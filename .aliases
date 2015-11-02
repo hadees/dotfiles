@@ -15,6 +15,11 @@ alias g="git"
 alias h="history"
 alias j="jobs"
 
+# Ruby development
+alias fr='foreman run bundle exec'
+alias fs='foreman start -f Procfile.custom'
+alias gs='foreman run bundle exec guard'
+
 # Detect which `ls` flavor is in use
 if ls --color > /dev/null 2>&1; then # GNU `ls`
 	colorflag="--color"
