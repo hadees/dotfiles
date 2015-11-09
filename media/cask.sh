@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 
-isWorkMachine=false
-
 # Start
 echo "`basename $0` starting."
 
