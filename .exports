@@ -33,5 +33,7 @@ export GEM_EDITOR="subl";
 eval "$(rbenv init -)"
 
 # Homebrew
+export PATH="/usr/local/sbin:$PATH"
+
 # Link Homebrew casks in `/Applications` rather than `~/Applications`
 export HOMEBREW_CASK_OPTS="--appdir=/Applications"
