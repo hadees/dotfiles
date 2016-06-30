@@ -21,3 +21,16 @@ export LESS_TERMCAP_md="${yellow}";
 
 # Don’t clear the screen after quitting a manual page.
 export MANPAGER='less -X';
+
+# Set editor for gem-open
+export GEM_EDITOR="subl";
+
+#rbenv shim
+#export PATH="$HOME/.rbenv/bin:$PATH"
+eval "$(rbenv init -)"
+
+# Homebrew
+export PATH="/usr/local/sbin:$PATH"
+
+# Link Homebrew casks in `/Applications` rather than `~/Applications`
+export HOMEBREW_CASK_OPTS="--appdir=/Applications"
