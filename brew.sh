@@ -86,7 +86,6 @@ brew install p7zip
 brew install pigz
 brew install pv
 brew install rename
-brew install rhino
 brew install speedtest_cli
 brew install ssh-copy-id
 brew install testssl
@@ -97,7 +96,12 @@ brew install zopfli
 
 # Ruby Development
 brew install rbenv
+brew install ruby-build
+brew install elasticsearch
+brew install postgres
 
+# Node Development
+brew install node
 
 # Remove outdated versions from the cellar.
 brew cleanup
