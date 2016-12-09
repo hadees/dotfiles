@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Hadees’ dotfilesßß
 
 ## Installation
