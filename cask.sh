@@ -33,11 +33,13 @@ brew cask install github-desktop
 brew cask install google-chrome
 brew cask install google-drive
 brew cask install handbrake
+brew cask install horndis
 brew cask install istat-menus
 brew cask install java
 brew cask install jdiskreport
 brew cask install kodi
 brew cask install libreoffice
+brew cask install little-snitch
 brew cask install moom
 brew cask install ngrok
 brew cask install opera
@@ -47,9 +49,14 @@ brew cask install sourcetree
 brew cask install spotify
 brew cask install steam
 brew cask install the-unarchiver
+brew cask install tower
 brew cask install transmission
 brew cask install vlc
 brew cask install xscreensaver
+brew cask install screenhero
+brew cask install nzbvortex
+brew cask install github-desktop
+brew cask install anki
 
 # install fonts
 brew cask install font-source-code-pro

@@ -47,61 +47,64 @@ brew install sfnt2woff
 brew install sfnt2woff-zopfli
 brew install woff2
 
-# Install some CTF tools; see https://github.com/ctfs/write-ups.
+
+# Install other useful binaries.
+brew install ack
 brew install aircrack-ng
+brew install awscli
 brew install bfg
 brew install binutils
 brew install binwalk
 brew install cifer
+brew install dark-mode
 brew install dex2jar
 brew install dns2tcp
+brew install elasticsearch
 brew install fcrackzip
+brew install ffmpeg
 brew install foremost
+brew install git
+brew install git-flow-avh
+brew install git-lfs
 brew install hashpump
+brew install heroku-toolbelt
+brew install hub
 brew install hydra
+brew install imagemagick --with-webp
 brew install john
 brew install knock
+brew install libxml2
+brew install lua
+brew install lynx
 brew install netpbm
+brew install ngrep
 brew install nmap
+brew install node
+brew install p7zip
+brew install pigz
 brew install pngcheck
+brew install postgres
+brew install pv
+brew install rbenv
+brew install redis
+brew install rename
+brew install ruby-build
 brew install socat
+brew install speedtest_cli
+brew install speedtest_cli
 brew install sqlmap
+brew install ssh-copy-id
 brew install tcpflow
 brew install tcpreplay
 brew install tcptrace
-brew install ucspi-tcp # `tcpserver` etc.
-brew install xpdf
-brew install xz
-
-# Install other useful binaries.
-brew install ack
-brew install dark-mode
-brew install git
-brew install git-lfs
-brew install git-flow-avh
-brew install imagemagick --with-webp
-brew install lua
-brew install lynx
-brew install p7zip
-brew install pigz
-brew install pv
-brew install rename
-brew install speedtest_cli
-brew install ssh-copy-id
 brew install testssl
 brew install tree
+brew install ucspi-tcp # `tcpserver` etc.
 brew install vbindiff
 brew install webkit2png
+brew install xpdf
+brew install xz
 brew install zopfli
-
-# Ruby Development
-brew install rbenv
-brew install ruby-build
-brew install elasticsearch
-brew install postgres
-
-# Node Development
-brew install node
 
 # Remove outdated versions from the cellar.
 brew cleanup
