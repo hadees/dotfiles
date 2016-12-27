@@ -198,8 +198,6 @@ sudo systemsetup -settimezone "America/Chicago" > /dev/null
 # Disable auto-correct
 defaults write NSGlobalDomain NSAutomaticSpellingCorrectionEnabled -bool false
 
-# Stop iTunes from responding to the keyboard media keys
-#launchctl unload -w /System/Library/LaunchAgents/com.apple.rcd.plist 2> /dev/null
 
 ###############################################################################
 # Screen                                                                      #
@@ -246,7 +244,7 @@ defaults write com.apple.finder ShowMountedServersOnDesktop -bool true
 defaults write com.apple.finder ShowRemovableMediaOnDesktop -bool true
 
 # Finder: show hidden files by default
-#defaults write com.apple.finder AppleShowAllFiles -bool true
+defaults write com.apple.finder AppleShowAllFiles -bool true
 
 # Finder: show all filename extensions
 defaults write NSGlobalDomain AppleShowAllExtensions -bool true
@@ -368,9 +366,6 @@ defaults write com.apple.dock show-process-indicators -bool true
 # This is only really useful when setting up a new Mac, or if you don’t use
 # the Dock to launch apps.
 #defaults write com.apple.dock persistent-apps -array
-
-# Show only open applications in the Dock
-#defaults write com.apple.dock static-only -bool true
 
 # Don’t animate opening applications from the Dock
 defaults write com.apple.dock launchanim -bool false
@@ -660,8 +655,8 @@ defaults write com.apple.terminal SecureKeyboardEntry -bool true
 # Disable the annoying line marks
 defaults write com.apple.Terminal ShowLineMarks -int 0
 
-# Install the Solarized Dark theme for iTerm
-open "${HOME}/init/Solarized Dark.itermcolors"
+# Install the Base16 Eighties theme for iTerm
+open "${HOME}/theme/base16-eighties.dark.256.itermcolors"
 
 # Don’t display the annoying prompt when quitting iTerm
 defaults write com.googlecode.iterm2 PromptOnQuit -bool false
@@ -804,6 +799,8 @@ defaults write com.operasoftware.OperaDeveloper PMPrintingExpandedStateForPrint2
 
 # Install Sublime Text settings
 cp -r init/Preferences.sublime-settings ~/Library/Application\ Support/Sublime\ Text*/Packages/User/Preferences.sublime-settings 2> /dev/null
+git clone git://github.com/chriskempson/base16-textmate.git ~/Library/Application\ Support/Sublime\ Text\ 3/Packages/Base16\ Color\ Schemes
+git clone git@github.com:kkga/spacegray.git ~/Library/Application\ Support/Sublime\ Text\ 3/Packages/
 
 ###############################################################################
 # Transmission.app                                                            #
@@ -811,7 +808,7 @@ cp -r init/Preferences.sublime-settings ~/Library/Application\ Support/Sublime\ 
 
 # Use `~/Documents/Torrents` to store incomplete downloads
 defaults write org.m0k.transmission UseIncompleteDownloadFolder -bool true
-defaults write org.m0k.transmission IncompleteDownloadFolder -string "${HOME}/Documents/Torrents"
+defaults write org.m0k.transmission IncompleteDownloadFolder -string "${HOME}/Downloads/Torrents"
 
 # Don’t prompt for confirmation before downloading
 defaults write org.m0k.transmission DownloadAsk -bool false
