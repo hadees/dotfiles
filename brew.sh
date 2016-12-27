@@ -12,6 +12,8 @@ brew upgrade
 # Don’t forget to add `$(brew --prefix coreutils)/libexec/gnubin` to `$PATH`.
 brew install coreutils
 
+brew install apple-gcc42
+
 # Install some other useful utilities like `sponge`.
 brew install moreutils
 # Install GNU `find`, `locate`, `updatedb`, and `xargs`, `g`-prefixed.
@@ -39,14 +41,12 @@ brew install vim --with-override-system-vi
 brew install homebrew/dupes/grep
 brew install homebrew/dupes/openssh
 brew install homebrew/dupes/screen
-brew install homebrew/php/php56 --with-gmp
 
 # Install font tools.
 brew tap bramstein/webfonttools
 brew install sfnt2woff
 brew install sfnt2woff-zopfli
 brew install woff2
-
 
 # Install other useful binaries.
 brew install ack
@@ -91,19 +91,21 @@ brew install rename
 brew install ruby-build
 brew install socat
 brew install speedtest_cli
-brew install speedtest_cli
 brew install sqlmap
 brew install ssh-copy-id
+brew install sublime-text
 brew install tcpflow
 brew install tcpreplay
 brew install tcptrace
 brew install testssl
+brew install tor
 brew install tree
 brew install ucspi-tcp # `tcpserver` etc.
 brew install vbindiff
 brew install webkit2png
 brew install xpdf
 brew install xz
+brew install youtube-dl
 brew install zopfli
 
 # Remove outdated versions from the cellar.
