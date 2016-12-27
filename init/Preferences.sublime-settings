@@ -1,5 +1,5 @@
 {
-	"color_scheme": "Packages/Color Scheme - Default/Solarized (Dark).tmTheme",
+	"color_scheme": "Packages/Base16 Color Schemes/Themes/base16-eighties.tmTheme",
 	"default_encoding": "UTF-8",
 	"default_line_ending": "unix",
 	"detect_indentation": false,
@@ -18,10 +18,12 @@
 	"folder_exclude_patterns":
 	[
 		".git",
-		"node_modules"
+		"node_modules",
+		"tmp",
+		"log"
 	],
-	"font_face": "Monaco",
-	"font_size": 13,
+	"font_face": "Source Code Pro",
+	"font_size": 15,
 	"highlight_modified_tabs": true,
 	"hot_exit": false,
 	"line_padding_bottom": 5,
@@ -34,8 +36,14 @@
 	],
 	"show_encoding": true,
 	"show_line_endings": true,
+	"translate_tabs_to_spaces": true,
+	"word_wrap": true,
+	"spacegray_sidebar_font_large": true,
+	"spacegray_sidebar_tree_normal": true,
+	"spacegray_tabs_font_normal": true,
+	"spacegray_tabs_normal": true,
 	"tab_size": 2,
-	"translate_tabs_to_spaces": false,
-	"trim_trailing_white_space_on_save": true,
-	"word_wrap": true
+	"theme": "Spacegray Eighties.sublime-theme",
+	"translate_tabs_to_spaces": true,
+	"trim_trailing_white_space_on_save": true
 }
