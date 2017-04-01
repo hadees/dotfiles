@@ -12,7 +12,8 @@ brew upgrade
 # Don’t forget to add `$(brew --prefix coreutils)/libexec/gnubin` to `$PATH`.
 brew install coreutils
 
-brew install apple-gcc42
+brew install Caskroom/cask/java
+brew install homebrew/dupes/apple-gcc42
 
 # Install some other useful utilities like `sponge`.
 brew install moreutils
@@ -93,7 +94,6 @@ brew install socat
 brew install speedtest_cli
 brew install sqlmap
 brew install ssh-copy-id
-brew install sublime-text
 brew install tcpflow
 brew install tcpreplay
 brew install tcptrace
