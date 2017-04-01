@@ -12,59 +12,57 @@ sudo -v
 # setup taps
 brew tap caskroom/fonts
 
-# install cask
-brew install caskroom/cask/brew-cask
-
 # install applications
-brew cask install 1password
-brew cask install airserver
-brew cask install alfred
-brew cask install anki
-brew cask install bartender
-brew cask install caffeine
-brew cask install cocktail
-brew cask install colloquy
-brew cask install controlplane
-brew cask install crashplan
-brew cask install dropbox
-brew cask install fantastical
-brew cask install firefox
-brew cask install flux
-brew cask install github-desktop
-brew cask install google-chrome
-brew cask install google-drive
-brew cask install handbrake
-brew cask install horndis
-brew cask install istat-menus
-brew cask install iterm2
-brew cask install java
-brew cask install jdiskreport
-brew cask install kodi
-brew cask install libreoffice
-brew cask install little-snitch
-brew cask install macvim
-brew cask install moom
-brew cask install namechanger
-brew cask install ngrok
-brew cask install nzbvortex
-brew cask install opera
-brew cask install screenhero
-brew cask install simple-comic
-brew cask install slack
-brew cask install sourcetree
-brew cask install spotify
-brew cask install steam
-brew cask install the-unarchiver
-brew cask install tower
-brew cask install transmission
-brew cask install virtualbox
-brew cask install vlc
-brew cask install xscreensaver
+brew install Caskroom/cask/1password
+brew install Caskroom/cask/airserver
+brew install Caskroom/cask/alfred
+brew install Caskroom/cask/anki
+brew install Caskroom/cask/bartender
+brew install Caskroom/cask/caffeine
+brew install Caskroom/cask/cocktail
+brew install Caskroom/cask/colloquy
+brew install Caskroom/cask/controlplane
+brew install Caskroom/cask/crashplan
+brew install Caskroom/cask/dropbox
+brew install Caskroom/cask/fantastical
+brew install Caskroom/cask/firefox
+brew install Caskroom/cask/flux
+brew install Caskroom/cask/github-desktop
+brew install Caskroom/cask/google-chrome
+brew install Caskroom/cask/google-drive
+brew install Caskroom/cask/handbrake
+brew install Caskroom/cask/horndis
+brew install Caskroom/cask/istat-menus
+brew install Caskroom/cask/iterm2
+brew install Caskroom/cask/jdiskreport
+brew install Caskroom/cask/kodi
+brew install Caskroom/cask/libreoffice
+brew install Caskroom/cask/little-snitch
+brew install Caskroom/cask/mackup
+brew install Caskroom/cask/macvim
+brew install Caskroom/cask/moom
+brew install Caskroom/cask/namechanger
+brew install Caskroom/cask/ngrok
+brew install Caskroom/cask/nzbvortex
+brew install Caskroom/cask/opera
+brew install Caskroom/cask/screenhero
+brew install Caskroom/cask/simple-comic
+brew install Caskroom/cask/slack
+brew install Caskroom/cask/sourcetree
+brew install Caskroom/cask/spotify
+brew install Caskroom/cask/steam
+brew install Caskroom/cask/sublime-text
+brew install Caskroom/cask/the-unarchiver
+brew install Caskroom/cask/tower
+brew install Caskroom/cask/transmission
+brew install Caskroom/cask/virtualbox
+brew install Caskroom/cask/vlc
+brew install Caskroom/cask/xscreensaver
 
 # install fonts
-brew cask install font-source-code-pro
-brew cask install font-source-code-pro-for-powerline
-brew cask install font-fira-sans
+brew install Caskroom/cask/font-source-code-pro
+brew install Caskroom/cask/font-source-code-pro-for-powerline
+brew install Caskroom/cask/font-fira-sans
 
 # cleanup unneeded files
 brew cleanup
