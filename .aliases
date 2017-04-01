@@ -19,7 +19,7 @@ alias j="jobs"
 
 # Ruby development
 alias fr='foreman run bundle exec'
-alias fs='foreman start -f Procfile.custom'
+alias fs='foreman start -f Procfile.local'
 alias gs='foreman run bundle exec guard'
 alias rc='foreman run bundle exec rails console'
 
