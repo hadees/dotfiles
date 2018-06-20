@@ -25,7 +25,6 @@ brew install gnu-sed --with-default-names
 # Note: don’t forget to add `/usr/local/bin/bash` to `/etc/shells` before
 # running `chsh`.
 brew install bash
-brew tap homebrew/versions
 brew install bash-completion2
 
 # Switch to using brew-installed bash as default shell
@@ -37,11 +36,23 @@ fi;
 # Install `wget` with IRI support.
 brew install wget --with-iri
 
+<<<<<<< HEAD
 # Install more recent versions of some macOS tools.
 brew install vim --with-override-system-vi
 brew install homebrew/dupes/grep
 brew install homebrew/dupes/openssh
 brew install homebrew/dupes/screen
+=======
+# Install GnuPG to enable PGP-signing commits.
+brew install gnupg
+
+# Install more recent versions of some macOS tools.
+brew install vim --with-override-system-vi
+brew install grep
+brew install openssh
+brew install screen
+brew install homebrew/php/php56 --with-gmp
+>>>>>>> upstream/master
 
 # Install font tools.
 brew tap bramstein/webfonttools
@@ -74,7 +85,28 @@ brew install hydra
 brew install imagemagick --with-webp
 brew install john
 brew install knock
+<<<<<<< HEAD
 brew install libxml2
+=======
+brew install netpbm
+brew install nmap
+brew install pngcheck
+brew install socat
+brew install sqlmap
+brew install tcpflow
+brew install tcpreplay
+brew install tcptrace
+brew install ucspi-tcp # `tcpserver` etc.
+brew install xpdf
+brew install xz
+
+# Install other useful binaries.
+brew install ack
+#brew install exiv2
+brew install git
+brew install git-lfs
+brew install imagemagick --with-webp
+>>>>>>> upstream/master
 brew install lua
 brew install lynx
 brew install netpbm
@@ -89,6 +121,7 @@ brew install pv
 brew install rbenv
 brew install redis
 brew install rename
+<<<<<<< HEAD
 brew install ruby-build
 brew install socat
 brew install speedtest_cli
@@ -99,13 +132,20 @@ brew install tcpreplay
 brew install tcptrace
 brew install testssl
 brew install tor
+=======
+brew install rlwrap
+brew install ssh-copy-id
+>>>>>>> upstream/master
 brew install tree
 brew install ucspi-tcp # `tcpserver` etc.
 brew install vbindiff
+<<<<<<< HEAD
 brew install webkit2png
 brew install xpdf
 brew install xz
 brew install youtube-dl
+=======
+>>>>>>> upstream/master
 brew install zopfli
 
 # Remove outdated versions from the cellar.
