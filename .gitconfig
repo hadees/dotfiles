@@ -79,6 +79,12 @@
 		fi \
 	}; f"
 
+	# https://adamcod.es/2014/12/10/git-pull-correct-workflow.html
+	update-from = "!f() { git fetch $1 --prune; git merge --ff-only $1/$2 || git rebase --preserve-merges $1/$2; }; f"
+
+  # https://developer.atlassian.com/blog/2015/04/force-with-lease/
+	pushf = "push --force-with-lease"
+
 [apply]
 
 	# Detect whitespace errors when applying a patch
