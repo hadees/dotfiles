@@ -79,29 +79,14 @@ When setting up a new Mac, you may want to install some common [Homebrew](https:
 ./brew.sh
 ```
 
-<<<<<<< HEAD
-## Thanks to…
-
-* [Mathias Bynens](https://mathiasbynens.be/) because this was forked from his [dotfiles repository](https://github.com/mathiasbynens/dotfiles).
-* @ptb and [his _OS X Lion Setup_ repository](https://github.com/ptb/Mac-OS-X-Lion-Setup)
-=======
-Some of the functionality of these dotfiles depends on formulae installed by `brew.sh`. If you don’t plan to run `brew.sh`, you should look carefully through the script and manually install any particularly important ones. A good example is Bash/Git completion: the dotfiles use a special version from Homebrew.
-
 ## Feedback
 
-Suggestions/improvements
-[welcome](https://github.com/mathiasbynens/dotfiles/issues)!
-
-## Author
-
-| [![twitter/mathias](http://gravatar.com/avatar/24e08a9ea84deb17ae121074d0f17125?s=70)](http://twitter.com/mathias "Follow @mathias on Twitter") |
-|---|
-| [Mathias Bynens](https://mathiasbynens.be/) |
+Suggestions/improvements [welcome](https://github.com/hadees/dotfiles/issues)!
 
 ## Thanks to…
 
+* [Mathias Bynens](https://github.com/mathiasbynens/dotfiles/)
 * @ptb and [his _macOS Setup_ repository](https://github.com/ptb/mac-setup)
->>>>>>> upstream/master
 * [Ben Alman](http://benalman.com/) and his [dotfiles repository](https://github.com/cowboy/dotfiles)
 * [Cătălin Mariș](https://github.com/alrra) and his [dotfiles repository](https://github.com/alrra/dotfiles)
 * [Gianni Chiappetta](https://butt.zone/) for sharing his [amazing collection of dotfiles](https://github.com/gf3/dotfiles)
