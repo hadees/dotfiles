@@ -16,10 +16,10 @@ alias c="cd ~/code"
 alias g="git"
 
 # Ruby development
-alias fr='foreman run bundle exec'
-alias fs='foreman start -f Procfile.local'
-alias gs='foreman run bundle exec guard'
-alias rc='foreman run bundle exec rails console'
+alias fr='overmind run bundle exec'
+alias fs='overmind start -f Procfile.local'
+alias gs='overmind run bundle exec guard'
+alias rc='overmind run bundle exec rails console'
 
 # Detect which `ls` flavor is in use
 if ls --color > /dev/null 2>&1; then # GNU `ls`
