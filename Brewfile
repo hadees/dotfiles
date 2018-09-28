@@ -14,14 +14,12 @@ brew 'awscli' # a unified tool to manage your AWS services.
 brew 'bash' # an sh-compatible shell that incorporates useful features from the Korn shell (ksh) and C shell (csh)
 brew 'bfg' # Removes large or troublesome blobs like git-filter-branch does, but faster. And written in Scala
 brew 'binutils' # The GNU Binutils are a collection of binary tools
-brew 'binwalk' # Firmware Analysis Tool
 brew 'bramstein/webfonttools/sfnt2woff' # Tool for converting TrueType and OpenType font files to WOFF made by Jonathan Kew.
 brew 'bramstein/webfonttools/sfnt2woff-zopfli' # Modified version of sfnt2woff that uses the Zopfli compression algorithm (2-5% better compression than standard WOFF).
 brew 'bramstein/webfonttools/woff2' # WOFF2 compression and decompression utilities by Google.
 brew 'cifer' # Work on automating classical cipher cracking in C.
 brew 'coreutils' # The GNU Core Utilities are the basic file, shell and text manipulation utilities of the GNU operating system.
 brew 'dark-mode' # Toggle the macOS Dark Mode from the command-line
-brew 'dex2jar' # Tools to work with android .dex and java .class files
 brew 'dns2tcp' # Dns2tcp is a network tool designed to relay TCP connections through DNS traffic.
 brew 'elasticsearch' # a distributed, RESTful search and analytics engine
 brew 'fcrackzip' # FCrackZip is a free and fast zip password cracker
@@ -45,9 +43,7 @@ brew 'screen' # a full-screen window manager that multiplexes a physical termina
 brew 'bash-completion@2' # Programmable completion functions for bash
 brew 'hub' # a command-line wrapper for git that makes you better at GitHub.
 brew 'imagemagick', args: ['with-webp']
-brew 'isl'
-brew 'jasper'
-brew 'john'
+brew 'john' # John the Ripper password cracker
 brew 'jpeg'
 brew 'knock'
 brew 'lame'
