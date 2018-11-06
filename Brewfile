@@ -8,10 +8,12 @@ tap 'homebrew/versions'
 
 brew 'ack' # a tool like grep, optimized for programmers
 brew 'aircrack-ng' # a complete suite of tools to assess WiFi network security.
+brew 'apple-gcc42' # gcc-4.2 (Apple build 5666.3) including GNU Fortran for Mac OS X 10.7 (Lion).
 brew 'autoconf' # an extensible package of M4 macros that produce shell scripts to automatically configure software source code packages.
 brew 'automake' # a tool for automatically generating Makefile in files compliant with the GNU Coding Standards
 brew 'awscli' # a unified tool to manage your AWS services.
 brew 'bash' # an sh-compatible shell that incorporates useful features from the Korn shell (ksh) and C shell (csh)
+brew 'bash-completion@2' # Programmable completion functions for bash
 brew 'bfg' # Removes large or troublesome blobs like git-filter-branch does, but faster. And written in Scala
 brew 'binutils' # The GNU Binutils are a collection of binary tools
 brew 'bramstein/webfonttools/sfnt2woff' # Tool for converting TrueType and OpenType font files to WOFF made by Jonathan Kew.
@@ -34,78 +36,77 @@ brew 'git-lfs' # Git extension for versioning large files
 brew 'gmp' # is a free library for arbitrary precision arithmetic, operating on signed integers, rational numbers, and floating-point numbers.
 brew 'gnu-getopt' # parse command-line arguments from shell scripts
 brew 'gnu-sed', args: ['with-default-names'] # sed (stream editor) is a non-interactive command-line text editor.
+brew 'grep' # searches one or more input files for lines containing a match to a specified pattern.
 brew 'hashpump' # A tool to exploit the hash length extension attack in various hashing algorithms
 brew 'heroku' # a tool for creating and managing Heroku apps from the command line / shell of various operating systems.
-brew 'apple-gcc42' # gcc-4.2 (Apple build 5666.3) including GNU Fortran for Mac OS X 10.7 (Lion).
-brew 'grep' # searches one or more input files for lines containing a match to a specified pattern.
-brew 'openssh' # the premier connectivity tool for remote login with the SSH protocol.
-brew 'screen' # a full-screen window manager that multiplexes a physical terminal between several processes, typically interactive shells.
-brew 'bash-completion@2' # Programmable completion functions for bash
 brew 'hub' # a command-line wrapper for git that makes you better at GitHub.
 brew 'imagemagick', args: ['with-webp']
 brew 'john' # John the Ripper password cracker
-brew 'jpeg'
-brew 'knock'
-brew 'lame'
-brew 'libdnet'
-brew 'libevent'
-brew 'libidn'
-brew 'libmpc'
-brew 'libpng'
-brew 'libtiff'
-brew 'libtool'
-brew 'libxml2'
-brew 'lua'
-brew 'lynx'
-brew 'mackup'
-brew 'moreutils'
-brew 'mpfr'
-brew 'mysql'
-brew 'netpbm'
-brew 'ngrep'
-brew 'nmap'
-brew 'node'
-brew 'openssl'
-brew 'p7zip'
-brew 'pcre'
-brew 'pigz'
-brew 'pkg-config'
-brew 'pngcheck'
-brew 'postgresql'
-brew 'pv'
-brew 'rbenv'
-brew 'readline'
-brew 'redis'
-brew 'rename'
-brew 'ruby-build'
-brew 'socat'
-brew 'speedtest_cli'
-brew 'sqlite'
-brew 'sqlmap'
-brew 'ssdeep'
-brew 'ssh-copy-id'
-brew 'tcpflow'
-brew 'tcpreplay'
-brew 'tcptrace'
-brew 'testssl'
-brew 'tor'
-brew 'tree'
-brew 'ucspi-tcp'
-brew 'vbindiff'
-brew 'vim', args: ['with-override-system-vi']
-brew 'webkit2png'
-brew 'webp'
-brew 'wget', args: ['with-iri']
-brew 'x264'
-brew 'xvid'
-brew 'xz'
-brew 'youtube-dl'
-brew 'zopfli'
+brew 'jpeg' # Image manipulation library
+brew 'knock' # Port-knock server
+brew 'lame' # High quality MPEG Audio Layer III (MP3) encoder
+brew 'libdnet' # Portable low-level networking library
+brew 'libevent' # Asynchronous event library
+brew 'libidn' # International domain name library
+brew 'libmpc' # C library for the arithmetic of high precision complex numbers
+brew 'libpng' # Library for manipulating PNG images
+brew 'libtiff' # TIFF library and utilities
+brew 'libtool' # Generic library support script
+brew 'libxml2' # GNOME XML library
+brew 'lua' # Powerful, lightweight programming language
+brew 'lynx' # Text-based web browser
+brew 'mackup' # Keep your Mac's application settings in sync
+brew 'moreutils' # Collection of tools that nobody wrote when UNIX was young
+brew 'mpfr' # C library for multiple-precision floating-point computations
+brew 'mysql' # Open source relational database management system
+brew 'netpbm' # Image manipulation
+brew 'ngrep' # Network grep
+brew 'nmap' # Port scanning utility for large networks
+brew 'node' # JS Platform built on V8 to build network applications
+brew 'openssh' # the premier connectivity tool for remote login with the SSH protocol.
+brew 'openssl' # SSL/TLS cryptography library
+brew 'p7zip' # 7-Zip (high compression file archiver) implementation
+brew 'pcre' # Perl compatible regular expressions library
+brew 'pigz' # Parallel gzip
+brew 'pkg-config' # Manage compile and link flags for libraries
+brew 'pngcheck' # Print info and check PNG, JNG, and MNG files
+brew 'postgresql' # Object-relational database system
+brew 'pv' # Monitor data's progress through a pipe
+brew 'rbenv' # Ruby version manager
+brew 'readline' # Library for command-line editing
+brew 'redis' # Persistent key-value database, with built-in net interface
+brew 'rename' # Perl-powered file rename script with many helpful built-ins
+brew 'ruby-build' # Install various Ruby versions and implementations
+brew 'screen' # a full-screen window manager that multiplexes a physical terminal between several processes, typically interactive shells.
+brew 'socat' # netcat on steroids
+brew 'speedtest_cli' # Command-line interface for https://speedtest.net bandwidth tests
+brew 'sqlite' # Command-line interface for SQLite
+brew 'sqlmap' # Penetration testing for SQL injection and database servers
+brew 'ssdeep' # Recursive piecewise hashing tool
+brew 'ssh-copy-id' # Add a public key to a remote machine's authorized_keys file
+brew 'tcpflow' # TCP flow recorder
+brew 'tcpreplay' # Replay saved tcpdump files at arbitrary speeds
+brew 'tcptrace' # Analyze tcpdump output
+brew 'testssl' # Tool which checks for the support of TLS/SSL ciphers and flaws
+brew 'tor' # Anonymizing overlay network for TCP
+brew 'tree' # Display directories as trees (with optional color/HTML output)
+brew 'ucspi-tcp' # Tools for building TCP client-server applications
+brew 'vbindiff' # Visual Binary Diff
+brew 'vim', args: ['with-override-system-vi'] # Vi 'workalike' with many additional features
+brew 'webkit2png' # Create screenshots of webpages from the terminal
+brew 'webp' # Image format providing lossless and lossy compression for web images
+brew 'wget', args: ['with-iri'] # Internet file retriever
+brew 'x264' # H.264/AVC encoder
+brew 'xvid' # High-performance, high-quality MPEG-4 video library
+brew 'xz' # General-purpose data compression with high compression ratio
+brew 'youtube-dl' # Download YouTube videos from the command-line
+brew 'zopfli' # New zlib (gzip, deflate) compatible compressor
 
 cask '1password'
 cask 'airserver'
 cask 'alfred'
 cask 'anki'
+cask 'arq'
 cask 'bartender'
 cask 'caffeine'
 cask 'cocktail'
@@ -122,6 +123,7 @@ cask 'font-source-code-pro-for-powerline'
 cask 'github-desktop'
 cask 'google-chrome'
 cask 'google-drive'
+cask 'gpg-suite'
 cask 'handbrake'
 cask 'horndis'
 cask 'istat-menus'
@@ -138,7 +140,6 @@ cask 'namechanger'
 cask 'ngrok'
 cask 'nzbvortex'
 cask 'opera'
-cask 'screenhero'
 cask 'simple-comic'
 cask 'slack'
 cask 'sourcetree'
