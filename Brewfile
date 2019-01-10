@@ -63,6 +63,7 @@ brew 'netpbm' # Image manipulation
 brew 'ngrep' # Network grep
 brew 'nmap' # Port scanning utility for large networks
 brew 'node' # JS Platform built on V8 to build network applications
+brew 'nodenv' # Manage multiple NodeJS versions.
 brew 'openssh' # the premier connectivity tool for remote login with the SSH protocol.
 brew 'openssl' # SSL/TLS cryptography library
 brew 'p7zip' # 7-Zip (high compression file archiver) implementation
@@ -101,6 +102,7 @@ brew 'xvid' # High-performance, high-quality MPEG-4 video library
 brew 'xz' # General-purpose data compression with high compression ratio
 brew 'youtube-dl' # Download YouTube videos from the command-line
 brew 'zopfli' # New zlib (gzip, deflate) compatible compressor
+brew 'pyenv' # Simple Python version management
 
 cask '1password'
 cask 'airserver'
