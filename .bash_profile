@@ -53,5 +53,5 @@ eval "$(rbenv init -)"
 # nodenv shim
 eval "$(nodenv init -)"
 
-# pyenv shim
-eval "$(pyenv init -)"
+# pipenv shim
+eval "$(pipenv --completion)"
