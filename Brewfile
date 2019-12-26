@@ -1,6 +1,5 @@
 tap 'bramstein/webfonttools'
-tap 'caskroom/cask'
-tap 'caskroom/cask-fonts'
+tap 'homebrew/cask-fonts'
 tap 'homebrew/bundle'
 tap 'homebrew/core'
 
