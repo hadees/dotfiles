@@ -1,10 +1,8 @@
 tap 'bramstein/webfonttools'
 tap 'caskroom/cask'
-tap 'caskroom/fonts'
+tap 'caskroom/cask-fonts'
 tap 'homebrew/bundle'
 tap 'homebrew/core'
-tap 'homebrew/dupes'
-tap 'homebrew/versions'
 
 brew 'ack' # a tool like grep, optimized for programmers
 brew 'aircrack-ng' # a complete suite of tools to assess WiFi network security.
