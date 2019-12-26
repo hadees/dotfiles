@@ -5,7 +5,6 @@ tap 'homebrew/core'
 
 brew 'ack' # a tool like grep, optimized for programmers
 brew 'aircrack-ng' # a complete suite of tools to assess WiFi network security.
-brew 'apple-gcc42' # gcc-4.2 (Apple build 5666.3) including GNU Fortran for Mac OS X 10.7 (Lion).
 brew 'autoconf' # an extensible package of M4 macros that produce shell scripts to automatically configure software source code packages.
 brew 'automake' # a tool for automatically generating Makefile in files compliant with the GNU Coding Standards
 brew 'awscli' # a unified tool to manage your AWS services.
@@ -103,6 +102,8 @@ brew 'pyenv' # Simple Python version management
 
 cask '1password'
 cask 'acorn'
+cask 'adoptopenjdk'
+cask 'adoptopenjdk8'
 cask 'airserver'
 cask 'alfred'
 cask 'android-platform-tools'
@@ -154,6 +155,7 @@ cask 'qlmarkdown'
 cask 'qlstephen'
 cask 'qlvideo'
 cask 'quicklook-json'
+cask 'quicklookapk'
 cask 'quicklookase'
 cask 'resxtreme'
 cask 'shimo'
@@ -176,4 +178,3 @@ cask 'vlc'
 cask 'webpquicklook'
 cask 'xquartz'
 cask 'xscreensaver'
-cask 'quicklookapk'
