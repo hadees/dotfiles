@@ -38,6 +38,8 @@ export PATH="/usr/local/sbin:$PATH"
 # Link Homebrew casks in `/Applications` rather than `~/Applications`
 export HOMEBREW_CASK_OPTS="--appdir=/Applications"
 
+# Hide the ‘default interactive shell is now zsh’ message in Terminal on macOS
+export BASH_SILENCE_DEPRECATION_WARNING=1
 
 
 # Avoid issues with `gpg` as installed via Homebrew.
