@@ -55,3 +55,6 @@ eval "$(nodenv init -)"
 
 # pipenv shim
 eval "$(pipenv --completion)"
+
+# Increase how many files can be opened at once
+ulimit -n 10480

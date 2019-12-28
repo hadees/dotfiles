@@ -88,6 +88,7 @@ brew 'ssh-copy-id' # Add a public key to a remote machine's authorized_keys file
 brew 'tcpflow' # TCP flow recorder
 brew 'tcpreplay' # Replay saved tcpdump files at arbitrary speeds
 brew 'tcptrace' # Analyze tcpdump output
+brew 'terminal-notifier'
 brew 'testssl' # Tool which checks for the support of TLS/SSL ciphers and flaws
 brew 'tor' # Anonymizing overlay network for TCP
 brew 'tree' # Display directories as trees (with optional color/HTML output)

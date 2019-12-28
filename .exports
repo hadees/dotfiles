@@ -41,6 +41,8 @@ export HOMEBREW_CASK_OPTS="--appdir=/Applications"
 # Hide the ‘default interactive shell is now zsh’ message in Terminal on macOS
 export BASH_SILENCE_DEPRECATION_WARNING=1
 
+# This keeps apple from throwing a forking error
+export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
 
 # Avoid issues with `gpg` as installed via Homebrew.
 # https://stackoverflow.com/a/42265848/96656
