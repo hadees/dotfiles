@@ -1,6 +1,8 @@
 tap 'bramstein/webfonttools'
-tap 'homebrew/cask-fonts'
+tap 'heroku/brew'
 tap 'homebrew/bundle'
+tap 'homebrew/cask-fonts'
+tap 'homebrew/cask-versions'
 tap 'homebrew/core'
 
 brew 'ack' # a tool like grep, optimized for programmers
@@ -31,12 +33,12 @@ brew 'git-flow-avh' # AVH Edition of the git extensions to provide high-level re
 brew 'git-lfs' # Git extension for versioning large files
 brew 'gmp' # is a free library for arbitrary precision arithmetic, operating on signed integers, rational numbers, and floating-point numbers.
 brew 'gnu-getopt' # parse command-line arguments from shell scripts
-brew 'gnu-sed', args: ['with-default-names'] # sed (stream editor) is a non-interactive command-line text editor.
+brew 'gnu-sed' # sed (stream editor) is a non-interactive command-line text editor.
 brew 'grep' # searches one or more input files for lines containing a match to a specified pattern.
 brew 'hashpump' # A tool to exploit the hash length extension attack in various hashing algorithms
 brew 'heroku' # a tool for creating and managing Heroku apps from the command line / shell of various operating systems.
 brew 'hub' # a command-line wrapper for git that makes you better at GitHub.
-brew 'imagemagick', args: ['with-webp']
+brew 'imagemagick'
 brew 'john' # John the Ripper password cracker
 brew 'jpeg' # Image manipulation library
 brew 'knock' # Port-knock server
@@ -62,6 +64,7 @@ brew 'node' # JS Platform built on V8 to build network applications
 brew 'nodenv' # Manage multiple NodeJS versions.
 brew 'openssh' # the premier connectivity tool for remote login with the SSH protocol.
 brew 'openssl' # SSL/TLS cryptography library
+brew 'overmind'
 brew 'p7zip' # 7-Zip (high compression file archiver) implementation
 brew 'pcre' # Perl compatible regular expressions library
 brew 'pigz' # Parallel gzip
@@ -69,6 +72,7 @@ brew 'pkg-config' # Manage compile and link flags for libraries
 brew 'pngcheck' # Print info and check PNG, JNG, and MNG files
 brew 'postgresql' # Object-relational database system
 brew 'pv' # Monitor data's progress through a pipe
+brew 'pyenv' # Simple Python version management
 brew 'rbenv' # Ruby version manager
 brew 'readline' # Library for command-line editing
 brew 'redis' # Persistent key-value database, with built-in net interface
@@ -89,23 +93,22 @@ brew 'tor' # Anonymizing overlay network for TCP
 brew 'tree' # Display directories as trees (with optional color/HTML output)
 brew 'ucspi-tcp' # Tools for building TCP client-server applications
 brew 'vbindiff' # Visual Binary Diff
-brew 'vim', args: ['with-override-system-vi'] # Vi 'workalike' with many additional features
+brew 'vim' # Vi 'workalike' with many additional features
 brew 'webkit2png' # Create screenshots of webpages from the terminal
 brew 'webp' # Image format providing lossless and lossy compression for web images
-brew 'wget', args: ['with-iri'] # Internet file retriever
+brew 'wget' # for retrieving files using HTTP, HTTPS, FTP and FTPS the most widely-used Internet protocols.
 brew 'x264' # H.264/AVC encoder
 brew 'xvid' # High-performance, high-quality MPEG-4 video library
 brew 'xz' # General-purpose data compression with high compression ratio
 brew 'youtube-dl' # Download YouTube videos from the command-line
 brew 'zopfli' # New zlib (gzip, deflate) compatible compressor
-brew 'pyenv' # Simple Python version management
 
 cask '1password'
 cask 'acorn'
-cask 'adoptopenjdk'
 cask 'adoptopenjdk8'
 cask 'airserver'
 cask 'alfred'
+cask 'android-messages'
 cask 'android-platform-tools'
 cask 'android-sdk'
 cask 'anki'
@@ -114,7 +117,6 @@ cask 'caffeine'
 cask 'calibre'
 cask 'carbon-copy-cloner'
 cask 'chromedriver'
-cask 'cocktail'
 cask 'colloquy'
 cask 'controlplane'
 cask 'deluge'
@@ -127,7 +129,7 @@ cask 'google-chrome'
 cask 'google-drive-file-stream'
 cask 'google-hangouts'
 cask 'google-photos-backup-and-sync'
-cask 'gpgtools'
+cask 'gpg-suite'
 cask 'handbrake'
 cask 'hazel'
 cask 'horndis' # driver for Mac OS X that allows you to use your Android phone's native USB tethering mode to get Internet access.
@@ -164,6 +166,7 @@ cask 'simplenote'
 cask 'slack'
 cask 'snagit'
 cask 'sourcetree'
+cask 'spark'
 cask 'spotify'
 cask 'steam'
 cask 'sublime-text'
@@ -176,5 +179,6 @@ cask 'vagrant'
 cask 'virtualbox'
 cask 'vlc'
 cask 'webpquicklook'
+cask 'whatsapp'
 cask 'xquartz'
 cask 'xscreensaver'
