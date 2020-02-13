@@ -56,5 +56,8 @@ eval "$(nodenv init -)"
 # pipenv shim
 eval "$(pipenv --completion)"
 
+# pyenv shim
+eval "$(pyenv init -)"
+
 # Increase how many files can be opened at once
 ulimit -n 10480
