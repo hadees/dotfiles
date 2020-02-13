@@ -1,4 +1,5 @@
 tap 'bramstein/webfonttools'
+tap 'elastic/tap'
 tap 'heroku/brew'
 tap 'homebrew/bundle'
 tap 'homebrew/cask-fonts'
@@ -19,8 +20,10 @@ brew 'bramstein/webfonttools/sfnt2woff-zopfli' # Modified version of sfnt2woff t
 brew 'bramstein/webfonttools/woff2' # WOFF2 compression and decompression utilities by Google.
 brew 'cifer' # Work on automating classical cipher cracking in C.
 brew 'coreutils' # The GNU Core Utilities are the basic file, shell and text manipulation utilities of the GNU operating system.
+brew 'curl'
 brew 'dark-mode' # Toggle the macOS Dark Mode from the command-line
 brew 'dns2tcp' # Dns2tcp is a network tool designed to relay TCP connections through DNS traffic.
+brew 'elastic/tap/kibana-full' # Kibana is an open source analytics and visualization platform designed to work with Elasticsearch.
 brew 'elasticsearch' # a distributed, RESTful search and analytics engine
 brew 'fcrackzip' # FCrackZip is a free and fast zip password cracker
 brew 'ffmpeg' # a complete, cross-platform solution to record, convert and stream audio and video. It includes libavcodec - the leading audio/video codec library.
@@ -54,6 +57,7 @@ brew 'libxml2' # GNOME XML library
 brew 'lua' # Powerful, lightweight programming language
 brew 'lynx' # Text-based web browser
 brew 'mackup' # Keep your Mac's application settings in sync
+brew 'mas' # Mac App Store command line interface
 brew 'moreutils' # Collection of tools that nobody wrote when UNIX was young
 brew 'mpfr' # C library for multiple-precision floating-point computations
 brew 'mysql' # Open source relational database management system
@@ -117,6 +121,7 @@ cask 'bartender'
 cask 'caffeine'
 cask 'calibre'
 cask 'carbon-copy-cloner'
+cask 'ccmenu'
 cask 'chromedriver'
 cask 'colloquy'
 cask 'controlplane'
@@ -126,6 +131,7 @@ cask 'fantastical'
 cask 'firefox'
 cask 'font-fira-sans'
 cask 'font-source-code-pro-for-powerline'
+cask 'forklift'
 cask 'google-chrome'
 cask 'google-drive-file-stream'
 cask 'google-hangouts'
@@ -140,6 +146,7 @@ cask 'istat-menus'
 cask 'iterm2'
 cask 'java'
 cask 'jdiskreport'
+cask 'kaleidoscope'
 cask 'launchrocket'
 cask 'libreoffice'
 cask 'little-snitch'
@@ -183,3 +190,7 @@ cask 'webpquicklook'
 cask 'whatsapp'
 cask 'xquartz'
 cask 'xscreensaver'
+
+mas 'Magnet', id: 441258766
+mas 'Sleepytime', id: 404302586
+mas 'Spark', id: 1176895641
