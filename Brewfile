@@ -191,6 +191,9 @@ cask 'whatsapp'
 cask 'xquartz'
 cask 'xscreensaver'
 
+mas 'AudioBookBinder', id: 413969927
+mas 'Contacts+', id: 1094748271
+mas 'Ethernet Status', id: 1186187538
 mas 'Magnet', id: 441258766
 mas 'Sleepytime', id: 404302586
 mas 'Spark', id: 1176895641
