@@ -54,7 +54,7 @@ eval "$(rbenv init -)"
 eval "$(nodenv init -)"
 
 # pipenv shim
-eval "$(pipenv --completion)"
+eval "$(_PIPENV_COMPLETE=bash_source pipenv)"
 
 # pyenv shim
 eval "$(pyenv init -)"
