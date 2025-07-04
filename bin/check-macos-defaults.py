@@ -75,8 +75,10 @@ def main():
         print('Commands potentially unsupported on', args.version)
         for domain, key, reason in unsupported:
             print(f'  {domain} {key} - {reason}')
+        sys.exit(1)
     else:
         print('All commands supported for', args.version)
+        sys.exit(0)
 
 if __name__ == '__main__':
     main()
