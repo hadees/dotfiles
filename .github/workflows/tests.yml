@@ -24,6 +24,6 @@ jobs:
       - name: Run tests
         run: bats tests
       - name: Install dependencies for defaults check
-        run: pip3 install requests
+        run: pip3 install --break-system-packages requests
       - name: Check macOS defaults compatibility
         run: ./bin/check-macos-defaults.py .macos Sonoma
