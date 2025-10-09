@@ -16,11 +16,16 @@ while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
 # General UI/UX                                                               #
 ###############################################################################
 
-# Set computer name (as done via System Preferences → Sharing)
-sudo scutil --set ComputerName "alice"
-sudo scutil --set HostName "alice"
-sudo scutil --set LocalHostName "alice"
-sudo defaults write /Library/Preferences/SystemConfiguration/com.apple.smb.server NetBIOSName -string "alice"
+# Set computer name (as done via System Preferences → Sharing) when provided.
+# Export COMPUTER_NAME before running this script to override.
+if [[ -n "${COMPUTER_NAME:-}" ]]; then
+	sudo scutil --set ComputerName "${COMPUTER_NAME}"
+	sudo scutil --set HostName "${COMPUTER_NAME}"
+	sudo scutil --set LocalHostName "${COMPUTER_NAME}"
+	sudo defaults write /Library/Preferences/SystemConfiguration/com.apple.smb.server NetBIOSName -string "${COMPUTER_NAME}"
+else
+	echo "Skipping computer name configuration (COMPUTER_NAME not set)."
+fi
 
 # Set standby delay to 24 hours (default is 1 hour)
 sudo pmset -a standbydelay 86400

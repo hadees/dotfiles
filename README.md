@@ -71,6 +71,8 @@ When setting up a new Mac, you may want to set some sensible macOS defaults:
 ./.macos
 ```
 
+To keep separate machine names, export `COMPUTER_NAME` before running the script, e.g. `COMPUTER_NAME="Work-Mac" ./.macos`. If the variable is not set, the existing system name is left unchanged so each Mac can keep its own identity.
+
 ### Install Homebrew formulae
 
 When setting up a new Mac, you may want to install some common [Homebrew](https://brew.sh/) formulae (after installing Homebrew, of course):
