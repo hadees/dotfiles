@@ -17,7 +17,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y bats
+          sudo apt-get install -y bats zsh
       - name: Install Bats on macOS
         if: matrix.os == 'macos-latest'
         run: brew install bats-core
