@@ -10,6 +10,7 @@ brew 'automake' # a tool for automatically generating Makefile in files complian
 brew 'awscli' # a unified tool to manage your AWS services.
 brew 'bash' # an sh-compatible shell that incorporates useful features from the Korn shell (ksh) and C shell (csh)
 brew 'bash-completion@2' # Programmable completion functions for bash
+brew 'bat' # Better cat with syntax highlighting and git integration
 brew 'bfg' # Removes large or troublesome blobs like git-filter-branch does, but faster. And written in Scala
 brew 'binutils' # The GNU Binutils are a collection of binary tools
 brew 'bramstein/webfonttools/sfnt2woff' # Tool for converting TrueType and OpenType font files to WOFF made by Jonathan Kew.
@@ -18,13 +19,17 @@ brew 'bramstein/webfonttools/woff2' # WOFF2 compression and decompression utilit
 brew 'cifer' # Work on automating classical cipher cracking in C.
 brew 'coreutils' # The GNU Core Utilities are the basic file, shell and text manipulation utilities of the GNU operating system.
 brew 'curl'
+brew 'delta' # Better git diffs with syntax highlighting
+brew 'direnv' # Per-directory environment variable loading
 brew 'dns2tcp' # Dns2tcp is a network tool designed to relay TCP connections through DNS traffic.
 brew 'elasticsearch' # a distributed, RESTful search and analytics engine
 brew 'fcrackzip' # FCrackZip is a free and fast zip password cracker
+brew 'fd' # Fast and user-friendly alternative to find
 brew 'ffmpeg' # a complete, cross-platform solution to record, convert and stream audio and video. It includes libavcodec - the leading audio/video codec library.
 brew 'findutils' # The GNU Find Utilities are the basic directory searching utilities of the GNU operating system.
 brew 'foremost' # a console program to recover files based on their headers, footers, and internal data structures.
 brew 'freetype' # a freely available software library to render fonts.
+brew 'fzf' # Command-line fuzzy finder
 brew 'gcc' # The GNU Compiler Collection includes front ends for C, C++, Objective-C, Fortran, Ada, and Go, as well as libraries for these languages (libstdc++,...)
 brew 'git' # a free and open source distributed version control system designed to handle everything from small to very large projects with speed and efficiency.
 brew 'git-flow-avh' # AVH Edition of the git extensions to provide high-level repository operations for Vincent Driessen's branching model
@@ -38,9 +43,12 @@ brew 'gh' # GitHub CLI — the official GitHub command-line tool.
 brew 'heroku' # a tool for creating and managing Heroku apps from the command line / shell of various operating systems.
 brew 'imagemagick'
 brew 'john' # John the Ripper password cracker
+brew 'jq' # Lightweight JSON processor
 brew 'jpeg' # Image manipulation library
+brew 'k9s' # Kubernetes TUI cluster manager
 brew 'knock' # Port-knock server
 brew 'lame' # High quality MPEG Audio Layer III (MP3) encoder
+brew 'lazygit' # Terminal UI for git
 brew 'libdnet' # Portable low-level networking library
 brew 'libevent' # Asynchronous event library
 brew 'libidn' # International domain name library
@@ -53,6 +61,7 @@ brew 'lua' # Powerful, lightweight programming language
 brew 'lynx' # Text-based web browser
 brew 'mackup' # Keep your Mac's application settings in sync
 brew 'mas' # Mac App Store command line interface
+brew 'mkcert' # Simple local HTTPS development certificates
 brew 'moreutils' # Collection of tools that nobody wrote when UNIX was young
 brew 'mpfr' # C library for multiple-precision floating-point computations
 brew 'mysql' # Open source relational database management system
@@ -106,6 +115,7 @@ brew 'zopfli' # New zlib (gzip, deflate) compatible compressor
 
 # AI / LLM tools
 brew 'ollama' # Run large language models locally (llama3, mistral, etc.)
+# After llm is installed: llm install llm-anthropic && llm keys set anthropic
 
 cask '1password'
 cask 'acorn'

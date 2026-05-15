@@ -98,6 +98,9 @@
 	excludesfile = ~/.gitignore
 	attributesfile = ~/.gitattributes
 
+	# Use delta for paging diffs (install via brew install delta)
+	pager = delta
+
 	# Treat spaces before tabs and all kinds of trailing whitespace as an error
 	# [default] trailing-space: looks for spaces at the end of a line
 	# [default] space-before-tab: looks for spaces before tabs at the beginning of a line
@@ -149,6 +152,19 @@
 
 	# Detect copies as well as renames
 	renames = copies
+	# Use delta's color-moved detection
+	colorMoved = default
+
+[interactive]
+
+	diffFilter = delta --color-only
+
+[delta]
+
+	navigate = true
+	side-by-side = true
+	line-numbers = true
+	syntax-theme = Dracula
 
 [diff "bin"]
 
