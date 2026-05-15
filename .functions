@@ -159,16 +159,6 @@ function getcertnames() {
 	fi;
 }
 
-# `s` with no arguments opens the current directory in VS Code, otherwise
-# opens the given location
-function s() {
-	if [ $# -eq 0 ]; then
-		code .;
-	else
-		code "$@";
-	fi;
-}
-
 # `v` with no arguments opens the current directory in Vim, otherwise opens the
 # given location
 function v() {
