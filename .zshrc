@@ -87,5 +87,18 @@ if (( $+commands[pyenv] )); then
 	eval "$(pyenv init -)"
 fi
 
+# fzf key bindings and completion.
+if [[ -f "$(brew --prefix fzf)/shell/key-bindings.zsh" ]]; then
+	source "$(brew --prefix fzf)/shell/key-bindings.zsh"
+fi
+if [[ -f "$(brew --prefix fzf)/shell/completion.zsh" ]]; then
+	source "$(brew --prefix fzf)/shell/completion.zsh"
+fi
+
+# direnv: load/unload .envrc files per directory.
+if (( $+commands[direnv] )); then
+	eval "$(direnv hook zsh)"
+fi
+
 # Increase how many files can be opened at once.
 ulimit -n 10480 2>/dev/null
