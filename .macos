@@ -792,6 +792,17 @@ defaults write com.operasoftware.OperaDeveloper PMPrintingExpandedStateForPrint2
 # Enable VS Code Settings Sync (sign in via GitHub/Microsoft after install)
 defaults write com.microsoft.VSCode ApplePressAndHoldEnabled -bool false
 
+# Install extensions
+if (( $+commands[code] )); then
+	for ext in \
+		eamodio.gitlens \
+		esbenp.prettier-vscode \
+		dbaeumer.vscode-eslint \
+		ms-azuretools.vscode-docker; do
+		code --install-extension "$ext" --force 2>/dev/null
+	done
+fi
+
 ###############################################################################
 # Spectacle.app                                                               #
 ###############################################################################

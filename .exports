@@ -15,13 +15,24 @@ export PYTHONIOENCODING='UTF-8'
 export LANG='en_US.UTF-8'
 export LC_ALL='en_US.UTF-8'
 
-# Highlight section titles in manual pages when possible.
-if command -v tput >/dev/null 2>&1; then
-	export LESS_TERMCAP_md="$(tput bold 2>/dev/null)$(tput setaf 3 2>/dev/null)"
+# Use bat for man pages when available, otherwise fall back to less.
+if (( $+commands[bat] )); then
+	export MANPAGER="sh -c ‘col -bx | bat -l man -p’"
+	export MANROFFOPT=’-c’
+else
+	export MANPAGER=’less -X’
 fi
 
-# Don’t clear the screen after quitting a manual page.
-export MANPAGER='less -X'
+# fzf: use fd for file finding, bat for previews.
+if (( $+commands[fzf] )); then
+	export FZF_DEFAULT_COMMAND=’fd --type f --hidden --follow --exclude .git’
+	export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
+	export FZF_ALT_C_COMMAND=’fd --type d --hidden --follow --exclude .git’
+	export FZF_DEFAULT_OPTS=’--height 40% --layout=reverse --border’
+	if (( $+commands[bat] )); then
+		export FZF_CTRL_T_OPTS="--preview ‘bat --color=always --style=numbers --line-range=:200 {}’"
+	fi
+fi
 
 # Homebrew preferences.
 typeset -U path PATH
