@@ -1,12 +1,9 @@
 tap 'bramstein/webfonttools'
-tap 'elastic/tap'
-tap 'heroku/brew'
 tap 'homebrew/bundle'
-tap 'homebrew/cask-fonts'
-tap 'homebrew/cask-versions'
 tap 'homebrew/core'
 
 brew 'ack' # a tool like grep, optimized for programmers
+brew 'asdf' # multi-language version manager (ruby, node, python, etc.)
 brew 'aircrack-ng' # a complete suite of tools to assess WiFi network security.
 brew 'autoconf' # an extensible package of M4 macros that produce shell scripts to automatically configure software source code packages.
 brew 'automake' # a tool for automatically generating Makefile in files compliant with the GNU Coding Standards
@@ -21,9 +18,7 @@ brew 'bramstein/webfonttools/woff2' # WOFF2 compression and decompression utilit
 brew 'cifer' # Work on automating classical cipher cracking in C.
 brew 'coreutils' # The GNU Core Utilities are the basic file, shell and text manipulation utilities of the GNU operating system.
 brew 'curl'
-brew 'dark-mode' # Toggle the macOS Dark Mode from the command-line
 brew 'dns2tcp' # Dns2tcp is a network tool designed to relay TCP connections through DNS traffic.
-brew 'elastic/tap/kibana-full' # Kibana is an open source analytics and visualization platform designed to work with Elasticsearch.
 brew 'elasticsearch' # a distributed, RESTful search and analytics engine
 brew 'fcrackzip' # FCrackZip is a free and fast zip password cracker
 brew 'ffmpeg' # a complete, cross-platform solution to record, convert and stream audio and video. It includes libavcodec - the leading audio/video codec library.
@@ -39,8 +34,8 @@ brew 'gnu-getopt' # parse command-line arguments from shell scripts
 brew 'gnu-sed' # sed (stream editor) is a non-interactive command-line text editor.
 brew 'grep' # searches one or more input files for lines containing a match to a specified pattern.
 brew 'hashpump' # A tool to exploit the hash length extension attack in various hashing algorithms
+brew 'gh' # GitHub CLI — the official GitHub command-line tool.
 brew 'heroku' # a tool for creating and managing Heroku apps from the command line / shell of various operating systems.
-brew 'hub' # a command-line wrapper for git that makes you better at GitHub.
 brew 'imagemagick'
 brew 'john' # John the Ripper password cracker
 brew 'jpeg' # Image manipulation library
@@ -65,6 +60,7 @@ brew 'netpbm' # Image manipulation
 brew 'ngrep' # Network grep
 brew 'nmap' # Port scanning utility for large networks
 brew 'node' # JS Platform built on V8 to build network applications
+# After node is installed: npm install -g @anthropic-ai/claude-code
 brew 'nodenv' # Manage multiple NodeJS versions.
 brew 'openssh' # the premier connectivity tool for remote login with the SSH protocol.
 brew 'openssl' # SSL/TLS cryptography library
@@ -105,12 +101,15 @@ brew 'wget' # for retrieving files using HTTP, HTTPS, FTP and FTPS the most wide
 brew 'x264' # H.264/AVC encoder
 brew 'xvid' # High-performance, high-quality MPEG-4 video library
 brew 'xz' # General-purpose data compression with high compression ratio
-brew 'youtube-dl' # Download YouTube videos from the command-line
+brew 'yt-dlp' # Download YouTube videos from the command-line (actively maintained youtube-dl fork)
 brew 'zopfli' # New zlib (gzip, deflate) compatible compressor
+
+# AI / LLM tools
+brew 'ollama' # Run large language models locally (llama3, mistral, etc.)
 
 cask '1password'
 cask 'acorn'
-cask 'adoptopenjdk8'
+cask 'temurin' # Eclipse Temurin OpenJDK (replaces adoptopenjdk)
 cask 'airserver'
 cask 'alfred'
 cask 'android-messages'
@@ -118,6 +117,7 @@ cask 'android-platform-tools'
 cask 'android-sdk'
 cask 'anki'
 cask 'bartender'
+cask 'claude' # Anthropic Claude desktop app
 cask 'caffeine'
 cask 'calibre'
 cask 'carbon-copy-cloner'
@@ -133,9 +133,7 @@ cask 'font-fira-sans'
 cask 'font-source-code-pro-for-powerline'
 cask 'forklift'
 cask 'google-chrome'
-cask 'google-drive-file-stream'
-cask 'google-hangouts'
-cask 'google-photos-backup-and-sync'
+cask 'google-drive'
 cask 'gpg-suite'
 cask 'handbrake'
 cask 'hazel'
@@ -147,7 +145,7 @@ cask 'iterm2'
 cask 'java'
 cask 'jdiskreport'
 cask 'kaleidoscope'
-cask 'launchrocket'
+cask 'lm-studio' # GUI for running local LLMs
 cask 'libreoffice'
 cask 'little-snitch'
 cask 'macvim'
@@ -177,7 +175,7 @@ cask 'sourcetree'
 cask 'spark'
 cask 'spotify'
 cask 'steam'
-cask 'sublime-text'
+cask 'visual-studio-code'
 cask 'suspicious-package'
 cask 'the-unarchiver'
 cask 'tinymediamanager'
