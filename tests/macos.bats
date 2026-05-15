@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 
 @test "macos script syntax is valid" {
-  run bash -n "$BATS_TEST_DIRNAME/../.macos"
+  run zsh -n "$BATS_TEST_DIRNAME/../.macos"
   [ "$status" -eq 0 ]
 }
 
