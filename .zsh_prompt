@@ -1,0 +1,57 @@
+#!/usr/bin/env zsh
+
+# Shell prompt based on the Solarized Dark theme.
+# Screenshot: http://i.imgur.com/EkEtphC.png
+# Heavily inspired by @necolas’s prompt: https://github.com/necolas/dotfiles
+# iTerm → Profiles → Text → use 13pt Monaco with 1.1 vertical spacing.
+
+if [[ $COLORTERM = gnome-* && $TERM = xterm ]] && infocmp gnome-256color >/dev/null 2>&1; then
+	export TERM='gnome-256color'
+elif infocmp xterm-256color >/dev/null 2>&1; then
+	export TERM='xterm-256color'
+fi
+
+autoload -Uz colors && colors
+setopt PROMPT_SUBST
+
+prompt_git() {
+	local status='' branch=''
+
+	if command git rev-parse --is-inside-work-tree &>/dev/null; then
+		if [[ "$(command git rev-parse --is-inside-git-dir 2>/dev/null)" == "false" ]]; then
+			command git update-index --really-refresh -q &>/dev/null
+
+			command git diff --quiet --ignore-submodules --cached || status+='+'
+			command git diff --quiet --ignore-submodules -- || status+='!'
+			[[ -n "$(command git ls-files --others --exclude-standard)" ]] && status+='?'
+			command git rev-parse --verify refs/stash &>/dev/null && status+='$'
+		fi
+
+		branch="$(command git symbolic-ref --quiet --short HEAD 2>/dev/null || \
+			command git rev-parse --short HEAD 2>/dev/null || \
+			echo '(unknown)')"
+
+		if [[ -n $status ]]; then
+			status=" %F{33}[$status]%f"
+		fi
+
+		print -n -- " on %F{61}${branch}%f${status}"
+	fi
+}
+
+user_segment="%F{208}%n%f"
+[[ $USER == root ]] && user_segment="%F{160}%n%f"
+
+host_segment="%F{220}%m%f"
+[[ -n $SSH_TTY ]] && host_segment="%B%F{160}%m%f%b"
+
+PROMPT=$'%B\n'
+PROMPT+="${user_segment} %F{250}at%f ${host_segment} %F{250}in%f %F{64}%~%f"
+PROMPT+='$(prompt_git)'
+PROMPT+=$'\n%F{250}$ %f%b'
+
+PROMPT2=$'%F{220}→ %f'
+
+precmd() {
+	print -Pn "\e]0;%~\a"
+}
