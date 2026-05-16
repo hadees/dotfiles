@@ -67,7 +67,7 @@ compdef _killall_completion killall
 # Runtime environment managers.
 # asdf is the preferred multi-language manager; the per-language managers below
 # are no-ops when not installed, so both setups coexist safely.
-if [[ -f "$(brew --prefix asdf)/libexec/asdf.sh" ]]; then
+if (( $+commands[brew] )) && [[ -f "$(brew --prefix asdf 2>/dev/null)/libexec/asdf.sh" ]]; then
 	source "$(brew --prefix asdf)/libexec/asdf.sh"
 fi
 
@@ -88,10 +88,10 @@ if (( $+commands[pyenv] )); then
 fi
 
 # fzf key bindings and completion.
-if [[ -f "$(brew --prefix fzf)/shell/key-bindings.zsh" ]]; then
+if (( $+commands[brew] )) && [[ -f "$(brew --prefix fzf 2>/dev/null)/shell/key-bindings.zsh" ]]; then
 	source "$(brew --prefix fzf)/shell/key-bindings.zsh"
 fi
-if [[ -f "$(brew --prefix fzf)/shell/completion.zsh" ]]; then
+if (( $+commands[brew] )) && [[ -f "$(brew --prefix fzf 2>/dev/null)/shell/completion.zsh" ]]; then
 	source "$(brew --prefix fzf)/shell/completion.zsh"
 fi
 
