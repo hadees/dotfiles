@@ -17,20 +17,20 @@ export LC_ALL='en_US.UTF-8'
 
 # Use bat for man pages when available, otherwise fall back to less.
 if (( $+commands[bat] )); then
-	export MANPAGER="sh -c ‘col -bx | bat -l man -p’"
-	export MANROFFOPT=’-c’
+	export MANPAGER="sh -c 'col -bx | bat -l man -p'"
+	export MANROFFOPT='-c'
 else
-	export MANPAGER=’less -X’
+	export MANPAGER='less -X'
 fi
 
 # fzf: use fd for file finding, bat for previews.
 if (( $+commands[fzf] )); then
-	export FZF_DEFAULT_COMMAND=’fd --type f --hidden --follow --exclude .git’
+	export FZF_DEFAULT_COMMAND='fd --type f --hidden --follow --exclude .git'
 	export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
-	export FZF_ALT_C_COMMAND=’fd --type d --hidden --follow --exclude .git’
-	export FZF_DEFAULT_OPTS=’--height 40% --layout=reverse --border’
+	export FZF_ALT_C_COMMAND='fd --type d --hidden --follow --exclude .git'
+	export FZF_DEFAULT_OPTS='--height 40% --layout=reverse --border'
 	if (( $+commands[bat] )); then
-		export FZF_CTRL_T_OPTS="--preview ‘bat --color=always --style=numbers --line-range=:200 {}’"
+		export FZF_CTRL_T_OPTS="--preview 'bat --color=always --style=numbers --line-range=:200 {}'"
 	fi
 fi
 
