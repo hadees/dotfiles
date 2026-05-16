@@ -36,7 +36,9 @@ fi
 
 # Homebrew preferences.
 typeset -U path PATH
-path=("$(brew --prefix)/sbin" $path)
+if (( $+commands[brew] )); then
+	path=("$(brew --prefix)/sbin" $path)
+fi
 export PATH
 export HOMEBREW_CASK_OPTS='--appdir=/Applications'
 
