@@ -32,10 +32,10 @@ prompt_git() {
 			echo '(unknown)')"
 
 		if [[ -n $git_status ]]; then
-			git_status=" %F{33}[$git_status]%f"
+			git_status=" %F{214}[$git_status]%f"
 		fi
 
-		print -n -- " on %F{61}${branch}%f${git_status}"
+		print -n -- " on %F{135}${branch}%f${git_status}"
 	fi
 }
 
