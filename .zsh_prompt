@@ -15,27 +15,27 @@ autoload -Uz colors && colors
 setopt PROMPT_SUBST
 
 prompt_git() {
-	local status='' branch=''
+	local git_status='' branch=''
 
 	if command git rev-parse --is-inside-work-tree &>/dev/null; then
 		if [[ "$(command git rev-parse --is-inside-git-dir 2>/dev/null)" == "false" ]]; then
 			command git update-index --really-refresh -q &>/dev/null
 
-			command git diff --quiet --ignore-submodules --cached || status+='+'
-			command git diff --quiet --ignore-submodules -- || status+='!'
-			[[ -n "$(command git ls-files --others --exclude-standard)" ]] && status+='?'
-			command git rev-parse --verify refs/stash &>/dev/null && status+='$'
+			command git diff --quiet --ignore-submodules --cached || git_status+='+'
+			command git diff --quiet --ignore-submodules -- || git_status+='!'
+			[[ -n "$(command git ls-files --others --exclude-standard)" ]] && git_status+='?'
+			command git rev-parse --verify refs/stash &>/dev/null && git_status+='$'
 		fi
 
 		branch="$(command git symbolic-ref --quiet --short HEAD 2>/dev/null || \
 			command git rev-parse --short HEAD 2>/dev/null || \
 			echo '(unknown)')"
 
-		if [[ -n $status ]]; then
-			status=" %F{33}[$status]%f"
+		if [[ -n $git_status ]]; then
+			git_status=" %F{33}[$git_status]%f"
 		fi
 
-		print -n -- " on %F{61}${branch}%f${status}"
+		print -n -- " on %F{61}${branch}%f${git_status}"
 	fi
 }
 
