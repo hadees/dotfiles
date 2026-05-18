@@ -6,7 +6,7 @@
 #   green   = Base0B #99cc99  cyan    = Base0C #66cccc
 #   red     = Base08 #f2777a  magenta = Base0E #cc99cc
 #   white   = Base05 #d3d0c8  brblack = Base03 #747369
-# Source Code Pro 13pt, 1.1 vertical spacing.
+# Requires SauceCodePro Nerd Font Mono 13pt for branch glyph ().
 
 if [[ $COLORTERM = gnome-* && $TERM = xterm ]] && infocmp gnome-256color >/dev/null 2>&1; then
 	export TERM='gnome-256color'
@@ -38,7 +38,7 @@ prompt_git() {
 			git_status=" %F{red}[$git_status]%f"
 		fi
 
-		print -n -- " %F{8}on%f %F{blue}${branch}%f${git_status}"
+		print -n -- " %F{8}on%f %F{blue} ${branch}%f${git_status}"
 	fi
 }
 
