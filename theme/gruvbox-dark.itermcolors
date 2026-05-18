@@ -183,11 +183,11 @@
 		<key>Color Space</key>
 		<string>sRGB</string>
 		<key>Blue Component</key>
-		<real>0.15686274509803921</real>
+		<real>0.18431372549019609</real>
 		<key>Green Component</key>
-		<real>0.15686274509803921</real>
+		<real>0.18823529411764706</real>
 		<key>Red Component</key>
-		<real>0.15686274509803921</real>
+		<real>0.19607843137254902</real>
 	</dict>
 	<key>Bold Color</key>
 	<dict>
@@ -216,11 +216,11 @@
 		<key>Color Space</key>
 		<string>sRGB</string>
 		<key>Blue Component</key>
-		<real>0.15686274509803921</real>
+		<real>0.18431372549019609</real>
 		<key>Green Component</key>
-		<real>0.15686274509803921</real>
+		<real>0.18823529411764706</real>
 		<key>Red Component</key>
-		<real>0.15686274509803921</real>
+		<real>0.19607843137254902</real>
 	</dict>
 	<key>Foreground Color</key>
 	<dict>
