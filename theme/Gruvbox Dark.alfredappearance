@@ -1,0 +1,60 @@
+{
+  "alfredtheme" : {
+    "result" : {
+      "textSpacing" : 5,
+      "subtext" : {
+        "size" : 12,
+        "colorSelected" : "#EBDBB2C0",
+        "font" : "System",
+        "color" : "#A89984C0"
+      },
+      "shortcut" : {
+        "size" : 16,
+        "colorSelected" : "#EBDBB2FF",
+        "font" : "System",
+        "color" : "#FABD2FFF"
+      },
+      "backgroundSelected" : "#458588CC",
+      "text" : {
+        "size" : 18,
+        "colorSelected" : "#EBDBB2FF",
+        "font" : "System",
+        "color" : "#EBDBB2FF"
+      },
+      "iconPaddingHorizontal" : 4,
+      "paddingVertical" : 3,
+      "iconSize" : 40
+    },
+    "separator" : {
+      "color" : "#3C3836FF",
+      "thickness" : 0
+    },
+    "search" : {
+      "paddingVertical" : 5,
+      "background" : "#32302F40",
+      "spacing" : 8,
+      "text" : {
+        "size" : 34,
+        "colorSelected" : "#EBDBB2FF",
+        "font" : "System Light",
+        "color" : "#EBDBB2FF"
+      },
+      "backgroundSelected" : "#458588CC"
+    },
+    "scrollbar" : {
+      "color" : "#A89984AA",
+      "thickness" : 2
+    },
+    "name" : "Gruvbox Dark",
+    "window" : {
+      "color" : "#282828F5",
+      "paddingHorizontal" : 9,
+      "width" : 559,
+      "borderPadding" : 0,
+      "borderColor" : "#504945FF",
+      "blur" : 0,
+      "roundness" : 3,
+      "paddingVertical" : 8
+    }
+  }
+}
