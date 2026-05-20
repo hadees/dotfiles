@@ -38,7 +38,7 @@ prompt_git() {
 			git_status=" %F{red}[$git_status]%f"
 		fi
 
-		print -n -- " %F{8}on%f %F{blue}  ${branch}%f${git_status}"
+		print -n -- " %F{8}on%f %F{blue} ${branch}%f${git_status}"
 	fi
 }
 
