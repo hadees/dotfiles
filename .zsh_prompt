@@ -38,7 +38,11 @@ prompt_git() {
 			git_status=" %F{red}[$git_status]%f"
 		fi
 
-		print -n -- " %F{8}on%f %F{blue} ${branch}%f${git_status}"
+		local gh_user gh_segment=''
+		gh_user="$(command git config github.user 2>/dev/null)"
+		[[ -n $gh_user ]] && gh_segment=" %F{8}as%f %F{magenta}@${gh_user}%f"
+
+		print -n -- " %F{8}on%f %F{blue} ${branch}%f${git_status}${gh_segment}"
 	fi
 }
 
