@@ -19,3 +19,6 @@ scratch.*
 # GPG — only track agent config, never keys or trust database
 .gnupg/*
 !.gnupg/gpg-agent.conf
+
+# Generated zsh completion cache
+.zcompdump
