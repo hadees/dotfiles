@@ -17,7 +17,7 @@ function doIt() {
 	echo "";
 	echo "Next steps on a new machine:";
 	echo "  brew bundle          — install Brewfile packages";
-	echo "  setup-gpg            — generate GPG key and wire to git signing";
+	echo "  gpg --full-generate-key  — generate GPG key for commit signing";
 	echo "  bash init/mackup.sh  — restore app settings from ~/.config/Mackup/";
 }
 
