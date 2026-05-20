@@ -5,12 +5,14 @@ tap 'homebrew/core'
 brew 'ack' # a tool like grep, optimized for programmers
 brew 'asdf' # multi-language version manager (ruby, node, python, etc.)
 brew 'aircrack-ng' # a complete suite of tools to assess WiFi network security.
+brew 'ansible' # Radically simple IT automation
 brew 'autoconf' # an extensible package of M4 macros that produce shell scripts to automatically configure software source code packages.
 brew 'automake' # a tool for automatically generating Makefile in files compliant with the GNU Coding Standards
 brew 'awscli' # a unified tool to manage your AWS services.
 brew 'bash' # an sh-compatible shell that incorporates useful features from the Korn shell (ksh) and C shell (csh)
 brew 'bash-completion@2' # Programmable completion functions for bash
 brew 'bat' # Better cat with syntax highlighting and git integration
+brew 'bats-core' # Bash Automated Testing System (used by dotfiles tests)
 brew 'bfg' # Removes large or troublesome blobs like git-filter-branch does, but faster. And written in Scala
 brew 'binutils' # The GNU Binutils are a collection of binary tools
 brew 'bramstein/webfonttools/sfnt2woff' # Tool for converting TrueType and OpenType font files to WOFF made by Jonathan Kew.
@@ -21,6 +23,7 @@ brew 'coreutils' # The GNU Core Utilities are the basic file, shell and text man
 brew 'curl'
 brew 'delta' # Better git diffs with syntax highlighting
 brew 'direnv' # Per-directory environment variable loading
+brew 'docker' # Docker CLI
 brew 'dns2tcp' # Dns2tcp is a network tool designed to relay TCP connections through DNS traffic.
 brew 'elasticsearch' # a distributed, RESTful search and analytics engine
 brew 'fcrackzip' # FCrackZip is a free and fast zip password cracker
@@ -80,14 +83,17 @@ brew 'pigz' # Parallel gzip
 brew 'pinentry-mac' # macOS-native passphrase dialog for GPG agent
 brew 'pkg-config' # Manage compile and link flags for libraries
 brew 'pngcheck' # Print info and check PNG, JNG, and MNG files
+brew 'poppler' # PDF rendering library (includes pdftotext, pdfimages, etc.)
 brew 'postgresql' # Object-relational database system
 brew 'pv' # Monitor data's progress through a pipe
 brew 'pyenv' # Simple Python version management
+brew 'qemu' # Generic machine emulator and virtualizer
 brew 'rbenv' # Ruby version manager
 brew 'readline' # Library for command-line editing
 brew 'redis' # Persistent key-value database, with built-in net interface
 brew 'rename' # Perl-powered file rename script with many helpful built-ins
 brew 'ruby-build' # Install various Ruby versions and implementations
+brew 'scrcpy' # Display and control Android devices over USB or TCP/IP
 brew 'screen' # a full-screen window manager that multiplexes a physical terminal between several processes, typically interactive shells.
 brew 'socat' # netcat on steroids
 brew 'speedtest_cli' # Command-line interface for https://speedtest.net bandwidth tests
@@ -95,6 +101,7 @@ brew 'sqlite' # Command-line interface for SQLite
 brew 'sqlmap' # Penetration testing for SQL injection and database servers
 brew 'ssdeep' # Recursive piecewise hashing tool
 brew 'ssh-copy-id' # Add a public key to a remote machine's authorized_keys file
+brew 'tailscale' # Mesh VPN based on WireGuard
 brew 'tcpflow' # TCP flow recorder
 brew 'tcpreplay' # Replay saved tcpdump files at arbitrary speeds
 brew 'tcptrace' # Analyze tcpdump output
@@ -120,9 +127,11 @@ brew 'zsh-syntax-highlighting' # Fish-style syntax highlighting for zsh
 
 # AI / LLM tools
 brew 'ollama' # Run large language models locally (llama3, mistral, etc.)
-# After llm is installed: llm install llm-anthropic && llm keys set anthropic
+brew 'llm' # CLI for interacting with LLMs (run: llm install llm-anthropic && llm keys set anthropic)
+brew 'lsusb' # List USB devices
 
 cask '1password'
+cask '1password-cli' # 1Password CLI for scripting and vault access
 cask 'acorn'
 cask 'temurin' # Eclipse Temurin OpenJDK (replaces adoptopenjdk)
 cask 'airserver'
@@ -131,6 +140,7 @@ cask 'android-messages'
 cask 'android-platform-tools'
 cask 'android-sdk'
 cask 'anki'
+cask 'balenaetcher' # Flash OS images to SD cards and USB drives
 cask 'bartender'
 cask 'claude' # Anthropic Claude desktop app
 cask 'claude-code' # Anthropic Claude Code CLI
@@ -139,17 +149,25 @@ cask 'calibre'
 cask 'carbon-copy-cloner'
 cask 'ccmenu'
 cask 'chromedriver'
+cask 'codex' # OpenAI Codex desktop app
 cask 'colloquy'
+cask 'comfyui' # Node-based UI for Stable Diffusion / local AI image generation
 cask 'controlplane'
 cask 'deluge'
+cask 'displaylink' # DisplayLink USB graphics driver
+cask 'docker-desktop' # Docker Desktop
 cask 'dropbox'
 cask 'fantastical'
+cask 'ferdium' # All-in-one messaging app (Slack, Discord, WhatsApp, etc.)
+cask 'fission' # Fast, lossless audio editor
 cask 'firefox'
 cask 'font-fira-sans'
 cask 'font-sauce-code-pro-nerd-font'
 cask 'font-source-code-pro'
 cask 'font-source-code-pro-for-powerline'
 cask 'forklift'
+cask 'gcloud-cli' # Google Cloud SDK and CLI tools
+cask 'github' # GitHub Desktop
 cask 'google-chrome'
 cask 'google-drive'
 cask 'gpg-suite'
@@ -168,10 +186,13 @@ cask 'libreoffice'
 cask 'little-snitch'
 cask 'macvim'
 cask 'micro-snitch'
+cask 'microsoft-teams' # Microsoft Teams
 cask 'moom'
 cask 'namechanger'
+cask 'neardrop' # AirDrop-like sharing with nearby Android and Windows devices
 cask 'ngrok'
 cask 'nzbvortex'
+cask 'openaudible' # Audible audiobook manager and converter
 cask 'opera'
 cask 'plex-media-player'
 cask 'postico'
