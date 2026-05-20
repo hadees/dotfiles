@@ -211,7 +211,7 @@
 	insteadOf = "gist:"
 
 # Machine-local overrides: signing key, user identity, work-specific config.
-# Not tracked in the repo — populate with setup-gpg or setup-1p-signing.
+# Not tracked in the repo — set user.name, user.email, user.signingkey per machine.
 [include]
 
 	path = ~/.gitconfig.local
