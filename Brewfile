@@ -1,4 +1,3 @@
-tap 'bramstein/webfonttools'
 tap 'homebrew/bundle'
 tap 'homebrew/core'
 
@@ -15,9 +14,6 @@ brew 'bat' # Better cat with syntax highlighting and git integration
 brew 'bats-core' # Bash Automated Testing System (used by dotfiles tests)
 brew 'bfg' # Removes large or troublesome blobs like git-filter-branch does, but faster. And written in Scala
 brew 'binutils' # The GNU Binutils are a collection of binary tools
-brew 'bramstein/webfonttools/sfnt2woff' # Tool for converting TrueType and OpenType font files to WOFF made by Jonathan Kew.
-brew 'bramstein/webfonttools/sfnt2woff-zopfli' # Modified version of sfnt2woff that uses the Zopfli compression algorithm (2-5% better compression than standard WOFF).
-brew 'bramstein/webfonttools/woff2' # WOFF2 compression and decompression utilities by Google.
 brew 'cifer' # Work on automating classical cipher cracking in C.
 brew 'coreutils' # The GNU Core Utilities are the basic file, shell and text manipulation utilities of the GNU operating system.
 brew 'curl'
@@ -25,7 +21,6 @@ brew 'delta' # Better git diffs with syntax highlighting
 brew 'direnv' # Per-directory environment variable loading
 brew 'docker' # Docker CLI
 brew 'dns2tcp' # Dns2tcp is a network tool designed to relay TCP connections through DNS traffic.
-brew 'elasticsearch' # a distributed, RESTful search and analytics engine
 brew 'fcrackzip' # FCrackZip is a free and fast zip password cracker
 brew 'fd' # Fast and user-friendly alternative to find
 brew 'ffmpeg' # a complete, cross-platform solution to record, convert and stream audio and video. It includes libavcodec - the leading audio/video codec library.
@@ -34,20 +29,19 @@ brew 'foremost' # a console program to recover files based on their headers, foo
 brew 'freetype' # a freely available software library to render fonts.
 brew 'fzf' # Command-line fuzzy finder
 brew 'gcc' # The GNU Compiler Collection includes front ends for C, C++, Objective-C, Fortran, Ada, and Go, as well as libraries for these languages (libstdc++,...)
+brew 'gh' # GitHub CLI — the official GitHub command-line tool.
 brew 'git' # a free and open source distributed version control system designed to handle everything from small to very large projects with speed and efficiency.
-brew 'git-flow-avh' # AVH Edition of the git extensions to provide high-level repository operations for Vincent Driessen's branching model
+brew 'git-flow' # Git extensions for Vincent Driessen's branching model
 brew 'git-lfs' # Git extension for versioning large files
 brew 'gmp' # is a free library for arbitrary precision arithmetic, operating on signed integers, rational numbers, and floating-point numbers.
 brew 'gnu-getopt' # parse command-line arguments from shell scripts
 brew 'gnu-sed' # sed (stream editor) is a non-interactive command-line text editor.
 brew 'grep' # searches one or more input files for lines containing a match to a specified pattern.
-brew 'hashpump' # A tool to exploit the hash length extension attack in various hashing algorithms
-brew 'gh' # GitHub CLI — the official GitHub command-line tool.
 brew 'heroku' # a tool for creating and managing Heroku apps from the command line / shell of various operating systems.
 brew 'imagemagick'
 brew 'john' # John the Ripper password cracker
-brew 'jq' # Lightweight JSON processor
 brew 'jpeg' # Image manipulation library
+brew 'jq' # Lightweight JSON processor
 brew 'k9s' # Kubernetes TUI cluster manager
 brew 'knock' # Port-knock server
 brew 'lame' # High quality MPEG Audio Layer III (MP3) encoder
@@ -60,6 +54,8 @@ brew 'libpng' # Library for manipulating PNG images
 brew 'libtiff' # TIFF library and utilities
 brew 'libtool' # Generic library support script
 brew 'libxml2' # GNOME XML library
+brew 'llm' # CLI for interacting with LLMs (run: llm install llm-anthropic && llm keys set anthropic)
+brew 'lsusb' # List USB devices
 brew 'lua' # Powerful, lightweight programming language
 brew 'lynx' # Text-based web browser
 brew 'mackup' # Keep your Mac's application settings in sync
@@ -104,7 +100,6 @@ brew 'ssh-copy-id' # Add a public key to a remote machine's authorized_keys file
 brew 'tailscale' # Mesh VPN based on WireGuard
 brew 'tcpflow' # TCP flow recorder
 brew 'tcpreplay' # Replay saved tcpdump files at arbitrary speeds
-brew 'tcptrace' # Analyze tcpdump output
 brew 'terminal-notifier'
 brew 'testssl' # Tool which checks for the support of TLS/SSL ciphers and flaws
 brew 'tor' # Anonymizing overlay network for TCP
@@ -127,8 +122,6 @@ brew 'zsh-syntax-highlighting' # Fish-style syntax highlighting for zsh
 
 # AI / LLM tools
 brew 'ollama' # Run large language models locally (llama3, mistral, etc.)
-brew 'llm' # CLI for interacting with LLMs (run: llm install llm-anthropic && llm keys set anthropic)
-brew 'lsusb' # List USB devices
 
 cask '1password'
 cask '1password-cli' # 1Password CLI for scripting and vault access
@@ -136,23 +129,20 @@ cask 'acorn'
 cask 'temurin' # Eclipse Temurin OpenJDK (replaces adoptopenjdk)
 cask 'airserver'
 cask 'alfred'
-cask 'android-messages'
+cask 'android-commandlinetools' # Android SDK command-line tools
 cask 'android-platform-tools'
-cask 'android-sdk'
 cask 'anki'
 cask 'balenaetcher' # Flash OS images to SD cards and USB drives
 cask 'bartender'
-cask 'claude' # Anthropic Claude desktop app
-cask 'claude-code' # Anthropic Claude Code CLI
 cask 'caffeine'
 cask 'calibre'
 cask 'carbon-copy-cloner'
 cask 'ccmenu'
 cask 'chromedriver'
+cask 'claude' # Anthropic Claude desktop app
+cask 'claude-code' # Anthropic Claude Code CLI
 cask 'codex' # OpenAI Codex desktop app
-cask 'colloquy'
 cask 'comfyui' # Node-based UI for Stable Diffusion / local AI image generation
-cask 'controlplane'
 cask 'deluge'
 cask 'displaylink' # DisplayLink USB graphics driver
 cask 'docker-desktop' # Docker Desktop
@@ -173,17 +163,15 @@ cask 'google-drive'
 cask 'gpg-suite'
 cask 'handbrake'
 cask 'hazel'
-cask 'horndis' # driver for Mac OS X that allows you to use your Android phone's native USB tethering mode to get Internet access.
 cask 'imageoptim'
 cask 'inkscape'
 cask 'istat-menus'
 cask 'iterm2'
-cask 'java'
 cask 'jdiskreport'
 cask 'kaleidoscope'
-cask 'lm-studio' # GUI for running local LLMs
 cask 'libreoffice'
 cask 'little-snitch'
+cask 'lm-studio' # GUI for running local LLMs
 cask 'macvim'
 cask 'micro-snitch'
 cask 'microsoft-teams' # Microsoft Teams
@@ -194,17 +182,14 @@ cask 'ngrok'
 cask 'nzbvortex'
 cask 'openaudible' # Audible audiobook manager and converter
 cask 'opera'
-cask 'plex-media-player'
+cask 'plex' # Plex media player
 cask 'postico'
 cask 'qlcolorcode'
-cask 'qlimagesize'
 cask 'qlmarkdown'
 cask 'qlstephen'
 cask 'qlvideo'
 cask 'quicklook-json'
-cask 'quicklookapk'
 cask 'quicklookase'
-cask 'resxtreme'
 cask 'shimo'
 cask 'simple-comic'
 cask 'simplenote'
@@ -214,7 +199,6 @@ cask 'sourcetree'
 cask 'spark'
 cask 'spotify'
 cask 'steam'
-cask 'visual-studio-code'
 cask 'suspicious-package'
 cask 'the-unarchiver'
 cask 'tinymediamanager'
@@ -222,13 +206,13 @@ cask 'tower'
 cask 'transmission'
 cask 'vagrant'
 cask 'virtualbox'
+cask 'visual-studio-code'
 cask 'vlc'
 cask 'webpquicklook'
 cask 'whatsapp'
 cask 'xquartz'
 cask 'xscreensaver'
 
-mas 'AudioBookBinder', id: 413969927
 mas 'DaVinci Resolve', id: 571213070
 mas 'Ethernet Status', id: 1186187538
 mas 'Folder Preview', id: 6698876601
