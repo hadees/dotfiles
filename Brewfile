@@ -229,7 +229,6 @@ cask 'xquartz'
 cask 'xscreensaver'
 
 mas 'AudioBookBinder', id: 413969927
-mas 'Contacts+', id: 1094748271
 mas 'DaVinci Resolve', id: 571213070
 mas 'Ethernet Status', id: 1186187538
 mas 'Folder Preview', id: 6698876601
