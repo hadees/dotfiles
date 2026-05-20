@@ -100,5 +100,25 @@ if (( $+commands[direnv] )); then
 	eval "$(direnv hook zsh)"
 fi
 
+# zoxide: frecency-based directory jumping (replaces cd with z).
+if (( $+commands[zoxide] )); then
+	eval "$(zoxide init zsh)"
+fi
+
+# zsh plugins (installed via Homebrew).
+# zsh-syntax-highlighting must be sourced last.
+if (( $+commands[brew] )); then
+	_brew_prefix="$(brew --prefix 2>/dev/null)"
+	[[ -f "${_brew_prefix}/share/zsh-autosuggestions/zsh-autosuggestions.zsh" ]] &&
+		source "${_brew_prefix}/share/zsh-autosuggestions/zsh-autosuggestions.zsh"
+	[[ -f "${_brew_prefix}/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" ]] &&
+		source "${_brew_prefix}/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
+	unset _brew_prefix
+fi
+
+# Ensure gpg-agent is running so commit signing works.
+# GPG Suite on macOS manages its own agent; gpgconf is a no-op if it's already up.
+command -v gpgconf > /dev/null 2>&1 && gpgconf --launch gpg-agent
+
 # Increase how many files can be opened at once.
 ulimit -n 10480 2>/dev/null

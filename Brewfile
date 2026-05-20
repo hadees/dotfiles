@@ -77,6 +77,7 @@ brew 'overmind'
 brew 'p7zip' # 7-Zip (high compression file archiver) implementation
 brew 'pcre' # Perl compatible regular expressions library
 brew 'pigz' # Parallel gzip
+brew 'pinentry-mac' # macOS-native passphrase dialog for GPG agent
 brew 'pkg-config' # Manage compile and link flags for libraries
 brew 'pngcheck' # Print info and check PNG, JNG, and MNG files
 brew 'postgresql' # Object-relational database system
@@ -112,6 +113,10 @@ brew 'xvid' # High-performance, high-quality MPEG-4 video library
 brew 'xz' # General-purpose data compression with high compression ratio
 brew 'yt-dlp' # Download YouTube videos from the command-line (actively maintained youtube-dl fork)
 brew 'zopfli' # New zlib (gzip, deflate) compatible compressor
+brew 'zoxide' # Smarter cd with frecency-based directory jumping
+brew 'zsh-autosuggestions' # Fish-style autosuggestions from shell history
+brew 'zsh-completions' # Additional completions for zsh
+brew 'zsh-syntax-highlighting' # Fish-style syntax highlighting for zsh
 
 # AI / LLM tools
 brew 'ollama' # Run large language models locally (llama3, mistral, etc.)

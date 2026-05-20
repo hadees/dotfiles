@@ -186,3 +186,40 @@ function o() {
 function tre() {
 	tree -aC -I '.git|node_modules|bower_components' --dirsfirst "$@" | less -FRNX;
 }
+
+# One-time setup per machine: generate a GPG key, write signing config to
+# ~/.gitconfig.local, and upload the public key to GitHub via gh CLI.
+function setup-gpg() {
+	if command -v gh > /dev/null 2>&1; then
+		if ! gh auth status > /dev/null 2>&1; then
+			echo "Not logged in to GitHub CLI. Run: gh auth login" >&2
+			return 1
+		fi
+	fi
+
+	gpg --full-generate-key
+	local key_id
+	key_id=$(gpg --list-secret-keys --keyid-format=long \
+		| awk '/^sec/{print $2}' | tail -1 | cut -d'/' -f2)
+	chmod 700 ~/.gnupg
+	chmod 600 ~/.gnupg/*
+
+	cat >> ~/.gitconfig.local <<-EOF
+
+		[commit]
+			gpgsign = true
+		[user]
+			signingkey = $key_id
+	EOF
+
+	echo "Signing key: $key_id"
+
+	if command -v gh > /dev/null 2>&1; then
+		echo "Uploading GPG public key to GitHub..."
+		gpg --armor --export "$key_id" | gh gpg-key add -
+		echo "GPG key added to GitHub account."
+	else
+		echo "Add this public key to GitHub → Settings → SSH and GPG keys:"
+		gpg --armor --export "$key_id"
+	fi
+}
