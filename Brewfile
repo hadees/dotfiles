@@ -1,5 +1,3 @@
-tap 'homebrew/bundle'
-tap 'homebrew/core'
 
 brew 'ack' # a tool like grep, optimized for programmers
 brew 'asdf' # multi-language version manager (ruby, node, python, etc.)
@@ -188,7 +186,6 @@ cask 'qlcolorcode'
 cask 'qlmarkdown'
 cask 'qlstephen'
 cask 'quicklook-video'
-cask 'quicklook-json'
 cask 'quicklookase'
 cask 'shimo'
 cask 'simple-comic'
