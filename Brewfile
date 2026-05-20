@@ -133,6 +133,7 @@ cask 'android-sdk'
 cask 'anki'
 cask 'bartender'
 cask 'claude' # Anthropic Claude desktop app
+cask 'claude-code' # Anthropic Claude Code CLI
 cask 'caffeine'
 cask 'calibre'
 cask 'carbon-copy-cloner'
