@@ -230,7 +230,11 @@ cask 'xscreensaver'
 
 mas 'AudioBookBinder', id: 413969927
 mas 'Contacts+', id: 1094748271
+mas 'DaVinci Resolve', id: 571213070
 mas 'Ethernet Status', id: 1186187538
+mas 'Folder Preview', id: 6698876601
+mas 'MacDroid', id: 1476545828
 mas 'Magnet', id: 441258766
+mas 'Mp3tag', id: 1532597159
 mas 'Sleepytime', id: 404302586
 mas 'Spark', id: 1176895641
