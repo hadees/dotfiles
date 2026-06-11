@@ -186,25 +186,3 @@ function o() {
 function tre() {
 	tree -aC -I '.git|node_modules|bower_components' --dirsfirst "$@" | less -FRNX;
 }
-
-# Switch the current repo to the icanalytica (work) git identity. Local config
-# only — leaves ~/.gitconfig.local (hadees) untouched.
-function useica() {
-	if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-		echo "useica: not inside a git repository" >&2
-		return 1
-	fi
-	git config --local user.name "Evan Alter"
-	git config --local user.email "evan@icanalytica.com"
-	git config --local github.user "icaevan"
-	echo "switched to icaevan / evan@icanalytica.com"
-}
-
-# Create a new project directory, init git, and apply the icanalytica identity.
-function newica() {
-	if [[ -z "$1" ]]; then
-		echo "usage: newica <path>" >&2
-		return 1
-	fi
-	mkdir -p "$1" && cd "$1" && git init -q && useica
-}
