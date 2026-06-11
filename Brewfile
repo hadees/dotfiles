@@ -141,6 +141,7 @@ cask 'claude' # Anthropic Claude desktop app
 cask 'claude-code' # Anthropic Claude Code CLI
 cask 'codex' # OpenAI Codex desktop app
 cask 'comfyui' # Node-based UI for Stable Diffusion / local AI image generation
+cask 'daisydisk'
 cask 'deluge'
 cask 'displaylink' # DisplayLink USB graphics driver
 cask 'docker-desktop' # Docker Desktop
@@ -165,7 +166,6 @@ cask 'imageoptim'
 cask 'inkscape'
 cask 'istat-menus'
 cask 'iterm2'
-cask 'jdiskreport'
 cask 'kaleidoscope'
 cask 'libreoffice'
 cask 'little-snitch'
