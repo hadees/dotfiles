@@ -22,3 +22,7 @@ scratch.*
 
 # Generated zsh completion cache
 .zcompdump
+
+# Claude Code — track user memory, never machine-local settings
+.claude/settings.local.json
+.claude/CLAUDE.local.md
