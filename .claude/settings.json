@@ -1,0 +1,25 @@
+{
+  "model": "claude-fable-5",
+  "statusLine": {
+    "type": "command",
+    "command": "~/.claude/statusline.sh"
+  },
+  "enabledPlugins": {
+    "ica-skills@ica-skills": true,
+    "feature-dev@claude-plugins-official": true,
+    "claude-md-management@claude-plugins-official": true,
+    "code-simplifier@claude-plugins-official": true,
+    "pyright-lsp@claude-plugins-official": true,
+    "commit-commands@claude-plugins-official": true
+  },
+  "extraKnownMarketplaces": {
+    "ica-skills": {
+      "source": {
+        "source": "github",
+        "repo": "icanalytica/ica-skills"
+      },
+      "autoUpdate": true
+    }
+  },
+  "skipWorkflowUsageWarning": true
+}
