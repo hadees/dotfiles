@@ -50,7 +50,7 @@ user_segment="%F{yellow}%n%f"
 [[ $USER == root ]] && user_segment="%F{red}%n%f"
 
 host_segment="%F{cyan}%m%f"
-[[ -n $SSH_TTY ]] && host_segment="%B%F{red}%m%f%b"
+[[ -n $SSH_TTY ]] && host_segment="%B%F{red}"$'\U000f08c0'" %m%f%b"
 
 PROMPT=$'%B\n'
 PROMPT+="${user_segment} %F{8}at%f ${host_segment} %F{8}in%f %F{green}%~%f"
