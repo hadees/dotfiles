@@ -24,7 +24,10 @@ setopt PROMPT_SUBST
 # can't inspect the local machine's fonts, so iTerm identity (LC_TERMINAL,
 # forwarded by iTerm) stays as the proxy. Either way the fallback is plain
 # text.
-nf_branch='' nf_github='' nf_ssh='' nf_on=''
+# nf_github replaces the plain-text "@" rather than adding to it: icons
+# stand in for words (cf. oh-my-posh's UpstreamIcon, shown bare before the
+# name), so the segment reads " user" with glyphs and "@user" without.
+nf_branch='' nf_github='@' nf_ssh='' nf_on=''
 if [[ -n $SSH_TTY ]]; then
 	[[ $LC_TERMINAL == iTerm2 ]] && nf_on=1
 elif [[ -x $HOME/bin/has-glyphs ]]; then
@@ -70,7 +73,7 @@ prompt_git() {
 
 		local gh_user gh_segment=''
 		gh_user="$(command git config github.user 2>/dev/null)"
-		[[ -n $gh_user ]] && gh_segment=" %F{8}as%f %F{magenta}${nf_github}@${gh_user}%f"
+		[[ -n $gh_user ]] && gh_segment=" %F{8}as%f %F{magenta}${nf_github}${gh_user}%f"
 
 		print -n -- " %F{8}on%f %F{blue}${nf_branch}${branch}%f${git_status}${arrows}${gh_segment}"
 	fi

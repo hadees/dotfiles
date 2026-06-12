@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Claude Code status line, styled after ~/.zsh_prompt (Base16 Eighties ANSI):
-#   org/repo[/subdir] on branch [+!?$] ↑N↓N as  @ghuser 󰚩 Model 󰓅 N% +N/-N
+#   org/repo[/subdir] on branch [+!?$] ↑N↓N as  ghuser 󰚩 Model 󰓅 N% +N/-N
 # Status flags match the zsh prompt: + staged, ! unstaged, ? untracked, $ stashed.
 # Nerd Font glyphs (branch, github, model, ctx gauge) are shown only when
 # ~/bin/has-glyphs confirms the terminal font renders them (over ssh: when
@@ -24,14 +24,16 @@ yellow=$'\033[33m' reset=$'\033[0m'
 # so iTerm identity (LC_TERMINAL, forwarded by iTerm) stays as the proxy.
 # Either way the fallback is plain text. printf -v keeps the trailing spaces
 # that $(...) would strip.
-nf_branch='' nf_github='' nf_model='' nf_ctx='' nf_on=''
+# nf_github replaces the plain-text "@" rather than adding to it (icons
+# stand in for words), matching ~/.zsh_prompt.
+nf_branch='' nf_github='@' nf_model='' nf_ctx='' nf_on=''
 if [[ -n ${SSH_TTY:-}${SSH_CONNECTION:-} ]]; then
 	[[ ${LC_TERMINAL:-} == iTerm2 ]] && nf_on=1
 elif [[ -x $HOME/bin/has-glyphs ]]; then
 	"$HOME/bin/has-glyphs" e0a0 f09b f06a9 f04c5 2>/dev/null && nf_on=1
 fi
 if [[ -n $nf_on ]]; then
-	printf -v nf_branch '\xee\x82\xa0'      # U+E0A0 branch; renders wide, no space after
+	printf -v nf_branch '\xee\x82\xa0 '     # U+E0A0 branch; glyph + space, as in .zsh_prompt
 	printf -v nf_github '\xef\x82\x9b '     # U+F09B nf-fa-github
 	printf -v nf_model '\xf3\xb0\x9a\xa9 '  # U+F06A9 nf-md-robot
 	printf -v nf_ctx '\xf3\xb0\x93\x85 '    # U+F04C5 nf-md-speedometer
@@ -76,7 +78,7 @@ if [[ -n $toplevel ]]; then
 	fi
 
 	gh_user=$(git -C "$cwd" config github.user 2>/dev/null)
-	[[ -n $gh_user ]] && out+=" ${grey}as${reset} ${magenta}${nf_github}@${gh_user}${reset}"
+	[[ -n $gh_user ]] && out+=" ${grey}as${reset} ${magenta}${nf_github}${gh_user}${reset}"
 else
 	out+="${green}${cwd/#$HOME/~}${reset}"
 fi
