@@ -35,8 +35,10 @@ if (( $+commands[fzf] )); then
 	fi
 fi
 
-# Homebrew preferences.
-typeset -U path PATH
+# Homebrew preferences. -gU, not -U: a bare typeset localizes (and empties)
+# path/PATH when this file is sourced from inside a function, e.g. via
+# bootstrap.sh's doIt.
+typeset -gU path PATH
 if (( $+commands[brew] )); then
 	path=("$(brew --prefix)/sbin" $path)
 fi
