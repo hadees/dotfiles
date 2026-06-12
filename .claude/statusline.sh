@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 
 # Claude Code status line, styled after ~/.zsh_prompt (Base16 Eighties ANSI):
-#   org/repo[/subdir] on  branch [+!?$] as @ghuser via Model +N/-N
+#   org/repo[/subdir] on branch [+!?$] ↑N↓N as  @ghuser 󰚩 Model 󰓅 N% +N/-N
 # Status flags match the zsh prompt: + staged, ! unstaged, ? untracked, $ stashed.
-# Branch glyph () requires a Nerd Font (SauceCodePro NFM, same as the prompt).
+# Nerd Font glyphs (branch, github, model, ctx gauge) are shown only when
+# ~/bin/has-glyphs confirms the terminal font renders them (over ssh: when
+# the client is iTerm); other terminals degrade to plain text.
 
 input=$(cat)
 cwd=$(jq -r '.workspace.current_dir // .cwd // empty' <<<"$input")
@@ -16,13 +18,23 @@ ctx_pct=$(jq -r '.context_window.used_percentage // empty' <<<"$input")
 grey=$'\033[90m'  red=$'\033[31m'    green=$'\033[32m'
 blue=$'\033[34m'  magenta=$'\033[35m' cyan=$'\033[36m'
 yellow=$'\033[33m' reset=$'\033[0m'
-# Powerline branch glyph (U+E0A0), same as .zsh_prompt. Fonts aren't
-# detectable from a script, so terminal identity is the proxy: iTerm is
-# configured with the Nerd Font; in any other terminal, skip the glyph.
-# LC_TERMINAL covers ssh sessions launched from iTerm.
-glyph=''
-if [[ $TERM_PROGRAM == iTerm.app || $LC_TERMINAL == iTerm2 ]]; then
-	glyph=$(printf '\xee\x82\xa0')  # renders wide; no space needed after
+# Nerd Font glyphs, same font as .zsh_prompt. Locally, has-glyphs asks
+# CoreText whether the terminal's configured font can actually render them
+# (cached). Over ssh the remote host can't inspect the local machine's fonts,
+# so iTerm identity (LC_TERMINAL, forwarded by iTerm) stays as the proxy.
+# Either way the fallback is plain text. printf -v keeps the trailing spaces
+# that $(...) would strip.
+nf_branch='' nf_github='' nf_model='' nf_ctx='' nf_on=''
+if [[ -n ${SSH_TTY:-}${SSH_CONNECTION:-} ]]; then
+	[[ ${LC_TERMINAL:-} == iTerm2 ]] && nf_on=1
+elif [[ -x $HOME/bin/has-glyphs ]]; then
+	"$HOME/bin/has-glyphs" e0a0 f09b f06a9 f04c5 2>/dev/null && nf_on=1
+fi
+if [[ -n $nf_on ]]; then
+	printf -v nf_branch '\xee\x82\xa0'      # U+E0A0 branch; renders wide, no space after
+	printf -v nf_github '\xef\x82\x9b '     # U+F09B nf-fa-github
+	printf -v nf_model '\xf3\xb0\x9a\xa9 '  # U+F06A9 nf-md-robot
+	printf -v nf_ctx '\xf3\xb0\x93\x85 '    # U+F04C5 nf-md-speedometer
 fi
 
 out=''
@@ -50,16 +62,32 @@ if [[ -n $toplevel ]]; then
 	git -C "$cwd" rev-parse --verify --quiet refs/stash >/dev/null && flags+='$'
 
 	out+="${green}${repo}${rel}${reset}"
-	out+=" ${grey}on${reset} ${blue}${glyph}${branch}${reset}"
+	out+=" ${grey}on${reset} ${blue}${nf_branch}${branch}${reset}"
 	[[ -n $flags ]] && out+=" ${red}[${flags}]${reset}"
 
+	# commits ahead/behind upstream; plain ↑/↓ render fine without a Nerd Font
+	counts=$(git -C "$cwd" rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)
+	if [[ -n $counts ]]; then
+		behind=${counts%%[!0-9]*} ahead=${counts##*[!0-9]}
+		arrows=''
+		(( ahead )) && arrows+="↑${ahead}"
+		(( behind )) && arrows+="↓${behind}"
+		[[ -n $arrows ]] && out+=" ${yellow}${arrows}${reset}"
+	fi
+
 	gh_user=$(git -C "$cwd" config github.user 2>/dev/null)
-	[[ -n $gh_user ]] && out+=" ${grey}as${reset} ${magenta}@${gh_user}${reset}"
+	[[ -n $gh_user ]] && out+=" ${grey}as${reset} ${magenta}${nf_github}@${gh_user}${reset}"
 else
 	out+="${green}${cwd/#$HOME/~}${reset}"
 fi
 
-[[ -n $model ]] && out+=" ${grey}via${reset} ${cyan}${model}${reset}"
+if [[ -n $model ]]; then
+	if [[ -n $nf_model ]]; then
+		out+=" ${cyan}${nf_model}${model}${reset}"
+	else
+		out+=" ${grey}via${reset} ${cyan}${model}${reset}"
+	fi
+fi
 
 # context usage: green until 60%, yellow until 85%, red after (near auto-compact)
 if [[ -n $ctx_pct ]]; then
@@ -68,7 +96,11 @@ if [[ -n $ctx_pct ]]; then
 	elif (( pct >= 60 )); then ctx_color=$yellow
 	else ctx_color=$green
 	fi
-	out+=" ${grey}ctx${reset} ${ctx_color}${pct}%${reset}"
+	if [[ -n $nf_ctx ]]; then
+		out+=" ${grey}${nf_ctx}${reset}${ctx_color}${pct}%${reset}"
+	else
+		out+=" ${grey}ctx${reset} ${ctx_color}${pct}%${reset}"
+	fi
 fi
 
 if (( added > 0 || removed > 0 )); then
