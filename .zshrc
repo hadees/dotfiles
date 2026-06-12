@@ -1,7 +1,10 @@
 #!/usr/bin/env zsh
 
-# Ensure ~/bin is on the PATH, keeping entries unique.
-typeset -U path PATH
+# Ensure ~/bin is on the PATH, keeping entries unique. -g matters: without
+# it, sourcing this file from inside a function (e.g. bootstrap.sh's doIt)
+# makes path/PATH function-local and empty, breaking every external command
+# for the rest of the file.
+typeset -gU path PATH
 path=("$HOME/bin" $path)
 
 # Load modular configuration files when present.
