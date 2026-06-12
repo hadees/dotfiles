@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+
+# has-glyphs — exit 0 if the terminal can render every given Unicode
+# codepoint, e.g.: has-glyphs e0a0 f09b f08c0
+#
+# macOS: reads the terminal's configured font (iTerm2 or Terminal.app prefs)
+# and asks CoreText whether each codepoint resolves to a real glyph — first in
+# that font, then through the same font-fallback cascade the terminal uses.
+# The cascade step matters for ordinary Unicode, but BMP private-use glyphs
+# (the Nerd Font powerline/icon ranges) never fall back across fonts, so the
+# configured font is the real gate. Unknown terminals fail closed.
+# Linux: approximates with fontconfig charset queries.
+#
+# Results are cached; the cache key includes the terminal, profile, prefs and
+# font-directory mtimes, so font or profile changes invalidate it.
+
+set -u
+[[ $# -gt 0 ]] || { echo "usage: has-glyphs <hex-codepoint>..." >&2; exit 2; }
+
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/has-glyphs"
+mkdir -p "$cache_dir"
+
+stamps=$(stat -f '%m' \
+	/System/Library/Fonts /Library/Fonts "$HOME/Library/Fonts" \
+	"$HOME/Library/Preferences/com.googlecode.iterm2.plist" \
+	"$HOME/Library/Preferences/com.apple.Terminal.plist" 2>/dev/null ||
+	stat -c '%Y' /usr/share/fonts "$HOME/.local/share/fonts" 2>/dev/null)
+key=$(printf '%s\n' "$*" "${TERM_PROGRAM:-}" "${ITERM_PROFILE:-}" "$stamps" |
+	cksum | cut -d' ' -f1)
+cache_file="$cache_dir/$key"
+if [[ -f $cache_file ]]; then
+	exit "$(<"$cache_file")"
+fi
+
+if [[ $(uname) == Darwin ]]; then
+	python3 - "$@" <<'PYEOF'
+import ctypes, ctypes.util, os, plistlib, sys
+
+ct = ctypes.CDLL(ctypes.util.find_library("CoreText"))
+cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
+CFIndex = ctypes.c_long
+
+class CFRange(ctypes.Structure):
+    _fields_ = [("location", CFIndex), ("length", CFIndex)]
+
+cf.CFStringCreateWithCharacters.restype = ctypes.c_void_p
+cf.CFStringCreateWithCharacters.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint16), CFIndex]
+cf.CFStringGetCString.restype = ctypes.c_bool
+cf.CFStringGetCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, CFIndex, ctypes.c_uint32]
+ct.CTFontCreateWithName.restype = ctypes.c_void_p
+ct.CTFontCreateWithName.argtypes = [ctypes.c_void_p, ctypes.c_double, ctypes.c_void_p]
+ct.CTFontCreateForString.restype = ctypes.c_void_p
+ct.CTFontCreateForString.argtypes = [ctypes.c_void_p, ctypes.c_void_p, CFRange]
+ct.CTFontGetGlyphsForCharacters.restype = ctypes.c_bool
+ct.CTFontGetGlyphsForCharacters.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint16), ctypes.POINTER(ctypes.c_uint16), CFIndex]
+ct.CTFontCopyPostScriptName.restype = ctypes.c_void_p
+ct.CTFontCopyPostScriptName.argtypes = [ctypes.c_void_p]
+
+def cfstr(units):
+    arr = (ctypes.c_uint16 * len(units))(*units)
+    return cf.CFStringCreateWithCharacters(None, arr, len(units)), arr
+
+def psname(font):
+    buf = ctypes.create_string_buffer(256)
+    cf.CFStringGetCString(ct.CTFontCopyPostScriptName(font), buf, 256, 0x08000100)
+    return buf.value.decode()
+
+def font_named(name):
+    s, _ = cfstr([ord(c) for c in name])
+    font = ct.CTFontCreateWithName(s, 12.0, None)
+    # CTFontCreateWithName substitutes a default for unknown names; only
+    # accept an exact resolution so a missing font reads as "no glyphs"
+    return font if psname(font) == name else None
+
+def prefs(domain):
+    # read the plist file directly: defaults export emits XML that chokes on
+    # control characters in string values, and plistlib handles binary fine
+    path = os.path.expanduser(f"~/Library/Preferences/{domain}.plist")
+    try:
+        with open(path, "rb") as f:
+            return plistlib.load(f)
+    except (OSError, plistlib.InvalidFileException):
+        return {}
+
+def terminal_font():
+    prog = os.environ.get("TERM_PROGRAM", "")
+    if prog == "iTerm.app":
+        pl = prefs("com.googlecode.iterm2")
+        profiles = pl.get("New Bookmarks", [])
+        want_name = os.environ.get("ITERM_PROFILE")
+        want_guid = pl.get("Default Bookmark Guid")
+        chosen = next((p for p in profiles if p.get("Name") == want_name),
+                      None) or next((p for p in profiles
+                                     if p.get("Guid") == want_guid),
+                                    None) or (profiles[0] if profiles else {})
+        # non-ASCII codepoints render in the non-ASCII font when enabled
+        spec = (chosen.get("Non Ascii Font")
+                if chosen.get("Use Non-ASCII Font") else None) \
+            or chosen.get("Normal Font", "")
+        return font_named(spec.rsplit(" ", 1)[0]) if spec else None
+    if prog == "Apple_Terminal":
+        pl = prefs("com.apple.Terminal")
+        profile = pl.get("Window Settings", {}).get(
+            pl.get("Default Window Settings", ""), {})
+        data = profile.get("Font")
+        if not data:
+            return font_named("Menlo-Regular")
+        # Font is an NSKeyedArchiver blob; the font name is one of the
+        # archived strings — take the first that resolves exactly
+        for obj in plistlib.loads(data).get("$objects", []):
+            if isinstance(obj, str) and not obj.startswith("$"):
+                font = font_named(obj)
+                if font:
+                    return font
+        return None
+    return None  # unknown terminal: fail closed
+
+base = terminal_font()
+if base is None:
+    sys.exit(1)
+
+def renderable(cp):
+    units = ([cp] if cp <= 0xFFFF else
+             [0xD800 + ((cp - 0x10000) >> 10), 0xDC00 + ((cp - 0x10000) & 0x3FF)])
+    s, arr = cfstr(units)
+    glyphs = (ctypes.c_uint16 * len(units))()
+    if ct.CTFontGetGlyphsForCharacters(base, arr, glyphs, len(units)):
+        return True
+    fb = ct.CTFontCreateForString(base, s, CFRange(0, len(units)))
+    return (not psname(fb).startswith("LastResort") and
+            ct.CTFontGetGlyphsForCharacters(fb, arr, glyphs, len(units)))
+
+sys.exit(0 if all(renderable(int(a, 16)) for a in sys.argv[1:]) else 1)
+PYEOF
+	rc=$?
+elif command -v fc-list >/dev/null 2>&1; then
+	rc=0
+	for cp in "$@"; do
+		[[ -n $(fc-list ":charset=$cp" family) ]] || { rc=1; break; }
+	done
+else
+	rc=1
+fi
+
+echo "$rc" >"$cache_file"
+exit "$rc"
