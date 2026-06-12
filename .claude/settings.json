@@ -2,7 +2,8 @@
   "model": "claude-fable-5",
   "statusLine": {
     "type": "command",
-    "command": "~/.claude/statusline.sh"
+    "command": "~/.claude/statusline.sh",
+    "refreshInterval": 1
   },
   "enabledPlugins": {
     "ica-skills@ica-skills": true,

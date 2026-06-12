@@ -16,6 +16,14 @@
 
 set -u
 [[ $# -gt 0 ]] || { echo "usage: has-glyphs <hex-codepoint>..." >&2; exit 2; }
+# Validate before touching the cache: a malformed argument used to crash the
+# python check and cache its exit as a plain "no glyphs" verdict — and since
+# the cache key joins $* on spaces, the poisoned entry also answered the
+# correctly-split form of the same query.
+for cp in "$@"; do
+	[[ $cp =~ ^[0-9a-fA-F]{2,6}$ ]] ||
+		{ echo "has-glyphs: invalid codepoint: $cp" >&2; exit 2; }
+done
 
 cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/has-glyphs"
 mkdir -p "$cache_dir"
@@ -112,7 +120,11 @@ def terminal_font():
                 font = font_named(obj)
                 if font:
                     return font
-        return None
+        # App-embedded fonts (Terminal's SF Mono) aren't registered
+        # globally, so the name doesn't resolve; approximate with Menlo.
+        # Regular-Unicode cascade checks still answer correctly, and PUA
+        # checks still fail closed for unpatched fonts.
+        return font_named("Menlo-Regular")
     return None  # unknown terminal: fail closed
 
 base = terminal_font()

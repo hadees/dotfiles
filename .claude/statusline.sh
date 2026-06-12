@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Claude Code status line, styled after ~/.zsh_prompt (Base16 Eighties ANSI):
-#   org/repo[/subdir] on branch [+!?$] ↑N↓N as  ghuser 󰚩 Model 󰓅 N% +N/-N
+#   org/repo[/subdir] on branch [+!?$] ↑N↓N as  ghuser 󰚩 Model 󰓅 N% +N/-N <spinner>
 # Status flags match the zsh prompt: + staged, ! unstaged, ? untracked, $ stashed.
 # Nerd Font glyphs (branch, github, model, ctx gauge) are shown only when
 # ~/bin/has-glyphs confirms the terminal font renders them (over ssh: when
@@ -10,6 +10,8 @@
 input=$(cat)
 cwd=$(jq -r '.workspace.current_dir // .cwd // empty' <<<"$input")
 model=$(jq -r '.model.display_name // empty' <<<"$input")
+session_id=$(jq -r '.session_id // empty' <<<"$input")
+project_dir=$(jq -r '.workspace.project_dir // .cwd // empty' <<<"$input")
 added=$(jq -r '.cost.total_lines_added // 0' <<<"$input")
 removed=$(jq -r '.cost.total_lines_removed // 0' <<<"$input")
 ctx_pct=$(jq -r '.context_window.used_percentage // empty' <<<"$input")
@@ -107,6 +109,37 @@ fi
 
 if (( added > 0 || removed > 0 )); then
 	out+=" ${green}+${added}${reset}${grey}/${reset}${red}-${removed}${reset}"
+fi
+
+# Running work indicator. Each Bash tool call (foreground or background) and
+# each subagent writes to <tasks_dir>/<id>.output and holds it open until it
+# finishes, so counting open .output files = tasks running right now. Needs
+# statusLine.refreshInterval in settings.json: without it the statusline only
+# re-renders on conversation events, so the count would go stale while the
+# session sits waiting on background work — exactly when it matters.
+if [[ -n $session_id && -n $project_dir ]]; then
+	tasks_dir="/tmp/claude-$(id -u)/$(sed 's/[^A-Za-z0-9]/-/g' <<<"$project_dir")/${session_id}/tasks"
+	outputs=("$tasks_dir"/*.output)
+	if [[ -e ${outputs[0]} || -L ${outputs[0]} ]]; then
+		running=$(lsof -F n -- "${outputs[@]}" 2>/dev/null | sed -n 's/^n//p' | sort -u | grep -c .)
+		if (( running > 0 )); then
+			# Throbber. The script is stateless, so key the frame to the
+			# clock — each 1s refresh advances one frame. Three tiers:
+			# Fira Code's spinner glyphs (nf extra-progress_spinner_1..6,
+			# gated separately from nf_on so a font with the core glyphs
+			# but not these still degrades), then braille dots (regular
+			# Unicode, so has-glyphs checks the OS fallback cascade rather
+			# than the terminal font itself), then ASCII.
+			frames=('-' '\' '|' '/')
+			if [[ -n $nf_on ]] && "$HOME/bin/has-glyphs" ee06 ee07 ee08 ee09 ee0a ee0b 2>/dev/null; then
+				frames=($'\xee\xb8\x86' $'\xee\xb8\x87' $'\xee\xb8\x88' \
+					$'\xee\xb8\x89' $'\xee\xb8\x8a' $'\xee\xb8\x8b')
+			elif "$HOME/bin/has-glyphs" 280b 2819 2839 2838 283c 2834 2826 2827 2807 280f 2>/dev/null; then
+				frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+			fi
+			out+=" ${yellow}${frames[$(( $(date +%s) % ${#frames[@]} ))]}${reset}"
+		fi
+	fi
 fi
 
 printf '%s' "$out"
