@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Claude Code status line, styled after ~/.zsh_prompt (Base16 Eighties ANSI):
+# Claude Code status line, styled after ~/.zsh_prompt (Gruvbox Dark ANSI):
 #   org/repo[/subdir] on branch [+!?$] ↑N↓N as  ghuser 󰚩 Model 󰓅 N% +N/-N <spinner>
 # Status flags match the zsh prompt: + staged, ! unstaged, ? untracked, $ stashed.
 # Nerd Font glyphs (branch, github, model, ctx gauge) are shown only when
@@ -16,7 +16,7 @@ added=$(jq -r '.cost.total_lines_added // 0' <<<"$input")
 removed=$(jq -r '.cost.total_lines_removed // 0' <<<"$input")
 ctx_pct=$(jq -r '.context_window.used_percentage // empty' <<<"$input")
 
-# ANSI palette (terminal maps these to Base16 Eighties, same as the prompt)
+# ANSI palette (terminal maps these to Gruvbox Dark, same as the prompt)
 grey=$'\033[90m'  red=$'\033[31m'    green=$'\033[32m'
 blue=$'\033[34m'  magenta=$'\033[35m' cyan=$'\033[36m'
 yellow=$'\033[33m' reset=$'\033[0m'

@@ -55,7 +55,7 @@ CI runs tests on both `ubuntu-latest` and `macos-latest` via `.github/workflows/
 - **`Brewfile`** — Homebrew formulae, casks, and Mac App Store apps
 - **`bin/`** — personal scripts added to `$PATH`
 - **`init/`** — one-time setup scripts
-- **`theme/`** — terminal color themes (Base16 Eighties, iTerm2, Sublime Text)
+- **`theme/`** — Gruvbox Dark color themes for iTerm2, Sublime Text, and Alfred
 
 ### Machine-local customization
 
