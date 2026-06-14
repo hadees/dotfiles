@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Claude Code status line, styled after ~/.zsh_prompt (Gruvbox Dark ANSI):
+# Claude Code status line, styled after ~/.zsh_prompt (Base16 Eighties, 256-color):
 #   org/repo[/subdir] on branch [+!?$] ↑N↓N as  ghuser 󰚩 Model 󰓅 N% +N/-N <spinner>
 # Status flags match the zsh prompt: + staged, ! unstaged, ? untracked, $ stashed.
 # Nerd Font glyphs (branch, github, model, ctx gauge) are shown only when
@@ -16,10 +16,11 @@ added=$(jq -r '.cost.total_lines_added // 0' <<<"$input")
 removed=$(jq -r '.cost.total_lines_removed // 0' <<<"$input")
 ctx_pct=$(jq -r '.context_window.used_percentage // empty' <<<"$input")
 
-# ANSI palette (terminal maps these to Gruvbox Dark, same as the prompt)
-grey=$'\033[90m'  red=$'\033[31m'    green=$'\033[32m'
-blue=$'\033[34m'  magenta=$'\033[35m' cyan=$'\033[36m'
-yellow=$'\033[33m' reset=$'\033[0m'
+# Base16 Eighties palette as fixed 256-color indices, matching ~/.zsh_prompt.
+grey=$'\033[38;5;243m'   red=$'\033[38;5;210m'     green=$'\033[38;5;151m'
+blue=$'\033[38;5;110m'   magenta=$'\033[38;5;182m' cyan=$'\033[38;5;80m'
+yellow=$'\033[38;5;221m' orange=$'\033[38;5;209m'  lime=$'\033[38;5;185m'
+purple=$'\033[38;5;104m' reset=$'\033[0m'
 # Nerd Font glyphs, same font as .zsh_prompt. Locally, has-glyphs asks
 # CoreText whether the terminal's configured font can actually render them
 # (cached). Over ssh the remote host can't inspect the local machine's fonts,
@@ -59,28 +60,30 @@ if [[ -n $toplevel ]]; then
 
 	# +!?$ flags via one porcelain call (cheaper than the prompt's diff trio)
 	porcelain=$(git -C "$cwd" status --porcelain 2>/dev/null)
+	# Each flag its own color, matching the prompt: staged green, unstaged
+	# yellow, untracked blue, stashed magenta.
 	flags=''
-	cut -c1 <<<"$porcelain" | grep -q '[MADRCT]' && flags+='+'
-	cut -c2 <<<"$porcelain" | grep -q '[MADRCT]' && flags+='!'
-	grep -q '^??' <<<"$porcelain" && flags+='?'
-	git -C "$cwd" rev-parse --verify --quiet refs/stash >/dev/null && flags+='$'
+	cut -c1 <<<"$porcelain" | grep -q '[MADRCT]' && flags+="${green}+${reset}"
+	cut -c2 <<<"$porcelain" | grep -q '[MADRCT]' && flags+="${yellow}!${reset}"
+	grep -q '^??' <<<"$porcelain" && flags+="${blue}?${reset}"
+	git -C "$cwd" rev-parse --verify --quiet refs/stash >/dev/null && flags+="${magenta}\$${reset}"
 
 	out+="${green}${repo}${rel}${reset}"
 	out+=" ${grey}on${reset} ${blue}${nf_branch}${branch}${reset}"
-	[[ -n $flags ]] && out+=" ${red}[${flags}]${reset}"
+	[[ -n $flags ]] && out+=" ${grey}[${reset}${flags}${grey}]${reset}"
 
 	# commits ahead/behind upstream; plain ↑/↓ render fine without a Nerd Font
 	counts=$(git -C "$cwd" rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)
 	if [[ -n $counts ]]; then
 		behind=${counts%%[!0-9]*} ahead=${counts##*[!0-9]}
 		arrows=''
-		(( ahead )) && arrows+="↑${ahead}"
-		(( behind )) && arrows+="↓${behind}"
-		[[ -n $arrows ]] && out+=" ${yellow}${arrows}${reset}"
+		(( ahead )) && arrows+="${lime}↑${ahead}${reset}"
+		(( behind )) && arrows+="${orange}↓${behind}${reset}"
+		[[ -n $arrows ]] && out+=" ${arrows}"
 	fi
 
 	gh_user=$(git -C "$cwd" config github.user 2>/dev/null)
-	[[ -n $gh_user ]] && out+=" ${grey}as${reset} ${magenta}${nf_github}${gh_user}${reset}"
+	[[ -n $gh_user ]] && out+=" ${grey}as${reset} ${purple}${nf_github}${gh_user}${reset}"
 else
 	out+="${green}${cwd/#$HOME/~}${reset}"
 fi

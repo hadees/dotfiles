@@ -1,11 +1,11 @@
 #!/usr/bin/env zsh
 
-# Shell prompt using ANSI colors 0-15, so the palette tracks the terminal's
-# theme instead of hardcoding hex. Relies on that palette matching Gruvbox Dark:
-#   yellow  = slot 3 #d79921  blue    = slot 4 #458588
-#   green   = slot 2 #98971a  cyan    = slot 6 #689d6a
-#   red     = slot 1 #cc241d  magenta = slot 5 #b16286
-#   white   = slot 7 #a89984  brblack = slot 8 #928374
+# Shell prompt — Base16 Eighties with a darkened background. Colors are fixed
+# 256-palette indices (not ANSI 0-15), so each segment/state gets its own
+# distinct hue. Indices approximate the Eighties pastels, plus a few extras:
+#   grey 243  fg 252  red 210  orange 209  yellow 221  green 151  cyan 80
+#   blue 110  magenta 182  brown 173  teal 79  rose 175  lime 185
+#   purple 104  peach 216
 # Nerd Font glyphs (branch , github , ssh 󰣀) are shown only when
 # ~/bin/has-glyphs confirms the terminal font renders them (over ssh: when
 # the client is iTerm); other terminals degrade to plain text.
@@ -18,6 +18,11 @@ fi
 
 autoload -Uz colors && colors
 setopt PROMPT_SUBST
+
+# Base16 Eighties palette as 256-color indices (documented above). Fixed, not
+# theme-tracking — distinct hues to denote different prompt elements/states.
+c_grey=243 c_fg=252 c_red=210 c_orange=209 c_yellow=221 c_green=151 c_cyan=80
+c_blue=110 c_magenta=182 c_brown=173 c_teal=79 c_rose=175 c_lime=185 c_purple=104 c_peach=216
 
 # We render the active Python venv ourselves (prompt_venv); suppress the
 # activate script's own "(venv)" prefix so it isn't shown twice.
@@ -61,9 +66,9 @@ prompt_venv() {
 	local name=${VIRTUAL_ENV:t}
 	[[ $name == (.venv|venv|.env|env) ]] && name=${VIRTUAL_ENV:h:t}
 	if [[ -n $nf_python ]]; then
-		print -n -- "%F{magenta}${nf_python}${name}%f "
+		print -n -- "%F{$c_magenta}${nf_python}${name}%f "
 	else
-		print -n -- "%F{magenta}(${name})%f "
+		print -n -- "%F{$c_magenta}(${name})%f "
 	fi
 }
 
@@ -74,9 +79,9 @@ prompt_direnv() {
 	[[ -n $DIRENV_DIR ]] || return
 	local name=${${DIRENV_DIR#-}:t}
 	if [[ -n $nf_direnv ]]; then
-		print -n -- "%F{cyan}${nf_direnv}${name}%f "
+		print -n -- "%F{$c_teal}${nf_direnv}${name}%f "
 	else
-		print -n -- "%F{cyan}(direnv:${name})%f "
+		print -n -- "%F{$c_teal}(direnv:${name})%f "
 	fi
 }
 
@@ -87,10 +92,12 @@ prompt_git() {
 		if [[ "$(command git rev-parse --is-inside-git-dir 2>/dev/null)" == "false" ]]; then
 			command git update-index --really-refresh -q &>/dev/null
 
-			command git diff --quiet --ignore-submodules --cached || git_status+='+'
-			command git diff --quiet --ignore-submodules -- || git_status+='!'
-			[[ -n "$(command git ls-files --others --exclude-standard)" ]] && git_status+='?'
-			command git rev-parse --verify refs/stash &>/dev/null && git_status+='$'
+			# Each flag gets its own color: staged green, unstaged yellow,
+			# untracked blue, stashed magenta.
+			command git diff --quiet --ignore-submodules --cached || git_status+="%F{$c_green}+%f"
+			command git diff --quiet --ignore-submodules -- || git_status+="%F{$c_yellow}!%f"
+			[[ -n "$(command git ls-files --others --exclude-standard)" ]] && git_status+="%F{$c_blue}?%f"
+			command git rev-parse --verify refs/stash &>/dev/null && git_status+="%F{$c_magenta}\$%f"
 		fi
 
 		branch="$(command git symbolic-ref --quiet --short HEAD 2>/dev/null || \
@@ -103,38 +110,38 @@ prompt_git() {
 		counts="$(command git rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)"
 		if [[ -n $counts ]]; then
 			local behind="${counts%%[^0-9]*}" ahead="${counts##*[^0-9]}"
-			(( ahead )) && arrows+="↑${ahead}"
-			(( behind )) && arrows+="↓${behind}"
-			[[ -n $arrows ]] && arrows=" %F{yellow}${arrows}%f"
+			(( ahead )) && arrows+="%F{$c_lime}↑${ahead}%f"
+			(( behind )) && arrows+="%F{$c_orange}↓${behind}%f"
+			[[ -n $arrows ]] && arrows=" ${arrows}"
 		fi
 
 		if [[ -n $git_status ]]; then
-			git_status=" %F{red}[$git_status]%f"
+			git_status=" %F{$c_grey}[%f${git_status}%F{$c_grey}]%f"
 		fi
 
 		local gh_user gh_segment=''
 		gh_user="$(command git config github.user 2>/dev/null)"
-		[[ -n $gh_user ]] && gh_segment=" %F{8}as%f %F{magenta}${nf_github}${gh_user}%f"
+		[[ -n $gh_user ]] && gh_segment=" %F{$c_grey}as%f %F{$c_purple}${nf_github}${gh_user}%f"
 
-		print -n -- " %F{8}on%f %F{blue}${nf_branch}${branch}%f${git_status}${arrows}${gh_segment}"
+		print -n -- " %F{$c_grey}on%f %F{$c_blue}${nf_branch}${branch}%f${git_status}${arrows}${gh_segment}"
 	fi
 }
 
-user_segment="%F{yellow}%n%f"
-[[ $USER == root ]] && user_segment="%F{red}%n%f"
+user_segment="%F{$c_yellow}%n%f"
+[[ $USER == root ]] && user_segment="%F{$c_red}%n%f"
 
-host_segment="%F{cyan}%m%f"
-[[ -n $SSH_TTY ]] && host_segment="%B%F{red}${nf_ssh}%m%f%b"
+host_segment="%F{$c_cyan}%m%f"
+[[ -n $SSH_TTY ]] && host_segment="%B%F{$c_peach}${nf_ssh}%m%f%b"
 
 PROMPT=$'%B\n'
 PROMPT+='$(prompt_venv)'
 PROMPT+='$(prompt_direnv)'
-PROMPT+="${user_segment} %F{8}at%f ${host_segment} %F{8}in%f %F{green}%~%f"
+PROMPT+="${user_segment} %F{$c_grey}at%f ${host_segment} %F{$c_grey}in%f %F{$c_green}%~%f"
 PROMPT+='$(prompt_git)'
 # Trailing $ is grey on success, red when the last command exited nonzero.
-PROMPT+=$'\n%(?.%F{8}.%F{red})$ %f%b'
+PROMPT+=$'\n'"%(?.%F{$c_grey}.%F{$c_red})\$ %f%b"
 
-PROMPT2=$'%F{yellow}→ %f'
+PROMPT2="%F{$c_yellow}→ %f"
 
 precmd() {
 	print -Pn "\e]0;%~\a"

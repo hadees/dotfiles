@@ -4,54 +4,54 @@
       "textSpacing" : 5,
       "subtext" : {
         "size" : 12,
-        "colorSelected" : "#EBDBB2C0",
+        "colorSelected" : "#D3D0C8C0",
         "font" : "System",
-        "color" : "#A89984C0"
+        "color" : "#A09F93C0"
       },
       "shortcut" : {
         "size" : 16,
-        "colorSelected" : "#EBDBB2FF",
+        "colorSelected" : "#D3D0C8FF",
         "font" : "System",
-        "color" : "#FABD2FFF"
+        "color" : "#FFCC66FF"
       },
-      "backgroundSelected" : "#458588CC",
+      "backgroundSelected" : "#6699CCCC",
       "text" : {
         "size" : 18,
-        "colorSelected" : "#EBDBB2FF",
+        "colorSelected" : "#D3D0C8FF",
         "font" : "System",
-        "color" : "#EBDBB2FF"
+        "color" : "#D3D0C8FF"
       },
       "iconPaddingHorizontal" : 4,
       "paddingVertical" : 3,
       "iconSize" : 40
     },
     "separator" : {
-      "color" : "#3C3836FF",
+      "color" : "#262626FF",
       "thickness" : 0
     },
     "search" : {
       "paddingVertical" : 5,
-      "background" : "#32302F40",
+      "background" : "#1A1A1A40",
       "spacing" : 8,
       "text" : {
         "size" : 34,
-        "colorSelected" : "#EBDBB2FF",
+        "colorSelected" : "#D3D0C8FF",
         "font" : "System Light",
-        "color" : "#EBDBB2FF"
+        "color" : "#D3D0C8FF"
       },
-      "backgroundSelected" : "#458588CC"
+      "backgroundSelected" : "#6699CCCC"
     },
     "scrollbar" : {
-      "color" : "#A89984AA",
+      "color" : "#A09F93AA",
       "thickness" : 2
     },
-    "name" : "Gruvbox Dark",
+    "name" : "Base16 Eighties",
     "window" : {
-      "color" : "#282828F5",
+      "color" : "#1A1A1AF5",
       "paddingHorizontal" : 9,
       "width" : 559,
       "borderPadding" : 0,
-      "borderColor" : "#504945FF",
+      "borderColor" : "#3A3A3AFF",
       "blur" : 0,
       "roundness" : 3,
       "paddingVertical" : 8
