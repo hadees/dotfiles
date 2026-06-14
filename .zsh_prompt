@@ -1,11 +1,11 @@
 #!/usr/bin/env zsh
 
-# Shell prompt using Base16 Eighties ANSI colors.
-# Relies on the terminal's ANSI palette (colors 0-15) matching Base16 Eighties:
-#   yellow  = Base0A #ffcc66  blue    = Base0D #6699cc
-#   green   = Base0B #99cc99  cyan    = Base0C #66cccc
-#   red     = Base08 #f2777a  magenta = Base0E #cc99cc
-#   white   = Base05 #d3d0c8  brblack = Base03 #747369
+# Shell prompt using ANSI colors 0-15, so the palette tracks the terminal's
+# theme instead of hardcoding hex. Relies on that palette matching Gruvbox Dark:
+#   yellow  = slot 3 #d79921  blue    = slot 4 #458588
+#   green   = slot 2 #98971a  cyan    = slot 6 #689d6a
+#   red     = slot 1 #cc241d  magenta = slot 5 #b16286
+#   white   = slot 7 #a89984  brblack = slot 8 #928374
 # Nerd Font glyphs (branch , github , ssh 󰣀) are shown only when
 # ~/bin/has-glyphs confirms the terminal font renders them (over ssh: when
 # the client is iTerm); other terminals degrade to plain text.
