@@ -1,21 +1,23 @@
+# Base16 Eighties theme for lazygit (darkened bg #262626).
+# Palette matches the iTerm/VSCode/k9s Base16 Eighties setup.
 gui:
   theme:
     activeBorderColor:
-      - '#fabd2f'
+      - '#ffcc66'
       - bold
     inactiveBorderColor:
-      - '#665c54'
+      - '#747369'
     optionsTextColor:
-      - '#83a598'
+      - '#6699cc'
     selectedLineBgColor:
-      - '#3c3836'
+      - '#262626'
     selectedRangeBgColor:
-      - '#3c3836'
+      - '#262626'
     cherryPickedCommitBgColor:
-      - '#458588'
+      - '#6699cc'
     cherryPickedCommitFgColor:
-      - '#ebdbb2'
+      - '#d3d0c8'
     unstagedChangesColor:
-      - '#fb4934'
+      - '#f2777a'
     defaultFgColor:
-      - '#ebdbb2'
+      - '#d3d0c8'

@@ -55,7 +55,7 @@ CI runs tests on both `ubuntu-latest` and `macos-latest` via `.github/workflows/
 - **`Brewfile`** — Homebrew formulae, casks, and Mac App Store apps
 - **`bin/`** — personal scripts added to `$PATH`
 - **`init/`** — one-time setup scripts
-- **`theme/`** — Gruvbox Dark color themes for iTerm2, Terminal.app, and Alfred (VSCode uses the `jdinhlife.gruvbox` extension installed by `.macos`)
+- **`theme/`** — Base16 Eighties color themes (darkened bg `#1a1a1a`) for iTerm2, Terminal.app, and Alfred; VSCode uses the `bsides.Theme-Base16-Eighties` extension installed by `.macos`. Terminal apps (bat, delta, fzf, k9s, vim) use `base16-256`/`base16-eighties` and inherit the iTerm palette.
 
 ### Machine-local customization
 

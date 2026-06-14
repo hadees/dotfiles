@@ -529,7 +529,7 @@ sudo mdutil -E / > /dev/null
 # Only use UTF-8 in Terminal.app
 defaults write com.apple.terminal StringEncodings -array 4
 
-# Use the Gruvbox Dark theme by default in Terminal.app
+# Use the Base16 Eighties theme by default in Terminal.app
 osascript <<EOD
 
 tell application "Terminal"
@@ -537,7 +537,7 @@ tell application "Terminal"
 	local allOpenedWindows
 	local initialOpenedWindows
 	local windowID
-	set themeName to "Gruvbox Dark"
+	set themeName to "Base16 Eighties"
 
 	(* Store the IDs of all the open terminal windows. *)
 	set initialOpenedWindows to id of every window
@@ -588,8 +588,8 @@ defaults write com.apple.terminal SecureKeyboardEntry -bool true
 # Disable the annoying line marks
 defaults write com.apple.Terminal ShowLineMarks -int 0
 
-# Install the Gruvbox Dark theme for iTerm
-open "${HOME}/theme/gruvbox-dark.itermcolors"
+# Install the Base16 Eighties (darkened) color preset for iTerm
+open "${HOME}/theme/base16-eighties.dark.256.itermcolors"
 
 # Don’t display the annoying prompt when quitting iTerm
 defaults write com.googlecode.iterm2 PromptOnQuit -bool false
@@ -689,7 +689,7 @@ defaults write com.microsoft.VSCode ApplePressAndHoldEnabled -bool false
 if (( $+commands[code] )); then
 	for ext in \
 		eamodio.gitlens \
-		jdinhlife.gruvbox \
+		bsides.Theme-Base16-Eighties \
 		esbenp.prettier-vscode \
 		dbaeumer.vscode-eslint \
 		ms-azuretools.vscode-docker; do
