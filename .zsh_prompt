@@ -19,6 +19,10 @@ fi
 autoload -Uz colors && colors
 setopt PROMPT_SUBST
 
+# We render the active Python venv ourselves (prompt_venv); suppress the
+# activate script's own "(venv)" prefix so it isn't shown twice.
+export VIRTUAL_ENV_DISABLE_PROMPT=1
+
 # Nerd Font glyphs. Locally, has-glyphs asks CoreText whether the terminal's
 # configured font can actually render them (cached). Over ssh the remote host
 # can't inspect the local machine's fonts, so iTerm identity (LC_TERMINAL,
@@ -27,7 +31,7 @@ setopt PROMPT_SUBST
 # nf_github replaces the plain-text "@" rather than adding to it: icons
 # stand in for words (cf. oh-my-posh's UpstreamIcon, shown bare before the
 # name), so the segment reads " user" with glyphs and "@user" without.
-nf_branch='' nf_github='@' nf_ssh='' nf_on=''
+nf_branch='' nf_github='@' nf_ssh='' nf_python='' nf_direnv='' nf_on=''
 if [[ -n $SSH_TTY ]]; then
 	[[ $LC_TERMINAL == iTerm2 ]] && nf_on=1
 elif [[ -x $HOME/bin/has-glyphs ]]; then
@@ -37,7 +41,44 @@ if [[ -n $nf_on ]]; then
 	nf_branch=$' '   # U+E0A0 nf-pl-branch
 	nf_github=$' '   # U+F09B nf-fa-github
 	nf_ssh=$'\U000F08C0 '  # U+F08C0 nf-md-ssh
+	# Python glyph for the venv segment, gated on its own (like the
+	# statusline's spinner) so a font with the core glyphs but not this one
+	# still shows the venv name as plain text. Over ssh we can't probe the
+	# local font, so iTerm identity already vouched for it via nf_on.
+	if [[ -n $SSH_TTY ]] || "$HOME/bin/has-glyphs" e73c 2>/dev/null; then
+		nf_python=$'\U0000E73C '  # U+E73C nf-dev-python
+	fi
+	# Leaf glyph for the direnv segment, gated on its own like nf_python.
+	if [[ -n $SSH_TTY ]] || "$HOME/bin/has-glyphs" f06c 2>/dev/null; then
+		nf_direnv=$'\U0000F06C '  # U+F06C nf-fa-leaf
+	fi
 fi
+
+prompt_venv() {
+	[[ -n $VIRTUAL_ENV ]] || return
+	# Show the venv's own name, but for the conventional ".venv"/"venv"
+	# layout that name is uninformative — use the project dir holding it.
+	local name=${VIRTUAL_ENV:t}
+	[[ $name == (.venv|venv|.env|env) ]] && name=${VIRTUAL_ENV:h:t}
+	if [[ -n $nf_python ]]; then
+		print -n -- "%F{magenta}${nf_python}${name}%f "
+	else
+		print -n -- "%F{magenta}(${name})%f "
+	fi
+}
+
+prompt_direnv() {
+	# DIRENV_DIR is set whenever an .envrc is loaded (the venv segment keys off
+	# VIRTUAL_ENV; this is the broader "an .envrc is active" signal and can
+	# co-occur with it). The value is the .envrc dir prefixed with '-'.
+	[[ -n $DIRENV_DIR ]] || return
+	local name=${${DIRENV_DIR#-}:t}
+	if [[ -n $nf_direnv ]]; then
+		print -n -- "%F{cyan}${nf_direnv}${name}%f "
+	else
+		print -n -- "%F{cyan}(direnv:${name})%f "
+	fi
+}
 
 prompt_git() {
 	local git_status='' branch=''
@@ -86,9 +127,12 @@ host_segment="%F{cyan}%m%f"
 [[ -n $SSH_TTY ]] && host_segment="%B%F{red}${nf_ssh}%m%f%b"
 
 PROMPT=$'%B\n'
+PROMPT+='$(prompt_venv)'
+PROMPT+='$(prompt_direnv)'
 PROMPT+="${user_segment} %F{8}at%f ${host_segment} %F{8}in%f %F{green}%~%f"
 PROMPT+='$(prompt_git)'
-PROMPT+=$'\n%F{8}$ %f%b'
+# Trailing $ is grey on success, red when the last command exited nonzero.
+PROMPT+=$'\n%(?.%F{8}.%F{red})$ %f%b'
 
 PROMPT2=$'%F{yellow}→ %f'
 
