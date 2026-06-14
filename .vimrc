@@ -1,6 +1,6 @@
 set background=dark
-let g:gruvbox_contrast_dark='soft'
-colorscheme gruvbox
+let base16colorspace=256
+colorscheme base16-eighties
 
 " Make Vim more useful
 set nocompatible

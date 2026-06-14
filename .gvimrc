@@ -1,6 +1,7 @@
-" Use the Solarized Dark theme
+" Use the Base16 Eighties theme
 set background=dark
-colorscheme solarized
+let base16colorspace=256
+colorscheme base16-eighties
 " Use 13pt SauceCodePro Nerd Font Mono
 set guifont=SauceCodePro\ Nerd\ Font\ Mono:h13
 " Don’t blink cursor in normal mode
