@@ -689,6 +689,7 @@ defaults write com.microsoft.VSCode ApplePressAndHoldEnabled -bool false
 if (( $+commands[code] )); then
 	for ext in \
 		eamodio.gitlens \
+		jdinhlife.gruvbox \
 		esbenp.prettier-vscode \
 		dbaeumer.vscode-eslint \
 		ms-azuretools.vscode-docker; do
