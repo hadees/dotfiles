@@ -1,0 +1,86 @@
+# Base16 Eighties skin for k9s, with a darkened background (#1a1a1a, vs the
+# stock base00 #2d2d2d). Matches the iTerm/Terminal/VSCode theme:
+# base05 #d3d0c8 fg, base08 #f2777a
+# red, base0A #ffcc66 yellow, base0B #99cc99 green, base0C #66cccc cyan,
+# base0D #6699cc blue, base0E #cc99cc magenta, base09 #f99157 orange.
+k9s:
+  body:
+    fgColor: '#d3d0c8'
+    bgColor: '#1a1a1a'
+    logoColor: '#ffcc66'
+  prompt:
+    fgColor: '#d3d0c8'
+    bgColor: '#262626'
+    suggestColor: '#6699cc'
+  info:
+    fgColor: '#66cccc'
+    sectionColor: '#d3d0c8'
+  dialog:
+    fgColor: '#d3d0c8'
+    bgColor: '#1a1a1a'
+    buttonFgColor: '#1a1a1a'
+    buttonBgColor: '#6699cc'
+    buttonFocusFgColor: '#1a1a1a'
+    buttonFocusBgColor: '#ffcc66'
+    labelFgColor: '#ffcc66'
+    caretFgColor: '#d3d0c8'
+  frame:
+    border:
+      fgColor: '#3a3a3a'
+      focusColor: '#ffcc66'
+    menu:
+      fgColor: '#d3d0c8'
+      keyColor: '#ffcc66'
+      numKeyColor: '#66cccc'
+    crumbs:
+      fgColor: '#1a1a1a'
+      bgColor: '#ffcc66'
+      activeColor: '#f99157'
+    status:
+      newColor: '#99cc99'
+      modifyColor: '#66cccc'
+      addColor: '#99cc99'
+      pendingColor: '#ffcc66'
+      errorColor: '#f2777a'
+      highlightColor: '#66cccc'
+      killColor: '#cc99cc'
+      completedColor: '#747369'
+    title:
+      fgColor: '#d3d0c8'
+      bgColor: '#1a1a1a'
+      highlightColor: '#ffcc66'
+      counterColor: '#66cccc'
+      filterColor: '#99cc99'
+  views:
+    charts:
+      bgColor: default
+      defaultDialColors:
+        - '#6699cc'
+        - '#f2777a'
+      defaultChartColors:
+        - '#6699cc'
+        - '#f2777a'
+    table:
+      fgColor: '#d3d0c8'
+      bgColor: '#1a1a1a'
+      markColor: '#ffcc66'
+      header:
+        fgColor: '#ffcc66'
+        bgColor: '#1a1a1a'
+        sorterColor: '#66cccc'
+    xray:
+      fgColor: '#d3d0c8'
+      bgColor: '#1a1a1a'
+      cursorColor: '#262626'
+      graphicColor: '#ffcc66'
+      showIcons: false
+    yaml:
+      keyColor: '#ffcc66'
+      colonColor: '#747369'
+      valueColor: '#d3d0c8'
+    logs:
+      fgColor: '#d3d0c8'
+      bgColor: '#1a1a1a'
+      indicator:
+        fgColor: '#d3d0c8'
+        bgColor: '#6699cc'
