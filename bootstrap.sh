@@ -25,7 +25,8 @@ function doIt() {
 	echo "";
 	echo "Next steps on a new machine:";
 	echo "  brew bundle          — install Brewfile packages";
-	echo "  gpg --full-generate-key  — generate GPG key for commit signing";
+	echo "  1Password → set up SSH agent + op-ssh-sign, then add signing config";
+	echo "                         to ~/.gitconfig.local (gpg.format=ssh, signingkey=*.pub)";
 	echo "  bash init/mackup.sh  — restore app settings from ~/.config/Mackup/";
 }
 

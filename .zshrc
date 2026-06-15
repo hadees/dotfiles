@@ -119,9 +119,11 @@ if (( $+commands[brew] )); then
 	unset _brew_prefix
 fi
 
-# Ensure gpg-agent is running so commit signing works.
-# GPG Suite on macOS manages its own agent; gpgconf is a no-op if it's already up.
-command -v gpgconf > /dev/null 2>&1 && gpgconf --launch gpg-agent
+# Commit signing uses SSH-format signatures via 1Password's op-ssh-sign
+# (gpg.format=ssh + gpg.ssh.program in ~/.gitconfig.local) — no gpg-agent needed.
+# The signing key's private half lives in 1Password; the repo only references
+# the .pub. On a machine without 1Password, forward your local 1Password SSH
+# agent or disable signing there (git config commit.gpgsign false).
 
 # Increase how many files can be opened at once.
 ulimit -n 10480 2>/dev/null

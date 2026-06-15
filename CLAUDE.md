@@ -57,6 +57,24 @@ CI runs tests on both `ubuntu-latest` and `macos-latest` via `.github/workflows/
 - **`init/`** — one-time setup scripts
 - **`theme/`** — Base16 Eighties color themes (darkened bg `#1a1a1a`) for iTerm2, Terminal.app, and Alfred; VSCode uses the `bsides.Theme-Base16-Eighties` extension installed by `.macos`. Terminal apps (bat, delta, fzf, k9s, vim) use `base16-256`/`base16-eighties` and inherit the iTerm palette.
 
+### Commit signing
+
+Commits are signed with **SSH-format signatures via 1Password**, not GPG. The
+repo sets `commit.gpgsign = true` (format-agnostic); the actual mechanism lives
+in untracked machine-local files:
+
+- `~/.gitconfig.local` / `~/.gitconfig-ica` set `gpg.format = ssh`,
+  `gpg.ssh.program = .../op-ssh-sign`, and `user.signingkey = ~/.ssh/*.pub`.
+- `~/.ssh/config` points `IdentityAgent` at the 1Password agent socket; the
+  private keys live in 1Password and never touch disk. The `.pub` files are
+  just selectors.
+
+On a machine without 1Password (e.g. a remote Linux box), `op-ssh-sign` doesn't
+exist and the agent socket is absent. Either forward your local 1Password SSH
+agent over the connection, or disable signing there with
+`git config commit.gpgsign false`. There is **no GPG keypair** in this setup
+despite the `gpgsign` name.
+
 ### Machine-local customization
 
 Add `~/.extra` (not committed) for per-machine overrides. Add `~/.path` for per-machine PATH entries. The `.macos` script skips the computer name block if `$COMPUTER_NAME` is unset.
