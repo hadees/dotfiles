@@ -103,6 +103,7 @@ brew 'testssl' # Tool which checks for the support of TLS/SSL ciphers and flaws
 brew 'tor' # Anonymizing overlay network for TCP
 brew 'tree' # Display directories as trees (with optional color/HTML output)
 brew 'ucspi-tcp' # Tools for building TCP client-server applications
+brew 'uv' # Fast Python package & project manager (also manages global tools)
 brew 'vbindiff' # Visual Binary Diff
 brew 'vim' # Vi 'workalike' with many additional features
 brew 'webkit2png' # Create screenshots of webpages from the terminal
