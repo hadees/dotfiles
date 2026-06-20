@@ -291,6 +291,8 @@
 	</dict>
 	<key>Default Bookmark Guid</key>
 	<string>E0F8D160-701E-48E1-8C8B-0F6A78ADD904</string>
+	<key>Default Browser Profile Guid</key>
+	<string>17C989ED-5D30-403A-A439-649D71A7EE48</string>
 	<key>EnableAPIServer</key>
 	<true/>
 	<key>HapticFeedbackForEsc</key>
@@ -999,6 +1001,8 @@
 			<integer>80</integer>
 			<key>Command</key>
 			<string></string>
+			<key>Cursor Boost (Dark)</key>
+			<real>0.0</real>
 			<key>Cursor Color</key>
 			<dict>
 				<key>Alpha Component</key>
@@ -1160,7 +1164,7 @@
 			<key>Horizontal Spacing</key>
 			<real>1</real>
 			<key>Icon</key>
-			<integer>0</integer>
+			<integer>1</integer>
 			<key>Idle Code</key>
 			<integer>0</integer>
 			<key>Jobs to Ignore</key>
@@ -1239,6 +1243,8 @@
 				<key>Red Component</key>
 				<real>0.99697142839431763</real>
 			</dict>
+			<key>Minimum Contrast (Dark)</key>
+			<real>0.0</real>
 			<key>Mouse Reporting</key>
 			<true/>
 			<key>Name</key>
@@ -1416,5 +1422,9 @@
 	<false/>
 	<key>findMode_iTerm</key>
 	<integer>0</integer>
+	<key>kCPKSelectionViewPreferredModeKey</key>
+	<integer>0</integer>
+	<key>kCPKSelectionViewShowHSBTextFieldsKey</key>
+	<false/>
 </dict>
 </plist>
