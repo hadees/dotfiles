@@ -54,8 +54,8 @@ alias sudo='sudo '
 # Get week number
 alias week='date +%V'
 
-# Get macOS Software Updates, and update installed Ruby gems, Homebrew, npm, and their installed packages
-alias update='sudo softwareupdate -i -a; brew update; brew upgrade; brew cleanup; command -v npm > /dev/null 2>&1 && npm install npm -g; command -v npm > /dev/null 2>&1 && npm update -g; [[ $(which ruby) != /usr/bin/ruby ]] && sudo gem update --system; [[ $(which ruby) != /usr/bin/ruby ]] && sudo gem update; [[ $(which ruby) != /usr/bin/ruby ]] && sudo gem cleanup'
+# Get macOS Software Updates, and update installed Ruby gems, Homebrew, npm, uv, and their installed packages
+alias update='sudo softwareupdate -i -a; brew update; brew upgrade; brew cleanup; command -v npm > /dev/null 2>&1 && npm install npm -g; command -v npm > /dev/null 2>&1 && npm update -g; command -v uv > /dev/null 2>&1 && uv tool upgrade --all; [[ $(which ruby) != /usr/bin/ruby ]] && sudo gem update --system; [[ $(which ruby) != /usr/bin/ruby ]] && sudo gem update; [[ $(which ruby) != /usr/bin/ruby ]] && sudo gem cleanup'
 
 # Google Chrome
 alias chrome='/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome'
