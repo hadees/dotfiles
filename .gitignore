@@ -26,3 +26,7 @@ scratch.*
 # Claude Code — track user memory, never machine-local settings
 .claude/settings.local.json
 .claude/CLAUDE.local.md
+
+# Machine-local secrets rendered from .extra.tmpl by `op inject`.
+# The template (.extra.tmpl) IS tracked; the rendered output never is.
+.extra
