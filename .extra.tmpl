@@ -1,0 +1,25 @@
+# shellcheck shell=sh
+#
+# ~/.extra — machine-local secrets / overrides, sourced last by .zshrc.
+#
+# This TEMPLATE is tracked in the repo. bootstrap.sh renders it to ~/.extra
+# with 1Password's `op inject` (output mode 0600), so real secret *values*
+# never touch the repo — only op:// reference paths do. The rendered ~/.extra
+# is gitignored.
+#
+# To add a secret:
+#   1. Store it in 1Password.
+#   2. Add an export below whose value is the secret's reference path, WRAPPED
+#      IN DOUBLE CURLY BRACES. The commented examples show the path format;
+#      to activate one, uncomment it and wrap the op://... path in {{ }}.
+#      (In the 1Password app: right-click a field -> "Copy Secret Reference".)
+#   3. Re-run `source bootstrap.sh`, or just:
+#          op inject -i .extra.tmpl -o ~/.extra -f
+#
+# With no braced references present, this renders to an (inert) ~/.extra.
+#
+# --- Examples — path format only; uncomment + add {{ }} to activate ---------
+
+# export GITHUB_TOKEN="op://Private/GitHub PAT/token"
+# export ANTHROPIC_API_KEY="op://Private/Anthropic API/credential"
+# export HOMEBREW_GITHUB_API_TOKEN="op://Private/GitHub PAT/token"
