@@ -9,6 +9,7 @@ function doIt() {
 		--exclude ".claude/settings.local.json" \
 		--exclude ".DS_Store" \
 		--exclude ".osx" \
+		--exclude "tests/" \
 		--exclude "bootstrap.sh" \
 		--exclude "README.md" \
 		--exclude "LICENSE-MIT.txt" \
