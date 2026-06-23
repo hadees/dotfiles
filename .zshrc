@@ -70,8 +70,8 @@ compdef _killall_completion killall
 # Runtime environment managers.
 # asdf is the preferred multi-language manager; the per-language managers below
 # are no-ops when not installed, so both setups coexist safely.
-if (( $+commands[brew] )) && [[ -f "$(brew --prefix asdf 2>/dev/null)/libexec/asdf.sh" ]]; then
-	source "$(brew --prefix asdf)/libexec/asdf.sh"
+if (( $+commands[asdf] )); then
+	export PATH="${ASDF_DATA_DIR:-$HOME/.asdf}/shims:$PATH"
 fi
 
 if (( $+commands[rbenv] )); then
