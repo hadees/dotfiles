@@ -186,3 +186,22 @@ function o() {
 function tre() {
 	tree -aC -I '.git|node_modules|bower_components' --dirsfirst "$@" | less -FRNX;
 }
+
+# `gh` wrapper that picks the GitHub account from the repo's origin remote,
+# mirroring the git identity scheme in ~/.gitconfig.local (which selects the
+# work identity via includeIf on the `github-icaevan:` remote-URL host alias).
+# It injects GH_TOKEN for the single gh invocation rather than running
+# `gh auth switch`, so it never mutates the global active account — other
+# shells are unaffected and there is no state left stale. `gh auth …` is passed
+# straight through so account management still works normally.
+function gh() {
+	[[ $1 == auth ]] && { command gh "$@"; return; };
+	local url acct;
+	url="$(command git config --get remote.origin.url 2>/dev/null)";
+	case $url in
+		*github-icaevan:*) acct=icaevan ;;
+		*github-hadees:*)  acct=hadees ;;
+		*) command gh "$@"; return ;;
+	esac;
+	GH_TOKEN="$(command gh auth token --user "$acct" 2>/dev/null)" command gh "$@";
+}
