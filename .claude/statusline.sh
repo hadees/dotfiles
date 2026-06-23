@@ -20,7 +20,7 @@ ctx_pct=$(jq -r '.context_window.used_percentage // empty' <<<"$input")
 grey=$'\033[38;5;243m'   red=$'\033[38;5;210m'     green=$'\033[38;5;151m'
 blue=$'\033[38;5;110m'   magenta=$'\033[38;5;182m' cyan=$'\033[38;5;80m'
 yellow=$'\033[38;5;221m' orange=$'\033[38;5;209m'  lime=$'\033[38;5;185m'
-purple=$'\033[38;5;104m' reset=$'\033[0m'
+purple=$'\033[38;5;104m' teal=$'\033[38;5;79m' reset=$'\033[0m'
 # Nerd Font glyphs, same font as .zsh_prompt. Locally, has-glyphs asks
 # CoreText whether the terminal's configured font can actually render them
 # (cached). Over ssh the remote host can't inspect the local machine's fonts,
@@ -29,7 +29,7 @@ purple=$'\033[38;5;104m' reset=$'\033[0m'
 # that $(...) would strip.
 # nf_github replaces the plain-text "@" rather than adding to it (icons
 # stand in for words), matching ~/.zsh_prompt.
-nf_branch='' nf_github='@' nf_model='' nf_ctx='' nf_on=''
+nf_branch='' nf_github='@' nf_model='' nf_ctx='' nf_python='' nf_direnv='' nf_on=''
 if [[ -n ${SSH_TTY:-}${SSH_CONNECTION:-} ]]; then
 	[[ ${LC_TERMINAL:-} == iTerm2 ]] && nf_on=1
 elif [[ -x $HOME/bin/has-glyphs ]]; then
@@ -40,9 +40,50 @@ if [[ -n $nf_on ]]; then
 	printf -v nf_github '\xef\x82\x9b '     # U+F09B nf-fa-github
 	printf -v nf_model '\xf3\xb0\x9a\xa9 '  # U+F06A9 nf-md-robot
 	printf -v nf_ctx '\xf3\xb0\x93\x85 '    # U+F04C5 nf-md-speedometer
+	# venv/direnv glyphs gated individually (like the spinner): a font with the
+	# core glyphs but not these still degrades to the plain-text fallback. Over
+	# ssh we can't probe the local font, so iTerm identity (nf_on) vouches.
+	if [[ -n ${SSH_TTY:-}${SSH_CONNECTION:-} ]] || "$HOME/bin/has-glyphs" e73c 2>/dev/null; then
+		printf -v nf_python '\xee\x9c\xbc '   # U+E73C nf-dev-python
+	fi
+	if [[ -n ${SSH_TTY:-}${SSH_CONNECTION:-} ]] || "$HOME/bin/has-glyphs" f06c 2>/dev/null; then
+		printf -v nf_direnv '\xef\x81\xac '   # U+F06C nf-fa-leaf
+	fi
 fi
 
+# venv / direnv segments, mirroring ~/.zsh_prompt's leading position. The shell
+# prompt keys off the interactive shell's VIRTUAL_ENV/DIRENV_DIR, but this
+# status line is a Claude Code subprocess whose environment is frozen at launch
+# (and can be stale), so detect from $cwd instead: walk up to the nearest .venv
+# (a real venv has pyvenv.cfg) and .envrc. That tracks the dir Claude is working
+# in and never shows a leftover env from an unrelated directory.
 out=''
+d=$cwd
+while [[ -n $d && $d != / ]]; do
+	if [[ -z ${venv_seg:-} ]]; then
+		for v in .venv venv; do
+			if [[ -f $d/$v/pyvenv.cfg ]]; then
+				# .venv/venv is uninformative; name the segment for the project dir.
+				if [[ -n $nf_python ]]; then
+					venv_seg="${magenta}${nf_python}${d##*/}${reset} "
+				else
+					venv_seg="${magenta}(${d##*/})${reset} "
+				fi
+				break
+			fi
+		done
+	fi
+	if [[ -z ${direnv_seg:-} && -e $d/.envrc ]]; then
+		if [[ -n $nf_direnv ]]; then
+			direnv_seg="${teal}${nf_direnv}${d##*/}${reset} "
+		else
+			direnv_seg="${teal}(direnv:${d##*/})${reset} "
+		fi
+	fi
+	[[ -n ${venv_seg:-} && -n ${direnv_seg:-} ]] && break
+	d=${d%/*}
+done
+out+="${venv_seg:-}${direnv_seg:-}"
 
 toplevel=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
 if [[ -n $toplevel ]]; then
