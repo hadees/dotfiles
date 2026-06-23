@@ -51,39 +51,44 @@ if [[ -n $nf_on ]]; then
 	fi
 fi
 
-# venv / direnv segments, mirroring ~/.zsh_prompt's leading position. The shell
-# prompt keys off the interactive shell's VIRTUAL_ENV/DIRENV_DIR, but this
-# status line is a Claude Code subprocess whose environment is frozen at launch
-# (and can be stale), so detect from $cwd instead: walk up to the nearest .venv
-# (a real venv has pyvenv.cfg) and .envrc. That tracks the dir Claude is working
-# in and never shows a leftover env from an unrelated directory.
-out=''
+# venv / direnv segments, mirroring ~/.zsh_prompt's leading position.
+#
+# venv is ACTIVATION-based, exactly like the prompt: show only when $VIRTUAL_ENV
+# is set (and still exists on disk). A dormant .venv merely sitting in a project
+# tree is not an active venv, so presence alone must not light it up. The status
+# line's env is frozen at Claude launch, same as the prompt's tracks its shell —
+# both reflect what's activated, not what's on disk. (The -d guard hides a venv
+# whose dir was deleted, matching the prompt's guard.)
+venv_seg=''
+if [[ -n ${VIRTUAL_ENV:-} && -d $VIRTUAL_ENV ]]; then
+	# .venv/venv/.env/env is uninformative; name the segment for the project dir.
+	vname=${VIRTUAL_ENV##*/}
+	case $vname in .venv|venv|.env|env) vp=${VIRTUAL_ENV%/*}; vname=${vp##*/} ;; esac
+	if [[ -n $nf_python ]]; then
+		venv_seg="${magenta}${nf_python}${vname}${reset} "
+	else
+		venv_seg="${magenta}(${vname})${reset} "
+	fi
+fi
+
+# direnv is PRESENCE-based: walk up from $cwd to the nearest .envrc. Unlike venv,
+# presence is the right signal (an .envrc means the tree uses direnv) and it
+# self-heals when the file is deleted — reading the frozen $DIRENV_DIR instead
+# would go stale, which is the bug that started all this.
+direnv_seg=''
 d=$cwd
 while [[ -n $d && $d != / ]]; do
-	if [[ -z ${venv_seg:-} ]]; then
-		for v in .venv venv; do
-			if [[ -f $d/$v/pyvenv.cfg ]]; then
-				# .venv/venv is uninformative; name the segment for the project dir.
-				if [[ -n $nf_python ]]; then
-					venv_seg="${magenta}${nf_python}${d##*/}${reset} "
-				else
-					venv_seg="${magenta}(${d##*/})${reset} "
-				fi
-				break
-			fi
-		done
-	fi
-	if [[ -z ${direnv_seg:-} && -e $d/.envrc ]]; then
+	if [[ -e $d/.envrc ]]; then
 		if [[ -n $nf_direnv ]]; then
 			direnv_seg="${teal}${nf_direnv}${d##*/}${reset} "
 		else
 			direnv_seg="${teal}(direnv:${d##*/})${reset} "
 		fi
+		break
 	fi
-	[[ -n ${venv_seg:-} && -n ${direnv_seg:-} ]] && break
 	d=${d%/*}
 done
-out+="${venv_seg:-}${direnv_seg:-}"
+out="${venv_seg}${direnv_seg}"
 
 toplevel=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
 if [[ -n $toplevel ]]; then
