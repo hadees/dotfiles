@@ -60,7 +60,10 @@ if [[ -n $nf_on ]]; then
 fi
 
 prompt_venv() {
-	[[ -n $VIRTUAL_ENV ]] || return
+	# Require the venv to still exist on disk: if it was deleted while active
+	# (or direnv left VIRTUAL_ENV stuck after its .envrc was removed), hide the
+	# segment rather than advertise a venv that's gone.
+	[[ -n $VIRTUAL_ENV && -d $VIRTUAL_ENV ]] || return
 	# Show the venv's own name, but for the conventional ".venv"/"venv"
 	# layout that name is uninformative — use the project dir holding it.
 	local name=${VIRTUAL_ENV:t}
@@ -76,7 +79,10 @@ prompt_direnv() {
 	# DIRENV_DIR is set whenever an .envrc is loaded (the venv segment keys off
 	# VIRTUAL_ENV; this is the broader "an .envrc is active" signal and can
 	# co-occur with it). The value is the .envrc dir prefixed with '-'.
-	[[ -n $DIRENV_DIR ]] || return
+	# Require the .envrc to still exist: direnv doesn't unload when its .envrc
+	# is deleted while loaded, leaving DIRENV_DIR stuck; gating on the file
+	# keeps the stale value from showing in unrelated directories.
+	[[ -n $DIRENV_DIR && -e ${DIRENV_DIR#-}/.envrc ]] || return
 	local name=${${DIRENV_DIR#-}:t}
 	if [[ -n $nf_direnv ]]; then
 		print -n -- "%F{$c_teal}${nf_direnv}${name}%f "
