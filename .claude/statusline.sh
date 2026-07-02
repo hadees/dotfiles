@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 
-# Claude Code status line, styled after ~/.zsh_prompt (Base16 Eighties, 256-color):
-#   org/repo[/subdir] on branch [+!?$] ↑N↓N as  ghuser 󰚩 Model 󰓅 N% +N/-N <spinner>
-# Status flags match the zsh prompt: + staged, ! unstaged, ? untracked, $ stashed.
-# Nerd Font glyphs (branch, github, model, ctx gauge) are shown only when
-# ~/bin/has-glyphs confirms the terminal font renders them (over ssh: when
-# the client is iTerm); other terminals degrade to plain text.
+# Claude Code status line:
+#   org/repo[/subdir] on branch [+!?$] ↑N↓N as @ghuser via Model ctx N% +N/-N <spinner>
+# Git status flags: + staged, ! unstaged, ? untracked, $ stashed.
+#
+# Design rule: every segment is optional and self-hiding. Each probe carries
+# its own guard, so a machine missing git, a GitHub identity, lsof — even jq —
+# renders whatever segments it can and never prints an error or exits non-zero.
+# Colors come from the 16-color ANSI palette, so they track whatever color
+# scheme the terminal uses.
+
+# jq is the one parsing dependency: without it we can't read the JSON Claude
+# Code pipes in, so render an empty status line rather than an error. The
+# install step is where a missing jq should be reported — a human is watching
+# then; nobody is watching a statusline subprocess fail every second.
+command -v jq >/dev/null 2>&1 || exit 0
 
 input=$(cat)
 cwd=$(jq -r '.workspace.current_dir // .cwd // empty' <<<"$input")
@@ -16,79 +25,33 @@ added=$(jq -r '.cost.total_lines_added // 0' <<<"$input")
 removed=$(jq -r '.cost.total_lines_removed // 0' <<<"$input")
 ctx_pct=$(jq -r '.context_window.used_percentage // empty' <<<"$input")
 
-# Base16 Eighties palette as fixed 256-color indices, matching ~/.zsh_prompt.
-grey=$'\033[38;5;243m'   red=$'\033[38;5;210m'     green=$'\033[38;5;151m'
-blue=$'\033[38;5;110m'   magenta=$'\033[38;5;182m' cyan=$'\033[38;5;80m'
-yellow=$'\033[38;5;221m' orange=$'\033[38;5;209m'  lime=$'\033[38;5;185m'
-purple=$'\033[38;5;104m' teal=$'\033[38;5;79m' reset=$'\033[0m'
-# Nerd Font glyphs, same font as .zsh_prompt. Locally, has-glyphs asks
-# CoreText whether the terminal's configured font can actually render them
-# (cached). Over ssh the remote host can't inspect the local machine's fonts,
-# so iTerm identity (LC_TERMINAL, forwarded by iTerm) stays as the proxy.
-# Either way the fallback is plain text. printf -v keeps the trailing spaces
-# that $(...) would strip.
-# nf_github replaces the plain-text "@" rather than adding to it (icons
-# stand in for words), matching ~/.zsh_prompt.
-nf_branch='' nf_github='@' nf_model='' nf_ctx='' nf_python='' nf_direnv='' nf_on=''
-if [[ -n ${SSH_TTY:-}${SSH_CONNECTION:-} ]]; then
-	[[ ${LC_TERMINAL:-} == iTerm2 ]] && nf_on=1
-elif [[ -x $HOME/bin/has-glyphs ]]; then
-	"$HOME/bin/has-glyphs" e0a0 f09b f06a9 f04c5 2>/dev/null && nf_on=1
-fi
-if [[ -n $nf_on ]]; then
-	printf -v nf_branch '\xee\x82\xa0 '     # U+E0A0 branch; glyph + space, as in .zsh_prompt
-	printf -v nf_github '\xef\x82\x9b '     # U+F09B nf-fa-github
-	printf -v nf_model '\xf3\xb0\x9a\xa9 '  # U+F06A9 nf-md-robot
-	printf -v nf_ctx '\xf3\xb0\x93\x85 '    # U+F04C5 nf-md-speedometer
-	# venv/direnv glyphs gated individually (like the spinner): a font with the
-	# core glyphs but not these still degrades to the plain-text fallback. Over
-	# ssh we can't probe the local font, so iTerm identity (nf_on) vouches.
-	if [[ -n ${SSH_TTY:-}${SSH_CONNECTION:-} ]] || "$HOME/bin/has-glyphs" e73c 2>/dev/null; then
-		printf -v nf_python '\xee\x9c\xbc '   # U+E73C nf-dev-python
-	fi
-	if [[ -n ${SSH_TTY:-}${SSH_CONNECTION:-} ]] || "$HOME/bin/has-glyphs" f06c 2>/dev/null; then
-		printf -v nf_direnv '\xef\x81\xac '   # U+F06C nf-fa-leaf
-	fi
-fi
+# ANSI palette colors — the terminal's own scheme decides the actual hues
+grey=$'\033[90m'  red=$'\033[31m'    green=$'\033[32m'
+blue=$'\033[34m'  magenta=$'\033[35m' cyan=$'\033[36m'
+yellow=$'\033[33m' reset=$'\033[0m'
 
-# venv / direnv segments, mirroring ~/.zsh_prompt's leading position.
-#
-# venv is ACTIVATION-based, exactly like the prompt: show only when $VIRTUAL_ENV
-# is set (and still exists on disk). A dormant .venv merely sitting in a project
-# tree is not an active venv, so presence alone must not light it up. The status
-# line's env is frozen at Claude launch, same as the prompt's tracks its shell —
-# both reflect what's activated, not what's on disk. (The -d guard hides a venv
-# whose dir was deleted, matching the prompt's guard.)
-venv_seg=''
-if [[ -n ${VIRTUAL_ENV:-} && -d $VIRTUAL_ENV ]]; then
-	# .venv/venv/.env/env is uninformative; name the segment for the project dir.
-	vname=${VIRTUAL_ENV##*/}
-	case $vname in .venv|venv|.env|env) vp=${VIRTUAL_ENV%/*}; vname=${vp##*/} ;; esac
-	if [[ -n $nf_python ]]; then
-		venv_seg="${magenta}${nf_python}${vname}${reset} "
-	else
-		venv_seg="${magenta}(${vname})${reset} "
-	fi
-fi
+# Spinner frames and glyph accents, selected by the argument the statusLine
+# command in settings.json passes ("braille", "nerd"; anything else means
+# plain ASCII). The style lives in settings, never in edits to this file, so
+# every installed copy stays byte-identical to the shipped asset. The glyphs
+# are literal UTF-8, not $'\u' escapes — macOS ships bash 3.2, which lacks
+# them. nerd needs a patched font: spinner U+EE06–U+EE0B, branch U+E0A0,
+# GitHub U+F09B, model U+F06A9, ctx gauge U+F04C5. Icons stand in for
+# words, so nerd drops the grey "via"/"ctx" labels rather than decorating
+# them. braille renders in nearly any modern terminal.
+case ${1-} in
+braille)
+	frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+	branch_icon='' user_icon='@' model_icon='' ctx_icon='' ;;
+nerd)
+	frames=('' '' '' '' '' '')
+	branch_icon=' ' user_icon=' ' model_icon='󰚩 ' ctx_icon='󰓅 ' ;;
+*)
+	frames=('-' '\' '|' '/')
+	branch_icon='' user_icon='@' model_icon='' ctx_icon='' ;;
+esac
 
-# direnv is PRESENCE-based: walk up from $cwd to the nearest .envrc. Unlike venv,
-# presence is the right signal (an .envrc means the tree uses direnv) and it
-# self-heals when the file is deleted — reading the frozen $DIRENV_DIR instead
-# would go stale, which is the bug that started all this.
-direnv_seg=''
-d=$cwd
-while [[ -n $d && $d != / ]]; do
-	if [[ -e $d/.envrc ]]; then
-		if [[ -n $nf_direnv ]]; then
-			direnv_seg="${teal}${nf_direnv}${d##*/}${reset} "
-		else
-			direnv_seg="${teal}(direnv:${d##*/})${reset} "
-		fi
-		break
-	fi
-	d=${d%/*}
-done
-out="${venv_seg}${direnv_seg}"
+out=''
 
 toplevel=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
 if [[ -n $toplevel ]]; then
@@ -104,39 +67,77 @@ if [[ -n $toplevel ]]; then
 	branch=$(git -C "$cwd" symbolic-ref --quiet --short HEAD 2>/dev/null ||
 		git -C "$cwd" rev-parse --short HEAD 2>/dev/null)
 
-	# +!?$ flags via one porcelain call (cheaper than the prompt's diff trio)
+	# +!?$ flags via one porcelain call (one subprocess, not three diffs)
 	porcelain=$(git -C "$cwd" status --porcelain 2>/dev/null)
-	# Each flag its own color, matching the prompt: staged green, unstaged
-	# yellow, untracked blue, stashed magenta.
 	flags=''
-	cut -c1 <<<"$porcelain" | grep -q '[MADRCT]' && flags+="${green}+${reset}"
-	cut -c2 <<<"$porcelain" | grep -q '[MADRCT]' && flags+="${yellow}!${reset}"
-	grep -q '^??' <<<"$porcelain" && flags+="${blue}?${reset}"
-	git -C "$cwd" rev-parse --verify --quiet refs/stash >/dev/null && flags+="${magenta}\$${reset}"
+	cut -c1 <<<"$porcelain" | grep -q '[MADRCT]' && flags+='+'
+	cut -c2 <<<"$porcelain" | grep -q '[MADRCT]' && flags+='!'
+	grep -q '^??' <<<"$porcelain" && flags+='?'
+	git -C "$cwd" rev-parse --verify --quiet refs/stash >/dev/null && flags+='$'
 
 	out+="${green}${repo}${rel}${reset}"
-	out+=" ${grey}on${reset} ${blue}${nf_branch}${branch}${reset}"
-	[[ -n $flags ]] && out+=" ${grey}[${reset}${flags}${grey}]${reset}"
+	out+=" ${grey}on${reset} ${blue}${branch_icon}${branch}${reset}"
+	[[ -n $flags ]] && out+=" ${red}[${flags}]${reset}"
 
-	# commits ahead/behind upstream; plain ↑/↓ render fine without a Nerd Font
-	counts=$(git -C "$cwd" rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)
+	# The ↑↓ arrows below compare against origin's last-*fetched* state — the
+	# remote-tracking ref only moves on fetch, so on a machine that never
+	# fetches, "behind" reads 0 forever and nobody learns they should pull.
+	# Keep it fresh: at most once per 5 minutes, fetch origin in the
+	# background. The stamp file is touched *before* the attempt (and gates
+	# the attempt) so an offline machine retries on the same 5-minute cadence
+	# instead of every render. Prompts are disabled (GIT_TERMINAL_PROMPT=0,
+	# ssh BatchMode): when auth would need a human, the fetch fails silently
+	# and the counts just go stale. Opt out per repo or globally with
+	# `git config statusline.fetch false`.
+	git_dir=$(git -C "$cwd" rev-parse --absolute-git-dir 2>/dev/null)
+	if [[ -n $remote && -n $git_dir ]] &&
+		[[ $(git -C "$cwd" config --get statusline.fetch 2>/dev/null) != false ]] &&
+		[[ -z $(find "$git_dir" -maxdepth 1 -name statusline-fetch -mmin -5 2>/dev/null) ]] &&
+		touch "$git_dir/statusline-fetch" 2>/dev/null; then
+		(GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -oBatchMode=yes' \
+			git -C "$cwd" fetch --quiet origin >/dev/null 2>&1 </dev/null &)
+	fi
+
+	# commits ahead/behind origin; ↑/↓ are plain Unicode, no special font.
+	# ↑ = local commits origin doesn't have, ↓ = origin commits you don't
+	# have (time to pull); both at once means the branch has diverged.
+	# @{upstream} is the configured counterpart; fall back to origin/<branch>
+	# for branches that were never pushed with tracking set up.
+	counts=$(git -C "$cwd" rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null ||
+		git -C "$cwd" rev-list --left-right --count "origin/${branch}...HEAD" 2>/dev/null)
 	if [[ -n $counts ]]; then
 		behind=${counts%%[!0-9]*} ahead=${counts##*[!0-9]}
 		arrows=''
-		(( ahead )) && arrows+="${lime}↑${ahead}${reset}"
-		(( behind )) && arrows+="${orange}↓${behind}${reset}"
-		[[ -n $arrows ]] && out+=" ${arrows}"
+		(( ahead )) && arrows+="↑${ahead}"
+		(( behind )) && arrows+="↓${behind}"
+		[[ -n $arrows ]] && out+=" ${yellow}${arrows}${reset}"
 	fi
 
+	# GitHub identity, two tiers. `git config github.user` is per-repo truth
+	# (it follows includeIf-based work/personal identity schemes), so it wins.
+	# Fallback: the gh CLI's active account, read straight from hosts.yml —
+	# this script re-runs every second, so spawning `gh auth status` (slow) or
+	# `gh api user` (network) is off the table. The awk matches the host
+	# block's `user:` key exactly — hosts.yml also has a `users:` map of all
+	# logged-in accounts, which must not false-match. The two tiers can
+	# legitimately disagree: gh's login is who you call the API as, git
+	# config is who you push as — which is why git config wins.
 	gh_user=$(git -C "$cwd" config github.user 2>/dev/null)
-	[[ -n $gh_user ]] && out+=" ${grey}as${reset} ${purple}${nf_github}${gh_user}${reset}"
+	if [[ -z $gh_user && -r $HOME/.config/gh/hosts.yml ]]; then
+		gh_user=$(awk '
+			/^github\.com:/ { in_host = 1; next }
+			in_host && /^[^[:space:]]/ { in_host = 0 }
+			in_host && $1 == "user:" { print $2; exit }
+		' "$HOME/.config/gh/hosts.yml" 2>/dev/null)
+	fi
+	[[ -n $gh_user ]] && out+=" ${grey}as${reset} ${magenta}${user_icon}${gh_user}${reset}"
 else
 	out+="${green}${cwd/#$HOME/~}${reset}"
 fi
 
 if [[ -n $model ]]; then
-	if [[ -n $nf_model ]]; then
-		out+=" ${cyan}${nf_model}${model}${reset}"
+	if [[ -n $model_icon ]]; then
+		out+=" ${cyan}${model_icon}${model}${reset}"
 	else
 		out+=" ${grey}via${reset} ${cyan}${model}${reset}"
 	fi
@@ -149,8 +150,8 @@ if [[ -n $ctx_pct ]]; then
 	elif (( pct >= 60 )); then ctx_color=$yellow
 	else ctx_color=$green
 	fi
-	if [[ -n $nf_ctx ]]; then
-		out+=" ${grey}${nf_ctx}${reset}${ctx_color}${pct}%${reset}"
+	if [[ -n $ctx_icon ]]; then
+		out+=" ${grey}${ctx_icon}${reset}${ctx_color}${pct}%${reset}"
 	else
 		out+=" ${grey}ctx${reset} ${ctx_color}${pct}%${reset}"
 	fi
@@ -160,32 +161,23 @@ if (( added > 0 || removed > 0 )); then
 	out+=" ${green}+${added}${reset}${grey}/${reset}${red}-${removed}${reset}"
 fi
 
-# Running work indicator. Each Bash tool call (foreground or background) and
-# each subagent writes to <tasks_dir>/<id>.output and holds it open until it
-# finishes, so counting open .output files = tasks running right now. Needs
-# statusLine.refreshInterval in settings.json: without it the statusline only
-# re-renders on conversation events, so the count would go stale while the
-# session sits waiting on background work — exactly when it matters.
-if [[ -n $session_id && -n $project_dir ]]; then
+# Running-task spinner. The statusline JSON has no "work in progress" field,
+# but every Bash tool call (foreground or background) and every subagent
+# holds open an output file under the session's tasks dir until it finishes,
+# so counting files some process holds open (lsof, deduped on the n field)
+# equals the number of tasks running right now. This is observed behavior,
+# not a documented interface — if the spinner stops appearing after a Claude
+# Code update, re-check this path first. Needs statusLine.refreshInterval in
+# settings.json: without it the statusline only re-renders on conversation
+# events, which go quiet exactly when background work runs.
+if [[ -n $session_id && -n $project_dir ]] && command -v lsof >/dev/null 2>&1; then
 	tasks_dir="/tmp/claude-$(id -u)/$(sed 's/[^A-Za-z0-9]/-/g' <<<"$project_dir")/${session_id}/tasks"
 	outputs=("$tasks_dir"/*.output)
 	if [[ -e ${outputs[0]} || -L ${outputs[0]} ]]; then
 		running=$(lsof -F n -- "${outputs[@]}" 2>/dev/null | sed -n 's/^n//p' | sort -u | grep -c .)
 		if (( running > 0 )); then
-			# Throbber. The script is stateless, so key the frame to the
-			# clock — each 1s refresh advances one frame. Three tiers:
-			# Fira Code's spinner glyphs (nf extra-progress_spinner_1..6,
-			# gated separately from nf_on so a font with the core glyphs
-			# but not these still degrades), then braille dots (regular
-			# Unicode, so has-glyphs checks the OS fallback cascade rather
-			# than the terminal font itself), then ASCII.
-			frames=('-' '\' '|' '/')
-			if [[ -n $nf_on ]] && "$HOME/bin/has-glyphs" ee06 ee07 ee08 ee09 ee0a ee0b 2>/dev/null; then
-				frames=($'\xee\xb8\x86' $'\xee\xb8\x87' $'\xee\xb8\x88' \
-					$'\xee\xb8\x89' $'\xee\xb8\x8a' $'\xee\xb8\x8b')
-			elif "$HOME/bin/has-glyphs" 280b 2819 2839 2838 283c 2834 2826 2827 2807 280f 2>/dev/null; then
-				frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-			fi
+			# The script is stateless across invocations, so key the frame
+			# to the clock — each 1s refresh advances one frame.
 			out+=" ${yellow}${frames[$(( $(date +%s) % ${#frames[@]} ))]}${reset}"
 		fi
 	fi
