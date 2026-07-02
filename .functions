@@ -187,21 +187,36 @@ function tre() {
 	tree -aC -I '.git|node_modules|bower_components' --dirsfirst "$@" | less -FRNX;
 }
 
-# `gh` wrapper that picks the GitHub account from the repo's origin remote,
-# mirroring the git identity scheme in ~/.gitconfig.local (which selects the
-# work identity via includeIf on the `github-icaevan:` remote-URL host alias).
+# `gh` wrapper that picks the GitHub account for each invocation, mirroring
+# the git identity scheme in ~/.gitconfig.local (which selects the work
+# identity via includeIf on the `github-icaevan:` remote-URL host alias).
 # It injects GH_TOKEN for the single gh invocation rather than running
 # `gh auth switch`, so it never mutates the global active account — other
 # shells are unaffected and there is no state left stale. `gh auth …` is passed
 # straight through so account management still works normally.
+#
+# An explicit org/owner in the arguments outranks the cwd's origin remote:
+# org-scoped commands (`gh repo list icanalytica`, `gh api orgs/…`) name their
+# target, and the repo you happen to be standing in says nothing about it.
+# Without this, `gh repo list icanalytica` run from a personal repo queried as
+# hadees — who is not an org member and silently sees only public repos.
 function gh() {
 	[[ $1 == auth ]] && { command gh "$@"; return; };
-	local url acct;
-	url="$(command git config --get remote.origin.url 2>/dev/null)";
-	case $url in
-		*github-icaevan:*) acct=icaevan ;;
-		*github-hadees:*)  acct=hadees ;;
-		*) command gh "$@"; return ;;
-	esac;
+	local url acct arg;
+	for arg in "$@"; do
+		case $arg in
+			icanalytica|icanalytica/*|*[/:]icanalytica|*[/:]icanalytica/*) acct=icaevan; break ;;
+			icarichie|icarichie/*|*[/:]icarichie|*[/:]icarichie/*)         acct=icaevan; break ;;
+			hadees|hadees/*|*[/:]hadees|*[/:]hadees/*)                     acct=hadees; break ;;
+		esac;
+	done;
+	if [[ -z $acct ]]; then
+		url="$(command git config --get remote.origin.url 2>/dev/null)";
+		case $url in
+			*github-icaevan:*) acct=icaevan ;;
+			*github-hadees:*)  acct=hadees ;;
+			*) command gh "$@"; return ;;
+		esac;
+	fi;
 	GH_TOKEN="$(command gh auth token --user "$acct" 2>/dev/null)" command gh "$@";
 }
