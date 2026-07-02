@@ -6,7 +6,7 @@
 #   grey 243  fg 252  red 210  orange 209  yellow 221  green 151  cyan 80
 #   blue 110  magenta 182  brown 173  teal 79  rose 175  lime 185
 #   purple 104  peach 216
-# Nerd Font glyphs (branch , github , ssh 󰣀) are shown only when
+# Nerd Font glyphs (branch , github , ssh 󰣀, pr ) are shown only when
 # ~/bin/has-glyphs confirms the terminal font renders them (over ssh: when
 # the client is iTerm); other terminals degrade to plain text.
 
@@ -36,7 +36,7 @@ export VIRTUAL_ENV_DISABLE_PROMPT=1
 # nf_github replaces the plain-text "@" rather than adding to it: icons
 # stand in for words (cf. oh-my-posh's UpstreamIcon, shown bare before the
 # name), so the segment reads " user" with glyphs and "@user" without.
-nf_branch='' nf_github='@' nf_ssh='' nf_python='' nf_direnv='' nf_on=''
+nf_branch='' nf_github='@' nf_ssh='' nf_python='' nf_direnv='' nf_pr='pr ' nf_on=''
 if [[ -n $SSH_TTY ]]; then
 	[[ $LC_TERMINAL == iTerm2 ]] && nf_on=1
 elif [[ -x $HOME/bin/has-glyphs ]]; then
@@ -56,6 +56,10 @@ if [[ -n $nf_on ]]; then
 	# Leaf glyph for the direnv segment, gated on its own like nf_python.
 	if [[ -n $SSH_TTY ]] || "$HOME/bin/has-glyphs" f06c 2>/dev/null; then
 		nf_direnv=$'\U0000F06C '  # U+F06C nf-fa-leaf
+	fi
+	# Pull-request glyph for the open-PR segment, gated on its own likewise.
+	if [[ -n $SSH_TTY ]] || "$HOME/bin/has-glyphs" f407 2>/dev/null; then
+		nf_pr=$'\U0000F407 '  # U+F407 nf-oct-git_pull_request
 	fi
 fi
 
@@ -125,11 +129,41 @@ prompt_git() {
 			git_status=" %F{$c_grey}[%f${git_status}%F{$c_grey}]%f"
 		fi
 
+		# Open PRs on the repo, hidden at zero. The count comes from the same
+		# statusline-prcount cache file (in the git dir) that
+		# ~/.claude/statusline.sh maintains: whichever of the two renders
+		# first refreshes it — a background `gh api search/issues` throttled
+		# to once per 5 minutes by touching the cache before the attempt, so
+		# failures (offline, repo not visible to gh's active account) retry
+		# on the cadence, not every prompt. Opt out alongside the statusline:
+		# `git config statusline.prcount false`.
+		local pr_segment='' git_dir pr_file prcount remote_url gh_repo
+		git_dir="$(command git rev-parse --absolute-git-dir 2>/dev/null)"
+		if [[ -n $git_dir ]]; then
+			pr_file="$git_dir/statusline-prcount"
+			remote_url="$(command git config --get remote.origin.url 2>/dev/null)"
+			if [[ $remote_url == *github* ]] && command -v gh >/dev/null 2>&1 &&
+				[[ "$(command git config --get statusline.prcount 2>/dev/null)" != false ]] &&
+				[[ -z $(find "$git_dir" -maxdepth 1 -name statusline-prcount -mmin -5 2>/dev/null) ]] &&
+				touch "$pr_file" 2>/dev/null; then
+				gh_repo=${remote_url%.git}
+				gh_repo=$(sed -E 's#^.*[:/]([^/]+/[^/]+)$#\1#' <<<"$gh_repo")
+				[[ $gh_repo == */* ]] && (command gh api \
+					"search/issues?q=repo:${gh_repo}+type:pr+state:open" \
+					--jq .total_count >"$pr_file.tmp" 2>/dev/null &&
+					mv -f "$pr_file.tmp" "$pr_file" &)
+			fi
+			[[ -r $pr_file ]] && prcount="$(<"$pr_file")"
+			if [[ $prcount == <-> ]] && (( prcount > 0 )); then
+				pr_segment=" %F{$c_grey}${nf_pr}%f%F{$c_rose}${prcount}%f"
+			fi
+		fi
+
 		local gh_user gh_segment=''
 		gh_user="$(command git config github.user 2>/dev/null)"
 		[[ -n $gh_user ]] && gh_segment=" %F{$c_grey}as%f %F{$c_purple}${nf_github}${gh_user}%f"
 
-		print -n -- " %F{$c_grey}on%f %F{$c_blue}${nf_branch}${branch}%f${git_status}${arrows}${gh_segment}"
+		print -n -- " %F{$c_grey}on%f %F{$c_blue}${nf_branch}${branch}%f${git_status}${arrows}${pr_segment}${gh_segment}"
 	fi
 }
 
