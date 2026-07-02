@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Claude Code status line:
-#   org/repo[/subdir] on branch [+!?$] ↑N↓N as @ghuser via Model ctx N% +N/-N <spinner>
+#   (venv) (direnv:dir) org/repo[/subdir] on branch [+!?$] ↑N↓N pr N as @ghuser via Model ctx N% +N/-N <spinner>
 # Git status flags: + staged, ! unstaged, ? untracked, $ stashed.
 #
 # Design rule: every segment is optional and self-hiding. Each probe carries
@@ -36,22 +36,57 @@ yellow=$'\033[33m' reset=$'\033[0m'
 # every installed copy stays byte-identical to the shipped asset. The glyphs
 # are literal UTF-8, not $'\u' escapes — macOS ships bash 3.2, which lacks
 # them. nerd needs a patched font: spinner U+EE06–U+EE0B, branch U+E0A0,
-# GitHub U+F09B, model U+F06A9, ctx gauge U+F04C5. Icons stand in for
-# words, so nerd drops the grey "via"/"ctx" labels rather than decorating
-# them. braille renders in nearly any modern terminal.
+# GitHub U+F09B, model U+F06A9, ctx gauge U+F04C5, venv python U+E73C,
+# direnv leaf U+F06C, pull request U+F407. Icons stand in for words, so
+# nerd drops the grey "via"/"ctx"/"pr" labels rather than decorating them,
+# and the venv/direnv segments drop their () text wrappers. braille renders
+# in nearly any modern terminal.
 case ${1-} in
 braille)
 	frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-	branch_icon='' user_icon='@' model_icon='' ctx_icon='' ;;
+	branch_icon='' user_icon='@' model_icon='' ctx_icon='' venv_icon='' direnv_icon='' pr_icon='' ;;
 nerd)
 	frames=('' '' '' '' '' '')
-	branch_icon=' ' user_icon=' ' model_icon='󰚩 ' ctx_icon='󰓅 ' ;;
+	branch_icon=' ' user_icon=' ' model_icon='󰚩 ' ctx_icon='󰓅 ' venv_icon=' ' direnv_icon=' ' pr_icon=' ' ;;
 *)
 	frames=('-' '\' '|' '/')
-	branch_icon='' user_icon='@' model_icon='' ctx_icon='' ;;
+	branch_icon='' user_icon='@' model_icon='' ctx_icon='' venv_icon='' direnv_icon='' pr_icon='' ;;
 esac
 
 out=''
+
+# venv segment — ACTIVATION-based: show only when $VIRTUAL_ENV is set and its
+# dir still exists. A dormant .venv merely sitting in the project tree is not
+# an active venv, so presence alone must not light it up; the -d guard hides a
+# venv whose dir was deleted after activation. The statusline's env is frozen
+# at Claude launch, so this reflects what was activated, not what's on disk.
+if [[ -n ${VIRTUAL_ENV:-} && -d $VIRTUAL_ENV ]]; then
+	# .venv/venv/.env/env is uninformative; name the segment for the project dir
+	vname=${VIRTUAL_ENV##*/}
+	case $vname in .venv|venv|.env|env) vp=${VIRTUAL_ENV%/*}; vname=${vp##*/} ;; esac
+	if [[ -n $venv_icon ]]; then
+		out+="${magenta}${venv_icon}${vname}${reset} "
+	else
+		out+="${magenta}(${vname})${reset} "
+	fi
+fi
+
+# direnv segment — PRESENCE-based, unlike venv: walk up from $cwd to the
+# nearest .envrc. Presence is the right signal here (an .envrc means the tree
+# uses direnv) and re-reading the tree every render self-heals when the file
+# is deleted — the frozen $DIRENV_DIR env var would just go stale.
+d=$cwd
+while [[ -n $d && $d != / ]]; do
+	if [[ -e $d/.envrc ]]; then
+		if [[ -n $direnv_icon ]]; then
+			out+="${cyan}${direnv_icon}${d##*/}${reset} "
+		else
+			out+="${cyan}(direnv:${d##*/})${reset} "
+		fi
+		break
+	fi
+	d=${d%/*}
+done
 
 toplevel=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
 if [[ -n $toplevel ]]; then
@@ -67,17 +102,20 @@ if [[ -n $toplevel ]]; then
 	branch=$(git -C "$cwd" symbolic-ref --quiet --short HEAD 2>/dev/null ||
 		git -C "$cwd" rev-parse --short HEAD 2>/dev/null)
 
-	# +!?$ flags via one porcelain call (one subprocess, not three diffs)
+	# +!?$ flags via one porcelain call (one subprocess, not three diffs).
+	# Each flag gets its own color — staged green, unstaged yellow, untracked
+	# blue, stashed magenta — so the state reads at a glance by hue, without
+	# parsing which punctuation made it into the brackets.
 	porcelain=$(git -C "$cwd" status --porcelain 2>/dev/null)
 	flags=''
-	cut -c1 <<<"$porcelain" | grep -q '[MADRCT]' && flags+='+'
-	cut -c2 <<<"$porcelain" | grep -q '[MADRCT]' && flags+='!'
-	grep -q '^??' <<<"$porcelain" && flags+='?'
-	git -C "$cwd" rev-parse --verify --quiet refs/stash >/dev/null && flags+='$'
+	cut -c1 <<<"$porcelain" | grep -q '[MADRCT]' && flags+="${green}+${reset}"
+	cut -c2 <<<"$porcelain" | grep -q '[MADRCT]' && flags+="${yellow}!${reset}"
+	grep -q '^??' <<<"$porcelain" && flags+="${blue}?${reset}"
+	git -C "$cwd" rev-parse --verify --quiet refs/stash >/dev/null && flags+="${magenta}\$${reset}"
 
 	out+="${green}${repo}${rel}${reset}"
 	out+=" ${grey}on${reset} ${blue}${branch_icon}${branch}${reset}"
-	[[ -n $flags ]] && out+=" ${red}[${flags}]${reset}"
+	[[ -n $flags ]] && out+=" ${grey}[${reset}${flags}${grey}]${reset}"
 
 	# The ↑↓ arrows below compare against origin's last-*fetched* state — the
 	# remote-tracking ref only moves on fetch, so on a machine that never
@@ -111,6 +149,35 @@ if [[ -n $toplevel ]]; then
 		(( ahead )) && arrows+="↑${ahead}"
 		(( behind )) && arrows+="↓${behind}"
 		[[ -n $arrows ]] && out+=" ${yellow}${arrows}${reset}"
+	fi
+
+	# Open-PR count for the repo, from the GitHub search API via gh. The
+	# script renders every second, so the count is read from a cache file in
+	# the git dir and refreshed in the background at most once per 5 minutes
+	# — the same stamp-first throttle as the fetch above: touching the cache
+	# gates the attempt, so a failing gh (offline, rate-limited, repo not
+	# visible to the active account) retries on the cadence instead of every
+	# render, and the segment just goes stale or stays hidden. The count is
+	# whatever gh's active account can see. Hidden at zero: the segment
+	# answers "are there open PRs?", so silence means no. Opt out per repo or
+	# globally with `git config statusline.prcount false`.
+	pr_file="$git_dir/statusline-prcount"
+	if [[ -n $git_dir && $remote == *github* && $repo == */* ]] &&
+		command -v gh >/dev/null 2>&1 &&
+		[[ $(git -C "$cwd" config --get statusline.prcount 2>/dev/null) != false ]] &&
+		[[ -z $(find "$git_dir" -maxdepth 1 -name statusline-prcount -mmin -5 2>/dev/null) ]] &&
+		touch "$pr_file" 2>/dev/null; then
+		(gh api "search/issues?q=repo:${repo}+type:pr+state:open" \
+			--jq .total_count >"$pr_file.tmp" 2>/dev/null &&
+			mv -f "$pr_file.tmp" "$pr_file" &)
+	fi
+	prcount=$(cat "$pr_file" 2>/dev/null)
+	if [[ $prcount =~ ^[0-9]+$ ]] && (( prcount > 0 )); then
+		if [[ -n $pr_icon ]]; then
+			out+=" ${grey}${pr_icon}${reset}${blue}${prcount}${reset}"
+		else
+			out+=" ${grey}pr${reset} ${blue}${prcount}${reset}"
+		fi
 	fi
 
 	# GitHub identity, two tiers. `git config github.user` is per-repo truth
