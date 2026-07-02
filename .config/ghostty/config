@@ -1,0 +1,57 @@
+# Ghostty config — mirrors the iTerm2 default profile (com.googlecode.iterm2.plist)
+# Theme: Base16 Eighties with darkened background (#1a1a1a).
+
+# Font: iTerm uses "SauceCodeProNFM-Bold 16" (Sauce Code Pro Nerd Font Mono, Bold).
+# iTerm derives every face from that single bold font, so pin bold/italic to the
+# bold faces too — otherwise Ghostty falls back to the regular-weight italic.
+font-family = SauceCodePro Nerd Font Mono
+font-size = 16
+font-style = Bold
+font-style-bold = Bold
+font-style-italic = Bold Italic
+font-style-bold-italic = Bold Italic
+
+# Base16 Eighties palette (darkened bg) — extracted from the iTerm profile.
+background = 1a1a1a
+foreground = d3d0c8
+
+palette = 0=#1a1a1a
+palette = 1=#f2777a
+palette = 2=#99cc99
+palette = 3=#ffcc66
+palette = 4=#6699cc
+palette = 5=#cc99cc
+palette = 6=#66cccc
+palette = 7=#d3d0c8
+palette = 8=#747369
+palette = 9=#f2777a
+palette = 10=#99cc99
+palette = 11=#ffcc66
+palette = 12=#6699cc
+palette = 13=#cc99cc
+palette = 14=#66cccc
+palette = 15=#f2f0ec
+
+# Cursor: solid white-ish block, no blink (iTerm "Blinking Cursor" = false).
+cursor-color = d3d0c8
+cursor-text = ffffff
+cursor-style = block
+cursor-style-blink = false
+
+# Selection (iTerm Selection #747369 / Selected Text #000000).
+selection-background = 747369
+selection-foreground = 000000
+
+# iTerm "Use Bright Bold" = true.
+bold-is-bright = true
+
+# iTerm "Transparency" = 0 / "Blur" = false.
+background-opacity = 1
+background-blur = false
+
+# iTerm "Unlimited Scrollback" = true (Ghostty caps by bytes; set generously).
+scrollback-limit = 100000000
+
+# iTerm default profile opens an 80x25 window.
+window-width = 80
+window-height = 25
