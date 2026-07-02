@@ -2,7 +2,7 @@
   "model": "claude-fable-5",
   "statusLine": {
     "type": "command",
-    "command": "~/.claude/statusline.sh",
+    "command": "~/.claude/statusline.sh nerd",
     "refreshInterval": 1
   },
   "enabledPlugins": {
