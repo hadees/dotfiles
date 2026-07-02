@@ -139,6 +139,9 @@ if [[ -n $toplevel ]]; then
 	# commits ahead/behind origin; ↑/↓ are plain Unicode, no special font.
 	# ↑ = local commits origin doesn't have, ↓ = origin commits you don't
 	# have (time to pull); both at once means the branch has diverged.
+	# Each direction gets its own color — ahead green (outgoing work, yours
+	# to push), behind red (pull needed) — so which side is stale reads by
+	# hue, like the status flags above.
 	# @{upstream} is the configured counterpart; fall back to origin/<branch>
 	# for branches that were never pushed with tracking set up.
 	counts=$(git -C "$cwd" rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null ||
@@ -146,9 +149,9 @@ if [[ -n $toplevel ]]; then
 	if [[ -n $counts ]]; then
 		behind=${counts%%[!0-9]*} ahead=${counts##*[!0-9]}
 		arrows=''
-		(( ahead )) && arrows+="↑${ahead}"
-		(( behind )) && arrows+="↓${behind}"
-		[[ -n $arrows ]] && out+=" ${yellow}${arrows}${reset}"
+		(( ahead )) && arrows+="${green}↑${ahead}${reset}"
+		(( behind )) && arrows+="${red}↓${behind}${reset}"
+		[[ -n $arrows ]] && out+=" ${arrows}"
 	fi
 
 	# Open-PR count for the repo, from the GitHub search API via gh. The
