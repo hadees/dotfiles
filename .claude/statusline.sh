@@ -282,19 +282,24 @@ if [[ -n $toplevel ]]; then
 	# path runs every second and must stay pure-read). Count = todo
 	# (review requests, assignments, invites; persist until resolved on
 	# GitHub) + fyi (unread mentions/replies; clear when read there).
-	# Hidden when zero, absent, or the cache is older than 25 min — a dead
-	# checker must not show a frozen count, and one find covers missing
-	# and stale in a single test.
+	# The hue says which kind, like the flags and arrows above: red means
+	# at least one todo (action owed), yellow means FYIs only (worth a
+	# look, nothing blocking). Hidden when zero, absent, or the cache is
+	# older than 25 min — a dead checker must not show a frozen count, and
+	# one find covers missing and stale in a single test.
 	inbox_file="${XDG_CACHE_HOME:-$HOME/.cache}/gh-inbox/inbox.json"
 	if [[ -n $(find "$inbox_file" -mmin -25 2>/dev/null) ]]; then
-		inbox=$(jq -r --arg r "$repo" \
-			'.repos[$r] | if . then .todo + .fyi else empty end' \
-			"$inbox_file" 2>/dev/null)
-		if [[ $inbox =~ ^[0-9]+$ ]] && (( inbox > 0 )); then
+		read -r inbox_todo inbox_fyi <<<"$(jq -r --arg r "$repo" \
+			'.repos[$r] | if . then "\(.todo) \(.fyi)" else empty end' \
+			"$inbox_file" 2>/dev/null)"
+		if [[ $inbox_todo =~ ^[0-9]+$ && $inbox_fyi =~ ^[0-9]+$ ]] &&
+			(( inbox_todo + inbox_fyi > 0 )); then
+			inbox=$(( inbox_todo + inbox_fyi ))
+			if (( inbox_todo > 0 )); then inbox_color=$red; else inbox_color=$yellow; fi
 			if [[ -n $inbox_icon ]]; then
-				out+=" ${grey}${inbox_icon}${reset}${yellow}${inbox}${reset}"
+				out+=" ${inbox_color}${inbox_icon}${inbox}${reset}"
 			else
-				out+=" ${grey}inbox${reset} ${yellow}${inbox}${reset}"
+				out+=" ${grey}inbox${reset} ${inbox_color}${inbox}${reset}"
 			fi
 		fi
 	fi
