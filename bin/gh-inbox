@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+
+# gh-inbox — cross-account GitHub inbox checker.
+#
+# Sweeps every account logged into the gh CLI and distills "what needs my
+# attention" into one JSON file that consumers (the Claude Code statusline,
+# a future TUI, anything with jq) read instead of talking to GitHub:
+#
+#   ${XDG_CACHE_HOME:-~/.cache}/gh-inbox/inbox.json
+#   { "updated": "…Z", "repos": { "org/repo": { "todo": N, "fyi": N,
+#     "items": [ { "class", "type", "title", "reason", "url" } ] } } }
+#
+# Two item classes with different clearing rules, both with GitHub as the
+# only source of truth — no local read/dismiss state:
+#
+#   todo — review requests, assignments, repo invitations. Ground truth of
+#          the obligation: an item drops out exactly when it is resolved on
+#          GitHub (review submitted, closed/unassigned, invite accepted).
+#          Glancing at it can't dismiss it.
+#   fyi  — unread notifications where I'm tagged or participating (mention,
+#          team_mention, author, comment, manual). Cleared by GitHub's own
+#          read state; unsubscribing/muting a thread stops these entirely,
+#          so opt-outs are respected for free. Passive reasons (subscribed,
+#          ci_activity, state_change) are dropped as noise, and the reasons
+#          the todo queries own (review_requested, assign, invitation) are
+#          dropped to avoid double counting. The notifications feed is the
+#          one API that unifies issues, PRs, AND Discussions.
+#
+# Design rules:
+#   - Silent always. This usually runs detached from a statusline; nothing
+#     watches stdout and a transient failure must not spam anything. Every
+#     probe is guarded, errors are discarded, exit is always 0.
+#   - No cadence logic. Running it refreshes, full stop; callers own the
+#     schedule (the statusline throttles itself with a stamp file), and a
+#     manual run is a forced refresh.
+#   - All-or-nothing per account: an account contributes only when all four
+#     of its queries succeed, so a partial failure can't make that
+#     account's items vanish and read as "handled".
+#   - The cache is rewritten only when at least one account fully answered.
+#     Offline keeps the previous contents: stale beats a false zero, and
+#     readers gate on the file's mtime to catch a dead checker.
+
+command -v jq >/dev/null 2>&1 || exit 0
+command -v gh >/dev/null 2>&1 || exit 0
+
+hosts="$HOME/.config/gh/hosts.yml"
+[[ -r $hosts ]] || exit 0
+
+# Every logged-in account: the keys of the `users:` map in hosts.yml. The
+# awk is indent-sensitive (users: at 4 spaces, account keys at 8) so the
+# host block's own `user:` key — the single ACTIVE account — can't match.
+# Tokens are pinned per API call with GH_TOKEN, never `gh auth switch`:
+# the active account is someone else's state and this script runs in the
+# background.
+accounts=$(awk '
+	/^github\.com:/ { in_host = 1; next }
+	in_host && /^[^[:space:]]/ { in_host = 0; in_users = 0 }
+	in_host && $1 == "users:" { in_users = 1; next }
+	in_users && /^        [^[:space:]]+:$/ { u = $1; sub(/:$/, "", u); print u; next }
+	in_users && /^    [^[:space:]]/ { in_users = 0 }
+' "$hosts" 2>/dev/null)
+[[ -n $accounts ]] || exit 0
+
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/gh-inbox"
+mkdir -p "$cache_dir" 2>/dev/null || exit 0
+
+# fetch <token> <endpoint> <filter> — GET the endpoint as the account the
+# token belongs to and normalize the response to a JSON array of
+# {repo, class, type, title, reason, url}. Fails if either step does, so
+# the caller can drop the whole account (all-or-nothing rule above).
+fetch() {
+	local resp
+	resp=$(GH_TOKEN=$1 gh api "$2" 2>/dev/null) || return 1
+	jq -c "$3" <<<"$resp" 2>/dev/null
+}
+
+# Normalizers. Search results carry only an API repository_url, so the
+# org/repo key is its tail. The review-requested query is type:pr by
+# construction; the assignee query mixes issues and PRs, told apart by the
+# .pull_request stub.
+review_jq='[.items[] | {repo: (.repository_url | sub("^.*/repos/"; "")),
+	class: "todo", type: "pr", title: .title,
+	reason: "review_requested", url: .html_url}]'
+assign_jq='[.items[] | {repo: (.repository_url | sub("^.*/repos/"; "")),
+	class: "todo", type: (if .pull_request then "pr" else "issue" end),
+	title: .title, reason: "assigned", url: .html_url}]'
+invite_jq='[.[] | {repo: .repository.full_name, class: "todo",
+	type: "invite", title: ("invitation to " + .repository.full_name),
+	reason: "invitation", url: .html_url}]'
+# Notification subject URLs are API URLs (api.github.com/repos/…/pulls/N),
+# so rewrite to the web form; Discussions ship a null subject.url (REST API
+# gap), which falls back to the repo page.
+notif_jq='[.[]
+	| select(.reason == "mention" or .reason == "team_mention"
+		or .reason == "author" or .reason == "comment" or .reason == "manual")
+	| {repo: .repository.full_name, class: "fyi",
+		type: ({PullRequest: "pr", Issue: "issue", Discussion: "discussion"}[.subject.type]
+			// (.subject.type | ascii_downcase)),
+		title: .subject.title, reason: .reason,
+		url: (if .subject.url then (.subject.url
+			| sub("//api\\.github\\.com/repos/"; "//github.com/")
+			| sub("/pulls/"; "/pull/"))
+			else .repository.html_url end)}]'
+
+chunks='' ok=''
+for account in $accounts; do
+	token=$(gh auth token --user "$account" 2>/dev/null)
+	[[ -n $token ]] || continue
+	review=$(fetch "$token" "search/issues?q=type:pr+state:open+review-requested:${account}&per_page=100" "$review_jq") || continue
+	assigned=$(fetch "$token" "search/issues?q=state:open+assignee:${account}&per_page=100" "$assign_jq") || continue
+	invites=$(fetch "$token" "user/repository_invitations?per_page=100" "$invite_jq") || continue
+	notifs=$(fetch "$token" "notifications?per_page=100" "$notif_jq") || continue
+	chunks+="$review"$'\n'"$assigned"$'\n'"$invites"$'\n'"$notifs"$'\n'
+	ok=1
+done
+[[ -n $ok ]] || exit 0
+
+# Merge the accounts' streams. todo sorts before fyi so unique_by — which
+# keeps each URL's first occurrence — makes the obligation win when the
+# same item is both (assigned PR someone also mentioned me on), and an
+# item visible to both accounts counts once. Zero items across the board
+# still writes (an empty repos map is a true zero — the accounts answered).
+tmp="$cache_dir/inbox.json.tmp"
+if jq -s --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+	add
+	| sort_by(if .class == "todo" then 0 else 1 end)
+	| unique_by(.url)
+	| group_by(.repo)
+	| map({key: .[0].repo, value: {
+		todo: (map(select(.class == "todo")) | length),
+		fyi: (map(select(.class == "fyi")) | length),
+		items: map(del(.repo))}})
+	| from_entries
+	| {updated: $now, repos: .}
+' <<<"$chunks" >"$tmp" 2>/dev/null && [[ -s $tmp ]]; then
+	mv -f "$tmp" "$cache_dir/inbox.json" 2>/dev/null
+else
+	rm -f "$tmp" 2>/dev/null
+fi
+exit 0
