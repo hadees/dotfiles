@@ -281,7 +281,8 @@ if [[ -n $toplevel ]]; then
 	# cache the block above keeps fresh — never fetched here (the render
 	# path runs every second and must stay pure-read). Count = todo
 	# (review requests, assignments, invites; persist until resolved on
-	# GitHub) + fyi (unread mentions/replies; clear when read there).
+	# GitHub) + fyi (open PRs/issues/discussions that @mention me; clear
+	# when the item closes or I unsubscribe from the thread).
 	# The hue says which kind, like the flags and arrows above: red means
 	# at least one todo (action owed), yellow means FYIs only (worth a
 	# look, nothing blocking). Hidden when zero, absent, or the cache is
