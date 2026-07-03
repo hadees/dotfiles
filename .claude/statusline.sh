@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Claude Code status line:
-#   (venv) (direnv:dir) org/repo[/subdir] on branch [+!?$] ↑N↓N pr N as @ghuser via Model (effort) ctx N% +N/-N <spinner>
+#   (venv) (direnv:dir) org/repo[/subdir] on branch [+!?$] ↑N↓N pr N as @ghuser inbox N via Model (effort) ctx N% +N/-N <spinner>
 # Git status flags: + staged, ! unstaged, ? untracked, $ stashed.
 #
 # Design rule: every segment is optional and self-hiding. Each probe carries
@@ -45,7 +45,8 @@ yellow=$'\033[33m' reset=$'\033[0m'
 # are literal UTF-8, not $'\u' escapes — macOS ships bash 3.2, which lacks
 # them. nerd needs a patched font: spinner U+EE06–U+EE0B, branch U+E0A0,
 # GitHub U+F09B, model U+F06A9, effort bolt U+F0E7, ctx gauge U+F04C5,
-# venv python U+E73C, direnv leaf U+F06C, pull request U+F407. Icons stand
+# venv python U+E73C, direnv leaf U+F06C, pull request U+F407, inbox bell
+# U+F009A. Icons stand
 # in for words, so
 # nerd drops the grey "via"/"ctx"/"pr" labels rather than decorating them,
 # and the venv/direnv segments drop their () text wrappers. braille renders
@@ -53,13 +54,13 @@ yellow=$'\033[33m' reset=$'\033[0m'
 case ${1-} in
 braille)
 	frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-	branch_icon='' user_icon='@' model_icon='' effort_icon='' ctx_icon='' venv_icon='' direnv_icon='' pr_icon='' ;;
+	branch_icon='' user_icon='@' model_icon='' effort_icon='' ctx_icon='' venv_icon='' direnv_icon='' pr_icon='' inbox_icon='' ;;
 nerd)
 	frames=('' '' '' '' '' '')
-	branch_icon=' ' user_icon=' ' model_icon='󰚩 ' effort_icon=' ' ctx_icon='󰓅 ' venv_icon=' ' direnv_icon=' ' pr_icon=' ' ;;
+	branch_icon=' ' user_icon=' ' model_icon='󰚩 ' effort_icon=' ' ctx_icon='󰓅 ' venv_icon=' ' direnv_icon=' ' pr_icon=' ' inbox_icon='󰂚 ' ;;
 *)
 	frames=('-' '\' '|' '/')
-	branch_icon='' user_icon='@' model_icon='' effort_icon='' ctx_icon='' venv_icon='' direnv_icon='' pr_icon='' ;;
+	branch_icon='' user_icon='@' model_icon='' effort_icon='' ctx_icon='' venv_icon='' direnv_icon='' pr_icon='' inbox_icon='' ;;
 esac
 
 out=''
@@ -96,6 +97,24 @@ while [[ -n $d && $d != / ]]; do
 	fi
 	d=${d%/*}
 done
+
+# GitHub-inbox refresh. bin/gh-inbox is a standalone checker (synced to
+# ~/bin by bootstrap) that sweeps every logged-in gh account and writes
+# ~/.cache/gh-inbox/inbox.json; the statusline never fetches inbox data
+# itself, it only schedules the checker and reads its file. Same
+# stamp-first throttle as the fetch/pr-count blocks below, at most once
+# per 10 minutes so handled items clear promptly (~4 requests/account/
+# refresh — well inside the search API's 30/min). Sits outside the git
+# block so the cache stays fresh even when cwd isn't a repo. Explicit
+# ~/bin path with -x, not a PATH lookup — the statusline inherits
+# whatever PATH Claude launched with. Opt out with
+# `git config statusline.inbox false`.
+if command -v gh >/dev/null 2>&1 && [[ -x $HOME/bin/gh-inbox ]] &&
+	[[ $(git -C "$cwd" config --get statusline.inbox 2>/dev/null) != false ]] &&
+	[[ -z $(find "$HOME/.claude" -maxdepth 1 -name statusline-inbox.stamp -mmin -10 2>/dev/null) ]] &&
+	touch "$HOME/.claude/statusline-inbox.stamp" 2>/dev/null; then
+	("$HOME/bin/gh-inbox" >/dev/null 2>&1 </dev/null &)
+fi
 
 toplevel=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
 if [[ -n $toplevel ]]; then
@@ -257,6 +276,28 @@ if [[ -n $toplevel ]]; then
 		' "$HOME/.config/gh/hosts.yml" 2>/dev/null)
 	fi
 	[[ -n $gh_user ]] && out+=" ${grey}as${reset} ${magenta}${user_icon}${gh_user}${reset}"
+
+	# Inbox badge: items in THIS repo that need me, read from the gh-inbox
+	# cache the block above keeps fresh — never fetched here (the render
+	# path runs every second and must stay pure-read). Count = todo
+	# (review requests, assignments, invites; persist until resolved on
+	# GitHub) + fyi (unread mentions/replies; clear when read there).
+	# Hidden when zero, absent, or the cache is older than 25 min — a dead
+	# checker must not show a frozen count, and one find covers missing
+	# and stale in a single test.
+	inbox_file="${XDG_CACHE_HOME:-$HOME/.cache}/gh-inbox/inbox.json"
+	if [[ -n $(find "$inbox_file" -mmin -25 2>/dev/null) ]]; then
+		inbox=$(jq -r --arg r "$repo" \
+			'.repos[$r] | if . then .todo + .fyi else empty end' \
+			"$inbox_file" 2>/dev/null)
+		if [[ $inbox =~ ^[0-9]+$ ]] && (( inbox > 0 )); then
+			if [[ -n $inbox_icon ]]; then
+				out+=" ${grey}${inbox_icon}${reset}${yellow}${inbox}${reset}"
+			else
+				out+=" ${grey}inbox${reset} ${yellow}${inbox}${reset}"
+			fi
+		fi
+	fi
 else
 	out+="${green}${cwd/#$HOME/~}${reset}"
 fi
