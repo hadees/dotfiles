@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Claude Code status line:
-#   (venv) (direnv:dir) org/repo[/subdir] on branch [+!?$] ↑N↓N pr N as @ghuser via Model ctx N% +N/-N <spinner>
+#   (venv) (direnv:dir) org/repo[/subdir] on branch [+!?$] ↑N↓N pr N as @ghuser via Model (effort) ctx N% +N/-N <spinner>
 # Git status flags: + staged, ! unstaged, ? untracked, $ stashed.
 #
 # Design rule: every segment is optional and self-hiding. Each probe carries
@@ -19,6 +19,7 @@ command -v jq >/dev/null 2>&1 || exit 0
 input=$(cat)
 cwd=$(jq -r '.workspace.current_dir // .cwd // empty' <<<"$input")
 model=$(jq -r '.model.display_name // empty' <<<"$input")
+effort=$(jq -r '.effort.level // empty' <<<"$input")
 session_id=$(jq -r '.session_id // empty' <<<"$input")
 project_dir=$(jq -r '.workspace.project_dir // .cwd // empty' <<<"$input")
 added=$(jq -r '.cost.total_lines_added // 0' <<<"$input")
@@ -36,21 +37,22 @@ yellow=$'\033[33m' reset=$'\033[0m'
 # every installed copy stays byte-identical to the shipped asset. The glyphs
 # are literal UTF-8, not $'\u' escapes — macOS ships bash 3.2, which lacks
 # them. nerd needs a patched font: spinner U+EE06–U+EE0B, branch U+E0A0,
-# GitHub U+F09B, model U+F06A9, ctx gauge U+F04C5, venv python U+E73C,
-# direnv leaf U+F06C, pull request U+F407. Icons stand in for words, so
+# GitHub U+F09B, model U+F06A9, effort bolt U+F0E7, ctx gauge U+F04C5,
+# venv python U+E73C, direnv leaf U+F06C, pull request U+F407. Icons stand
+# in for words, so
 # nerd drops the grey "via"/"ctx"/"pr" labels rather than decorating them,
 # and the venv/direnv segments drop their () text wrappers. braille renders
 # in nearly any modern terminal.
 case ${1-} in
 braille)
 	frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-	branch_icon='' user_icon='@' model_icon='' ctx_icon='' venv_icon='' direnv_icon='' pr_icon='' ;;
+	branch_icon='' user_icon='@' model_icon='' effort_icon='' ctx_icon='' venv_icon='' direnv_icon='' pr_icon='' ;;
 nerd)
 	frames=('' '' '' '' '' '')
-	branch_icon=' ' user_icon=' ' model_icon='󰚩 ' ctx_icon='󰓅 ' venv_icon=' ' direnv_icon=' ' pr_icon=' ' ;;
+	branch_icon=' ' user_icon=' ' model_icon='󰚩 ' effort_icon=' ' ctx_icon='󰓅 ' venv_icon=' ' direnv_icon=' ' pr_icon=' ' ;;
 *)
 	frames=('-' '\' '|' '/')
-	branch_icon='' user_icon='@' model_icon='' ctx_icon='' venv_icon='' direnv_icon='' pr_icon='' ;;
+	branch_icon='' user_icon='@' model_icon='' effort_icon='' ctx_icon='' venv_icon='' direnv_icon='' pr_icon='' ;;
 esac
 
 out=''
@@ -210,6 +212,16 @@ if [[ -n $model ]]; then
 		out+=" ${cyan}${model_icon}${model}${reset}"
 	else
 		out+=" ${grey}via${reset} ${cyan}${model}${reset}"
+	fi
+fi
+
+# reasoning effort (low/medium/high/xhigh/max); the field is absent when the
+# model doesn't support the effort parameter, so the segment self-hides then.
+if [[ -n $effort ]]; then
+	if [[ -n $effort_icon ]]; then
+		out+=" ${grey}${effort_icon}${reset}${cyan}${effort}${reset}"
+	else
+		out+=" ${grey}(${effort})${reset}"
 	fi
 fi
 
