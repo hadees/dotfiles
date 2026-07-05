@@ -217,11 +217,19 @@ fi
 
 # reasoning effort (low/medium/high/xhigh/max); the field is absent when the
 # model doesn't support the effort parameter, so the segment self-hides then.
+# Same traffic-light scale as the ctx gauge below — green cheap, yellow warm,
+# red heavy — so in auto mode the switches read by hue, not by squinting at
+# the word.
 if [[ -n $effort ]]; then
+	case $effort in
+	low|medium) effort_color=$green ;;
+	high)       effort_color=$yellow ;;
+	*)          effort_color=$red ;;
+	esac
 	if [[ -n $effort_icon ]]; then
-		out+=" ${grey}${effort_icon}${reset}${cyan}${effort}${reset}"
+		out+=" ${grey}${effort_icon}${reset}${effort_color}${effort}${reset}"
 	else
-		out+=" ${grey}(${effort})${reset}"
+		out+=" ${grey}(${reset}${effort_color}${effort}${reset}${grey})${reset}"
 	fi
 fi
 
