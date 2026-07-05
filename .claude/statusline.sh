@@ -220,8 +220,13 @@ fi
 # Hues mirror the /effort slider inside Claude Code (its theme tokens, mapped
 # to the nearest ANSI color): low=warning yellow, medium=success green,
 # high=permission blue, xhigh=autoAccept purple. max is rainbow-animated in
-# the slider; here each letter gets its own hue and the whole word shifts one
-# step per 1s refresh, same clock trick as the spinner at the bottom.
+# the slider; here each letter gets its own hue and the word shifts one step
+# per 250ms of wall clock. The statusline only redraws once per second when
+# idle (refreshInterval's documented floor) plus on conversation events, so
+# the ms clock can't raise the frame rate — it makes every redraw land on a
+# fresh hue instead of holding one for a full second. gdate supplies the ms
+# (coreutils, in the Brewfile); without it the clock falls back to whole
+# seconds and the rainbow just steps slower.
 if [[ -n $effort ]]; then
 	case $effort in
 	low)    effort_str="${yellow}${effort}${reset}" ;;
@@ -230,7 +235,11 @@ if [[ -n $effort ]]; then
 	xhigh)  effort_str="${magenta}${effort}${reset}" ;;
 	max)
 		rainbow=("$red" "$yellow" "$green" "$cyan" "$blue" "$magenta")
-		shift_t=$(date +%s)
+		if command -v gdate >/dev/null 2>&1; then
+			shift_t=$(( $(gdate +%s%3N) / 250 ))
+		else
+			shift_t=$(date +%s)
+		fi
 		effort_str=''
 		for (( i = 0; i < ${#effort}; i++ )); do
 			effort_str+="${rainbow[$(( (shift_t + i) % 6 ))]}${effort:$i:1}"
