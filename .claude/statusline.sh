@@ -291,7 +291,11 @@ if [[ -n $session_id && -n $project_dir ]] && command -v lsof >/dev/null 2>&1; t
 	if [[ -e ${outputs[0]} || -L ${outputs[0]} ]]; then
 		running=$(lsof -F n -- "${outputs[@]}" 2>/dev/null | sed -n 's/^n//p' | sort -u | grep -c .)
 		if (( running > 0 )); then
-			out+=" ${yellow}${frames[$(( anim_t % ${#frames[@]} ))]}${reset}"
+			# on max effort the spinner borrows the effort segment's
+			# rainbow (already populated above) and cycles with it
+			spin_color=$yellow
+			[[ $effort == max ]] && spin_color=${rainbow[$(( anim_t % 6 ))]}
+			out+=" ${spin_color}${frames[$(( anim_t % ${#frames[@]} ))]}${reset}"
 		fi
 	fi
 fi
