@@ -217,19 +217,31 @@ fi
 
 # reasoning effort (low/medium/high/xhigh/max); the field is absent when the
 # model doesn't support the effort parameter, so the segment self-hides then.
-# Same traffic-light scale as the ctx gauge below — green cheap, yellow warm,
-# red heavy — so in auto mode the switches read by hue, not by squinting at
-# the word.
+# Hues mirror the /effort slider inside Claude Code (its theme tokens, mapped
+# to the nearest ANSI color): low=warning yellow, medium=success green,
+# high=permission blue, xhigh=autoAccept purple. max is rainbow-animated in
+# the slider; here each letter gets its own hue and the whole word shifts one
+# step per 1s refresh, same clock trick as the spinner at the bottom.
 if [[ -n $effort ]]; then
 	case $effort in
-	low|medium) effort_color=$green ;;
-	high)       effort_color=$yellow ;;
-	*)          effort_color=$red ;;
+	low)    effort_str="${yellow}${effort}${reset}" ;;
+	medium) effort_str="${green}${effort}${reset}" ;;
+	high)   effort_str="${blue}${effort}${reset}" ;;
+	xhigh)  effort_str="${magenta}${effort}${reset}" ;;
+	max)
+		rainbow=("$red" "$yellow" "$green" "$cyan" "$blue" "$magenta")
+		shift_t=$(date +%s)
+		effort_str=''
+		for (( i = 0; i < ${#effort}; i++ )); do
+			effort_str+="${rainbow[$(( (shift_t + i) % 6 ))]}${effort:$i:1}"
+		done
+		effort_str+=$reset ;;
+	*)      effort_str="${cyan}${effort}${reset}" ;;
 	esac
 	if [[ -n $effort_icon ]]; then
-		out+=" ${grey}${effort_icon}${reset}${effort_color}${effort}${reset}"
+		out+=" ${grey}${effort_icon}${reset}${effort_str}"
 	else
-		out+=" ${grey}(${reset}${effort_color}${effort}${reset}${grey})${reset}"
+		out+=" ${grey}(${reset}${effort_str}${grey})${reset}"
 	fi
 fi
 
