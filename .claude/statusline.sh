@@ -26,24 +26,12 @@ added=$(jq -r '.cost.total_lines_added // 0' <<<"$input")
 removed=$(jq -r '.cost.total_lines_removed // 0' <<<"$input")
 ctx_pct=$(jq -r '.context_window.used_percentage // empty' <<<"$input")
 
-# Animation clock, one tick per 250ms: the script is stateless across
+# Animation clock, one tick per second: the script is stateless across
 # invocations, so anything animated (max rainbow, task spinner) keys its
-# frame to this. The statusline redraws at most once per second when idle
-# plus on conversation events, so ticks land mid-second too — the ms clock
-# makes each redraw pick up a fresh frame instead of holding one for a full
-# second. GNU date prints ms for +%s%3N (all-digit result: Linux natively,
-# macOS as gdate from the Brewfile's coreutils); BSD date passes the
-# unknown %3N through as literal text, which the digit check rejects, and
-# the clock falls back to whole seconds — animations just step slower.
-anim_t=$(date +%s%3N 2>/dev/null)
-if [[ ! $anim_t =~ ^[0-9]{13,}$ ]] && command -v gdate >/dev/null 2>&1; then
-	anim_t=$(gdate +%s%3N 2>/dev/null)
-fi
-if [[ $anim_t =~ ^[0-9]{13,}$ ]]; then
-	anim_t=$(( anim_t / 250 ))
-else
-	anim_t=$(date +%s)
-fi
+# frame to the wall clock and advances on each refresh. Plain POSIX date —
+# deliberately no gdate/coreutils dependency for sub-second ticks; the
+# statusline mostly redraws once per second anyway.
+anim_t=$(date +%s)
 
 # ANSI palette colors — the terminal's own scheme decides the actual hues
 grey=$'\033[90m'  red=$'\033[31m'    green=$'\033[32m'
