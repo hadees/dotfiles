@@ -231,21 +231,28 @@ fi
 # per animation tick.
 if [[ -n $effort ]]; then
 	case $effort in
-	low)    effort_str="${yellow}${effort}${reset}" ;;
-	medium) effort_str="${green}${effort}${reset}" ;;
-	high)   effort_str="${blue}${effort}${reset}" ;;
-	xhigh)  effort_str="${magenta}${effort}${reset}" ;;
-	max)
+	low)    effort_color=$yellow ;;
+	medium) effort_color=$green ;;
+	high)   effort_color=$blue ;;
+	xhigh)  effort_color=$magenta ;;
+	max)    effort_color='' ;;
+	*)      effort_color=$cyan ;;
+	esac
+	if [[ -n $effort_color ]]; then
+		effort_str="${effort_color}${effort}${reset}"
+	else
+		# max: per-letter rainbow. The icon takes the hue one step behind
+		# the first letter, so icon and word read as one moving gradient.
 		rainbow=("$red" "$yellow" "$green" "$cyan" "$blue" "$magenta")
+		effort_color=${rainbow[$(( (anim_t + 5) % 6 ))]}
 		effort_str=''
 		for (( i = 0; i < ${#effort}; i++ )); do
 			effort_str+="${rainbow[$(( (anim_t + i) % 6 ))]}${effort:$i:1}"
 		done
-		effort_str+=$reset ;;
-	*)      effort_str="${cyan}${effort}${reset}" ;;
-	esac
+		effort_str+=$reset
+	fi
 	if [[ -n $effort_icon ]]; then
-		out+=" ${grey}${effort_icon}${reset}${effort_str}"
+		out+=" ${effort_color}${effort_icon}${reset}${effort_str}"
 	else
 		out+=" ${grey}(${reset}${effort_str}${grey})${reset}"
 	fi
