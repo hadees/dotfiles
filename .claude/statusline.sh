@@ -31,10 +31,16 @@ ctx_pct=$(jq -r '.context_window.used_percentage // empty' <<<"$input")
 # frame to this. The statusline redraws at most once per second when idle
 # plus on conversation events, so ticks land mid-second too — the ms clock
 # makes each redraw pick up a fresh frame instead of holding one for a full
-# second. gdate supplies the ms (coreutils, in the Brewfile); without it the
-# clock falls back to whole seconds and animations just step slower.
-if command -v gdate >/dev/null 2>&1; then
-	anim_t=$(( $(gdate +%s%3N) / 250 ))
+# second. GNU date prints ms for +%s%3N (all-digit result: Linux natively,
+# macOS as gdate from the Brewfile's coreutils); BSD date passes the
+# unknown %3N through as literal text, which the digit check rejects, and
+# the clock falls back to whole seconds — animations just step slower.
+anim_t=$(date +%s%3N 2>/dev/null)
+if [[ ! $anim_t =~ ^[0-9]{13,}$ ]] && command -v gdate >/dev/null 2>&1; then
+	anim_t=$(gdate +%s%3N 2>/dev/null)
+fi
+if [[ $anim_t =~ ^[0-9]{13,}$ ]]; then
+	anim_t=$(( anim_t / 250 ))
 else
 	anim_t=$(date +%s)
 fi
