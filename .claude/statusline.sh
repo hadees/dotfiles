@@ -26,6 +26,19 @@ added=$(jq -r '.cost.total_lines_added // 0' <<<"$input")
 removed=$(jq -r '.cost.total_lines_removed // 0' <<<"$input")
 ctx_pct=$(jq -r '.context_window.used_percentage // empty' <<<"$input")
 
+# Animation clock, one tick per 250ms: the script is stateless across
+# invocations, so anything animated (max rainbow, task spinner) keys its
+# frame to this. The statusline redraws at most once per second when idle
+# plus on conversation events, so ticks land mid-second too — the ms clock
+# makes each redraw pick up a fresh frame instead of holding one for a full
+# second. gdate supplies the ms (coreutils, in the Brewfile); without it the
+# clock falls back to whole seconds and animations just step slower.
+if command -v gdate >/dev/null 2>&1; then
+	anim_t=$(( $(gdate +%s%3N) / 250 ))
+else
+	anim_t=$(date +%s)
+fi
+
 # ANSI palette colors — the terminal's own scheme decides the actual hues
 grey=$'\033[90m'  red=$'\033[31m'    green=$'\033[32m'
 blue=$'\033[34m'  magenta=$'\033[35m' cyan=$'\033[36m'
@@ -221,12 +234,7 @@ fi
 # to the nearest ANSI color): low=warning yellow, medium=success green,
 # high=permission blue, xhigh=autoAccept purple. max is rainbow-animated in
 # the slider; here each letter gets its own hue and the word shifts one step
-# per 250ms of wall clock. The statusline only redraws once per second when
-# idle (refreshInterval's documented floor) plus on conversation events, so
-# the ms clock can't raise the frame rate — it makes every redraw land on a
-# fresh hue instead of holding one for a full second. gdate supplies the ms
-# (coreutils, in the Brewfile); without it the clock falls back to whole
-# seconds and the rainbow just steps slower.
+# per animation tick.
 if [[ -n $effort ]]; then
 	case $effort in
 	low)    effort_str="${yellow}${effort}${reset}" ;;
@@ -235,14 +243,9 @@ if [[ -n $effort ]]; then
 	xhigh)  effort_str="${magenta}${effort}${reset}" ;;
 	max)
 		rainbow=("$red" "$yellow" "$green" "$cyan" "$blue" "$magenta")
-		if command -v gdate >/dev/null 2>&1; then
-			shift_t=$(( $(gdate +%s%3N) / 250 ))
-		else
-			shift_t=$(date +%s)
-		fi
 		effort_str=''
 		for (( i = 0; i < ${#effort}; i++ )); do
-			effort_str+="${rainbow[$(( (shift_t + i) % 6 ))]}${effort:$i:1}"
+			effort_str+="${rainbow[$(( (anim_t + i) % 6 ))]}${effort:$i:1}"
 		done
 		effort_str+=$reset ;;
 	*)      effort_str="${cyan}${effort}${reset}" ;;
@@ -287,9 +290,7 @@ if [[ -n $session_id && -n $project_dir ]] && command -v lsof >/dev/null 2>&1; t
 	if [[ -e ${outputs[0]} || -L ${outputs[0]} ]]; then
 		running=$(lsof -F n -- "${outputs[@]}" 2>/dev/null | sed -n 's/^n//p' | sort -u | grep -c .)
 		if (( running > 0 )); then
-			# The script is stateless across invocations, so key the frame
-			# to the clock — each 1s refresh advances one frame.
-			out+=" ${yellow}${frames[$(( $(date +%s) % ${#frames[@]} ))]}${reset}"
+			out+=" ${yellow}${frames[$(( anim_t % ${#frames[@]} ))]}${reset}"
 		fi
 	fi
 fi
