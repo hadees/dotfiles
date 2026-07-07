@@ -132,17 +132,64 @@ if [[ -n $toplevel ]]; then
 	# Keep it fresh: at most once per 5 minutes, fetch origin in the
 	# background. The stamp file is touched *before* the attempt (and gates
 	# the attempt) so an offline machine retries on the same 5-minute cadence
-	# instead of every render. Prompts are disabled (GIT_TERMINAL_PROMPT=0,
-	# ssh BatchMode): when auth would need a human, the fetch fails silently
-	# and the counts just go stale. Opt out per repo or globally with
+	# instead of every render.
+	#
+	# The fetch must never reach an ssh agent: BatchMode only suppresses
+	# password prompts — agent SIGNING requests still go through, and a
+	# 1Password-backed agent (IdentityAgent in ~/.ssh/config) answers each
+	# one with a biometric dialog. A background fetch every 5 minutes then
+	# becomes a Touch ID prompt loop, and every dismissed prompt fails the
+	# fetch and re-arms the next one. So GitHub remotes fetch over https
+	# instead, trying each gh-logged-in account's token until one works —
+	# the account whose name appears in the origin's ssh host alias first
+	# (the github-<account> alias convention), since that account most
+	# likely sees the repo. The token rides in an auth header through
+	# GIT_CONFIG_* env vars so it never shows in `ps`; the explicit refspec
+	# updates the same refs/remotes/origin/* refs a `fetch origin` would.
+	# Everything else fetches over ssh with IdentityAgent=none: on-disk
+	# keys still work, agent-only keys fail silently and the counts just
+	# go stale. Opt out per repo or globally with
 	# `git config statusline.fetch false`.
 	git_dir=$(git -C "$cwd" rev-parse --absolute-git-dir 2>/dev/null)
 	if [[ -n $remote && -n $git_dir ]] &&
 		[[ $(git -C "$cwd" config --get statusline.fetch 2>/dev/null) != false ]] &&
 		[[ -z $(find "$git_dir" -maxdepth 1 -name statusline-fetch -mmin -5 2>/dev/null) ]] &&
 		touch "$git_dir/statusline-fetch" 2>/dev/null; then
-		(GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -oBatchMode=yes' \
-			git -C "$cwd" fetch --quiet origin >/dev/null 2>&1 </dev/null &)
+		if [[ $remote == *github* && $repo == */* ]] && command -v gh >/dev/null 2>&1; then
+			(
+				# host part of the remote: git@HOST:path or ssh://git@HOST/path
+				host=${remote#*@}; host=${host%%[:/]*}
+				# logged-in accounts — the keys of the users: map in
+				# hosts.yml (same indent-sensitive awk as bin/gh-inbox);
+				# alias-matched account moves to the front of the line
+				accounts=$(awk '
+					/^github\.com:/ { in_host = 1; next }
+					in_host && /^[^[:space:]]/ { in_host = 0; in_users = 0 }
+					in_host && $1 == "users:" { in_users = 1; next }
+					in_users && /^        [^[:space:]]+:$/ { u = $1; sub(/:$/, "", u); print u; next }
+					in_users && /^    [^[:space:]]/ { in_users = 0 }
+				' "$HOME/.config/gh/hosts.yml" 2>/dev/null)
+				try=''
+				for a in $accounts; do
+					if [[ $host == *"$a"* ]]; then try="$a $try"; else try="$try $a"; fi
+				done
+				for a in ${try:-''}; do
+					token=$(gh auth token ${a:+--user "$a"} 2>/dev/null)
+					[[ -n $token ]] || continue
+					auth=$(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')
+					GIT_TERMINAL_PROMPT=0 \
+					GIT_CONFIG_COUNT=1 \
+					GIT_CONFIG_KEY_0='http.https://github.com/.extraheader' \
+					GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
+						git -C "$cwd" fetch --quiet "https://github.com/${repo}.git" \
+						'+refs/heads/*:refs/remotes/origin/*' >/dev/null 2>&1 && break
+				done
+			) </dev/null &
+		else
+			(GIT_TERMINAL_PROMPT=0 \
+				GIT_SSH_COMMAND='ssh -oBatchMode=yes -oIdentityAgent=none' \
+				git -C "$cwd" fetch --quiet origin >/dev/null 2>&1 </dev/null &)
+		fi
 	fi
 
 	# commits ahead/behind origin; ↑/↓ are plain Unicode, no special font.
