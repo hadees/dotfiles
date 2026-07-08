@@ -112,7 +112,7 @@ done
 # `git config statusline.inbox false`.
 checker="${BASH_SOURCE[0]%/*}/gh-inbox"
 if command -v gh >/dev/null 2>&1 && [[ -x $checker ]] &&
-	[[ $(git -C "$cwd" config --get statusline.inbox 2>/dev/null) != false ]] &&
+	[[ $(git -C "$cwd" config --type=bool --get statusline.inbox 2>/dev/null) != false ]] &&
 	[[ -z $(find "$HOME/.claude" -maxdepth 1 -name statusline-inbox.stamp -mmin -10 2>/dev/null) ]] &&
 	touch "$HOME/.claude/statusline-inbox.stamp" 2>/dev/null; then
 	("$checker" >/dev/null 2>&1 </dev/null &)
@@ -147,6 +147,17 @@ if [[ -n $toplevel ]]; then
 	out+=" ${grey}on${reset} ${blue}${branch_icon}${branch}${reset}"
 	[[ -n $flags ]] && out+=" ${grey}[${reset}${flags}${grey}]${reset}"
 
+	# Per-repo GitHub identity, resolved from git config and used by every
+	# GitHub API call below (fetch ordering, PR count) and the as-@user
+	# segment: `statusline.account` names the gh account this repo's calls
+	# run as (explicit override, same namespace as the fetch/prcount/inbox
+	# opt-outs); else `github.user`, the conventional per-repo identity key
+	# that includeIf-based work/personal schemes set automatically. Unset
+	# means gh's active account — single-account setups need no
+	# configuration and get gh's default behavior untouched.
+	acct=$(git -C "$cwd" config --get statusline.account 2>/dev/null)
+	[[ -z $acct ]] && acct=$(git -C "$cwd" config --get github.user 2>/dev/null)
+
 	# The ↑↓ arrows below compare against origin's last-*fetched* state — the
 	# remote-tracking ref only moves on fetch, so on a machine that never
 	# fetches, "behind" reads 0 forever and nobody learns they should pull.
@@ -162,9 +173,9 @@ if [[ -n $toplevel ]]; then
 	# becomes a Touch ID prompt loop, and every dismissed prompt fails the
 	# fetch and re-arms the next one. So GitHub remotes fetch over https
 	# instead, trying each gh-logged-in account's token until one works —
-	# the account whose name appears in the origin's ssh host alias first
-	# (the github-<account> alias convention), since that account most
-	# likely sees the repo. The token rides in an auth header through
+	# the repo's resolved account first (the identity block above), since
+	# that account most likely sees the repo. The token rides in an auth
+	# header through
 	# GIT_CONFIG_* env vars so it never shows in `ps`; the explicit refspec
 	# updates the same refs/remotes/origin/* refs a `fetch origin` would.
 	# Everything else fetches over ssh with IdentityAgent=none: on-disk
@@ -173,16 +184,16 @@ if [[ -n $toplevel ]]; then
 	# `git config statusline.fetch false`.
 	git_dir=$(git -C "$cwd" rev-parse --absolute-git-dir 2>/dev/null)
 	if [[ -n $remote && -n $git_dir ]] &&
-		[[ $(git -C "$cwd" config --get statusline.fetch 2>/dev/null) != false ]] &&
+		[[ $(git -C "$cwd" config --type=bool --get statusline.fetch 2>/dev/null) != false ]] &&
 		[[ -z $(find "$git_dir" -maxdepth 1 -name statusline-fetch -mmin -5 2>/dev/null) ]] &&
 		touch "$git_dir/statusline-fetch" 2>/dev/null; then
 		if [[ $remote == *github* && $repo == */* ]] && command -v gh >/dev/null 2>&1; then
 			(
-				# host part of the remote: git@HOST:path or ssh://git@HOST/path
-				host=${remote#*@}; host=${host%%[:/]*}
 				# logged-in accounts — the keys of the users: map in
-				# hosts.yml (same indent-sensitive awk as gh-inbox);
-				# alias-matched account moves to the front of the line
+				# hosts.yml (same indent-sensitive awk as gh-inbox); the
+				# repo's resolved account moves to the front of the line,
+				# the rest stay behind it as fallback resilience. Logins
+				# compare case-insensitively (GitHub treats them that way).
 				accounts=$(awk '
 					/^github\.com:/ { in_host = 1; next }
 					in_host && /^[^[:space:]]/ { in_host = 0; in_users = 0 }
@@ -190,9 +201,14 @@ if [[ -n $toplevel ]]; then
 					in_users && /^        [^[:space:]]+:$/ { u = $1; sub(/:$/, "", u); print u; next }
 					in_users && /^    [^[:space:]]/ { in_users = 0 }
 				' "$HOME/.config/gh/hosts.yml" 2>/dev/null)
+				acct_lc=$(tr '[:upper:]' '[:lower:]' <<<"$acct")
 				try=''
 				for a in $accounts; do
-					if [[ $host == *"$a"* ]]; then try="$a $try"; else try="$try $a"; fi
+					if [[ -n $acct_lc && $(tr '[:upper:]' '[:lower:]' <<<"$a") == "$acct_lc" ]]; then
+						try="$a $try"
+					else
+						try="$try $a"
+					fi
 				done
 				for a in ${try:-''}; do
 					token=$(gh auth token ${a:+--user "$a"} 2>/dev/null)
@@ -236,20 +252,42 @@ if [[ -n $toplevel ]]; then
 	# the git dir and refreshed in the background at most once per 5 minutes
 	# — the same stamp-first throttle as the fetch above: touching the cache
 	# gates the attempt, so a failing gh (offline, rate-limited, repo not
-	# visible to the active account) retries on the cadence instead of every
-	# render, and the segment just goes stale or stays hidden. The count is
-	# whatever gh's active account can see. Hidden at zero: the segment
-	# answers "are there open PRs?", so silence means no. Opt out per repo or
-	# globally with `git config statusline.prcount false`.
+	# visible) retries on the cadence instead of every render, and the
+	# segment just goes stale or stays hidden. The query runs as the repo's
+	# resolved account (the identity block above), else gh's active account.
+	# Hidden at zero: the segment answers "are there open PRs?", so silence
+	# means no. Opt out per repo or globally with
+	# `git config statusline.prcount false`.
 	pr_file="$git_dir/statusline-prcount"
 	if [[ -n $git_dir && $remote == *github* && $repo == */* ]] &&
 		command -v gh >/dev/null 2>&1 &&
-		[[ $(git -C "$cwd" config --get statusline.prcount 2>/dev/null) != false ]] &&
+		[[ $(git -C "$cwd" config --type=bool --get statusline.prcount 2>/dev/null) != false ]] &&
 		[[ -z $(find "$git_dir" -maxdepth 1 -name statusline-prcount -mmin -5 2>/dev/null) ]] &&
 		touch "$pr_file" 2>/dev/null; then
-		(gh api "search/issues?q=repo:${repo}+type:pr+state:open" \
-			--jq .total_count >"$pr_file.tmp" 2>/dev/null &&
-			mv -f "$pr_file.tmp" "$pr_file" &)
+		(
+			# Trust no token: gh's keyring can hand back a DIFFERENT
+			# account's token, and a search as the wrong identity returns
+			# silently thin counts, not errors — so the token's identity
+			# is verified before use, and a mismatch skips this refresh
+			# (stale beats wrong; the stamp retries on cadence). A
+			# resolved account with NO token just isn't logged into gh —
+			# stale config, not a wrong identity — so the query falls
+			# back to the active account, unpinned, as if no account had
+			# resolved. Logins compare case-insensitively.
+			token=''
+			if [[ -n $acct ]]; then
+				token=$(gh auth token --user "$acct" 2>/dev/null)
+				if [[ -n $token ]]; then
+					login=$(GH_TOKEN=$token gh api user --jq .login 2>/dev/null)
+					[[ $(tr '[:upper:]' '[:lower:]' <<<"$login") == \
+						"$(tr '[:upper:]' '[:lower:]' <<<"$acct")" ]] || exit 0
+				fi
+			fi
+			env ${token:+"GH_TOKEN=$token"} \
+				gh api "search/issues?q=repo:${repo}+type:pr+state:open" \
+				--jq .total_count >"$pr_file.tmp" 2>/dev/null &&
+				mv -f "$pr_file.tmp" "$pr_file"
+		) </dev/null &
 	fi
 	prcount=$(cat "$pr_file" 2>/dev/null)
 	if [[ $prcount =~ ^[0-9]+$ ]] && (( prcount > 0 )); then
@@ -260,16 +298,15 @@ if [[ -n $toplevel ]]; then
 		fi
 	fi
 
-	# GitHub identity, two tiers. `git config github.user` is per-repo truth
-	# (it follows includeIf-based work/personal identity schemes), so it wins.
+	# GitHub identity segment: the repo's resolved account (the identity
+	# block above — statusline.account, else github.user), so what this
+	# shows IS the identity the fetch and PR-count calls above run as.
 	# Fallback: the gh CLI's active account, read straight from hosts.yml —
 	# this script re-runs every second, so spawning `gh auth status` (slow) or
 	# `gh api user` (network) is off the table. The awk matches the host
 	# block's `user:` key exactly — hosts.yml also has a `users:` map of all
-	# logged-in accounts, which must not false-match. The two tiers can
-	# legitimately disagree: gh's login is who you call the API as, git
-	# config is who you push as — which is why git config wins.
-	gh_user=$(git -C "$cwd" config github.user 2>/dev/null)
+	# logged-in accounts, which must not false-match.
+	gh_user=$acct
 	if [[ -z $gh_user && -r $HOME/.config/gh/hosts.yml ]]; then
 		gh_user=$(awk '
 			/^github\.com:/ { in_host = 1; next }
