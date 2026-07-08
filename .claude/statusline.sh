@@ -109,11 +109,12 @@ done
 # ~/bin path with -x, not a PATH lookup — the statusline inherits
 # whatever PATH Claude launched with. Opt out with
 # `git config statusline.inbox false`.
-if command -v gh >/dev/null 2>&1 && [[ -x $HOME/bin/gh-inbox ]] &&
+checker="${BASH_SOURCE[0]%/*}/gh-inbox"
+if command -v gh >/dev/null 2>&1 && [[ -x $checker ]] &&
 	[[ $(git -C "$cwd" config --get statusline.inbox 2>/dev/null) != false ]] &&
 	[[ -z $(find "$HOME/.claude" -maxdepth 1 -name statusline-inbox.stamp -mmin -10 2>/dev/null) ]] &&
 	touch "$HOME/.claude/statusline-inbox.stamp" 2>/dev/null; then
-	("$HOME/bin/gh-inbox" >/dev/null 2>&1 </dev/null &)
+	("$checker" >/dev/null 2>&1 </dev/null &)
 fi
 
 toplevel=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
