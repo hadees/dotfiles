@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Claude Code status line:
+# claude-statusline — Claude Code status line:
 #   (venv) (direnv:dir) org/repo[/subdir] on branch [+!?$] ↑N↓N pr N as @ghuser inbox N via Model (effort) ctx N% +N/-N <spinner>
 # Git status flags: + staged, ! unstaged, ? untracked, $ stashed.
 #
@@ -98,16 +98,17 @@ while [[ -n $d && $d != / ]]; do
 	d=${d%/*}
 done
 
-# GitHub-inbox refresh. bin/gh-inbox is a standalone checker (synced to
-# ~/bin by bootstrap) that sweeps every logged-in gh account and writes
-# ~/.cache/gh-inbox/inbox.json; the statusline never fetches inbox data
+# GitHub-inbox refresh. gh-inbox is a standalone checker shipped next to
+# this script; it sweeps every logged-in gh account and writes
+# ~/.cache/gh-inbox/inbox.json. The statusline never fetches inbox data
 # itself, it only schedules the checker and reads its file. Same
 # stamp-first throttle as the fetch/pr-count blocks below, at most once
 # per 10 minutes so handled items clear promptly (~4 requests/account/
 # refresh — well inside the search API's 30/min). Sits outside the git
-# block so the cache stays fresh even when cwd isn't a repo. Explicit
-# ~/bin path with -x, not a PATH lookup — the statusline inherits
-# whatever PATH Claude launched with. Opt out with
+# block so the cache stays fresh even when cwd isn't a repo. Resolved as
+# a sibling of this file with -x, not a PATH lookup — the statusline
+# inherits whatever PATH Claude launched with, and the sibling is the
+# checker that shipped with this exact version. Opt out with
 # `git config statusline.inbox false`.
 checker="${BASH_SOURCE[0]%/*}/gh-inbox"
 if command -v gh >/dev/null 2>&1 && [[ -x $checker ]] &&
@@ -180,7 +181,7 @@ if [[ -n $toplevel ]]; then
 				# host part of the remote: git@HOST:path or ssh://git@HOST/path
 				host=${remote#*@}; host=${host%%[:/]*}
 				# logged-in accounts — the keys of the users: map in
-				# hosts.yml (same indent-sensitive awk as bin/gh-inbox);
+				# hosts.yml (same indent-sensitive awk as gh-inbox);
 				# alias-matched account moves to the front of the line
 				accounts=$(awk '
 					/^github\.com:/ { in_host = 1; next }
