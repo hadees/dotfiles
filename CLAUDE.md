@@ -54,6 +54,7 @@ CI runs tests on both `ubuntu-latest` and `macos-latest` via `.github/workflows/
 - **`.macos`** — macOS `defaults write` settings; reads `$COMPUTER_NAME` env var for machine-specific naming
 - **`Brewfile`** — Homebrew formulae, casks, and Mac App Store apps
 - **`bin/`** — personal scripts added to `$PATH`
+- **Claude Code statusline** — lives in `work-org/private-skills` (skill `claude-statusline`), not here. Install once per machine with `/claude-statusline`; the plugin's session-start hook keeps the installed copies in `~/.claude` current after that. On a fresh machine, `.claude/settings.json`'s statusLine command is harmlessly dead until that one-time install.
 - **`init/`** — one-time setup scripts
 - **`theme/`** — Base16 Eighties color themes (darkened bg `#1a1a1a`) for iTerm2, Terminal.app, and Alfred; VSCode uses the `bsides.Theme-Base16-Eighties` extension installed by `.macos`. Terminal apps (bat, delta, fzf, k9s, vim) use `base16-256`/`base16-eighties` and inherit the iTerm palette.
 
