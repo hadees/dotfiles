@@ -81,6 +81,22 @@ command -v md5sum > /dev/null || alias md5sum="md5"
 # macOS has no `sha1sum`, so use `shasum` as a fallback
 command -v sha1sum > /dev/null || alias sha1sum="shasum"
 
+# Linux has no `pbcopy`/`pbpaste`, so use `xclip`/`xsel` as fallbacks
+if ! command -v pbcopy > /dev/null; then
+	if command -v xclip > /dev/null; then
+		alias pbcopy="xclip -selection clipboard"
+		alias pbpaste="xclip -selection clipboard -o"
+	elif command -v xsel > /dev/null; then
+		alias pbcopy="xsel --clipboard --input"
+		alias pbpaste="xsel --clipboard --output"
+	fi
+fi
+
+# Linux has no `open`, so use `xdg-open` as a fallback
+if ! command -v open > /dev/null && command -v xdg-open > /dev/null; then
+	alias open="xdg-open"
+fi
+
 # JavaScriptCore REPL
 jscbin="/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Resources/jsc";
 [ -e "${jscbin}" ] && alias jsc="${jscbin}";
