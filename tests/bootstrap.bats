@@ -10,7 +10,8 @@ teardown() {
 
 @test "bootstrap script syncs dotfiles" {
   git() { :; }
-  export -f git
+  op() { :; }
+  export -f git op
   cd "$BATS_TEST_DIRNAME/.."
   HOME="$TMPHOME" run bash bootstrap.sh --force
   [ "$status" -eq 0 ]
@@ -19,11 +20,13 @@ teardown() {
   [ -f "$TMPHOME/.claude/CLAUDE.md" ]
   [ ! -e "$TMPHOME/.claude/settings.local.json" ]
   [ -f "$TMPHOME/.claude/CLAUDE.local.md" ]
+  [ ! -e "$TMPHOME/.macos" ]
 }
 
 @test "bootstrap does not overwrite existing CLAUDE.local.md" {
   git() { :; }
-  export -f git
+  op() { :; }
+  export -f git op
   cd "$BATS_TEST_DIRNAME/.."
   mkdir -p "$TMPHOME/.claude"
   echo "my custom notes" > "$TMPHOME/.claude/CLAUDE.local.md"
