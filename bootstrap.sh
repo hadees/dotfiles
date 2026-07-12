@@ -22,6 +22,12 @@ function doIt() {
 			"${WSL_DISTRO_NAME:+, WSL: $WSL_DISTRO_NAME}" \
 			"${TMUX:+, tmux}" > ~/.claude/CLAUDE.local.md;
 	fi;
+	# Render machine-local secrets from the tracked template (op:// references
+	# only — values come from 1Password). Never overwrites an existing ~/.extra.
+	if command -v op > /dev/null 2>&1 && [ ! -f ~/.extra ]; then
+		op inject -i .extra.tmpl -o ~/.extra \
+			|| echo "op inject failed (not signed in?) — render ~/.extra manually later.";
+	fi;
 	# ~/.zshrc is zsh-only syntax; only source it when actually running in zsh
 	if [ -n "$ZSH_VERSION" ]; then
 		source ~/.zshrc;
@@ -35,6 +41,9 @@ function doIt() {
 	echo "                         to ~/.gitconfig.local (commit.gpgsign=true,";
 	echo "                         gpg.format=ssh, signingkey=*.pub)";
 	echo "  bash init/mackup.sh  — restore app settings from ~/.config/Mackup/";
+	echo "  op inject -i .extra.tmpl -o ~/.extra";
+	echo "                       — render secrets (auto-runs above when op is";
+	echo "                         installed and ~/.extra doesn't exist yet)";
 }
 
 if [ "$1" = "--force" -o "$1" = "-f" ]; then
