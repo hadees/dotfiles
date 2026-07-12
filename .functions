@@ -231,10 +231,8 @@ function update() {
 	local keepalive_pid=$!;
 	trap 'kill "$keepalive_pid" 2>/dev/null' EXIT;
 
-	sudo softwareupdate -i -a;
-	brew update;
-	brew upgrade;
-	brew cleanup;
+	[[ $(uname) == Darwin ]] && sudo softwareupdate -i -a;
+	command -v brew > /dev/null 2>&1 && { brew update; brew upgrade; brew cleanup; };
 	command -v npm > /dev/null 2>&1 && npm install npm -g;
 	command -v npm > /dev/null 2>&1 && npm update -g;
 	command -v uv > /dev/null 2>&1 && uv tool upgrade --all;
