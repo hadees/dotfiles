@@ -16,9 +16,9 @@ Thumbs.db
 # Scratch pads
 scratch.*
 
-# GPG — only track agent config, never keys or trust database
-.gnupg/*
-!.gnupg/gpg-agent.conf
+# GPG — never track anything under .gnupg; agent config is machine-local
+# (pinentry program paths differ per OS and Homebrew prefix)
+.gnupg/
 
 # Generated zsh completion cache
 .zcompdump
