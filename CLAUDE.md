@@ -60,21 +60,24 @@ CI runs tests on both `ubuntu-latest` and `macos-latest` via `.github/workflows/
 
 ### Commit signing
 
-Commits are signed with **SSH-format signatures via 1Password**, not GPG. The
-repo sets `commit.gpgsign = true` (format-agnostic); the actual mechanism lives
-in untracked machine-local files:
+Commits are signed with **SSH-format signatures via 1Password**, not GPG.
+Signing is entirely machine-local: the tracked `.gitconfig` does NOT enable
+it, so a fresh machine defaults to unsigned commits instead of failing on a
+missing signer. Each machine opts in via untracked files:
 
-- `~/.gitconfig.local` / `~/.gitconfig-work` set `gpg.format = ssh`,
-  `gpg.ssh.program = .../op-ssh-sign`, and `user.signingkey = ~/.ssh/*.pub`.
+- `~/.gitconfig.local` / `~/.gitconfig-work` set `commit.gpgsign = true`,
+  `gpg.format = ssh`, `gpg.ssh.program = .../op-ssh-sign`, and
+  `user.signingkey = ~/.ssh/*.pub`.
 - `~/.ssh/config` points `IdentityAgent` at the 1Password agent socket; the
   private keys live in 1Password and never touch disk. The `.pub` files are
   just selectors.
 
-On a machine without 1Password (e.g. a remote Linux box), `op-ssh-sign` doesn't
-exist and the agent socket is absent. Either forward your local 1Password SSH
-agent over the connection, or disable signing there with
-`git config commit.gpgsign false`. There is **no GPG keypair** in this setup
-despite the `gpgsign` name.
+On a machine without 1Password (e.g. a remote Linux box), nothing needs
+disabling — signing is simply never enabled there. To sign on a remote you
+keep around, forward your local 1Password SSH agent over the connection and
+set `user.signingkey` to the literal public key (not `op-ssh-sign`, which
+only exists locally). There is **no GPG keypair** in this setup despite the
+`gpgsign` name.
 
 ### Machine-local customization
 
