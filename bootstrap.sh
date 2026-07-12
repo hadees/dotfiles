@@ -2,13 +2,13 @@
 
 cd "$(dirname "${BASH_SOURCE}")";
 
-git pull origin master;
+git pull --ff-only origin master || echo "Could not pull latest changes; continuing with local copy.";
 
 function doIt() {
 	rsync --exclude ".git/" \
 		--exclude ".claude/settings.local.json" \
 		--exclude ".DS_Store" \
-		--exclude ".osx" \
+		--exclude ".macos" \
 		--exclude "tests/" \
 		--exclude "bootstrap.sh" \
 		--exclude "README.md" \
@@ -22,7 +22,12 @@ function doIt() {
 			"${WSL_DISTRO_NAME:+, WSL: $WSL_DISTRO_NAME}" \
 			"${TMUX:+, tmux}" > ~/.claude/CLAUDE.local.md;
 	fi;
-	source ~/.zshrc;
+	# ~/.zshrc is zsh-only syntax; only source it when actually running in zsh
+	if [ -n "$ZSH_VERSION" ]; then
+		source ~/.zshrc;
+	else
+		echo "Restart your shell (or run: exec zsh) to pick up the new config.";
+	fi;
 	echo "";
 	echo "Next steps on a new machine:";
 	echo "  brew bundle          — install Brewfile packages";
