@@ -33,7 +33,11 @@ bats tests/macos.bats
 bats tests/bootstrap.bats
 ```
 
-CI runs tests on both `ubuntu-latest` and `macos-latest` via `.github/workflows/tests.yml`.
+CI (`.github/workflows/tests.yml`) runs the suite on `ubuntu-latest`,
+`macos-latest`, Rocky Linux 9 (container), and WSL Ubuntu (windows runner).
+The macOS job additionally executes `.macos` for real and asserts settings
+stuck (`tests/macos-apply.bats`) — safe there because runners are throwaway
+VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 
 ## Architecture
 
