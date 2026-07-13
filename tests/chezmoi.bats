@@ -1,8 +1,20 @@
 #!/usr/bin/env bats
 
-# Full init + apply into an isolated $HOME per machine class. HOME is
-# overridden for every chezmoi call, so the real machine is never touched
-# and no real config is read or written.
+# Full init + apply into an isolated $HOME per machine class, so the real
+# machine is never touched and no real config is read or written. XDG dirs
+# must be pinned too, not just HOME: GitHub's ubuntu runners export
+# XDG_CONFIG_HOME, which chezmoi prefers over $HOME/.config — without the
+# override, the first test's machineClass leaks into every later test via
+# promptStringOnce.
+
+chez() {
+  HOME="$TMPHOME" \
+  XDG_CONFIG_HOME="$TMPHOME/.config" \
+  XDG_DATA_HOME="$TMPHOME/.local/share" \
+  XDG_STATE_HOME="$TMPHOME/.local/state" \
+  XDG_CACHE_HOME="$TMPHOME/.cache" \
+    chezmoi "$@"
+}
 
 setup() {
   command -v chezmoi > /dev/null 2>&1 || skip "chezmoi not installed"
@@ -15,7 +27,7 @@ teardown() {
 
 @test "ephemeral class deploys shell config and nothing sensitive" {
   cd "$BATS_TEST_DIRNAME/.."
-  HOME="$TMPHOME" chezmoi init --source "$PWD" --promptString machineClass=ephemeral --apply
+  chez init --source "$PWD" --promptString machineClass=ephemeral --apply
   # Shell layer lands
   [ -f "$TMPHOME/.zshrc" ]
   [ -f "$TMPHOME/.aliases" ]
@@ -38,7 +50,7 @@ teardown() {
 
 @test "linux class deploys identity without signing" {
   cd "$BATS_TEST_DIRNAME/.."
-  HOME="$TMPHOME" chezmoi init --source "$PWD" --promptString machineClass=linux --apply
+  chez init --source "$PWD" --promptString machineClass=linux --apply
   [ -f "$TMPHOME/.gitconfig.local" ]
   grep -q "email = evan.alter@gmail.com" "$TMPHOME/.gitconfig.local"
   grep -q "user = hadees" "$TMPHOME/.gitconfig.local"
@@ -54,7 +66,7 @@ teardown() {
 
 @test "wsl class wires git through Windows ssh.exe" {
   cd "$BATS_TEST_DIRNAME/.."
-  HOME="$TMPHOME" chezmoi init --source "$PWD" --promptString machineClass=wsl --apply
+  chez init --source "$PWD" --promptString machineClass=wsl --apply
   grep -q "sshCommand = ssh.exe" "$TMPHOME/.gitconfig.local"
   ! grep -q "gpgsign = true" "$TMPHOME/.gitconfig.local"
 }
@@ -63,6 +75,6 @@ teardown() {
   cd "$BATS_TEST_DIRNAME/.."
   mkdir -p "$TMPHOME/.claude"
   echo "my custom notes" > "$TMPHOME/.claude/CLAUDE.local.md"
-  HOME="$TMPHOME" chezmoi init --source "$PWD" --promptString machineClass=linux --apply
+  chez init --source "$PWD" --promptString machineClass=linux --apply
   grep -q "my custom notes" "$TMPHOME/.claude/CLAUDE.local.md"
 }
