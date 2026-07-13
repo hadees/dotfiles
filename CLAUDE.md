@@ -4,21 +4,48 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-Personal dotfiles for macOS/zsh, including shell configuration, macOS system defaults, and a Homebrew bundle. The primary shell is **zsh** (`.bash_profile` auto-upgrades any bash session to zsh).
+Personal dotfiles managed by **chezmoi**, targeting macOS, Linux, WSL, and
+disposable remote boxes. Shell configuration (zsh-first; `.bash_profile`
+auto-upgrades bash sessions to zsh), macOS system defaults, and a Homebrew
+bundle. A **machine class** chosen once at `chezmoi init` (`mac` / `linux` /
+`wsl` / `ephemeral`, answerable non-interactively with
+`--promptString machineClass=<class>`) drives all per-machine templating:
+`ephemeral` deploys shell config only (no identity, no secrets), `wsl` adds
+1Password's ssh.exe forwarding pattern, `mac` pins chezmoi's `sourceDir` to
+`~/code/dotfiles` so the clone is the source of truth.
+
+Source naming follows chezmoi conventions: `dot_zshrc` deploys to
+`~/.zshrc`, `private_dot_extra.tmpl` renders to `~/.extra` (mode 0600),
+`bin/executable_has-glyphs` to `~/bin/has-glyphs`, `create_` files are
+written only when missing. Repo-level files (`.gitignore`, `.macos`,
+`.github`, dot-prefixed in general) are invisible to chezmoi; non-dot
+repo files are excluded via `.chezmoiignore`.
 
 ## Installation
 
 ```bash
-# Clone and apply dotfiles to $HOME
-source bootstrap.sh
+# Fresh machine (no root needed)
+sh -c "$(curl -fsLS get.chezmoi.io)" -- init --apply hadees
 
-# Apply macOS system preferences (requires sudo)
-# Optionally set a machine name first:
+# Disposable box — applies, then removes chezmoi and all traces of itself
+sh -c "$(curl -fsLS get.chezmoi.io)" -- init --one-shot hadees
+
+# Development clone (this Mac)
+chezmoi init --source ~/code/dotfiles --apply
+
+# Day-to-day: edit in ~/code/dotfiles, then
+chezmoi diff && chezmoi apply    # `dotfiles` is aliased to `chezmoi apply`
+
+# Apply macOS system preferences (requires sudo; run manually, chezmoi
+# never touches it). Optionally set a machine name first:
 COMPUTER_NAME="My-Mac" ./.macos
 
-# Install Homebrew packages
+# Install Homebrew packages (macOS)
 brew bundle
 ```
+
+`bootstrap.sh` is a deprecated wrapper that just calls
+`chezmoi init --source . --apply`; it will be removed.
 
 ## Running tests
 
@@ -54,7 +81,9 @@ VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 
 ### Key files
 
-- **`bootstrap.sh`** — uses `rsync` to copy repo files to `$HOME`; excludes `bootstrap.sh`, `README.md`, `Brewfile`, `LICENSE-MIT.txt`
+- **`.chezmoi.toml.tmpl`** — config template; prompts once for the machine class and pins `sourceDir` to the clone on macs
+- **`.chezmoiignore`** — target paths chezmoi must not manage (repo-level files everywhere; macOS GUI config off-mac; identity/secrets on `ephemeral`)
+- **`bootstrap.sh`** — deprecated wrapper around `chezmoi init --source . --apply`
 - **`.macos`** — macOS `defaults write` settings; reads `$COMPUTER_NAME` env var for machine-specific naming
 - **`Brewfile`** — Homebrew formulae, casks, and Mac App Store apps
 - **`bin/`** — personal scripts added to `$PATH`
@@ -89,17 +118,18 @@ Add `~/.extra` (not committed) for per-machine overrides. Add `~/.path` for per-
 
 ### Machine-local secrets (~/.extra)
 
-`~/.extra` is rendered from the tracked `.extra.tmpl` by 1Password's
-`op inject`. bootstrap.sh runs it automatically when `~/.extra` is missing;
-re-render manually with `op inject -i .extra.tmpl -o ~/.extra -f`. The
-template stores only secret *references*, never values:
+`~/.extra` is rendered by chezmoi from `private_dot_extra.tmpl` (mode 0600)
+on every `chezmoi apply`, using chezmoi's built-in 1Password template
+functions — secret *values* come from the 1Password CLI at apply time, only
+references live in the repo:
 
-    export GITHUB_TOKEN="{{ op://Private/GitHub PAT/token }}"
+    export GITHUB_TOKEN={{ onepasswordRead "op://Private/GitHub PAT/token" | quote }}
 
 Get a reference path from the 1Password app: right-click a field →
-"Copy Secret Reference".
+"Copy Secret Reference". The `ephemeral` machine class never deploys this
+file (see `.chezmoiignore`).
 
-CAUTION: `op inject` parses the whole template, comments included, and
-errors on any curly-brace pair or bare `op://` text that isn't a real
-brace-wrapped reference. That's why these instructions live here and not in
-the template itself. `tests/extra-tmpl.bats` enforces the invariant.
+CAUTION: chezmoi parses the template as a Go template, comments included —
+a stray `{{` anywhere breaks rendering. That's why these instructions live
+here and not in the template itself. `tests/extra-tmpl.bats` enforces the
+invariant.
