@@ -27,9 +27,16 @@ TMPL="private_dot_extra.tmpl"
   cd "$BATS_TEST_DIRNAME/.."
   # Reference-free today, so this needs no 1Password auth; if references
   # are ever added, CI would need op or this becomes a syntax-only check.
+  # XDG dirs pinned alongside HOME — CI runners export XDG_CONFIG_HOME,
+  # which chezmoi prefers, and state must not leak between tests.
   TMPHOME="$(mktemp -d)"
-  HOME="$TMPHOME" chezmoi init --source "$PWD" --promptString machineClass=linux
-  HOME="$TMPHOME" run chezmoi execute-template --source "$PWD" < "$TMPL"
+  chez() {
+    HOME="$TMPHOME" XDG_CONFIG_HOME="$TMPHOME/.config" \
+    XDG_DATA_HOME="$TMPHOME/.local/share" XDG_STATE_HOME="$TMPHOME/.local/state" \
+    XDG_CACHE_HOME="$TMPHOME/.cache" chezmoi "$@"
+  }
+  chez init --source "$PWD" --promptString machineClass=linux
+  run chez execute-template --source "$PWD" < "$TMPL"
   rm -rf "$TMPHOME"
   [ "$status" -eq 0 ]
   [[ "$output" == *"machine-local secrets"* ]]
