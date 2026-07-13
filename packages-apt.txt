@@ -1,0 +1,24 @@
+# Debian/Ubuntu/WSL package list — the Linux counterpart of the Brewfile.
+# Keep the two in sync: when adding or removing a CLI tool, update every
+# list where the tool is available, using each distro's NATIVE package
+# name (e.g. the bat package here installs the binary as batcat; the
+# shell config's command -v guards tolerate either).
+# Consumed by .chezmoiscripts/linux/run_onchange_install-packages.sh.
+
+zsh
+git
+curl
+wget
+vim
+tmux
+tree
+jq
+fzf
+bat
+ripgrep
+fd-find
+zoxide
+direnv
+git-delta
+xclip
+# lazygit and k9s are not in Ubuntu's repos — install manually if wanted

@@ -85,7 +85,8 @@ VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 - **`.chezmoiignore`** — target paths chezmoi must not manage (repo-level files everywhere; macOS GUI config off-mac; identity/secrets on `ephemeral`)
 - **`bootstrap.sh`** — deprecated wrapper around `chezmoi init --source . --apply`
 - **`.macos`** — macOS `defaults write` settings; reads `$COMPUTER_NAME` env var for machine-specific naming
-- **`Brewfile`** — Homebrew formulae, casks, and Mac App Store apps
+- **`Brewfile`** — Homebrew formulae, casks, and Mac App Store apps (macOS only; `.chezmoiscripts/darwin/` runs `brew bundle` when it changes)
+- **`packages-apt.txt`** — Debian/Ubuntu/WSL package list (`.chezmoiscripts/linux/` installs it when it changes; skips gracefully without apt or sudo)
 - **`bin/`** — personal scripts added to `$PATH`
 - **Claude Code statusline** — lives in `icanalytica/ica-skills` (skill `claude-statusline`), not here. Install once per machine with `/claude-statusline`; the plugin's session-start hook keeps the installed copies in `~/.claude` current after that. On a fresh machine, `.claude/settings.json`'s statusLine command is harmlessly dead until that one-time install.
 - **`init/`** — one-time setup scripts
@@ -111,6 +112,18 @@ keep around, forward your local 1Password SSH agent over the connection and
 set `user.signingkey` to the literal public key (not `op-ssh-sign`, which
 only exists locally). There is **no GPG keypair** in this setup despite the
 `gpgsign` name.
+
+### Package lists
+
+CLI tools are declared per-OS — `Brewfile` (macOS), `packages-apt.txt`
+(Debian/Ubuntu/WSL). **When adding or removing a tool, update every list
+where it's available**, using each distro's native package name (e.g.
+Ubuntu's `bat` package installs the binary as `batcat`; the shell config's
+`command -v` guards tolerate the difference). If a tool exists on one
+platform only, note it in the list file. Homebrew is deliberately not used
+on Linux. The install scripts re-run automatically on `chezmoi apply`
+whenever their list's hash changes; the `ephemeral` machine class never
+runs them.
 
 ### Machine-local customization
 
