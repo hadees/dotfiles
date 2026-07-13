@@ -6,10 +6,19 @@
 README.md
 LICENSE-MIT.txt
 Brewfile
+packages-apt.txt
 bootstrap.sh
 tests
 init
 theme
+
+# Package-install scripts run only on their own OS
+{{ if ne .chezmoi.os "darwin" -}}
+.chezmoiscripts/darwin/**
+{{ end -}}
+{{ if ne .chezmoi.os "linux" -}}
+.chezmoiscripts/linux/**
+{{ end -}}
 
 {{ if ne .chezmoi.os "darwin" -}}
 # macOS GUI configuration has no business on Linux/WSL
@@ -18,10 +27,11 @@ com.googlecode.iterm2.plist
 {{ end -}}
 
 {{ if eq .machineClass "ephemeral" -}}
-# Disposable boxes get shell config only: no identity, no secrets, and no
-# tooling that assumes a long-lived machine.
+# Disposable boxes get shell config only: no identity, no secrets, no
+# package installs, and no tooling that assumes a long-lived machine.
 .extra
 .gitconfig.local
 .claude
 CLAUDE.md
+.chezmoiscripts/**
 {{ end -}}
