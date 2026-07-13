@@ -2,13 +2,13 @@
 
 cd "$(dirname "${BASH_SOURCE}")";
 
-git pull origin master;
+git pull --ff-only origin master || echo "Could not pull latest changes; continuing with local copy.";
 
 function doIt() {
 	rsync --exclude ".git/" \
 		--exclude ".claude/settings.local.json" \
 		--exclude ".DS_Store" \
-		--exclude ".osx" \
+		--exclude ".macos" \
 		--exclude "tests/" \
 		--exclude "bootstrap.sh" \
 		--exclude "README.md" \
@@ -22,13 +22,28 @@ function doIt() {
 			"${WSL_DISTRO_NAME:+, WSL: $WSL_DISTRO_NAME}" \
 			"${TMUX:+, tmux}" > ~/.claude/CLAUDE.local.md;
 	fi;
-	source ~/.zshrc;
+	# Render machine-local secrets from the tracked template (op:// references
+	# only — values come from 1Password). Never overwrites an existing ~/.extra.
+	if command -v op > /dev/null 2>&1 && [ ! -f ~/.extra ]; then
+		op inject -i .extra.tmpl -o ~/.extra \
+			|| echo "op inject failed (not signed in?) — render ~/.extra manually later.";
+	fi;
+	# ~/.zshrc is zsh-only syntax; only source it when actually running in zsh
+	if [ -n "$ZSH_VERSION" ]; then
+		source ~/.zshrc;
+	else
+		echo "Restart your shell (or run: exec zsh) to pick up the new config.";
+	fi;
 	echo "";
 	echo "Next steps on a new machine:";
 	echo "  brew bundle          — install Brewfile packages";
 	echo "  1Password → set up SSH agent + op-ssh-sign, then add signing config";
-	echo "                         to ~/.gitconfig.local (gpg.format=ssh, signingkey=*.pub)";
+	echo "                         to ~/.gitconfig.local (commit.gpgsign=true,";
+	echo "                         gpg.format=ssh, signingkey=*.pub)";
 	echo "  bash init/mackup.sh  — restore app settings from ~/.config/Mackup/";
+	echo "  op inject -i .extra.tmpl -o ~/.extra";
+	echo "                       — render secrets (auto-runs above when op is";
+	echo "                         installed and ~/.extra doesn't exist yet)";
 }
 
 if [ "$1" = "--force" -o "$1" = "-f" ]; then
