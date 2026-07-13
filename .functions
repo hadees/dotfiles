@@ -220,3 +220,23 @@ function gh() {
 	fi;
 	GH_TOKEN="$(command gh auth token --user "$acct" 2>/dev/null)" command gh "$@";
 }
+
+# Get macOS Software Updates, and update installed Ruby gems, Homebrew, npm, uv, and their installed packages
+function update() {
+	# Ask for the administrator password upfront, then keep the sudo time
+	# stamp alive until the updates finish (same pattern as ~/.macos)
+	setopt localoptions nomonitor nonotify;
+	sudo -v || return;
+	while true; do sudo -n true; sleep 60; done 2>/dev/null &
+	local keepalive_pid=$!;
+	trap 'kill "$keepalive_pid" 2>/dev/null' EXIT;
+
+	[[ $(uname) == Darwin ]] && sudo softwareupdate -i -a;
+	command -v brew > /dev/null 2>&1 && { brew update; brew upgrade; brew cleanup; };
+	command -v npm > /dev/null 2>&1 && npm install npm -g;
+	command -v npm > /dev/null 2>&1 && npm update -g;
+	command -v uv > /dev/null 2>&1 && uv tool upgrade --all;
+	[[ $(which ruby) != /usr/bin/ruby ]] && sudo gem update --system;
+	[[ $(which ruby) != /usr/bin/ruby ]] && sudo gem update;
+	[[ $(which ruby) != /usr/bin/ruby ]] && sudo gem cleanup;
+}

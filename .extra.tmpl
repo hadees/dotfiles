@@ -13,7 +13,7 @@
 #      IN DOUBLE CURLY BRACES. The commented examples show the path format;
 #      to activate one, uncomment it and wrap the op://... path in {{ }}.
 #      (In the 1Password app: right-click a field -> "Copy Secret Reference".)
-#   3. Re-run `source bootstrap.sh`, or just:
+#   3. Re-render (bootstrap.sh only renders when ~/.extra is missing):
 #          op inject -i .extra.tmpl -o ~/.extra -f
 #
 # With no braced references present, this renders to an (inert) ~/.extra.
