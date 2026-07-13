@@ -1,0 +1,27 @@
+# Entries here are TARGET paths (relative to $HOME) that chezmoi must not
+# manage. This file is parsed as a template, so ignores can vary by machine.
+
+# Repo-level files — never deployed. (Dot-prefixed source files like .macos,
+# .github, and .gitignore are invisible to chezmoi already and need no entry.)
+README.md
+LICENSE-MIT.txt
+Brewfile
+bootstrap.sh
+tests
+init
+theme
+
+{{ if ne .chezmoi.os "darwin" -}}
+# macOS GUI configuration has no business on Linux/WSL
+com.googlecode.iterm2.plist
+.mackup.cfg
+{{ end -}}
+
+{{ if eq .machineClass "ephemeral" -}}
+# Disposable boxes get shell config only: no identity, no secrets, and no
+# tooling that assumes a long-lived machine.
+.extra
+.gitconfig.local
+.claude
+CLAUDE.md
+{{ end -}}

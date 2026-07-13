@@ -1,0 +1,47 @@
+{{- /* Machine-local git identity + signing, generated per machine class.
+     Work identity (~/.gitconfig-ica) stays untracked and machine-local —
+     the includeIf hooks below reference it only where it exists. */ -}}
+[user]
+	name = Evan Alter
+	email = evan.alter@gmail.com
+{{- if eq .machineClass "mac" }}
+	# SSH commit signing via 1Password — personal (hadees) key
+	signingkey = ~/.ssh/id_github_hadees.pub
+{{- end }}
+[github]
+	user = hadees
+{{- if eq .machineClass "mac" }}
+[gpg]
+	format = ssh
+[gpg "ssh"]
+	program = "/Applications/1Password.app/Contents/MacOS/op-ssh-sign"
+	allowedSignersFile = ~/.config/git/allowed_signers
+
+# Work identity follows the remote: any repo whose remote uses the
+# github-icaevan SSH alias gets the icanalytica identity (requires git 2.36+).
+[includeIf "hasconfig:remote.*.url:github-icaevan:*/**"]
+	path = ~/.gitconfig-ica
+[includeIf "hasconfig:remote.*.url:git@github-icaevan:*/**"]
+	path = ~/.gitconfig-ica
+[commit]
+	gpgsign = true
+{{- end }}
+{{- if eq .machineClass "wsl" }}
+[core]
+	# 1Password's official WSL pattern: SSH requests are forwarded to the
+	# Windows ssh.exe, which talks to the 1Password agent on the host.
+	# SSH config lives Windows-side in %USERPROFILE%\.ssh\config.
+	sshCommand = ssh.exe
+
+# To sign commits from WSL, use 1Password's "Configure Commit Signing"
+# flow with the WSL checkbox (needs Git 2.34+); it emits a snippet using
+# op-ssh-sign-wsl.exe. Paste it below.
+{{- end }}
+{{- if eq .machineClass "linux" }}
+
+# Signing is off by default here. To sign on a box you keep around:
+# forward the local 1Password SSH agent (per-host ForwardAgent yes), then
+# set gpg.format=ssh, user.signingkey=<literal public key>, and
+# commit.gpgsign=true. Do NOT reference op-ssh-sign — it only exists on
+# the machine that runs 1Password.
+{{- end }}
