@@ -1,7 +1,9 @@
 #!/usr/bin/env bats
 
 # Full init + apply into an isolated $HOME per machine class, so the real
-# machine is never touched and no real config is read or written. XDG dirs
+# machine is never touched and no real config is read or written. Applies
+# use --exclude scripts: the .chezmoiscripts package installers must never
+# run brew/apt inside a test. XDG dirs
 # must be pinned too, not just HOME: GitHub's ubuntu runners export
 # XDG_CONFIG_HOME, which chezmoi prefers over $HOME/.config — without the
 # override, the first test's machineClass leaks into every later test via
@@ -27,7 +29,7 @@ teardown() {
 
 @test "ephemeral class deploys shell config and nothing sensitive" {
   cd "$BATS_TEST_DIRNAME/.."
-  chez init --source "$PWD" --promptString machineClass=ephemeral --apply
+  chez init --source "$PWD" --promptString machineClass=ephemeral --apply --exclude scripts
   # Shell layer lands
   [ -f "$TMPHOME/.zshrc" ]
   [ -f "$TMPHOME/.aliases" ]
@@ -44,13 +46,14 @@ teardown() {
   # Repo-level files never deploy
   [ ! -e "$TMPHOME/README.md" ]
   [ ! -e "$TMPHOME/Brewfile" ]
+  [ ! -e "$TMPHOME/packages-apt.txt" ]
   [ ! -e "$TMPHOME/tests" ]
   [ ! -e "$TMPHOME/.macos" ]
 }
 
 @test "linux class deploys identity without signing" {
   cd "$BATS_TEST_DIRNAME/.."
-  chez init --source "$PWD" --promptString machineClass=linux --apply
+  chez init --source "$PWD" --promptString machineClass=linux --apply --exclude scripts
   [ -f "$TMPHOME/.gitconfig.local" ]
   grep -q "email = owner@example.com" "$TMPHOME/.gitconfig.local"
   grep -q "user = hadees" "$TMPHOME/.gitconfig.local"
@@ -66,7 +69,7 @@ teardown() {
 
 @test "wsl class wires git through Windows ssh.exe" {
   cd "$BATS_TEST_DIRNAME/.."
-  chez init --source "$PWD" --promptString machineClass=wsl --apply
+  chez init --source "$PWD" --promptString machineClass=wsl --apply --exclude scripts
   grep -q "sshCommand = ssh.exe" "$TMPHOME/.gitconfig.local"
   ! grep -q "gpgsign = true" "$TMPHOME/.gitconfig.local"
 }
@@ -75,6 +78,6 @@ teardown() {
   cd "$BATS_TEST_DIRNAME/.."
   mkdir -p "$TMPHOME/.claude"
   echo "my custom notes" > "$TMPHOME/.claude/CLAUDE.local.md"
-  chez init --source "$PWD" --promptString machineClass=linux --apply
+  chez init --source "$PWD" --promptString machineClass=linux --apply --exclude scripts
   grep -q "my custom notes" "$TMPHOME/.claude/CLAUDE.local.md"
 }
