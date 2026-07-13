@@ -1,0 +1,23 @@
+# Global git excludes — referenced by .gitconfig's core.excludesfile.
+# Repo-specific ignores belong in each repo's own .gitignore, not here.
+
+# Compiled Python files
+*.pyc
+
+# Folder view configuration files
+.DS_Store
+Desktop.ini
+
+# Thumbnail cache files
+._*
+Thumbs.db
+
+# Files that might appear on external disks
+.Spotlight-V100
+.Trashes
+
+# Scratch pads
+scratch.*
+
+# Generated zsh completion cache
+.zcompdump
