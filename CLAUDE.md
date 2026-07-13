@@ -86,3 +86,20 @@ only exists locally). There is **no GPG keypair** in this setup despite the
 ### Machine-local customization
 
 Add `~/.extra` (not committed) for per-machine overrides. Add `~/.path` for per-machine PATH entries. The `.macos` script skips the computer name block if `$COMPUTER_NAME` is unset.
+
+### Machine-local secrets (~/.extra)
+
+`~/.extra` is rendered from the tracked `.extra.tmpl` by 1Password's
+`op inject`. bootstrap.sh runs it automatically when `~/.extra` is missing;
+re-render manually with `op inject -i .extra.tmpl -o ~/.extra -f`. The
+template stores only secret *references*, never values:
+
+    export GITHUB_TOKEN="{{ op://Private/GitHub PAT/token }}"
+
+Get a reference path from the 1Password app: right-click a field →
+"Copy Secret Reference".
+
+CAUTION: `op inject` parses the whole template, comments included, and
+errors on any curly-brace pair or bare `op://` text that isn't a real
+brace-wrapped reference. That's why these instructions live here and not in
+the template itself. `tests/extra-tmpl.bats` enforces the invariant.
