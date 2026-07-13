@@ -140,9 +140,8 @@ cask 'carbon-copy-cloner'
 cask 'ccmenu'
 cask 'chromedriver'
 cask 'claude' # Anthropic Claude desktop app
-cask 'claude-code' # Anthropic Claude Code CLI
 cask 'codex' # OpenAI Codex desktop app
-cask 'comfyui' # Node-based UI for Stable Diffusion / local AI image generation
+cask 'comfy' # Node-based UI for Stable Diffusion / local AI image generation
 cask 'daisydisk'
 cask 'deluge'
 cask 'displaylink' # DisplayLink USB graphics driver
@@ -172,7 +171,7 @@ cask 'kaleidoscope'
 cask 'libreoffice'
 cask 'little-snitch'
 cask 'lm-studio' # GUI for running local LLMs
-cask 'macvim'
+cask 'macvim-app'
 cask 'micro-snitch'
 cask 'microsoft-teams' # Microsoft Teams
 cask 'moom'
