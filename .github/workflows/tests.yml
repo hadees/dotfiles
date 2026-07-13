@@ -23,3 +23,38 @@ jobs:
         run: brew install bats-core
       - name: Run tests
         run: bats tests
+
+  test-rocky:
+    # No hosted Rocky runners exist; run in a container on the ubuntu host.
+    runs-on: ubuntu-latest
+    container: rockylinux:9
+    steps:
+      - name: Install dependencies
+        run: dnf install -y git zsh rsync
+      - uses: actions/checkout@v3
+      - name: Install Bats
+        run: |
+          git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats-core
+          /tmp/bats-core/install.sh /usr/local
+      - name: Run tests
+        run: bats tests
+
+  test-wsl:
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: wsl-bash {0}
+    steps:
+      # Line-ending normalization is disabled in .gitattributes, and Windows
+      # runners default to core.autocrlf=true — without this, every shell
+      # file checks out with CRLF and breaks inside WSL.
+      - name: Force LF line endings on checkout
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v3
+      - uses: Vampire/setup-wsl@v5
+        with:
+          distribution: Ubuntu-24.04
+          additional-packages: bats zsh rsync
+      - name: Run tests
+        run: bats tests
