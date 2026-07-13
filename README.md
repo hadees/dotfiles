@@ -1,38 +1,45 @@
-# Hadees’ dotfilesßß
+# Hadees’ dotfiles
+
+Managed with [chezmoi](https://www.chezmoi.io/). One repo targets macOS,
+Linux, WSL, and disposable remote boxes; a **machine class** chosen at init
+time (`mac` / `linux` / `wsl` / `ephemeral`) controls what gets deployed.
 
 ## Installation
 
 **Warning:** If you want to give these dotfiles a try, you should first fork this repository, review the code, and remove things you don’t want or need. Don’t blindly use my settings unless you know what that entails. Use at your own risk!
 
-### Using Git and the bootstrap script
-
-You can clone the repository wherever you want. (I like to keep it in `~/code/dotfiles`, with `~/.dotfiles` as a symlink.) The bootstrapper script will pull in the latest version and copy the files to your home folder.
+### Fresh machine (one-liner, no root needed)
 
 ```bash
-git clone https://github.com/hadees/dotfiles.git && cd dotfiles && source bootstrap.sh
+sh -c "$(curl -fsLS get.chezmoi.io)" -- init --apply hadees
 ```
 
-To update, `cd` into your local `dotfiles` repository and then:
+Installs chezmoi to `~/.local/bin`, clones this repo, prompts once for the
+machine class, and applies.
+
+### Disposable box (leave no trace)
 
 ```bash
-source bootstrap.sh
+sh -c "$(curl -fsLS get.chezmoi.io)" -- init --one-shot hadees
 ```
 
-Alternatively, to update while avoiding the confirmation prompt:
+Applies the dotfiles, then removes chezmoi, its source clone, and its config
+from the machine. Answer `ephemeral` to the machine-class prompt: that class
+deploys shell config only — no git identity and no secrets ever touch disk.
+For commit signing on a box you keep around, forward your local 1Password
+SSH agent (per-host `ForwardAgent yes`) instead of putting keys there.
+
+### Development clone (macOS)
 
 ```bash
-set -- -f; source bootstrap.sh
+brew install chezmoi
+git clone git@github.com:hadees/dotfiles.git ~/code/dotfiles
+chezmoi init --source ~/code/dotfiles --apply
 ```
 
-### Git-free install
-
-To install these dotfiles without Git:
-
-```bash
-cd; curl -#L https://github.com/hadees/dotfiles/tarball/master | tar -xzv --strip-components 1 --exclude={README.md,bootstrap.sh,.osx,LICENSE-MIT.txt}
-```
-
-To update later on, just run that command again.
+The `mac` machine class pins chezmoi’s `sourceDir` to the clone, so the
+day-to-day loop is: edit files in `~/code/dotfiles`, review with
+`chezmoi diff`, deploy with `chezmoi apply` (aliased to `dotfiles`).
 
 ### Specify the `$PATH`
 
@@ -46,20 +53,11 @@ export PATH="/usr/local/bin:$PATH"
 
 ### Add custom commands without creating a new fork
 
-If `~/.extra` exists, it will be sourced along with the other files. You can use this to add a few custom commands without the need to fork this entire repository, or to add commands you don’t want to commit to a public repository.
-
-My `~/.extra` looks something like this:
-
-```bash
-# Git credentials
-# Not in the repository, to prevent people from accidentally committing under my name
-GIT_AUTHOR_NAME="John Doe"
-GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
-git config --global user.name "$GIT_AUTHOR_NAME"
-GIT_AUTHOR_EMAIL="mathias@mailinator.com"
-GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
-git config --global user.email "$GIT_AUTHOR_EMAIL"
-```
+If `~/.extra` exists, it will be sourced along with the other files. On
+managed machines it is rendered by chezmoi from `private_dot_extra.tmpl`,
+which pulls secret values out of 1Password at apply time — see CLAUDE.md
+“Machine-local secrets” for the syntax. On the `ephemeral` machine class it
+is never deployed at all.
 
 You could also use `~/.extra` to override settings, functions and aliases from my dotfiles repository. It’s probably better to [fork this repository](https://github.com/hadees/dotfiles/fork) instead, though.
 
