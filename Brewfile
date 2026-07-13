@@ -161,7 +161,7 @@ cask 'github' # GitHub Desktop
 cask 'google-chrome'
 cask 'google-drive'
 cask 'gpg-suite'
-cask 'handbrake'
+cask 'handbrake-app'
 cask 'hazel'
 cask 'imageoptim'
 cask 'inkscape'
