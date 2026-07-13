@@ -12,6 +12,7 @@ brew 'bat' # Better cat with syntax highlighting and git integration
 brew 'bats-core' # Bash Automated Testing System (used by dotfiles tests)
 brew 'bfg' # Removes large or troublesome blobs like git-filter-branch does, but faster. And written in Scala
 brew 'binutils' # The GNU Binutils are a collection of binary tools
+brew 'chezmoi' # manage your dotfiles across multiple diverse machines, securely
 brew 'cifer' # Work on automating classical cipher cracking in C.
 brew 'coreutils' # The GNU Core Utilities are the basic file, shell and text manipulation utilities of the GNU operating system.
 brew 'curl'

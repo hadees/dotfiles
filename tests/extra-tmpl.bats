@@ -1,31 +1,43 @@
 #!/usr/bin/env bats
 
-# op inject parses ALL of .extra.tmpl — comments included — and errors on
-# any curly-brace pair or bare op:// text that isn't a real brace-wrapped
-# secret reference. These tests enforce that invariant without needing the
-# op CLI (CI runners don't have it); real references only ever appear on
-# non-comment export lines.
+# chezmoi parses private_dot_extra.tmpl as a Go template — comments
+# included — so a stray {{ }} anywhere breaks rendering. These tests
+# enforce the invariants that keep the template renderable; real template
+# actions only ever appear on non-comment export lines.
 
-TMPL=".extra.tmpl"
+TMPL="private_dot_extra.tmpl"
 
-@test "extra.tmpl comment lines contain no curly braces" {
+@test "extra template comment lines contain no template actions" {
   cd "$BATS_TEST_DIRNAME/.."
   run grep -nE '^[[:space:]]*#.*(\{\{|\}\})' "$TMPL"
   [ "$status" -ne 0 ]
 }
 
-@test "extra.tmpl comment lines contain no op:// references" {
+@test "extra template secret reads are well-formed onepasswordRead calls" {
   cd "$BATS_TEST_DIRNAME/.."
-  run grep -nE '^[[:space:]]*#.*op://' "$TMPL"
-  [ "$status" -ne 0 ]
+  # Any op:// on an active line must sit inside a onepasswordRead action
+  # with vault/item/field segments.
+  while IFS= read -r line; do
+    [[ "$line" =~ \{\{\ *onepasswordRead\ \"op://[^/]+/[^/]+/[^\"]+\" ]]
+  done < <(grep -E '^[^#]*op://' "$TMPL" || true)
 }
 
-@test "extra.tmpl secret references are brace-wrapped and well-formed" {
+@test "extra template renders as a valid Go template" {
+  command -v chezmoi > /dev/null 2>&1 || skip "chezmoi not installed"
   cd "$BATS_TEST_DIRNAME/.."
-  # Any op:// on an active line must look like "{{ op://vault/item/field }}"
-  # (at least three path segments) — a bare or malformed reference is a
-  # render error waiting to happen.
-  while IFS= read -r line; do
-    [[ "$line" =~ \{\{\ *op://[^/]+/[^/]+/[^}]+\ *\}\} ]]
-  done < <(grep -E '^[^#]*op://' "$TMPL" || true)
+  # Reference-free today, so this needs no 1Password auth; if references
+  # are ever added, CI would need op or this becomes a syntax-only check.
+  # XDG dirs pinned alongside HOME — CI runners export XDG_CONFIG_HOME,
+  # which chezmoi prefers, and state must not leak between tests.
+  TMPHOME="$(mktemp -d)"
+  chez() {
+    HOME="$TMPHOME" XDG_CONFIG_HOME="$TMPHOME/.config" \
+    XDG_DATA_HOME="$TMPHOME/.local/share" XDG_STATE_HOME="$TMPHOME/.local/state" \
+    XDG_CACHE_HOME="$TMPHOME/.cache" chezmoi "$@"
+  }
+  chez init --source "$PWD" --promptString machineClass=linux
+  run chez execute-template --source "$PWD" < "$TMPL"
+  rm -rf "$TMPHOME"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"machine-local secrets"* ]]
 }
