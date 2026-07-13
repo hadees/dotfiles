@@ -21,6 +21,10 @@ jobs:
       - name: Install Bats on macOS
         if: matrix.os == 'macos-latest'
         run: brew install bats-core
+      - name: Install chezmoi
+        run: |
+          sh -c "$(curl -fsLS get.chezmoi.io)" -- -b "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Run tests
         run: bats tests
       - name: Apply .macos on the throwaway runner and verify
@@ -33,12 +37,15 @@ jobs:
     container: rockylinux:9
     steps:
       - name: Install dependencies
+        # No explicit curl: the image ships curl-minimal, which conflicts
+        # with the full package but already provides the curl binary.
         run: dnf install -y git zsh rsync
       - uses: actions/checkout@v3
-      - name: Install Bats
+      - name: Install Bats and chezmoi
         run: |
           git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats-core
           /tmp/bats-core/install.sh /usr/local
+          sh -c "$(curl -fsLS get.chezmoi.io)" -- -b /usr/local/bin
       - name: Run tests
         run: bats tests
 
@@ -58,6 +65,8 @@ jobs:
       - uses: Vampire/setup-wsl@v5
         with:
           distribution: Ubuntu-24.04
-          additional-packages: bats zsh rsync
+          additional-packages: bats zsh rsync curl
+      - name: Install chezmoi
+        run: sh -c "$(curl -fsLS get.chezmoi.io)" -- -b /usr/local/bin
       - name: Run tests
         run: bats tests
