@@ -37,7 +37,9 @@ jobs:
     container: rockylinux:9
     steps:
       - name: Install dependencies
-        run: dnf install -y git zsh rsync curl
+        # No explicit curl: the image ships curl-minimal, which conflicts
+        # with the full package but already provides the curl binary.
+        run: dnf install -y git zsh rsync
       - uses: actions/checkout@v3
       - name: Install Bats and chezmoi
         run: |
