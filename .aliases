@@ -54,9 +54,6 @@ alias sudo='sudo '
 # Get week number
 alias week='date +%V'
 
-# Get macOS Software Updates, and update installed Ruby gems, Homebrew, npm, uv, and their installed packages
-alias update='sudo softwareupdate -i -a; brew update; brew upgrade; brew cleanup; command -v npm > /dev/null 2>&1 && npm install npm -g; command -v npm > /dev/null 2>&1 && npm update -g; command -v uv > /dev/null 2>&1 && uv tool upgrade --all; [[ $(which ruby) != /usr/bin/ruby ]] && sudo gem update --system; [[ $(which ruby) != /usr/bin/ruby ]] && sudo gem update; [[ $(which ruby) != /usr/bin/ruby ]] && sudo gem cleanup'
-
 # Google Chrome
 alias chrome='/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome'
 alias canary='/Applications/Google\ Chrome\ Canary.app/Contents/MacOS/Google\ Chrome\ Canary'
@@ -83,6 +80,22 @@ command -v md5sum > /dev/null || alias md5sum="md5"
 
 # macOS has no `sha1sum`, so use `shasum` as a fallback
 command -v sha1sum > /dev/null || alias sha1sum="shasum"
+
+# Linux has no `pbcopy`/`pbpaste`, so use `xclip`/`xsel` as fallbacks
+if ! command -v pbcopy > /dev/null; then
+	if command -v xclip > /dev/null; then
+		alias pbcopy="xclip -selection clipboard"
+		alias pbpaste="xclip -selection clipboard -o"
+	elif command -v xsel > /dev/null; then
+		alias pbcopy="xsel --clipboard --input"
+		alias pbpaste="xsel --clipboard --output"
+	fi
+fi
+
+# Linux has no `open`, so use `xdg-open` as a fallback
+if ! command -v open > /dev/null && command -v xdg-open > /dev/null; then
+	alias open="xdg-open"
+fi
 
 # JavaScriptCore REPL
 jscbin="/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Resources/jsc";
