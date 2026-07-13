@@ -177,7 +177,7 @@ cask 'micro-snitch'
 cask 'microsoft-teams' # Microsoft Teams
 cask 'moom'
 cask 'namechanger'
-cask 'neardrop' # AirDrop-like sharing with nearby Android and Windows devices
+cask 'neardrop' # AirDrop-like sharing with nearby Android and Windows devices (needs one-time: brew trust grishka/grishka)
 cask 'ngrok'
 cask 'nzbvortex'
 cask 'openaudible' # Audible audiobook manager and converter
@@ -202,7 +202,7 @@ cask 'simplenote'
 cask 'slack'
 cask 'snagit'
 cask 'sourcetree'
-cask 'spark'
+cask 'spark-app'
 cask 'spotify'
 cask 'steam'
 cask 'suspicious-package'
