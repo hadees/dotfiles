@@ -25,6 +25,26 @@
 	path = ~/.gitconfig-ica
 [commit]
 	gpgsign = true
+
+# Route git-over-HTTPS to the right GitHub account (the gh() wrapper in
+# ~/.functions, but for plain git). The Xcode CLT system gitconfig
+# hardwires osxkeychain, which answers with whichever account last cached
+# a credential — background tooling (e.g. Claude Code's plugin marketplace
+# updater) then clones private work repos as the wrong user and gets
+# "repository not found". Reset the helper list: git-credential-gh-user
+# (~/bin) serves the pinned account's token straight from gh's keyring,
+# and gh's own helper covers unpinned URLs with the active account.
+[credential "https://github.com"]
+	helper =
+	helper = !$HOME/bin/git-credential-gh-user
+	helper = !gh auth git-credential
+	useHttpPath = true
+[credential "https://github.com/icanalytica"]
+	username = icaevan
+[credential "https://github.com/icarichie"]
+	username = icaevan
+[credential "https://github.com/hadees"]
+	username = hadees
 {{- end }}
 {{- if eq .machineClass "wsl" }}
 [core]
