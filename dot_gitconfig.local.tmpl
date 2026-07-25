@@ -18,10 +18,15 @@
 	allowedSignersFile = ~/.config/git/allowed_signers
 
 # Work identity follows the remote: any repo whose remote uses the
-# github-icaevan SSH alias gets the icanalytica identity (requires git 2.36+).
+# github-icaevan SSH alias or an HTTPS URL under a work org gets the
+# icanalytica identity (requires git 2.36+).
 [includeIf "hasconfig:remote.*.url:github-icaevan:*/**"]
 	path = ~/.gitconfig-ica
 [includeIf "hasconfig:remote.*.url:git@github-icaevan:*/**"]
+	path = ~/.gitconfig-ica
+[includeIf "hasconfig:remote.*.url:https://github.com/icanalytica/**"]
+	path = ~/.gitconfig-ica
+[includeIf "hasconfig:remote.*.url:https://github.com/icarichie/**"]
 	path = ~/.gitconfig-ica
 [commit]
 	gpgsign = true
