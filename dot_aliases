@@ -169,5 +169,10 @@ alias reload="exec ${SHELL} -l"
 # Sync dotfiles repo to $HOME (chezmoi's sourceDir points at the clone)
 alias dotfiles='chezmoi apply'
 
+# namecheap-cli with credentials injected per-invocation from 1Password.
+# ~/.config/namecheap/env holds op:// references, not secrets; `op run`
+# resolves them into just this process. One biometric okay per app unlock.
+alias nc-cli='op run --env-file ~/.config/namecheap/env -- namecheap-cli'
+
 # Print each PATH entry on a separate line
 alias path='echo -e ${PATH//:/\\n}'

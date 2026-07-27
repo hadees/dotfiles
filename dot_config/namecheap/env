@@ -1,0 +1,4 @@
+# 1Password secret REFERENCES for namecheap-cli — not secrets, safe to commit.
+# Resolved at runtime by `op run --env-file` (see nc-cli alias in .aliases).
+NAMECHEAP_USERNAME="op://Personal/www.namecheap.com/username"
+NAMECHEAP_API_KEY="op://Personal/www.namecheap.com/API/credential"
