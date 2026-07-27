@@ -1,0 +1,4 @@
+# 1Password secret REFERENCES for registrar-cli — not secrets, safe to commit.
+# Resolved at runtime by `op run --env-file` (see nc-cli alias in .aliases).
+REGISTRAR_USERNAME="op://Personal/www.registrar.com/username"
+REGISTRAR_API_KEY="op://Personal/www.registrar.com/API/credential"
