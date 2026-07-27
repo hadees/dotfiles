@@ -34,4 +34,5 @@ com.googlecode.iterm2.plist
 .claude
 CLAUDE.md
 .chezmoiscripts/**
+.config/registrar
 {{ end -}}
