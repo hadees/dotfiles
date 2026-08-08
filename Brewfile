@@ -30,6 +30,7 @@ brew 'fzf' # Command-line fuzzy finder
 brew 'gcc' # The GNU Compiler Collection includes front ends for C, C++, Objective-C, Fortran, Ada, and Go, as well as libraries for these languages (libstdc++,...)
 brew 'gh' # GitHub CLI — the official GitHub command-line tool.
 brew 'git' # a free and open source distributed version control system designed to handle everything from small to very large projects with speed and efficiency.
+brew 'git-filter-repo' # Rewrites git history — file contents, paths, and commit messages. Supersedes git-filter-branch; unlike bfg it can rewrite messages.
 brew 'git-flow' # Git extensions for Vincent Driessen's branching model
 brew 'git-lfs' # Git extension for versioning large files
 brew 'gmp' # is a free library for arbitrary precision arithmetic, operating on signed integers, rational numbers, and floating-point numbers.
