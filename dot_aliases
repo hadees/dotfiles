@@ -166,13 +166,8 @@ alias afk="/System/Library/CoreServices/Menu\ Extras/User.menu/Contents/Resource
 # Reload the shell (i.e. invoke as a login shell)
 alias reload="exec ${SHELL} -l"
 
-# Sync dotfiles repo to $HOME (chezmoi's sourceDir points at the clone)
-alias dotfiles='chezmoi apply'
-
-# registrar-cli with credentials injected per-invocation from 1Password.
-# ~/.config/registrar/env holds op:// references, not secrets; `op run`
-# resolves them into just this process. One biometric okay per app unlock.
-alias nc-cli='op run --env-file ~/.config/registrar/env -- registrar-cli'
+# `dotfiles` (sync this repo to $HOME) is a function in ~/.functions, not an
+# alias: it applies the public source and then the private overlay.
 
 # Print each PATH entry on a separate line
 alias path='echo -e ${PATH//:/\\n}'
