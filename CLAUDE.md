@@ -34,7 +34,8 @@ sh -c "$(curl -fsLS get.chezmoi.io)" -- init --one-shot hadees
 chezmoi init --source ~/code/dotfiles --apply
 
 # Day-to-day: edit in ~/code/dotfiles, then
-chezmoi diff && chezmoi apply    # `dotfiles` is aliased to `chezmoi apply`
+chezmoi diff && chezmoi apply    # or just `dotfiles`, which also applies
+                                 # the private overlay (see below)
 
 # Apply macOS system preferences (requires sudo; run manually, chezmoi
 # never touches it). Optionally set a machine name first:
@@ -73,7 +74,7 @@ VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 `.zshrc` sources these files in order when present: `~/.path`, `~/.zsh_prompt`, `~/.exports`, `~/.aliases`, `~/.functions`, `~/.extra`
 
 - **`~/.path`** — machine-local PATH additions (not in repo)
-- **`~/.extra`** — machine-local overrides and secrets like git credentials (not in repo)
+- **`~/.extra`** — machine-local overrides and secrets (not in this repo; comes from the private overlay)
 - **`.exports`** — environment variables
 - **`.aliases`** — shell aliases
 - **`.functions`** — shell functions
@@ -88,7 +89,7 @@ VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 - **`Brewfile`** — Homebrew formulae, casks, and Mac App Store apps (macOS only; `.chezmoiscripts/darwin/` runs `brew bundle` when it changes)
 - **`packages-apt.txt`** — Debian/Ubuntu/WSL package list (`.chezmoiscripts/linux/` installs it when it changes; skips gracefully without apt or sudo)
 - **`bin/`** — personal scripts added to `$PATH`
-- **Claude Code statusline** — lives in `icanalytica/ica-skills` (skill `claude-statusline`), not here. Install once per machine with `/claude-statusline`; the plugin's session-start hook keeps the installed copies in `~/.claude` current after that. On a fresh machine, `.claude/settings.json`'s statusLine command is harmlessly dead until that one-time install.
+- **Claude Code statusline** — lives in a private skills marketplace repo (skill `claude-statusline`), not here. Install once per machine with `/claude-statusline`; the plugin's session-start hook keeps the installed copies in `~/.claude` current after that. `~/.claude/settings.json` comes from the private overlay, so on a public-only machine there is no statusLine command to be dead.
 - **`init/`** — one-time setup scripts
 - **`theme/`** — Base16 Eighties color themes (darkened bg `#1a1a1a`) for iTerm2, Terminal.app, and Alfred; VSCode uses the `bsides.Theme-Base16-Eighties` extension installed by `.macos`. Terminal apps (bat, delta, fzf, k9s, vim) use `base16-256`/`base16-eighties` and inherit the iTerm palette.
 
@@ -99,8 +100,9 @@ Signing is entirely machine-local: the tracked `.gitconfig` does NOT enable
 it, so a fresh machine defaults to unsigned commits instead of failing on a
 missing signer. Each machine opts in via untracked files:
 
-- `~/.gitconfig.local` / `~/.gitconfig-ica` set `commit.gpgsign = true`,
-  `gpg.format = ssh`, `gpg.ssh.program = .../op-ssh-sign`, and
+- `~/.gitconfig.local` (from the private overlay) and any per-identity include
+  it pulls in set `commit.gpgsign = true`, `gpg.format = ssh`,
+  `gpg.ssh.program = .../op-ssh-sign`, and
   `user.signingkey = ~/.ssh/*.pub`.
 - `~/.ssh/config` points `IdentityAgent` at the 1Password agent socket; the
   private keys live in 1Password and never touch disk. The `.pub` files are
@@ -127,22 +129,56 @@ runs them.
 
 ### Machine-local customization
 
-Add `~/.extra` (not committed) for per-machine overrides. Add `~/.path` for per-machine PATH entries. The `.macos` script skips the computer name block if `$COMPUTER_NAME` is unset.
+Add `~/.extra` (from the private overlay, or hand-written) for per-machine overrides. Add `~/.path` for per-machine PATH entries. The `.macos` script skips the computer name block if `$COMPUTER_NAME` is unset.
+
+### Private overlay
+
+**This repo is public and must stay identity-free.** Anything that names a
+person, an account, an organization, or a private repo lives in a separate
+**private chezmoi overlay** (`hadees/dotfiles-private`, cloned to
+`~/code/dotfiles-private`), which supplies:
+
+| Target | What makes it private |
+| --- | --- |
+| `~/.gitconfig.local` | name/email, work account, work org names, credential pins |
+| `~/.claude/settings.json` | names the private plugin marketplace repo |
+| `~/.claude/CLAUDE.work.md` | work account/org notes, imported by `~/.claude/CLAUDE.md` |
+| `~/.config/<vendor>/env` files | third-party account names and 1Password vault paths |
+| `~/.extra` (0600) | machine-local secrets from 1Password |
+
+chezmoi allows one source directory per config file, so the overlay is a
+second config (`~/.config/chezmoi/private.toml`) pointing at a second source.
+The `dotfiles` function in `.functions` applies the public source and then the
+overlay if it is set up; see the overlay's README for the one-time init. It
+sets `persistentState` explicitly because both configs live in
+`~/.config/chezmoi/` and would otherwise share one state database.
+
+**Consequences to keep in mind when editing this repo:**
+
+- A public-only clone configures **no git `user.name` / `user.email`** — that
+  is expected, not a bug. Same for `~/.extra` and `~/.claude/settings.json`.
+- Nothing in the public source may depend on the overlay existing. Templates,
+  tests, and scripts must all work without it (`ephemeral` boxes never get it).
+- The `gh()` wrapper and `bin/git-credential-gh-user` deliberately contain no
+  account or org names: both read the `credential.<url>.username` pins from
+  git config at runtime, which the overlay provides. **Adding a work org is a
+  one-line change in the overlay and needs no edit here.**
+- Don't "helpfully" reintroduce a name, email, org, or private repo name into
+  this repo's files, tests, or commit messages.
 
 ### Machine-local secrets (~/.extra)
 
 `~/.extra` is rendered by chezmoi from `private_dot_extra.tmpl` (mode 0600)
-on every `chezmoi apply`, using chezmoi's built-in 1Password template
+**in the private overlay**, using chezmoi's built-in 1Password template
 functions — secret *values* come from the 1Password CLI at apply time, only
-references live in the repo:
+references live in that repo:
 
     export GITHUB_TOKEN={{ onepasswordRead "op://Private/GitHub PAT/token" | quote }}
 
 Get a reference path from the 1Password app: right-click a field →
-"Copy Secret Reference". The `ephemeral` machine class never deploys this
-file (see `.chezmoiignore`).
+"Copy Secret Reference".
 
-CAUTION: chezmoi parses the template as a Go template, comments included —
+CAUTION: chezmoi parses that template as a Go template, comments included —
 a stray `{{` anywhere breaks rendering. That's why these instructions live
-here and not in the template itself. `tests/extra-tmpl.bats` enforces the
-invariant.
+here and not in the template itself. The overlay's `tests/extra-tmpl.bats`
+enforces the invariant.

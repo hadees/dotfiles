@@ -27,12 +27,10 @@ com.googlecode.iterm2.plist
 {{ end -}}
 
 {{ if eq .machineClass "ephemeral" -}}
-# Disposable boxes get shell config only: no identity, no secrets, no
-# package installs, and no tooling that assumes a long-lived machine.
-.extra
-.gitconfig.local
+# Disposable boxes get shell config only: no package installs and no tooling
+# that assumes a long-lived machine. Identity and secrets need no entry here
+# any more — they come from the private overlay, which these boxes never clone.
 .claude
 CLAUDE.md
 .chezmoiscripts/**
-.config/namecheap
 {{ end -}}

@@ -38,7 +38,10 @@ teardown() {
   # Rendered shell files parse
   zsh -n "$TMPHOME/.zshrc"
   zsh -n "$TMPHOME/.aliases"
-  # No identity, secrets, or long-lived-machine tooling
+  # No identity, secrets, or long-lived-machine tooling. Note .extra and
+  # .gitconfig.local are absent from every class now that they come from the
+  # private overlay — these two assertions are belt-and-braces, and the
+  # .chezmoiignore entries that used to cover them are gone.
   [ ! -e "$TMPHOME/.extra" ]
   [ ! -e "$TMPHOME/.gitconfig.local" ]
   [ ! -e "$TMPHOME/.claude" ]
@@ -51,28 +54,36 @@ teardown() {
   [ ! -e "$TMPHOME/.macos" ]
 }
 
-@test "linux class deploys identity without signing" {
+@test "linux class deploys no identity and no secrets" {
   cd "$BATS_TEST_DIRNAME/.."
   chez init --source "$PWD" --promptString machineClass=linux --apply --exclude scripts
-  [ -f "$TMPHOME/.gitconfig.local" ]
-  grep -q "email = evan.alter@gmail.com" "$TMPHOME/.gitconfig.local"
-  grep -q "user = hadees" "$TMPHOME/.gitconfig.local"
-  ! grep -q "gpgsign = true" "$TMPHOME/.gitconfig.local"
-  ! grep -q "sshCommand" "$TMPHOME/.gitconfig.local"
-  # Secrets template renders (currently reference-free) with private mode
-  [ -f "$TMPHOME/.extra" ]
-  run stat -f "%Lp" "$TMPHOME/.extra"
-  [ "$output" = "600" ] || { run stat -c "%a" "$TMPHOME/.extra"; [ "$output" = "600" ]; }
+  # Identity and secrets live in the private overlay, so a public-only apply
+  # must configure none of it. This is the intended end state, not a gap:
+  # see "Private overlay" in CLAUDE.md.
+  [ ! -e "$TMPHOME/.gitconfig.local" ]
+  [ ! -e "$TMPHOME/.extra" ]
+  [ ! -e "$TMPHOME/.claude/settings.json" ]
+  # ...but the machinery that reads them still deploys
+  [ -f "$TMPHOME/.gitconfig" ]
+  grep -q "path = ~/.gitconfig.local" "$TMPHOME/.gitconfig"
+  [ -x "$TMPHOME/bin/git-credential-gh-user" ]
   # Machine-local memory is created when missing
   [ -f "$TMPHOME/.claude/CLAUDE.local.md" ]
 }
 
-@test "wsl class wires git through Windows ssh.exe" {
+@test "wsl class renders shell config cleanly" {
   cd "$BATS_TEST_DIRNAME/.."
   chez init --source "$PWD" --promptString machineClass=wsl --apply --exclude scripts
-  grep -q "sshCommand = ssh.exe" "$TMPHOME/.gitconfig.local"
-  ! grep -q "gpgsign = true" "$TMPHOME/.gitconfig.local"
+  zsh -n "$TMPHOME/.zshrc"
+  zsh -n "$TMPHOME/.functions"
+  # The wsl-specific git bits (ssh.exe forwarding) moved to the private
+  # overlay along with .gitconfig.local; nothing wsl-specific is left here.
+  [ ! -e "$TMPHOME/.gitconfig.local" ]
 }
+
+# NOTE: the denylist check that asserts no work identity leaks into this repo
+# lives in the private overlay (tests/no-public-leak.bats), not here — a test
+# naming the forbidden strings would leak them itself.
 
 @test "create_ file is never overwritten on re-apply" {
   cd "$BATS_TEST_DIRNAME/.."
