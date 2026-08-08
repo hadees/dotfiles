@@ -223,20 +223,34 @@ function gh() {
 
 # Get macOS Software Updates, and update installed Ruby gems, Homebrew, npm, uv, and their installed packages
 function update() {
-	# Ask for the administrator password upfront, then keep the sudo time
-	# stamp alive until the updates finish (same pattern as ~/.macos)
 	setopt localoptions nomonitor nonotify;
+
+	# No-sudo work first. brew can't share an upfront sudo session
+	# anyway: every brew invocation wipes the sudo timestamp (brew.sh
+	# runs `sudo --reset-timestamp`), so sudo steps are clustered after
+	# it behind a single prompt instead.
+	# HOMEBREW_NO_ASK: brew >=4.5 "ask mode" prompts before upgrades
+	# with dependencies; suppress it so the run is unattended. Casks
+	# that install privileged helpers (e.g. docker-desktop) may still
+	# prompt — brew resets the timestamp by design.
+	command -v brew > /dev/null 2>&1 && { brew update; HOMEBREW_NO_ASK=1 brew upgrade; brew cleanup; };
+	command -v npm > /dev/null 2>&1 && npm install npm -g;
+	command -v npm > /dev/null 2>&1 && npm update -g;
+	command -v uv > /dev/null 2>&1 && uv tool upgrade --all;
+
+	# One password prompt for the rest; keep the sudo timestamp alive
+	# until the updates finish (same pattern as ~/.macos)
 	sudo -v || return;
 	while true; do sudo -n true; sleep 60; done 2>/dev/null &
 	local keepalive_pid=$!;
 	trap 'kill "$keepalive_pid" 2>/dev/null' EXIT;
 
 	[[ $(uname) == Darwin ]] && sudo softwareupdate -i -a;
-	command -v brew > /dev/null 2>&1 && { brew update; brew upgrade; brew cleanup; };
-	command -v npm > /dev/null 2>&1 && npm install npm -g;
-	command -v npm > /dev/null 2>&1 && npm update -g;
-	command -v uv > /dev/null 2>&1 && uv tool upgrade --all;
-	[[ $(which ruby) != /usr/bin/ruby ]] && sudo gem update --system;
-	[[ $(which ruby) != /usr/bin/ruby ]] && sudo gem update;
-	[[ $(which ruby) != /usr/bin/ruby ]] && sudo gem cleanup;
+	# gem --version guards against version-manager shims with no ruby
+	# selected (asdf prints an error for every gem call otherwise).
+	if [[ $(which ruby) != /usr/bin/ruby ]] && gem --version > /dev/null 2>&1; then
+		sudo gem update --system;
+		sudo gem update;
+		sudo gem cleanup;
+	fi;
 }
