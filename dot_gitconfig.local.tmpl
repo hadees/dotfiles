@@ -18,10 +18,15 @@
 	allowedSignersFile = ~/.config/git/allowed_signers
 
 # Work identity follows the remote: any repo whose remote uses the
-# github-work-account SSH alias gets the work-org identity (requires git 2.36+).
+# github-work-account SSH alias or an HTTPS URL under a work org gets the
+# work-org identity (requires git 2.36+).
 [includeIf "hasconfig:remote.*.url:github-work-account:*/**"]
 	path = ~/.gitconfig-work
 [includeIf "hasconfig:remote.*.url:git@github-work-account:*/**"]
+	path = ~/.gitconfig-work
+[includeIf "hasconfig:remote.*.url:https://github.com/work-org/**"]
+	path = ~/.gitconfig-work
+[includeIf "hasconfig:remote.*.url:https://github.com/work-org-two/**"]
 	path = ~/.gitconfig-work
 [commit]
 	gpgsign = true
