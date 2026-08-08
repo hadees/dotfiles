@@ -20,5 +20,6 @@ fd-find
 zoxide
 direnv
 git-delta
+git-filter-repo
 xclip
 # lazygit and k9s are not in Ubuntu's repos — install manually if wanted
