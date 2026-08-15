@@ -199,6 +199,55 @@ function dotfiles() {
 	chezmoi --config ~/.config/chezmoi/private.toml apply "$@";
 }
 
+# Resolve the GitHub account implied by the cwd's origin remote, from the
+# `credential.<url>.username` pins in git config. Every `/`- and `:`-delimited
+# segment of the URL is a candidate, so SSH host aliases, `owner/repo`, and
+# full HTTPS URLs all resolve. Prints nothing and returns 1 when nothing
+# matches. Shared by gh() and claude() so the two can never disagree about
+# which account a repo belongs to.
+function _gh_account_for_cwd() {
+	local seg acct;
+	for seg in ${(s./.)${${"$(command git config --get remote.origin.url 2>/dev/null)"}//:/\/}}; do
+		acct="$(command git config --get "credential.https://github.com/$seg.username" 2>/dev/null)";
+		[[ -n $acct ]] && { print -r -- "$acct"; return 0; };
+	done;
+	return 1;
+}
+
+# Claude Code keeps each account in its own config directory — separate login,
+# settings, plugins, and session history — selected by CLAUDE_CONFIG_DIR. Each
+# profile must be logged in once with `claude auth login`; credentials live in
+# the macOS Keychain and cannot be copied between profiles.
+#
+# Which profile applies is derived from the repo you are standing in, using the
+# same credential pins that drive gh(), so work repos get the work Claude
+# account and personal repos the personal one with no flag to remember.
+#
+# The account -> directory mapping lives in machine-local git config
+# (`claude.profile.<account>`, set by the private overlay), so no account names
+# appear here. Override with CLAUDE_PROFILE, which takes either an account name
+# or a literal directory. With no mapping at all, this is plain `claude` on the
+# default ~/.claude config dir.
+function claude() {
+	local acct dir;
+	if [[ -n $CLAUDE_PROFILE ]]; then
+		dir="$(command git config --get "claude.profile.$CLAUDE_PROFILE" 2>/dev/null)";
+		[[ -z $dir ]] && dir=$CLAUDE_PROFILE;
+	else
+		acct="$(_gh_account_for_cwd)" && \
+			dir="$(command git config --get "claude.profile.$acct" 2>/dev/null)";
+	fi;
+	[[ -n $dir ]] || { command claude "$@"; return; };
+	dir="${dir/#\~/$HOME}";
+	# Setting CLAUDE_CONFIG_DIR at all switches Claude Code off Keychain-backed
+	# auth — even when it points at the default directory, which then reports
+	# logged out. So the default profile must run with the variable UNSET, not
+	# set to its own path. Only non-default profiles get it, and they keep
+	# their credentials in a file under the profile directory instead.
+	[[ $dir == "$HOME/.claude" ]] && { command claude "$@"; return; };
+	CLAUDE_CONFIG_DIR="$dir" command claude "$@";
+}
+
 # `gh` wrapper that picks the GitHub account for each invocation, mirroring
 # the git identity scheme in ~/.gitconfig.local. It injects GH_TOKEN for the
 # single gh invocation rather than running `gh auth switch`, so it never
@@ -246,14 +295,7 @@ function gh() {
 		done;
 	done;
 
-	if [[ -z $acct ]]; then
-		for seg in ${(s./.)${${"$(command git config --get remote.origin.url 2>/dev/null)"}//:/\/}}; do
-			if [[ -n ${gh_owners[$seg]} ]]; then
-				acct=${gh_owners[$seg]};
-				break;
-			fi;
-		done;
-	fi;
+	[[ -n $acct ]] || acct="$(_gh_account_for_cwd)";
 
 	[[ -n $acct ]] || { command gh "$@"; return; };
 	GH_TOKEN="$(command gh auth token --user "$acct" 2>/dev/null)" command gh "$@";

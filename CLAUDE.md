@@ -166,6 +166,35 @@ sets `persistentState` explicitly because both configs live in
 - Don't "helpfully" reintroduce a name, email, org, or private repo name into
   this repo's files, tests, or commit messages.
 
+### Claude Code profiles
+
+Claude Code keeps each account in its own config directory — separate login,
+settings, plugins, and session history — selected by `CLAUDE_CONFIG_DIR`.
+Two profiles are deployed:
+
+| Directory | Profile | Source |
+| --- | --- | --- |
+| `~/.claude` | work (the default config dir; keeps the existing login, plugins, and session history) | `dot_claude/` here + the private overlay's `settings.json` and `CLAUDE.work.md` |
+| `~/.claude-hadees` | personal | `dot_claude-hadees/` here |
+| `~/.claude-shared` | memory imported by both | `dot_claude-shared/` here |
+
+Each profile's `CLAUDE.md` is a thin file that imports the shared memory plus
+its own machine-local (and, for work, work-specific) notes. Settings are
+**not** shared: only the work profile's `settings.json` references the private
+plugin marketplace.
+
+The `claude()` function in `.functions` picks the profile by resolving the
+cwd's origin remote to a GitHub account — via the same
+`credential.<url>.username` pins that drive `gh()` — then looking up
+`claude.profile.<account>` in git config. That mapping lives in the private
+overlay, which is why no account names appear here. Override with
+`CLAUDE_PROFILE=<account-or-directory> claude`. With no pins or no mapping, it
+is plain `claude` on the default directory.
+
+**Each profile must be logged in once** with `claude auth login`; credentials
+live in the macOS Keychain and cannot be copied between profiles — verified,
+copying `.claude.json` does not carry a session.
+
 ### Machine-local secrets (~/.extra)
 
 `~/.extra` is rendered by chezmoi from `private_dot_extra.tmpl` (mode 0600)
