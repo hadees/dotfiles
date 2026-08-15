@@ -31,6 +31,8 @@ com.googlecode.iterm2.plist
 # that assumes a long-lived machine. Identity and secrets need no entry here
 # any more — they come from the private overlay, which these boxes never clone.
 .claude
+.claude-shared
+.claude-hadees
 CLAUDE.md
 .chezmoiscripts/**
 {{ end -}}
