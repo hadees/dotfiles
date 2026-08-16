@@ -13,6 +13,15 @@
 setup() {
   REPO="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
 
+  # Container CI checkouts are owned by another uid and git refuses to read
+  # them ("dubious ownership"), which would silently EMPTY the ls-files
+  # scan lists and turn every guard below vacuous. Mark repos safe via a
+  # per-test global config, then prove the scan list is non-empty so a
+  # future git failure loudly fails the suite instead.
+  export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig"
+  git config --file "$GIT_CONFIG_GLOBAL" safe.directory '*'
+  [ -n "$(git -C "$REPO" ls-files)" ]
+
   # 1Password secret references. The documented occurrences — CLAUDE.md's
   # onepasswordRead example and the literal grep patterns in
   # tests/chezmoi.bats' rendered-home leak guard — are asserted exactly
