@@ -48,7 +48,7 @@ make_repo() {
 }
 
 account_in() {
-  run zsh -c "source '$DOTFUNCTIONS'; cd '$1'; _gh_account_for_cwd"
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$1'; gh_account_for_cwd"
 }
 
 claude_in() {
@@ -56,10 +56,10 @@ claude_in() {
 }
 
 @test "dot_functions defines the claude wrapper and account resolver" {
-  run zsh -c "source '$DOTFUNCTIONS'; whence -w claude _gh_account_for_cwd gh"
+  run zsh -c "source '$DOTFUNCTIONS'; whence -w claude gh_account_for_cwd gh"
   [ "$status" -eq 0 ]
   [[ "$output" == *"claude: function"* ]]
-  [[ "$output" == *"_gh_account_for_cwd: function"* ]]
+  [[ "$output" == *"gh_account_for_cwd: function"* ]]
   [[ "$output" == *"gh: function"* ]]
 }
 
@@ -132,4 +132,41 @@ claude_in() {
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; CLAUDE_PROFILE='$BATS_TEST_TMPDIR/custom-profile' claude"
   [ "$status" -eq 0 ]
   [ "$output" = "CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/custom-profile" ]
+}
+
+@test "claude-doctor: traces resolution and flags a missing login" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"wrapper: claude: function"* ]]
+  [[ "$output" == *"account: personal-account"* ]]
+  [[ "$output" == *"launch:  $HOME/.claude-personal"* ]]
+  [[ "$output" == *"NOT LOGGED IN"* ]]
+}
+
+@test "claude-doctor: names the logged-in account from the profile's .claude.json" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  mkdir -p "$HOME/.claude-personal"
+  echo '{"oauthAccount":{"emailAddress":"person@example.com"}}' \
+    > "$HOME/.claude-personal/.claude.json"
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"logged in as person@example.com"* ]]
+}
+
+@test "no underscore-prefixed function names in dot_functions" {
+  # Claude Code's shell snapshot (Bash tool, `!` commands) carries shell
+  # functions over but silently drops underscore-prefixed ones, leaving
+  # callers like claude() half-defined in those shells.
+  run grep -En '^(function +_|_[A-Za-z0-9_]+ *\(\))' "$BATS_TEST_DIRNAME/../dot_functions"
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+@test "claude-doctor: unpinned repo reports the bare-claude fallback" {
+  repo=$(make_repo 'git@github.com:someone-else/some-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"account: <no credential pin matched>"* ]]
+  [[ "$output" == *"(bare claude fallback)"* ]]
 }

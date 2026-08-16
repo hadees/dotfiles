@@ -205,7 +205,13 @@ function dotfiles() {
 # full HTTPS URLs all resolve. Prints nothing and returns 1 when nothing
 # matches. Shared by gh() and claude() so the two can never disagree about
 # which account a repo belongs to.
-function _gh_account_for_cwd() {
+#
+# NO helper here may have an underscore-prefixed name: Claude Code's shell
+# snapshot (used by its Bash tool and `!` commands) carries over shell
+# functions but silently drops underscore-prefixed ones, leaving callers
+# like claude() half-defined in those shells. tests/claude-profiles.bats
+# enforces this.
+function gh_account_for_cwd() {
 	local seg acct;
 	for seg in ${(s./.)${${"$(command git config --get remote.origin.url 2>/dev/null)"}//:/\/}}; do
 		acct="$(command git config --get "credential.https://github.com/$seg.username" 2>/dev/null)";
@@ -229,23 +235,77 @@ function _gh_account_for_cwd() {
 # or a literal directory. With no mapping at all, this is plain `claude` on the
 # default ~/.claude config dir.
 function claude() {
+	local dir;
+	dir="$(claude_profile_dir)" || { command claude "$@"; return; };
+	# The default profile must run with CLAUDE_CONFIG_DIR UNSET, not set to
+	# its own path — setting the variable at all switches Claude Code to
+	# per-profile credentials (a separate Keychain entry keyed on the dir),
+	# so the default dir with the variable set reports logged out.
+	[[ $dir == "$HOME/.claude" ]] && { command claude "$@"; return; };
+	CLAUDE_CONFIG_DIR="$dir" command claude "$@";
+}
+
+# The profile-directory decision claude() acts on, extracted so claude-doctor
+# reports the same answer claude() uses — the two can never drift. Prints the
+# tilde-expanded directory; prints nothing and returns 1 when claude() would
+# fall through to a bare `claude`.
+function claude_profile_dir() {
 	local acct dir;
 	if [[ -n $CLAUDE_PROFILE ]]; then
 		dir="$(command git config --get "claude.profile.$CLAUDE_PROFILE" 2>/dev/null)";
 		[[ -z $dir ]] && dir=$CLAUDE_PROFILE;
 	else
-		acct="$(_gh_account_for_cwd)" && \
+		acct="$(gh_account_for_cwd)" && \
 			dir="$(command git config --get "claude.profile.$acct" 2>/dev/null)";
 	fi;
-	[[ -n $dir ]] || { command claude "$@"; return; };
-	dir="${dir/#\~/$HOME}";
-	# Setting CLAUDE_CONFIG_DIR at all switches Claude Code off Keychain-backed
-	# auth — even when it points at the default directory, which then reports
-	# logged out. So the default profile must run with the variable UNSET, not
-	# set to its own path. Only non-default profiles get it, and they keep
-	# their credentials in a file under the profile directory instead.
-	[[ $dir == "$HOME/.claude" ]] && { command claude "$@"; return; };
-	CLAUDE_CONFIG_DIR="$dir" command claude "$@";
+	[[ -n $dir ]] || return 1;
+	print -r -- "${dir/#\~/$HOME}";
+}
+
+# Diagnose what `claude` would do right here: is the wrapper loaded, what does
+# the cwd resolve to, which profile directory launches, and does that profile
+# hold a login. Run it in any terminal tab and paste the output when profile
+# selection misbehaves. If the command itself is not found, the tab's shell
+# predates the last `chezmoi apply` — open a new shell.
+function claude-doctor() {
+	local origin acct map dir cred email;
+	print -r -- "wrapper: $(whence -w claude)";
+	print -r -- "cwd:     $PWD";
+	origin="$(command git config --get remote.origin.url 2>/dev/null)";
+	print -r -- "origin:  ${origin:-<none — not a git repo or no origin>}";
+	acct="$(gh_account_for_cwd)";
+	print -r -- "account: ${acct:-<no credential pin matched>}";
+	map="";
+	[[ -n $acct ]] && map="$(command git config --get "claude.profile.$acct" 2>/dev/null)";
+	print -r -- "mapping: ${map:-<none>}";
+	print -r -- "env:     CLAUDE_PROFILE=${CLAUDE_PROFILE-<unset>} CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR-<unset>}";
+	if dir="$(claude_profile_dir)"; then
+		print -r -- "launch:  $dir";
+	else
+		dir="$HOME/.claude";
+		print -r -- "launch:  $dir (bare claude fallback)";
+	fi;
+	if [[ $dir == "$HOME/.claude" ]]; then
+		# The default profile authenticates via the shared Keychain entry and
+		# records no account metadata on disk — presence is all we can check.
+		if ! command -v security >/dev/null; then
+			cred="default profile uses the macOS Keychain; cannot check from here";
+		elif command security find-generic-password -s "Claude Code-credentials" >/dev/null 2>&1; then
+			cred="Keychain entry present (run /status in the session to see which account)";
+		else
+			cred="NOT LOGGED IN — run: claude auth login";
+		fi;
+	else
+		# Non-default profiles get their own Keychain entry and record the
+		# account email in the profile's .claude.json at login.
+		email="$(command sed -n 's/.*"emailAddress"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$dir/.claude.json" 2>/dev/null | command head -n1)";
+		if [[ -n $email ]]; then
+			cred="logged in as $email";
+		else
+			cred="NOT LOGGED IN — run: CLAUDE_CONFIG_DIR=$dir claude auth login";
+		fi;
+	fi;
+	print -r -- "creds:   $cred";
 }
 
 # `gh` wrapper that picks the GitHub account for each invocation, mirroring
@@ -295,7 +355,7 @@ function gh() {
 		done;
 	done;
 
-	[[ -n $acct ]] || acct="$(_gh_account_for_cwd)";
+	[[ -n $acct ]] || acct="$(gh_account_for_cwd)";
 
 	[[ -n $acct ]] || { command gh "$@"; return; };
 	GH_TOKEN="$(command gh auth token --user "$acct" 2>/dev/null)" command gh "$@";
