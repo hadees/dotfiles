@@ -15,6 +15,12 @@ alias dt="cd ~/Desktop"
 alias c="cd ~/code"
 alias g="git"
 
+# Fat-finger corrections. These expand to the `claude` function in
+# ~/.functions, so they still pick the per-account profile.
+alias cladue="claude"
+alias claud="claude"
+alias clade="claude"
+
 # Ruby development
 alias fr='overmind run bundle exec'
 alias fs='overmind start -f Procfile.local'

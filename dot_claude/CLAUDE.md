@@ -1,4 +1,4 @@
-# User memory — ICA profile
+# User memory — work profile
 
 This is the work Claude Code profile (`~/.claude`, the default config dir),
 selected automatically by the `claude()` wrapper when the repo's origin

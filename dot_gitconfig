@@ -205,8 +205,21 @@
 
 	insteadOf = "gist:"
 
+# git-lfs (declared in Brewfile / packages-apt.txt). Tracked here so
+# `git lfs install` and chezmoi stop fighting over the deployed file.
+[filter "lfs"]
+
+	process = git-lfs filter-process
+	required = true
+	clean = git-lfs clean -- %f
+	smudge = git-lfs smudge -- %f
+
 # Machine-local overrides: signing key, user identity, work-specific config.
 # Not tracked in the repo — set user.name, user.email, user.signingkey per machine.
 [include]
 
+	# Identity is overlay-supplied and optional: .local comes from the
+	# personal overlay, .work from the work overlay. git silently skips
+	# whichever is absent, so a public-only machine has no identity at all.
 	path = ~/.gitconfig.local
+	path = ~/.gitconfig.work
