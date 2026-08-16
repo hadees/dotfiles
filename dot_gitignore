@@ -21,3 +21,5 @@ scratch.*
 
 # Generated zsh completion cache
 .zcompdump
+
+**/.claude/settings.local.json
