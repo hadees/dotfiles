@@ -154,6 +154,21 @@ claude_in() {
   [[ "$output" == *"logged in as person@example.com"* ]]
 }
 
+@test "personal profile settings guard every cross-profile path" {
+  # The statusline script is installed into ~/.claude by the work profile's
+  # private marketplace. The public source must not hard-depend on it (or on
+  # anything else the overlay provides): any reference to the work profile
+  # dir in the personal settings must sit behind an existence check, so a
+  # public-only machine gets a silent no-op instead of a dead command.
+  f="$BATS_TEST_DIRNAME/../private_dot_claude-hadees/settings.json"
+  while IFS= read -r line; do
+    [[ "$line" == *'[ -x '* || "$line" == *'[ -f '* ]] || {
+      echo "unguarded work-profile reference: $line"
+      return 1
+    }
+  done < <(grep -F '.claude/' "$f" || true)
+}
+
 @test "no underscore-prefixed function names in dot_functions" {
   # Claude Code's shell snapshot (Bash tool, `!` commands) carries shell
   # functions over but silently drops underscore-prefixed ones, leaving

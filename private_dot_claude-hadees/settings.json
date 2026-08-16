@@ -1,7 +1,7 @@
 {
   "statusLine": {
     "type": "command",
-    "command": "~/.claude/statusline.sh nerd",
+    "command": "[ -x ~/.claude/statusline.sh ] && exec ~/.claude/statusline.sh nerd || true",
     "refreshInterval": 1
   },
   "enabledPlugins": {
