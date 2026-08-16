@@ -23,6 +23,28 @@ setup() {
   TMPHOME="$(mktemp -d)"
 }
 
+# Content-level leak guard: after an apply, nothing in the rendered home may
+# look like a secret. Generic patterns only — a test naming a real account,
+# org, or address would itself be the leak (see the NOTE below). Excluded as
+# known-benign: vendored vim syntax files (upstream maintainer addresses),
+# .gitconfig's git@github.com URL rewrites (hosts, not identities), and
+# CLAUDE.md's documented onepasswordRead template example (an op:// reference
+# shape from the public docs, not a rendered secret).
+assert_no_secret_leaks() {
+  local leaks
+  leaks="$(grep -rEIn --exclude-dir=.vim \
+    -e 'op://' \
+    -e 'ghp_[A-Za-z0-9]{16,}' \
+    -e 'gho_[A-Za-z0-9]{16,}' \
+    -e 'github_pat_[A-Za-z0-9_]{20,}' \
+    -e 'AKIA[0-9A-Z]{16}' \
+    -e 'BEGIN [A-Z ]*PRIVATE KEY' \
+    -e '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' \
+    "$TMPHOME" | grep -vE 'git@(gist\.)?github\.com|\{\{ onepasswordRead ' || true)"
+  echo "$leaks"
+  [ -z "$leaks" ]
+}
+
 teardown() {
   rm -rf "$TMPHOME"
 }
@@ -52,6 +74,57 @@ teardown() {
   [ ! -e "$TMPHOME/packages-apt.txt" ]
   [ ! -e "$TMPHOME/tests" ]
   [ ! -e "$TMPHOME/.macos" ]
+  # Nothing rendered may look like a secret
+  assert_no_secret_leaks
+}
+
+@test "mac class pins sourceDir and deploys the shell layer" {
+  cd "$BATS_TEST_DIRNAME/.."
+  chez init --source "$PWD" --promptString machineClass=mac --apply --exclude scripts
+  # The mac-only bit that renders identically on every platform: the config
+  # pins the development clone as the source of truth.
+  grep -q 'sourceDir = "~/code/dotfiles"' "$TMPHOME/.config/chezmoi/chezmoi.toml"
+  grep -q 'machineClass = "mac"' "$TMPHOME/.config/chezmoi/chezmoi.toml"
+  # Shell layer lands and parses
+  [ -f "$TMPHOME/.zshrc" ]
+  [ -f "$TMPHOME/.functions" ]
+  zsh -n "$TMPHOME/.zshrc"
+  # macOS GUI config deploys only where a GUI exists — .chezmoiignore keys
+  # these off the OS, not the machine class, so gate on uname for Linux CI.
+  if [ "$(uname -s)" = "Darwin" ]; then
+    [ -f "$TMPHOME/.mackup.cfg" ]
+    [ -f "$TMPHOME/com.googlecode.iterm2.plist" ]
+  else
+    [ ! -e "$TMPHOME/.mackup.cfg" ]
+    [ ! -e "$TMPHOME/com.googlecode.iterm2.plist" ]
+  fi
+  assert_no_secret_leaks
+}
+
+@test "an invalid machineClass fails init before anything is applied" {
+  cd "$BATS_TEST_DIRNAME/.."
+  run chez init --source "$PWD" --promptString machineClass=bogus --apply --exclude scripts
+  echo "$output"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *machineClass* ]]
+  [ ! -e "$TMPHOME/.zshrc" ]
+}
+
+@test "package-install script templates render to valid shell" {
+  cd "$BATS_TEST_DIRNAME/.."
+  # Init gives execute-template the sandbox config, so .chezmoi data and the
+  # source dir exist. Render only — the scripts must never execute in a test.
+  chez init --source "$PWD" --promptString machineClass=linux
+  local tmpl rendered shebang
+  for tmpl in .chezmoiscripts/*/run_onchange_*.sh.tmpl; do
+    rendered="$TMPHOME/$(dirname "$tmpl" | tr / -)-$(basename "$tmpl" .tmpl)"
+    chez execute-template --source "$PWD" < "$tmpl" > "$rendered"
+    shebang="$(head -n 1 "$rendered")"
+    case "$shebang" in
+      *bash*) bash -n "$rendered" ;;
+      *) sh -n "$rendered" ;;
+    esac
+  done
 }
 
 @test "linux class deploys no identity and no secrets" {

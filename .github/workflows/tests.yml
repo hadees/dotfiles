@@ -31,6 +31,38 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: MACOS_APPLY_OK=1 bats tests/macos-apply.bats
 
+  # The README's fresh-machine command, run for real end to end: the get.chezmoi.io
+  # installer, --one-shot against this checkout, ephemeral class. Proves a
+  # disposable box gets a working shell config, no identity, and no chezmoi
+  # left behind — the one path the sandboxed bats suites cannot cover.
+  test-bootstrap:
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    steps:
+      - name: Install dependencies
+        run: apt-get update && apt-get install -y curl git zsh rsync ca-certificates
+      - uses: actions/checkout@v3
+      - name: One-shot bootstrap from this checkout
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          sh -c "$(curl -fsLS get.chezmoi.io)" -- init --one-shot \
+            --source "$PWD" --promptString machineClass=ephemeral
+      - name: Verify the ephemeral contract
+        run: |
+          test -f "$HOME/.zshrc"
+          test -f "$HOME/.functions"
+          zsh -c 'source "$HOME/.zshrc"' </dev/null
+          # ephemeral means no identity, no secrets, no Claude profiles
+          test ! -e "$HOME/.gitconfig.local"
+          test ! -e "$HOME/.gitconfig.work"
+          test ! -e "$HOME/.extra"
+          test ! -d "$HOME/.claude"
+          test ! -d "$HOME/.claude-hadees"
+          # --one-shot removes chezmoi and its state after applying
+          ! command -v chezmoi
+          test ! -d "$HOME/.config/chezmoi"
+          test ! -d "$HOME/.local/share/chezmoi"
+
   test-rocky:
     # No hosted Rocky runners exist; run in a container on the ubuntu host.
     runs-on: ubuntu-latest

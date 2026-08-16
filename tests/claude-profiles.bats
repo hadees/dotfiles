@@ -185,3 +185,190 @@ claude_in() {
   [[ "$output" == *"account: <no credential pin matched>"* ]]
   [[ "$output" == *"(bare claude fallback)"* ]]
 }
+
+@test "resolver: mixed-case origin owner resolves through the lowercase pin" {
+  # GitHub owners are case-insensitive; the pins are recorded lowercase.
+  repo=$(make_repo 'git@github.com:Octo-Personal/Some-Repo.git')
+  account_in "$repo"
+  [ "$status" -eq 0 ]
+  [ "$output" = "personal-account" ]
+}
+
+@test "claude: non-repo cwd uses claude.profile.default when pinned" {
+  git config --file "$GIT_CONFIG_GLOBAL" claude.profile.default '~/.claude-fallback'
+  claude_in "$BATS_TEST_TMPDIR"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=$HOME/.claude-fallback" ]
+}
+
+@test "claude: non-repo cwd without a default pin stays bare claude" {
+  claude_in "$BATS_TEST_TMPDIR"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=UNSET" ]
+}
+
+@test "claude: CLAUDE_PROFILE typo warns on stderr and falls back to the default profile" {
+  # A typo'd account name must not become a relative CLAUDE_CONFIG_DIR — the
+  # wrapper warns and launches the default profile instead, even in a repo
+  # that would otherwise have mapped to a non-default one.
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; CLAUDE_PROFILE=presonal-account claude 2>'$BATS_TEST_TMPDIR/stderr'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=UNSET" ]
+  grep -q "CLAUDE_PROFILE='presonal-account' is neither a mapped account nor a directory" \
+    "$BATS_TEST_TMPDIR/stderr"
+}
+
+@test "typo alias: cladue routes through the same profile selection as claude" {
+  # dot_aliases maps fat-fingered spellings to `claude`, which must expand to
+  # the wrapper function, not a bare binary. `eval` forces alias expansion
+  # after both files are sourced.
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  run zsh -c "source '$BATS_TEST_DIRNAME/../dot_aliases'; source '$DOTFUNCTIONS'; cd '$repo'; eval cladue"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=$HOME/.claude-personal" ]
+}
+
+# --- dotfiles() sequencing -------------------------------------------------
+#
+# dotfiles() applies the public source, then every overlay config in
+# ~/.config/chezmoi/*.toml (skipping chezmoi.toml itself) whose source clone
+# exists. The stub chezmoi logs each invocation's argv to $CHEZMOI_LOG,
+# answers `--config <cfg> source-path` from a companion `<cfg>.src` file
+# (which never matches the *.toml glob), and fails the plain `apply` when
+# $CHEZMOI_FAIL exists.
+
+make_chezmoi_stub() {
+  CHEZMOI_LOG="$BATS_TEST_TMPDIR/chezmoi.log"
+  CHEZMOI_FAIL="$BATS_TEST_TMPDIR/chezmoi.fail"
+  : > "$CHEZMOI_LOG"
+  cat > "$BATS_TEST_TMPDIR/bin/chezmoi" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$BATS_TEST_TMPDIR/chezmoi.log"
+case " $* " in
+  *" source-path "*)
+    cfg=
+    while [ $# -gt 0 ]; do
+      [ "$1" = --config ] && cfg=$2
+      shift
+    done
+    cat "$cfg.src" 2>/dev/null
+    exit 0
+    ;;
+esac
+if [ "$*" = apply ] && [ -e "$BATS_TEST_TMPDIR/chezmoi.fail" ]; then
+  exit 1
+fi
+exit 0
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/chezmoi"
+}
+
+# Add an overlay config named $1 whose stubbed source-path answer is $2.
+make_overlay_cfg() {
+  mkdir -p "$HOME/.config/chezmoi"
+  touch "$HOME/.config/chezmoi/$1"
+  echo "$2" > "$HOME/.config/chezmoi/$1.src"
+}
+
+@test "dotfiles: no overlay configs means exactly one apply" {
+  make_chezmoi_stub
+  run zsh -c "source '$DOTFUNCTIONS'; dotfiles"
+  [ "$status" -eq 0 ]
+  run cat "$CHEZMOI_LOG"
+  [ "$output" = "apply" ]
+}
+
+@test "dotfiles: applies each overlay after the public source, in order, with --config" {
+  make_chezmoi_stub
+  mkdir -p "$BATS_TEST_TMPDIR/src1" "$BATS_TEST_TMPDIR/src2"
+  make_overlay_cfg fake1.toml "$BATS_TEST_TMPDIR/src1"
+  make_overlay_cfg fake2.toml "$BATS_TEST_TMPDIR/src2"
+  # The public config itself must never be re-applied as an overlay.
+  touch "$HOME/.config/chezmoi/chezmoi.toml"
+  run zsh -c "source '$DOTFUNCTIONS'; dotfiles"
+  [ "$status" -eq 0 ]
+  run grep 'apply$' "$CHEZMOI_LOG"
+  [ "$output" = "apply
+--config $HOME/.config/chezmoi/fake1.toml apply
+--config $HOME/.config/chezmoi/fake2.toml apply" ]
+  ! grep -q 'chezmoi\.toml' "$CHEZMOI_LOG"
+}
+
+@test "dotfiles: skips an overlay whose source clone is missing" {
+  make_chezmoi_stub
+  mkdir -p "$BATS_TEST_TMPDIR/src2"
+  make_overlay_cfg fake1.toml "$BATS_TEST_TMPDIR/missing-src"
+  make_overlay_cfg fake2.toml "$BATS_TEST_TMPDIR/src2"
+  run zsh -c "source '$DOTFUNCTIONS'; dotfiles"
+  [ "$status" -eq 0 ]
+  ! grep -q 'fake1\.toml apply' "$CHEZMOI_LOG"
+  run grep 'apply$' "$CHEZMOI_LOG"
+  [ "$output" = "apply
+--config $HOME/.config/chezmoi/fake2.toml apply" ]
+}
+
+@test "dotfiles: a failed public apply aborts before any overlay runs" {
+  make_chezmoi_stub
+  touch "$CHEZMOI_FAIL"
+  mkdir -p "$BATS_TEST_TMPDIR/src1"
+  make_overlay_cfg fake1.toml "$BATS_TEST_TMPDIR/src1"
+  run zsh -c "source '$DOTFUNCTIONS'; dotfiles"
+  [ "$status" -ne 0 ]
+  run cat "$CHEZMOI_LOG"
+  [ "$output" = "apply" ]
+}
+
+# --- claude-as: explicit per-account launcher ------------------------------
+#
+# `claude-as <profile> [args...]` pins one invocation to a named profile,
+# routing through the claude() wrapper. Fixture mappings only — no real
+# account names (see CLAUDE.md).
+
+@test "claude-as: mapped alias pins the profile and forwards args intact" {
+  git config --file "$GIT_CONFIG_GLOBAL" claude.profile.octo-alias '~/.claude-octo'
+  # Extend the stub to also prove the argv it received.
+  printf '#!/bin/sh\necho "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR-UNSET}"\necho "ARGS=$*"\n' \
+    > "$BATS_TEST_TMPDIR/bin/claude"
+  run zsh -c "source '$DOTFUNCTIONS'; claude-as octo-alias -p 'hello world' --model foo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"CLAUDE_CONFIG_DIR=$HOME/.claude-octo"* ]]
+  [[ "$output" == *"ARGS=-p hello world --model foo"* ]]
+}
+
+@test "claude-as: stdin passes through to claude untouched" {
+  git config --file "$GIT_CONFIG_GLOBAL" claude.profile.octo-alias '~/.claude-octo'
+  printf '#!/bin/sh\ncat\n' > "$BATS_TEST_TMPDIR/bin/claude"
+  run zsh -c "source '$DOTFUNCTIONS'; echo round-trip-marker | claude-as octo-alias"
+  [ "$status" -eq 0 ]
+  [ "$output" = "round-trip-marker" ]
+}
+
+@test "claude-as: unknown profile errors, lists profiles, never launches claude" {
+  # An explicit request must never silently fall back to another account.
+  printf '#!/bin/sh\ntouch "$BATS_TEST_TMPDIR/claude-invoked"\n' \
+    > "$BATS_TEST_TMPDIR/bin/claude"
+  run zsh -c "source '$DOTFUNCTIONS'; claude-as no-such-profile 2>'$BATS_TEST_TMPDIR/stderr'"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+  [ ! -e "$BATS_TEST_TMPDIR/claude-invoked" ]
+  grep -q "unknown profile 'no-such-profile'" "$BATS_TEST_TMPDIR/stderr"
+  grep -q '^work-account$' "$BATS_TEST_TMPDIR/stderr"
+  grep -q '^personal-account$' "$BATS_TEST_TMPDIR/stderr"
+}
+
+@test "claude-as: no arguments prints usage and the profile list on stderr" {
+  run zsh -c "source '$DOTFUNCTIONS'; claude-as 2>'$BATS_TEST_TMPDIR/stderr'"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+  grep -q 'usage: claude-as <profile>' "$BATS_TEST_TMPDIR/stderr"
+  grep -q '^work-account$' "$BATS_TEST_TMPDIR/stderr"
+  grep -q '^personal-account$' "$BATS_TEST_TMPDIR/stderr"
+}
+
+@test "claude-as: a literal existing directory works as the profile" {
+  mkdir -p "$BATS_TEST_TMPDIR/literal-profile"
+  run zsh -c "source '$DOTFUNCTIONS'; claude-as '$BATS_TEST_TMPDIR/literal-profile'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/literal-profile" ]
+}
