@@ -2,6 +2,9 @@
      The prompt text stays exactly "machineClass" so scripts can answer it
      with --promptString machineClass=<class>. */ -}}
 {{- $machineClass := promptStringOnce . "machineClass" "machineClass" -}}
+{{- if not (has $machineClass (list "mac" "linux" "wsl" "ephemeral")) -}}
+{{-   fail (printf "machineClass %q is invalid: must be one of mac, linux, wsl, ephemeral" $machineClass) -}}
+{{- end -}}
 
 {{ if eq $machineClass "mac" -}}
 # The development clone doubles as the chezmoi source directory on macs.

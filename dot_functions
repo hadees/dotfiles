@@ -80,7 +80,7 @@ function server() {
 	sleep 1 && open "http://localhost:${port}/" &
 	# Set the default Content-Type to `text/plain` instead of `application/octet-stream`
 	# And serve everything as UTF-8 (although not technically correct, this doesn’t break anything for binary files)
-	python3 -c $’import http.server, functools;\nhandler = http.server.SimpleHTTPRequestHandler;\nhandler.extensions_map[""] = "text/plain";\nfor key in list(handler.extensions_map):\n\thandler.extensions_map[key] += ";charset=UTF-8";\nhttp.server.test(HandlerClass=handler, port=int("’"$port"’"))’ 2>&1;
+	python3 -c $'import http.server, functools;\nhandler = http.server.SimpleHTTPRequestHandler;\nhandler.extensions_map[""] = "text/plain";\nfor key in list(handler.extensions_map):\n\thandler.extensions_map[key] += ";charset=UTF-8";\nhttp.server.test(HandlerClass=handler, port=int("'"$port"'"))' 2>&1;
 }
 
 # Start a PHP server from a directory, optionally specifying the port
@@ -187,22 +187,30 @@ function tre() {
 	tree -aC -I '.git|node_modules|bower_components' --dirsfirst "$@" | less -FRNX;
 }
 
-# Sync this repo to $HOME: the public source first, then the private overlay
-# if it is set up. chezmoi supports one source directory per config file, so
-# the overlay is a second config (~/.config/chezmoi/private.toml) pointing at
-# a second source; see that repo's README for the one-time init. Machines
-# without the overlay — including every `ephemeral` box — get the public pass
-# only, which is why nothing in the public source depends on it.
+# Sync this repo to $HOME: the public source first, then every private
+# overlay that is set up. chezmoi supports one source directory per config
+# file, so each overlay is its own config in ~/.config/chezmoi/*.toml
+# pointing at its own source; see each overlay repo's README for the
+# one-time init. An overlay whose source clone is missing is skipped, so
+# machines without any overlay — including every `ephemeral` box — get the
+# public pass only, which is why nothing in the public source depends on
+# one existing. Which overlays a machine carries defines what it is: a
+# personal box gets the personal overlay, a work box the work one, a
+# machine used for both gets both.
 function dotfiles() {
 	chezmoi apply "$@" || return;
-	[[ -d ~/code/dotfiles-private && -f ~/.config/chezmoi/private.toml ]] || return 0;
-	chezmoi --config ~/.config/chezmoi/private.toml apply "$@";
+	local cfg src;
+	for cfg in ~/.config/chezmoi/*.toml(N); do
+		[[ ${cfg:t} == chezmoi.toml ]] && continue;
+		src="$(chezmoi --config "$cfg" source-path 2>/dev/null)" && [[ -d $src ]] || continue;
+		chezmoi --config "$cfg" apply "$@" || return;
+	done;
 }
 
 # Resolve the GitHub account implied by the cwd's origin remote, from the
-# `credential.<url>.username` pins in git config. Every `/`- and `:`-delimited
-# segment of the URL is a candidate, so SSH host aliases, `owner/repo`, and
-# full HTTPS URLs all resolve. Prints nothing and returns 1 when nothing
+# `credential.<url>.username` pins in git config. The OWNER path segment is
+# parsed positionally from ssh/scp-alias/https URL shapes, lowercased, and
+# looked up against the pins. Prints nothing and returns 1 when nothing
 # matches. Shared by gh() and claude() so the two can never disagree about
 # which account a repo belongs to.
 #
@@ -212,11 +220,23 @@ function dotfiles() {
 # like claude() half-defined in those shells. tests/claude-profiles.bats
 # enforces this.
 function gh_account_for_cwd() {
-	local seg acct;
-	for seg in ${(s./.)${${"$(command git config --get remote.origin.url 2>/dev/null)"}//:/\/}}; do
-		acct="$(command git config --get "credential.https://github.com/$seg.username" 2>/dev/null)";
-		[[ -n $acct ]] && { print -r -- "$acct"; return 0; };
-	done;
+	local url owner acct;
+	url="$(command git config --get remote.origin.url 2>/dev/null)";
+	[[ -n $url ]] || return 1;
+	url=${url%.git};
+	# Parse the OWNER positionally instead of trying every segment, so a repo
+	# that happens to be named after a pinned owner can never hijack the
+	# lookup. Lowercase it: GitHub owners are case-insensitive, the pins are
+	# recorded lowercase.
+	case $url in
+		(*://*) owner=${${url#*://*/}%%/*};;  # https://host/owner/repo
+		(*:*)   owner=${${url#*:}%%/*};;      # [user@]host:owner/repo (ssh, incl. aliases)
+		(*)     return 1;;                    # local path or something else — no owner
+	esac;
+	owner=${(L)owner};
+	[[ -n $owner ]] || return 1;
+	acct="$(command git config --get "credential.https://github.com/$owner.username" 2>/dev/null)";
+	[[ -n $acct ]] && { print -r -- "$acct"; return 0; };
 	return 1;
 }
 
@@ -240,8 +260,11 @@ function claude() {
 	# The default profile must run with CLAUDE_CONFIG_DIR UNSET, not set to
 	# its own path — setting the variable at all switches Claude Code to
 	# per-profile credentials (a separate Keychain entry keyed on the dir),
-	# so the default dir with the variable set reports logged out.
-	[[ $dir == "$HOME/.claude" ]] && { command claude "$@"; return; };
+	# so the default dir with the variable set reports logged out. Unset it
+	# in a subshell: the parent environment may carry another profile's dir
+	# (e.g. `claude-as` to the default profile from inside a non-default
+	# Claude session, whose shells inherit CLAUDE_CONFIG_DIR).
+	[[ $dir == "$HOME/.claude" ]] && { (unset CLAUDE_CONFIG_DIR; command claude "$@"); return; };
 	CLAUDE_CONFIG_DIR="$dir" command claude "$@";
 }
 
@@ -253,13 +276,58 @@ function claude_profile_dir() {
 	local acct dir;
 	if [[ -n $CLAUDE_PROFILE ]]; then
 		dir="$(command git config --get "claude.profile.$CLAUDE_PROFILE" 2>/dev/null)";
-		[[ -z $dir ]] && dir=$CLAUDE_PROFILE;
+		if [[ -z $dir ]]; then
+			# A literal directory is fine; a typo'd account name is not —
+			# without this check it would become a relative CLAUDE_CONFIG_DIR.
+			if [[ $CLAUDE_PROFILE == (\~|/)* || -d $CLAUDE_PROFILE ]]; then
+				dir=$CLAUDE_PROFILE;
+			else
+				print -ru2 -- "claude: CLAUDE_PROFILE='$CLAUDE_PROFILE' is neither a mapped account nor a directory; falling back to the default profile";
+				return 1;
+			fi;
+		fi;
 	else
-		acct="$(gh_account_for_cwd)" && \
-			dir="$(command git config --get "claude.profile.$acct" 2>/dev/null)";
+		# No pin match (not a repo, no origin, unpinned owner) falls back to
+		# the machine-local default profile, `claude.profile.default` — set it
+		# in the overlay of whichever identity should own stray directories on
+		# this machine. Unset, this stays plain `claude`.
+		acct="$(gh_account_for_cwd)" || acct=default;
+		dir="$(command git config --get "claude.profile.$acct" 2>/dev/null)";
 	fi;
 	[[ -n $dir ]] || return 1;
 	print -r -- "${dir/#\~/$HOME}";
+}
+
+# Launch Claude Code pinned to an explicit profile, ignoring the cwd:
+# `claude-as <profile> [args...]`. The profile is an account or alias mapped in
+# `claude.profile.*` (machine-local git config, set by the private overlay) or
+# a literal directory; anything else is an error — an explicit request must
+# never silently fall back to another account. Remaining args and stdin pass
+# through untouched, so piping a prompt in works. Resolution and the
+# default-profile unset-variable special case stay in claude(); this only
+# vets the name and sets CLAUDE_PROFILE for one invocation.
+function claude-as() {
+	local profile names;
+	names="$(command git config --get-regexp '^claude\.profile\.' 2>/dev/null | command sed 's/^claude\.profile\.//; s/ .*//')";
+	[[ -n $names ]] || names="<none mapped in claude.profile.*>";
+	if (( $# == 0 )); then
+		print -ru2 -- "usage: claude-as <profile> [claude args...]";
+		print -ru2 -- "available profiles:";
+		print -ru2 -- "$names";
+		return 1;
+	fi;
+	profile=$1;
+	shift;
+	# Vet the name with the same resolver claude() uses (its warning is
+	# suppressed — ours names the command). Mapped accounts, absolute or
+	# tilde-prefixed paths, and existing directories resolve; typos do not.
+	if ! CLAUDE_PROFILE=$profile claude_profile_dir >/dev/null 2>&1; then
+		print -ru2 -- "claude-as: unknown profile '$profile'";
+		print -ru2 -- "available profiles:";
+		print -ru2 -- "$names";
+		return 1;
+	fi;
+	CLAUDE_PROFILE=$profile claude "$@";
 }
 
 # Diagnose what `claude` would do right here: is the wrapper loaded, what does
@@ -276,7 +344,12 @@ function claude-doctor() {
 	acct="$(gh_account_for_cwd)";
 	print -r -- "account: ${acct:-<no credential pin matched>}";
 	map="";
-	[[ -n $acct ]] && map="$(command git config --get "claude.profile.$acct" 2>/dev/null)";
+	if [[ -n $acct ]]; then
+		map="$(command git config --get "claude.profile.$acct" 2>/dev/null)";
+	else
+		map="$(command git config --get claude.profile.default 2>/dev/null)";
+		[[ -n $map ]] && map="$map (claude.profile.default)";
+	fi;
 	print -r -- "mapping: ${map:-<none>}";
 	print -r -- "env:     CLAUDE_PROFILE=${CLAUDE_PROFILE-<unset>} CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR-<unset>}";
 	if dir="$(claude_profile_dir)"; then
@@ -343,13 +416,20 @@ function gh() {
 		'^credential\.https://github\.com/.*\.username' 2>/dev/null);
 	(( ${#gh_owners} )) || { command gh "$@"; return; };
 
-	# Every `/`- and `:`-delimited segment of every argument is a candidate,
-	# so `<org>`, `<org>/<repo>`, `orgs/<org>`, `<host>:<org>/<repo>` and full
-	# URLs all match. First hit wins.
+	# Every `/`- and `:`-delimited segment of every target-shaped argument is
+	# a candidate, so `<org>`, `<org>/<repo>`, `orgs/<org>`, `<host>:<org>/<repo>`
+	# and full URLs all match. First hit wins. Local paths are skipped so a
+	# file argument that happens to contain a pinned owner's name (e.g.
+	# `gh gist create ./notes/<org>.md`) cannot hijack the account.
 	for arg in "$@"; do
-		for seg in ${(s./.)${arg//:/\/}}; do
-			if [[ -n ${gh_owners[$seg]} ]]; then
-				acct=${gh_owners[$seg]};
+		# Skip filesystem-path arguments only: ./ or ../ relative forms and
+		# anything that actually exists. A bare leading / must NOT be
+		# skipped — `gh api /repos/<owner>/<repo>` is a documented endpoint
+		# form and its owner segment has to outrank the cwd.
+		[[ $arg == (.|..)/* || -e $arg ]] && continue;
+		for seg in ${(s./.)${${arg%.git}//:/\/}}; do
+			if [[ -n ${gh_owners[${(L)seg}]} ]]; then
+				acct=${gh_owners[${(L)seg}]};
 				break 2;
 			fi;
 		done;
@@ -358,7 +438,16 @@ function gh() {
 	[[ -n $acct ]] || acct="$(gh_account_for_cwd)";
 
 	[[ -n $acct ]] || { command gh "$@"; return; };
-	GH_TOKEN="$(command gh auth token --user "$acct" 2>/dev/null)" command gh "$@";
+	local tok;
+	tok="$(command gh auth token --user "$acct" 2>/dev/null)";
+	if [[ -z $tok ]]; then
+		# Running on silently would use whichever account happens to be
+		# active — the exact wrong-account failure the pins exist to prevent.
+		print -ru2 -- "gh: no token for pinned account '$acct'; running as the active account";
+		command gh "$@";
+		return;
+	fi;
+	GH_TOKEN="$tok" command gh "$@";
 }
 
 # Get macOS Software Updates, and update installed Ruby gems, Homebrew, npm, uv, and their installed packages
@@ -381,9 +470,10 @@ function update() {
 	# One password prompt for the rest; keep the sudo timestamp alive
 	# until the updates finish (same pattern as ~/.macos)
 	sudo -v || return;
-	while true; do sudo -n true; sleep 60; done 2>/dev/null &
+	while true; do sudo -n true; sleep 60; kill -0 $$ 2>/dev/null || exit; done 2>/dev/null &
 	local keepalive_pid=$!;
-	trap 'kill "$keepalive_pid" 2>/dev/null' EXIT;
+	# Expand the PID now: by the time the trap fires the local is gone.
+	trap "kill $keepalive_pid 2>/dev/null" EXIT;
 
 	[[ $(uname) == Darwin ]] && sudo softwareupdate -i -a;
 	# gem --version guards against version-manager shims with no ruby
