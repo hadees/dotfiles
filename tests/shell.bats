@@ -20,6 +20,18 @@
   done
 }
 
+@test "every bin executable and init/mackup.sh parse under their shebang shell" {
+  cd "$BATS_TEST_DIRNAME/.."
+  [ -n "$(git ls-files 'bin/executable_*')" ]
+  for f in $(git ls-files 'bin/executable_*') init/mackup.sh; do
+    case "$(head -n 1 "$f")" in
+      *zsh*)  zsh -n "$f" ;;
+      *bash*) bash -n "$f" ;;
+      *)      sh -n "$f" ;;
+    esac
+  done
+}
+
 @test "exports, aliases, functions, and prompt source cleanly in zsh" {
   cd "$BATS_TEST_DIRNAME/.."
   run zsh -c '
