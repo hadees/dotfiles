@@ -42,11 +42,15 @@ jobs:
       - name: Install dependencies
         run: apt-get update && apt-get install -y curl git zsh rsync ca-certificates
       - uses: actions/checkout@v3
-      - name: One-shot bootstrap from this checkout
+      - name: One-shot bootstrap from a copy of this checkout
+        # --one-shot purges the SOURCE directory after applying, so it must
+        # run against a copy — pointing it at $GITHUB_WORKSPACE deletes the
+        # runner's working directory out from under the job.
         run: |
-          cd "$GITHUB_WORKSPACE"
+          cp -a "$GITHUB_WORKSPACE" /tmp/dotfiles-src
+          cd /tmp
           sh -c "$(curl -fsLS get.chezmoi.io)" -- init --one-shot \
-            --source "$PWD" --promptString machineClass=ephemeral
+            --source /tmp/dotfiles-src --promptString machineClass=ephemeral
       - name: Verify the ephemeral contract
         run: |
           test -f "$HOME/.zshrc"
@@ -58,10 +62,11 @@ jobs:
           test ! -e "$HOME/.extra"
           test ! -d "$HOME/.claude"
           test ! -d "$HOME/.claude-hadees"
-          # --one-shot removes chezmoi and its state after applying
+          # --one-shot removes chezmoi, its state, and the source copy
           ! command -v chezmoi
           test ! -d "$HOME/.config/chezmoi"
           test ! -d "$HOME/.local/share/chezmoi"
+          test ! -d /tmp/dotfiles-src
 
   test-rocky:
     # No hosted Rocky runners exist; run in a container on the ubuntu host.

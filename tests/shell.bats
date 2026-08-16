@@ -6,6 +6,14 @@
 # use chezmoi naming (dot_*) but are plain files, so they parse directly;
 # tests/chezmoi.bats covers the rendered output.
 
+setup() {
+  # Container CI checkouts are owned by another uid and git refuses to read
+  # them ("dubious ownership"). Point the global config at a per-test file
+  # so marking the repo safe never touches the real machine's config.
+  export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig"
+  git config --file "$GIT_CONFIG_GLOBAL" safe.directory '*'
+}
+
 @test "zsh parses the zsh dotfiles" {
   cd "$BATS_TEST_DIRNAME/.."
   for f in dot_zshrc dot_zsh_prompt dot_exports dot_aliases dot_functions; do
