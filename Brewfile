@@ -54,6 +54,7 @@ brew 'libpng' # Library for manipulating PNG images
 brew 'libtiff' # TIFF library and utilities
 brew 'libtool' # Generic library support script
 brew 'libxml2' # GNOME XML library
+brew 'llama.cpp' # Local LLM inference (llama-server serves GGUF models with a web UI + OpenAI-compatible API); no apt package — build from source on Linux
 brew 'llm' # CLI for interacting with LLMs (run: llm install llm-anthropic && llm keys set anthropic)
 brew 'lsusb' # List USB devices
 brew 'lua' # Powerful, lightweight programming language
