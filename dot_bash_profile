@@ -1,6 +1,12 @@
-# This repository now targets zsh; upgrade Bash sessions to zsh automatically.
-if command -v zsh >/dev/null 2>&1; then
-	exec zsh -l
-else
-	echo "zsh is not available; continuing in bash with limited configuration." >&2
-fi
+# This repository now targets zsh; upgrade interactive Bash sessions to zsh
+# automatically. Non-interactive login shells (e.g. `bash -l -c cmd`) stay in
+# bash so their commands are not swallowed by the exec.
+case $- in
+	*i*)
+		if command -v zsh >/dev/null 2>&1; then
+			exec zsh -l
+		else
+			echo "zsh is not available; continuing in bash with limited configuration." >&2
+		fi
+		;;
+esac
