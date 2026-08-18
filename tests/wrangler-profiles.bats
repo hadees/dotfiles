@@ -287,7 +287,7 @@ STUB
   [ "$status" -ne 0 ]
   [ -z "$output" ]
   grep -q "No version is set for command wrangler" "$BATS_TEST_TMPDIR/stderr"
-  grep -q "cannot bind $repo to profile 'personal-profile' (see above; \\\`wrangler-doctor\\\` shows which wrangler ran)" "$BATS_TEST_TMPDIR/stderr"
+  grep -qF "cannot bind $repo to profile 'personal-profile' (see above; \`wrangler-doctor\` shows which wrangler ran)" "$BATS_TEST_TMPDIR/stderr"
   ! grep -q "auth create" "$BATS_TEST_TMPDIR/stderr"
 }
 
