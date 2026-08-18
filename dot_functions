@@ -276,6 +276,9 @@ function bin_trace() {
 			target="$(command nodenv which "${bin:t}" 2>/dev/null)" || target="";
 		fi;
 		[[ -n $target ]] || { print -r -- "$bin -> <not installed under the selected node>"; return 0; };
+		# A version manager whose data dir is missing (e.g. a sandboxed HOME)
+		# answers `which` with the shim itself — nothing to follow.
+		[[ $target == "$bin" ]] && target="";
 	fi;
 	real=${${target:-$bin}:A};
 	if [[ -e $real ]]; then

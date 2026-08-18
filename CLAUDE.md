@@ -61,6 +61,13 @@ bats tests/macos.bats
 bats tests/bootstrap.bats
 ```
 
+To *run* the dotfiles rather than test them — render a machine class into a
+sandbox `$HOME`, drive the resulting zsh (prompt, wrappers, doctors) one-shot
+or under tmux, stack overlays, or see what a real apply would change — use
+the `/run-dotfiles` skill (`.claude/skills/run-dotfiles/driver.sh`); each
+overlay carries a matching `run-<overlay>` skill that stacks itself on it.
+Skill directories are dot-prefixed, so chezmoi never deploys them.
+
 CI (`.github/workflows/tests.yml`) runs the suite on `ubuntu-latest`,
 `macos-latest`, Rocky Linux 9 (container), and WSL Ubuntu (windows runner).
 The macOS job additionally executes `.macos` for real and asserts settings
