@@ -258,6 +258,36 @@ wrapper. Consequences:
   key/signer exist, the origin's SSH alias resolution, https credential
   routing. `doctor` runs all four.
 
+### Link routing (Finicky → Chrome profiles)
+
+macOS hands every external link to the default browser, and Chrome opens
+it in whichever profile's window was active last — wrong half the time on
+a machine with personal, work, and per-company profiles. **Finicky**
+(`cask 'finicky'`, set as the default browser once from its own window) is
+the router: it launches Chrome with `--profile-directory=` per link, picking
+the profile by URL (or by which app the link was clicked in).
+
+The config is split the same way as everything else here — machinery public,
+identity in overlays:
+
+| Target | Source | Role |
+| --- | --- | --- |
+| `~/.finicky.ts` | public `dot_finicky.ts` | composer: imports the two fragments, work rules first, options |
+| `~/.config/finicky/lib.ts` | public | helpers: `chrome(profileName)`, `hosts(...)`, `githubOwners(...)`, `openedBy(bundleIds...)`, `any(...)` |
+| `~/.config/finicky/personal.ts` | personal overlay (public deploys a `create_` stub) | personal/per-company rules **and the `defaultBrowser`** for unmatched links |
+| `~/.config/finicky/work.ts` | work overlay (public deploys a `create_` stub) | work domains, work GitHub orgs, work Cloudflare account |
+
+Fragments export `default` (handler array), optional `rewrite`, and personal
+also `defaultBrowser`. Chrome profiles are addressed by **display name**
+(Finicky resolves it via Chrome's `Local State`). Facts learned from the
+source that shape this: the config must be `.ts` (Finicky bundles with
+esbuild; a `.js` config is babel-copied elsewhere first and loses relative
+imports); Finicky caches the bundle keyed on the entry file's mtime, so a
+fragment edit needs `touch ~/.finicky.ts` — `dotfiles()` does that after
+applying overlays. Debug with `~/Library/Logs/Finicky/` (`logRequests` is
+on) or `Finicky --dry-run` + `open -a Finicky <url>`. macOS-only: ignored
+elsewhere via `.chezmoiignore`.
+
 ### Machine-local secrets (~/.extra)
 
 `~/.extra` is rendered by chezmoi from `private_dot_extra.tmpl` (mode 0600)

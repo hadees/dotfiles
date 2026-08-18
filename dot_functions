@@ -205,6 +205,12 @@ function dotfiles() {
 		src="$(chezmoi --config "$cfg" source-path 2>/dev/null)" && [[ -d $src ]] || continue;
 		chezmoi --config "$cfg" apply "$@" || return;
 	done;
+	# Finicky caches its bundled config keyed on ~/.finicky.ts's mtime, so an
+	# overlay's rule fragment (imported by it) changing is invisible until the
+	# entry file is touched. Cheap and idempotent; skipped where Finicky
+	# isn't deployed.
+	[[ -f ~/.finicky.ts ]] && command touch ~/.finicky.ts;
+	return 0;
 }
 
 # Resolve the GitHub account implied by the cwd's origin remote, from the
