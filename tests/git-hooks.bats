@@ -176,6 +176,24 @@ make_repo() {
   [[ "$output" == *"gate:    OFF — core.hooksPath unset"* ]]
 }
 
+@test "a local pre-commit that runs git itself does not see HOOK_NAME leak into nested hooks" {
+  # The pre-commit framework stashes and `git checkout -- .`s inside the
+  # pre-commit hook; that nested checkout fires post-checkout, which must
+  # resolve to the repo's post-checkout (with checkout args), not to
+  # pre-commit again because HOOK_NAME was still in the environment.
+  repo=$(make_repo 'git@github.com:someone-else/some-repo.git')
+  local_hooks="$repo/.git/hooks"; mkdir -p "$local_hooks"
+  printf '#!/bin/sh\necho "LOCAL-PRE-COMMIT args=$#" >&2\ngit checkout -q -- . \n' > "$local_hooks/pre-commit"
+  printf '#!/bin/sh\necho "LOCAL-POST-CHECKOUT args=$#" >&2\n' > "$local_hooks/post-checkout"
+  chmod +x "$local_hooks/pre-commit" "$local_hooks/post-checkout"
+  run git -C "$repo" commit -q -m init
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"LOCAL-PRE-COMMIT args=0"* ]]
+  [[ "$output" == *"LOCAL-POST-CHECKOUT args=3"* ]]
+  # exactly one pre-commit run — never re-entered by the nested checkout
+  [ "$(printf '%s\n' "$output" | grep -c LOCAL-PRE-COMMIT)" -eq 1 ]
+}
+
 @test "hook.<name>.run: repo-local config commands run from the repo root before the local hook, and block on failure" {
   repo=$(make_repo 'git@github.com:someone-else/some-repo.git')
   git -C "$repo" config --add hook.pre-commit.run 'echo "RUN1 in $(pwd)" >&2'

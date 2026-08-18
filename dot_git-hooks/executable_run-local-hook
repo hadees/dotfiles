@@ -16,6 +16,11 @@
 # its tree — e.g. the private overlay pointing the public dotfiles clone's
 # pre-push at its own leak test (docs/private-overlays.md).
 name=${HOOK_NAME:-${0##*/}}
+# HOOK_NAME is how pre-commit hands its name over after its own check; drop
+# it before anything else runs, or a hook that itself invokes git (the
+# pre-commit framework's stash/checkout dance) would see nested hooks —
+# post-checkout — resolve to the wrong name and get the wrong arguments.
+unset HOOK_NAME
 top="$(git rev-parse --show-toplevel 2>/dev/null)"
 git config --get-all "hook.$name.run" 2>/dev/null | while IFS= read -r cmd; do
 	[ -n "$cmd" ] || continue
