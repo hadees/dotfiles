@@ -154,7 +154,10 @@ Add `~/.extra` (from the private overlay, or hand-written) for per-machine overr
 **This repo is public and must stay identity-free.** Anything that names a
 person, an account, an organization, or a private repo lives in **private
 chezmoi overlays** — additional chezmoi configs in `~/.config/chezmoi/*.toml`,
-each pointing at its own source clone. Ownership follows content:
+each pointing at its own source clone. `docs/private-overlays.md` is the
+full manual (building an overlay, loading it, what goes where, the leak
+test, the add-an-account checklist); this section is the summary. Ownership
+follows content:
 
 - the **personal overlay** (`hadees/dotfiles-private`, cloned to
   `~/code/dotfiles-private`) carries the personal identity;
@@ -335,7 +338,14 @@ test skips where Node is too old.
 functions — secret *values* come from the 1Password CLI at apply time, only
 references live in that repo:
 
-    export GITHUB_TOKEN={{ onepasswordRead "op://Private/GitHub PAT/token" | quote }}
+    export SOME_SERVICE_TOKEN={{ onepasswordRead "op://Private/Some Service/token" | quote }}
+
+Never export a token that one of the per-repo wrappers routes
+(`GH_TOKEN`/`GITHUB_TOKEN`, `CLOUDFLARE_API_TOKEN`, `ANTHROPIC_API_KEY`,
+`CLAUDE_CONFIG_DIR`, …) from `~/.extra`: it is sourced by every shell, so
+such a token overrides the account routing everywhere. Project tokens belong
+in that project's `op run --env-file`. The overlay's `tests/extra-tmpl.bats`
+enforces this too.
 
 Get a reference path from the 1Password app: right-click a field →
 "Copy Secret Reference".
