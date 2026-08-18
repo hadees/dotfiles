@@ -248,6 +248,11 @@ wrapper. Consequences:
   profile> wrangler …` or `wrangler-as <name> [args...]` (strict: unknown
   names error out listing the mapped ones); both pass `--profile=`, so they
   cannot be combined with the commands that reject it.
+- `wrangler-doctor` traces all of the above for the cwd (pin, mapping,
+  profile existence, binding, what wrangler will use) without running
+  wrangler; `gh-doctor` and `claude-doctor` do the same for their wrappers
+  (`gh-doctor` also verifies the stored token really authenticates as the
+  pinned account, since gh's keyring has handed back the wrong one before)).
 
 ### Machine-local secrets (~/.extra)
 

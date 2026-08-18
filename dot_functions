@@ -708,6 +708,40 @@ function gh() {
 	GH_TOKEN="$tok" command gh "$@";
 }
 
+# Diagnose what `gh` would do right here: is the wrapper loaded, which
+# account does the cwd's origin pin, is a token stored for it, and — the part
+# that has bitten before — does that token actually authenticate as that
+# account (gh's keyring can hand back another user's token). Makes one API
+# call; says so if it cannot. Note gh() also lets an explicit owner in the
+# arguments outrank the cwd, which this only describes.
+function gh-doctor() {
+	local origin acct tok who;
+	print -r -- "wrapper: $(whence -w gh)";
+	print -r -- "cwd:     $PWD";
+	origin="$(command git config --get remote.origin.url 2>/dev/null)";
+	print -r -- "origin:  ${origin:-<none — not a git repo or no origin>}";
+	acct="$(gh_account_for_cwd)";
+	print -r -- "account: ${acct:-<no credential pin matched — gh runs as its active account>}";
+	# Never echo the token itself — only whether it is set.
+	print -r -- "env:     GH_TOKEN=$([[ -n $GH_TOKEN ]] && print -r -- '<set — gh ignores stored logins>' || print -r -- '<unset>')";
+	print -r -- "pins:    $(command git config --get-regexp '^credential\.https://github\.com/.*\.username' 2>/dev/null | command sed 's|credential.https://github.com/||; s|\.username | -> |' | command paste -sd, - | command sed 's/,/, /g')";
+	[[ -n $acct ]] || return 0;
+	tok="$(command gh auth token --user "$acct" 2>/dev/null)";
+	if [[ -z $tok ]]; then
+		print -r -- "token:   NONE for '$acct' — run: gh auth login (as $acct); until then gh runs as the active account";
+		return 0;
+	fi;
+	print -r -- "token:   present for '$acct'";
+	who="$(GH_TOKEN=$tok command gh api user --jq .login 2>/dev/null)";
+	if [[ -z $who ]]; then
+		print -r -- "verify:  could not reach the API (offline?) — identity unverified";
+	elif [[ ${(L)who} == ${(L)acct} ]]; then
+		print -r -- "verify:  token authenticates as $who — OK";
+	else
+		print -r -- "verify:  MISMATCH — token for '$acct' authenticates as '$who'; re-run: gh auth login (as $acct)";
+	fi;
+}
+
 # Get macOS Software Updates, and update installed Ruby gems, Homebrew, npm, uv, and their installed packages
 function update() {
 	setopt localoptions nomonitor nonotify;
