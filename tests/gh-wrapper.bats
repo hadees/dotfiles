@@ -149,6 +149,7 @@ EOF
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; gh-doctor"
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: gh: function"* ]]
+  [[ "$output" == *"binary:  $BATS_TEST_TMPDIR/bin/gh"* ]]
   [[ "$output" == *"account: personal-acct"* ]]
   [[ "$output" == *"pins:    octo-work-org -> work-acct, octo-personal -> personal-acct"* ]]
   [[ "$output" == *"token:   present for 'personal-acct'"* ]]
