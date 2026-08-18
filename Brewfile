@@ -160,6 +160,7 @@ cask 'font-source-code-pro-for-powerline'
 cask 'forklift'
 cask 'gcloud-cli' # Google Cloud SDK and CLI tools
 cask 'github' # GitHub Desktop
+cask 'finicky' # URL router set as the default browser: routes links to the right browser / Chrome profile (rules: ~/.finicky.ts + overlay fragments)
 cask 'google-chrome'
 cask 'google-drive'
 cask 'gpg-suite'

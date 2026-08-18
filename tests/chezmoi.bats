@@ -94,11 +94,36 @@ teardown() {
   if [ "$(uname -s)" = "Darwin" ]; then
     [ -f "$TMPHOME/.mackup.cfg" ]
     [ -f "$TMPHOME/com.googlecode.iterm2.plist" ]
+    [ -f "$TMPHOME/.finicky.ts" ]
+    [ -f "$TMPHOME/.config/finicky/lib.ts" ]
   else
     [ ! -e "$TMPHOME/.mackup.cfg" ]
     [ ! -e "$TMPHOME/com.googlecode.iterm2.plist" ]
+    [ ! -e "$TMPHOME/.finicky.ts" ]
+    [ ! -e "$TMPHOME/.config/finicky" ]
   fi
   assert_no_secret_leaks
+}
+
+@test "finicky: composer, helpers, and overwritable fragment stubs deploy on macOS" {
+  [ "$(uname -s)" = "Darwin" ] || skip "Finicky is macOS-only"
+  cd "$BATS_TEST_DIRNAME/.."
+  chez init --source "$PWD" --promptString machineClass=mac --apply --exclude scripts
+  # The composer imports exactly the two overlay-owned fragments...
+  grep -q 'from "./.config/finicky/personal.ts"' "$TMPHOME/.finicky.ts"
+  grep -q 'from "./.config/finicky/work.ts"' "$TMPHOME/.finicky.ts"
+  # ...which the public repo only stubs (create_: written when missing) so
+  # the bundle always resolves; an overlay overwrites its own without a
+  # fight because create_ never rewrites an existing file.
+  grep -q '^export default \[\];' "$TMPHOME/.config/finicky/personal.ts"
+  grep -q '^export default \[\];' "$TMPHOME/.config/finicky/work.ts"
+  echo 'export default [{ match: "x", browser: "y" }];' > "$TMPHOME/.config/finicky/work.ts"
+  chez apply --source "$PWD" --exclude scripts
+  grep -q 'match: "x"' "$TMPHOME/.config/finicky/work.ts"
+  # (Identity stays out of the public composer/lib by construction; the
+  # personal overlay's no-public-leak test polices the whole public tree.)
+  # And Finicky is in the bundle.
+  grep -q "^cask 'finicky'" Brewfile
 }
 
 @test "an invalid machineClass fails init before anything is applied" {
