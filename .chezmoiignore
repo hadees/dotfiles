@@ -24,6 +24,9 @@ theme
 # macOS GUI configuration has no business on Linux/WSL
 com.googlecode.iterm2.plist
 .mackup.cfg
+# Finicky (URL router) is a macOS app
+.finicky.ts
+.config/finicky
 {{ end -}}
 
 {{ if eq .machineClass "ephemeral" -}}
