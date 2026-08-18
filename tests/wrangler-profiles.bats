@@ -78,12 +78,14 @@ wrangler_in() {
 }
 
 @test "dot_functions defines the wrangler wrapper and its helpers" {
-  run zsh -c "source '$DOTFUNCTIONS'; whence -w wrangler wrangler-as wrangler_profile wrangler_bind wrangler_config_dir wrangler_profile_exists"
+  run zsh -c "source '$DOTFUNCTIONS'; whence -w wrangler wrangler-as wrangler_profile wrangler_bin wrangler_bind wrangler_config_dir wrangler_profile_exists bin_trace"
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrangler: function"* ]]
   [[ "$output" == *"wrangler-as: function"* ]]
   [[ "$output" == *"wrangler_profile: function"* ]]
   [[ "$output" == *"wrangler_bind: function"* ]]
+  [[ "$output" == *"wrangler_bin: function"* ]]
+  [[ "$output" == *"bin_trace: function"* ]]
 }
 
 @test "wrangler: personal repo binds the repo root to its profile once, then runs" {
@@ -151,6 +153,14 @@ wrangler_in() {
   [ "$(sed -n 1p "$WRANGLER_LOG")" = "auth activate personal-profile $repo" ]
 }
 
+@test "wrangler-doctor: a stale binding is shown once, with the rebind note" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  printf '{\n\t"%s": "%s"\n}' "$repo" "other-profile" > "$WRANGLER_CFG/profiles/directory-bindings.json"
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; wrangler-doctor"
+  [[ "$output" == *"binding: $repo -> other-profile  (wrapper will rebind it to 'personal-profile' on the next run)"* ]]
+  [[ "$output" != *"other-profileother-profile"* ]]
+}
+
 @test "wrangler: a stale binding to another profile is rebound to the pinned one" {
   repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
   printf '{\n\t"%s": "%s"\n}\n' "$repo" "somebody-else" > "$WRANGLER_CFG/profiles/directory-bindings.json"
@@ -188,6 +198,97 @@ wrangler_in() {
   [ "$status" -eq 0 ]
   [ "$output" = "RAN: whoami" ]
   ! grep -q '^auth activate' "$WRANGLER_LOG"
+}
+
+# --- which wrangler runs -----------------------------------------------------
+#
+# A project that vendors wrangler (a devDependency, as Cloudflare projects do)
+# must get its own node_modules/.bin/wrangler — the version it pinned, on the
+# node it was installed under — exactly as `npx wrangler` and its package.json
+# scripts would. Everything else gets whatever `wrangler` is on PATH, which is
+# where a version manager's shim (asdf, nodenv) or `npm -g` lives.
+
+# A fake vendored wrangler laid out as npm lays it out: node_modules/.bin/
+# wrangler is a symlink into node_modules/wrangler/, whose package.json
+# carries the version — bin_trace reads that instead of running anything.
+vendor_wrangler() {
+  local root=$1 ver=$2
+  mkdir -p "$root/node_modules/.bin" "$root/node_modules/wrangler/bin"
+  printf '{\n  "name": "wrangler",\n  "version": "%s"\n}\n' "$ver" > "$root/node_modules/wrangler/package.json"
+  cat > "$root/node_modules/wrangler/bin/wrangler.js" <<'STUB'
+#!/bin/sh
+printf 'LOCAL %s\n' "$*" >> "$BATS_TEST_TMPDIR/wrangler.log"
+if [ "$1" = auth ] && [ "$2" = activate ]; then
+  cfg="$XDG_CONFIG_HOME/.wrangler"
+  printf '{\n\t"%s": "%s"\n}\n' "$4" "$3" > "$cfg/profiles/directory-bindings.json"
+  exit 0
+fi
+echo "LOCAL RAN: $*"
+STUB
+  chmod +x "$root/node_modules/wrangler/bin/wrangler.js"
+  ln -s ../wrangler/bin/wrangler.js "$root/node_modules/.bin/wrangler"
+}
+
+@test "wrangler: a repo that vendors wrangler runs node_modules/.bin/wrangler, binding included" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  vendor_wrangler "$repo" 4.999.0
+  wrangler_in "$repo" deploy
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"wrangler: bound $repo to profile 'personal-profile'"* ]]
+  [[ "$output" == *"LOCAL RAN: deploy"* ]]
+  # Both the activate and the command went to the vendored copy; the PATH
+  # stub (asdf shim stand-in) was never touched.
+  [ "$(sed -n 1p "$WRANGLER_LOG")" = "LOCAL auth activate personal-profile $repo" ]
+  [ "$(sed -n 2p "$WRANGLER_LOG")" = "LOCAL deploy" ]
+  ! grep -qv '^LOCAL ' "$WRANGLER_LOG"
+}
+
+@test "wrangler: the vendored wrangler is found from a subdirectory and hoisted monorepo roots" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  vendor_wrangler "$repo" 4.999.0
+  mkdir -p "$repo/packages/worker/src"
+  wrangler_in "$repo/packages/worker/src" whoami
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"LOCAL RAN: whoami"* ]]
+  # PATH lookup is only the fallback: an unpinned non-repo cwd with no
+  # node_modules anywhere above it gets the PATH wrangler.
+  wrangler_in "$BATS_TEST_TMPDIR" whoami
+  [ "$output" = "RAN: whoami" ]
+  # wrangler_bin itself resolves the same way, and the passthrough commands
+  # use it too.
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo/packages/worker'; wrangler_bin"
+  [ "$output" = "$repo/node_modules/.bin/wrangler" ]
+  wrangler_in "$repo" login
+  [ "$output" = "LOCAL RAN: login" ]
+}
+
+@test "wrangler: no wrangler anywhere errors clearly and touches nothing" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  # (exit 127, checked inside the shell so old bats releases don't warn.)
+  run zsh -c "PATH=/usr/bin:/bin; source '$DOTFUNCTIONS'; cd '$repo'; wrangler deploy 2>'$BATS_TEST_TMPDIR/stderr'; [ \$? -eq 127 ]"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  grep -q "wrangler: not found — no node_modules/.bin/wrangler at or above $repo and none on PATH" "$BATS_TEST_TMPDIR/stderr"
+  [ ! -e "$WRANGLER_CFG/profiles/directory-bindings.json" ]
+}
+
+@test "wrangler: a bind failure for a profile that exists does not send you to auth create" {
+  # The stub only knows the profile from its config file; make activate fail
+  # for a profile that does exist (an old wrangler, a shim with no wrangler
+  # under the selected node, ...) — the hint must point at the error and the
+  # doctor, not at creating a profile that is already there.
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  cat > "$BATS_TEST_TMPDIR/bin/wrangler" <<'STUB'
+#!/bin/sh
+echo "No version is set for command wrangler" >&2
+exit 126
+STUB
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; wrangler deploy 2>'$BATS_TEST_TMPDIR/stderr'"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+  grep -q "No version is set for command wrangler" "$BATS_TEST_TMPDIR/stderr"
+  grep -q "cannot bind $repo to profile 'personal-profile' (see above; \\\`wrangler-doctor\\\` shows which wrangler ran)" "$BATS_TEST_TMPDIR/stderr"
+  ! grep -q "auth create" "$BATS_TEST_TMPDIR/stderr"
 }
 
 @test "wrangler: auth, login, and logout pass straight through, even in a pinned repo" {
@@ -290,6 +391,8 @@ wrangler_in() {
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; wrangler-doctor"
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: wrangler: function"* ]]
+  [[ "$output" == *"binary:  $BATS_TEST_TMPDIR/bin/wrangler"* ]]
+  [[ "$output" != *"repo-local"* ]]
   [[ "$output" == *"account: personal-account"* ]]
   [[ "$output" == *"repo pin: wrangler.octo-personal/side-project.profile = side-profile"* ]]
   [[ "$output" == *"mapping: wrangler.profile.personal-account = personal-profile"* ]]
@@ -308,11 +411,58 @@ wrangler_in() {
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo/sub/dir'; CLOUDFLARE_API_TOKEN=sekrit-token wrangler-doctor"
   [ "$status" -eq 0 ]
   [[ "$output" == *"profile: 'personal-profile' exists"* ]]
-  [[ "$output" == *"binding: $repo -> personal-profile"* ]]
+  [[ "$output" == *"binding: $repo -> personal-profile"$'\n'* ]]
   [[ "$output" != *"will bind"* ]]
   [[ "$output" == *"CLOUDFLARE_API_TOKEN=<set"* ]]
   [[ "$output" == *"uses:    CLOUDFLARE_API_TOKEN"* ]]
   [[ "$output" != *"sekrit"* ]]
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo/sub/dir'; wrangler-doctor"
   [[ "$output" == *"uses:    personal-profile (bound at $repo)"* ]]
+}
+
+@test "wrangler-doctor: shows the vendored wrangler, its version from package.json, and the PATH one it outranks" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  vendor_wrangler "$repo" 4.999.0
+  mkdir -p "$repo/sub"
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo/sub'; wrangler-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"binary:  $repo/node_modules/.bin/wrangler (4.999.0) [repo-local, as npx would run; PATH has $BATS_TEST_TMPDIR/bin/wrangler]"* ]]
+  # Still read-only: neither wrangler was executed.
+  [ ! -s "$WRANGLER_LOG" ]
+  run zsh -c "PATH=/usr/bin:/bin; source '$DOTFUNCTIONS'; cd '$BATS_TEST_TMPDIR'; wrangler-doctor"
+  [[ "$output" == *"binary:  NOT FOUND — no node_modules/.bin/wrangler at or above the cwd and none on PATH"* ]]
+}
+
+@test "bin_trace: follows an asdf shim to the selected install, or says the node lacks the command" {
+  # A fake asdf: its shim dir on PATH, and an `asdf which` that answers from
+  # ASDF_STUB_TARGET (or fails, as asdf does when the selected node has no
+  # such command). Nothing here runs the traced binary.
+  export ASDF_DATA_DIR="$BATS_TEST_TMPDIR/asdf"
+  mkdir -p "$ASDF_DATA_DIR/shims" "$ASDF_DATA_DIR/installs/nodejs/22.0.0/lib/node_modules/wrangler/bin" "$ASDF_DATA_DIR/installs/nodejs/22.0.0/bin"
+  printf '{ "name": "wrangler", "version": "4.123.0" }\n' > "$ASDF_DATA_DIR/installs/nodejs/22.0.0/lib/node_modules/wrangler/package.json"
+  : > "$ASDF_DATA_DIR/installs/nodejs/22.0.0/lib/node_modules/wrangler/bin/wrangler.js"
+  ln -s ../lib/node_modules/wrangler/bin/wrangler.js "$ASDF_DATA_DIR/installs/nodejs/22.0.0/bin/wrangler"
+  printf '#!/bin/sh\nexec asdf exec wrangler "$@"\n' > "$ASDF_DATA_DIR/shims/wrangler"
+  chmod +x "$ASDF_DATA_DIR/shims/wrangler"
+  cat > "$BATS_TEST_TMPDIR/bin/asdf" <<'STUB'
+#!/bin/sh
+[ "$1" = which ] || exit 1
+[ -n "${ASDF_STUB_TARGET-}" ] || { echo "unexpected error: no versions set for $2"; exit 1; }
+echo "$ASDF_STUB_TARGET"
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/asdf"
+  export ASDF_STUB_TARGET="$ASDF_DATA_DIR/installs/nodejs/22.0.0/bin/wrangler"
+  run zsh -c "PATH='$ASDF_DATA_DIR/shims:$PATH'; source '$DOTFUNCTIONS'; bin_trace '$ASDF_DATA_DIR/shims/wrangler'"
+  [ "$output" = "$ASDF_DATA_DIR/shims/wrangler -> $ASDF_STUB_TARGET (4.123.0)" ]
+  # The node version in the path must never be mistaken for the tool's.
+  [[ "$output" != *"22.0.0)"* ]]
+  unset ASDF_STUB_TARGET
+  run zsh -c "PATH='$ASDF_DATA_DIR/shims:$PATH'; source '$DOTFUNCTIONS'; bin_trace '$ASDF_DATA_DIR/shims/wrangler'"
+  [ "$output" = "$ASDF_DATA_DIR/shims/wrangler -> <not installed under the selected node>" ]
+  # A cask/native-style install: version read off the path, no execution.
+  mkdir -p "$BATS_TEST_TMPDIR/Caskroom/some-tool/9.8.7"
+  : > "$BATS_TEST_TMPDIR/Caskroom/some-tool/9.8.7/some-tool"
+  ln -s "$BATS_TEST_TMPDIR/Caskroom/some-tool/9.8.7/some-tool" "$BATS_TEST_TMPDIR/bin/some-tool"
+  run zsh -c "source '$DOTFUNCTIONS'; bin_trace '$BATS_TEST_TMPDIR/bin/some-tool'"
+  [ "$output" = "$BATS_TEST_TMPDIR/bin/some-tool (9.8.7)" ]
 }
