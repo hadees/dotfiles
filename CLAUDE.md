@@ -93,6 +93,24 @@ VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 - **`init/`** — one-time setup scripts
 - **`theme/`** — Base16 Eighties color themes (darkened bg `#1a1a1a`) for iTerm2, Terminal.app, and Alfred; VSCode uses the `bsides.Theme-Base16-Eighties` extension installed by `.macos`. Terminal apps (bat, delta, fzf, k9s, vim) use `base16-256`/`base16-eighties` and inherit the iTerm palette.
 
+### Commit identity gate (global git hooks)
+
+`dot_gitconfig` sets `core.hooksPath = ~/.git-hooks` (`dot_git-hooks/`).
+`pre-commit` refuses a commit whose author or committer email is not one of
+`identity.<account>.email` for the account the origin's owner is pinned to
+(same credential pins as the wrappers; the mapping is overlay-supplied, so
+a public-only clone has no opinion), or of `identity.<owner>/<repo>.email`
+when that per-repo pin exists (a side project committing under its own
+identity — mirrors `wrangler.<owner>/<repo>.profile`). `GIT_IDENTITY_CHECK=0` bypasses one
+commit; `git-doctor` shows the verdict (`gate:`). Every hook name there is
+a shim that first runs any `hook.<name>.run` git-config commands (repeatable,
+per-repo `.git/config`; a failure blocks) and then the repo's own
+`.git/hooks/<name>` — via `git rev-parse --git-common-dir`, never
+`--git-path hooks`, which honours `core.hooksPath` and would exec the shim
+itself. Tests: `tests/git-hooks.bats` — its fixture repos must use
+absolute paths for anything under `.git/`, or a relative path lands in this
+clone's `.git/hooks`. Full guide: `docs/private-overlays.md`.
+
 ### Commit signing
 
 Commits are signed with **SSH-format signatures via 1Password**, not GPG.

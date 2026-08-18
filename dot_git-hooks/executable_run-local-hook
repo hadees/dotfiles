@@ -1,0 +1,36 @@
+#!/bin/sh
+# Global git hooks (core.hooksPath = ~/.git-hooks) replace a repo's own
+# .git/hooks directory, so every hook name here first hands off to the
+# repo-local hook of the same name when one exists — tools that install
+# into .git/hooks (lefthook, pre-commit, husky's older mode, ...) keep
+# working. Invoked directly for hooks that have no global behaviour (the
+# symlinks next to this file) and by pre-commit after its own check.
+#
+# A repo that sets core.hooksPath itself (husky ≥ 5) overrides the global
+# path entirely and never reaches here — also fine.
+#
+# Before the local hook, every `hook.<name>.run` git-config value (repeatable;
+# usually set in a repo's own .git/config) is run as a shell command from
+# the repo root, and any failure blocks like a hook would. This is how an
+# untracked, machine-local check gets attached to a repo without touching
+# its tree — e.g. the private overlay pointing the public dotfiles clone's
+# pre-push at its own leak test (docs/private-overlays.md).
+name=${HOOK_NAME:-${0##*/}}
+top="$(git rev-parse --show-toplevel 2>/dev/null)"
+git config --get-all "hook.$name.run" 2>/dev/null | while IFS= read -r cmd; do
+	[ -n "$cmd" ] || continue
+	(cd "${top:-.}" && sh -c "$cmd" </dev/null) || {
+		echo "$name: hook.$name.run command failed: $cmd" >&2
+		exit 1
+	}
+done || exit 1
+# NOT `git rev-parse --git-path hooks`: that honours core.hooksPath and would
+# resolve to this very directory (an exec loop). The repo's own hooks live
+# in its common git dir (shared by worktrees).
+common_dir="$(git rev-parse --git-common-dir 2>/dev/null)"
+[ -n "$common_dir" ] || exit 0
+local_hook="$common_dir/hooks/$name"
+if [ -x "$local_hook" ]; then
+	exec "$local_hook" "$@"
+fi
+exit 0
