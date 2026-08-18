@@ -299,7 +299,60 @@ wrapper. Consequences:
   executable will run, a version-manager shim followed to the install it
   selects for the cwd (or "not installed under the selected node"), and the
   version read off the install without executing it (npm `package.json`,
-  cask/native path segment). `doctor` runs all four.
+  cask/native path segment). `doctor` runs all five (git, gh, claude,
+  wrangler, tailnet).
+
+### Tailnets (two Tailscale networks at once)
+
+Tailscale.app holds several accounts but is *on* one tailnet at a time
+(`tailscale switch`). To reach every tailnet from the terminal without
+switching, `bin/tailnet` runs **one always-on userspace `tailscaled` per
+tailnet** ("tailnet profile" `<name>`): unprivileged
+(`--tun=userspace-networking`, no root, no TUN), a per-user launchd agent
+(`local.tailnet.<name>`; systemd `--user` unit on Linux; `tailnet run` in the
+foreground where neither exists), state in `~/.local/state/tailnet/<name>/`,
+and a local SOCKS5+HTTP proxy on `127.0.0.1:<port>` (recorded in that dir).
+The Homebrew `tailscale` **formula** provides that tailscaled (the app bundle
+has none) — never `brew services start tailscale`: without root it
+crash-loops. The daemon for the tailnet the app is currently on just idles;
+the others' proxies are what make their tailnets reachable. Facts that shape
+this: the userspace proxy resolves MagicDNS itself and dials non-tailnet
+destinations through the OS stack; SOCKS5 and HTTP may share one port; the
+proxies are unauthenticated on loopback (fine on a single-user machine); each
+daemon is its own node in its tailnet (`up --hostname=<host>-<name>`, else it
+becomes `<host>-1`) with its own key expiry — `tailnet up <name>` re-auths.
+
+The shell side mirrors `claude()`/`wrangler()`: `tailnet.profile.<account>`
+in machine-local git config (overlay-supplied) maps the cwd's account to a
+tailnet, `tailnet.<owner>/<repo>.profile` pins one repo, `TAILNET=<name>`
+overrides. But the cwd only sets a **preference**: for a target host,
+`ssh`/`scp`/`sftp`/`curl` wrappers in `.functions` ask each installed daemon
+(cwd's tailnet first) whether the host is one of its nodes — matched against
+`status --json` DNSNames/IPs, never a DNS lookup or `tailscale ip`, and a
+daemon whose socket file is missing is skipped without a call (the CLI stalls
+2 s on a missing socket) — and act only on a hit on a tailnet the app is
+**not** on: ssh gets `-o ProxyCommand="~/bin/tailnet nc <name> %h %p"`
+(absolute path — ssh runs it via `$SHELL -c` without `~/bin` on PATH; `%h`
+is ssh's post-config HostName and stays unresolved, so MagicDNS resolves in
+that daemon), curl gets `--proxy socks5h://localhost:<port>`. A node of the
+app's own tailnet, or of no tailnet, runs untouched; so do hosts whose shape
+can't be a node (public FQDNs, non-CGNAT IPs, localhost — zero calls),
+anything with a ProxyJump/ProxyCommand already (config or `-J`/`-o`: a
+command-line `-o ProxyCommand` would silently override a configured
+ProxyJump), and curl with `-x`/`--noproxy`/proxy variables set. The
+destination comes from `ssh -G` (ssh's own parsing) — scp/sftp extract the
+`[user@]host:` operand first — and for curl the first URL / bare host
+argument. `TAILNET` forces its tailnet with the node check skipped (subnet
+routes the daemons can't vouch for); `tailnet-as <name> <cmd…>` does that and
+exports `ALL_PROXY`/`HTTP(S)_PROXY`/`NO_PROXY` so any proxy-aware tool
+follows. `tailnet-doctor [host]` traces all of it. Without the script or an
+installed tailnet the wrappers are plain passthroughs.
+
+Once per machine: `tailnet install <name> && tailnet up <name>` per tailnet
+(browser login as that account; approve the device in its admin console),
+overlays supply the mappings. Tests: `tests/tailnet.bats` (stub
+tailscale/launchctl/ssh/curl; state in a short `/tmp` dir because a unix
+socket path is capped at ~104 bytes on macOS).
 
 ### Link routing (Finicky → Chrome profiles)
 
