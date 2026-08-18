@@ -146,8 +146,8 @@ each pointing at its own source clone. Ownership follows content:
 
 | Target | Overlay | What makes it private |
 | --- | --- | --- |
-| `~/.gitconfig.local` | personal | name/email, personal account pin |
-| `~/.gitconfig.work` (+ the identity file it routes to) | work | work account, work org pins, work identity routing |
+| `~/.gitconfig.local` | personal | name/email, personal account pin, personal `claude.profile` / `wrangler.profile` mappings |
+| `~/.gitconfig.work` (+ the identity file it routes to) | work | work account, work org pins, work identity routing, work `claude.profile` / `wrangler.profile` mappings |
 | `~/.claude/settings.json` | work | names the private plugin marketplace repo |
 | `~/.claude/CLAUDE.work.md` | work | work account/org notes, imported by `~/.claude/CLAUDE.md` |
 | `~/.config/<vendor>/env` files | personal | third-party account names and 1Password vault paths |
@@ -212,6 +212,42 @@ different account.
 **Each profile must be logged in once** with `claude auth login`; credentials
 live in the macOS Keychain and cannot be copied between profiles — verified,
 copying `.claude.json` does not carry a session.
+
+### Wrangler (Cloudflare) auth profiles
+
+Wrangler (≥ 4.106) keeps one OAuth login per **auth profile**: named ones
+created with `wrangler auth create <name>`, plus the unnamed `default` that
+`wrangler login` manages. Wrangler resolves the profile for a command as
+`CLOUDFLARE_API_TOKEN` (overrides everything) → `--profile <name>` → the
+nearest ancestor directory bound with `wrangler auth activate <name> <dir>`
+→ `default`. `auth`, `login`, `logout`, and `whoami` reject `--profile`.
+
+The `wrangler()` function in `.functions` picks the profile the way
+`claude()` picks its config dir — cwd origin → account (credential pins) →
+`wrangler.profile.<account>` in machine-local git config, set by the
+overlays — with one extra layer first: a **per-repo pin**
+`wrangler.<owner>/<repo>.profile` (origin slug, lowercase) outranks the
+account mapping, for a repo that deploys to a Cloudflare account other than
+its GitHub owner's usual one (a side project with its own Cloudflare login,
+hosted under the personal account). It then **keeps the repo root bound to
+that profile** via
+wrangler's own `auth activate`, re-binding only when the binding is missing
+or points elsewhere. Driving the binding (instead of injecting a flag) is
+what makes `whoami`, `npx wrangler`, and package.json scripts agree with the
+wrapper. Consequences:
+
+- A mapped profile that was never created makes the wrapper refuse to run
+  the command (it never logs you in and never falls back to another
+  account); create it once with `wrangler auth create <name>`.
+- Mapping an account to `default` means wrangler's default login and manages
+  no binding. `auth`/`login`/`logout` pass straight through, and a set
+  `CLOUDFLARE_API_TOKEN` disables profile management entirely.
+- Unpinned repos and non-repo directories are left to wrangler's own
+  resolution.
+- Override for one run with `WRANGLER_PROFILE=<mapped name or existing
+  profile> wrangler …` or `wrangler-as <name> [args...]` (strict: unknown
+  names error out listing the mapped ones); both pass `--profile=`, so they
+  cannot be combined with the commands that reject it.
 
 ### Machine-local secrets (~/.extra)
 

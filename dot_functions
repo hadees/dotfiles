@@ -220,24 +220,37 @@ function dotfiles() {
 # like claude() half-defined in those shells. tests/claude-profiles.bats
 # enforces this.
 function gh_account_for_cwd() {
-	local url owner acct;
-	url="$(command git config --get remote.origin.url 2>/dev/null)";
-	[[ -n $url ]] || return 1;
-	url=${url%.git};
-	# Parse the OWNER positionally instead of trying every segment, so a repo
-	# that happens to be named after a pinned owner can never hijack the
-	# lookup. Lowercase it: GitHub owners are case-insensitive, the pins are
-	# recorded lowercase.
-	case $url in
-		(*://*) owner=${${url#*://*/}%%/*};;  # https://host/owner/repo
-		(*:*)   owner=${${url#*:}%%/*};;      # [user@]host:owner/repo (ssh, incl. aliases)
-		(*)     return 1;;                    # local path or something else — no owner
-	esac;
-	owner=${(L)owner};
+	local slug owner acct;
+	slug="$(git_origin_slug)" || return 1;
+	# The OWNER is parsed positionally instead of trying every segment, so a
+	# repo that happens to be named after a pinned owner can never hijack the
+	# lookup.
+	owner=${slug%%/*};
 	[[ -n $owner ]] || return 1;
 	acct="$(command git config --get "credential.https://github.com/$owner.username" 2>/dev/null)";
 	[[ -n $acct ]] && { print -r -- "$acct"; return 0; };
 	return 1;
+}
+
+# The cwd's origin remote as a lowercase `owner/repo` slug (the path after
+# the host, `.git` stripped), from ssh, scp-alias, or https URL shapes.
+# Lowercased because GitHub owners and repos are case-insensitive and the
+# pins are recorded lowercase. Prints nothing and returns 1 for a local path
+# or no origin.
+function git_origin_slug() {
+	local url slug;
+	url="$(command git config --get remote.origin.url 2>/dev/null)";
+	[[ -n $url ]] || return 1;
+	url=${url%/};
+	url=${url%.git};
+	case $url in
+		(*://*) slug=${url#*://*/};;  # https://host/owner/repo
+		(*:*)   slug=${url#*:};;      # [user@]host:owner/repo (ssh, incl. aliases)
+		(*)     return 1;;            # local path or something else — no owner
+	esac;
+	slug=${(L)slug};
+	[[ $slug == */* ]] || return 1;
+	print -r -- "$slug";
 }
 
 # Claude Code keeps each account in its own config directory — separate login,
@@ -379,6 +392,251 @@ function claude-doctor() {
 		fi;
 	fi;
 	print -r -- "creds:   $cred";
+}
+
+# Wrangler (Cloudflare) keeps one OAuth login per *auth profile* — a named
+# login created with `wrangler auth create <name>`, plus the unnamed `default`
+# one that `wrangler login` manages. Wrangler picks the profile for a command
+# as: CLOUDFLARE_API_TOKEN (overrides everything) > `--profile <name>` >
+# the nearest ancestor directory bound with `wrangler auth activate <name>
+# <dir>` > `default`. That per-directory binding is the mechanism this wrapper
+# drives, rather than injecting a flag: bindings are what wrangler itself
+# consults, so `whoami`, `npx wrangler`, and package.json scripts all agree
+# with the wrapper, and `login`/`logout`/`whoami`/`auth *` — which reject
+# `--profile` outright — behave normally.
+#
+# Which profile a repo gets is derived as claude() derives its config dir:
+# the cwd's origin remote -> GitHub account (credential pins) ->
+# `wrangler.profile.<account>` in machine-local git config (set by the
+# private overlays, so no account names live here). A repo that deploys to
+# some other Cloudflare account — a side project with its own login, hosted
+# under a personal GitHub account — is pinned by slug instead:
+# `wrangler.<owner>/<repo>.profile`, which outranks the account mapping. Both
+# lookups are done at run time from git config. The wrapper binds the
+# repo root to that profile the first time it sees the repo (or whenever the
+# binding disagrees), then runs the command; a repo whose owner is unpinned or
+# unmapped is left to wrangler's own resolution. Mapping an account to
+# `default` means "wrangler's default login" and manages no binding.
+#
+# Override for one run with WRANGLER_PROFILE=<mapped name or existing
+# profile> or `wrangler-as <name> [args...]`, both of which pass wrangler's
+# own `--profile=` flag (so they cannot be combined with the commands that
+# reject it). Each profile must be created once with `wrangler auth create
+# <name>` — the wrapper never logs in for you and refuses to run a command as
+# another account when the mapped profile is missing.
+function wrangler() {
+	local profile;
+	# Account management passes straight through (as gh() does with `gh
+	# auth`); an API token in the environment overrides every profile and
+	# makes wrangler refuse binding changes, so there is nothing to manage.
+	case $1 in
+		(auth|login|logout) command wrangler "$@"; return;;
+	esac;
+	[[ -n $CLOUDFLARE_API_TOKEN ]] && { command wrangler "$@"; return; };
+	if [[ -n $WRANGLER_PROFILE ]]; then
+		if profile="$(wrangler_profile)"; then
+			# One-shot override: wrangler's flag outranks any binding. Left
+			# alone when the caller already passed one — duplicating the
+			# flag makes yargs reject the command.
+			[[ " $* " == *" --profile "* || " $* " == *" --profile="* ]] \
+				|| set -- --profile="$profile" "$@";
+			command wrangler "$@";
+			return;
+		fi;
+		# A typo'd override warned on stderr; fall through to the cwd.
+	fi;
+	profile="$(WRANGLER_PROFILE= wrangler_profile)" || { command wrangler "$@"; return; };
+	wrangler_bind "$profile" || return;
+	command wrangler "$@";
+}
+
+# The profile name wrangler() acts on: WRANGLER_PROFILE (a mapped account or
+# alias from `wrangler.profile.*`, else an existing profile name — a typo must
+# not become a fresh OAuth login under the misspelled name) or, unset, the
+# cwd's repo: a per-repo pin `wrangler.<owner>/<repo>.profile` first (for a
+# repo that deploys to a Cloudflare account other than its GitHub owner's
+# usual one), else the pinned account's `wrangler.profile.<account>`. Prints
+# nothing and returns 1 when wrangler() should leave resolution to wrangler
+# itself.
+function wrangler_profile() {
+	local slug acct name;
+	if [[ -n $WRANGLER_PROFILE ]]; then
+		name="$(command git config --get "wrangler.profile.$WRANGLER_PROFILE" 2>/dev/null)";
+		if [[ -z $name ]]; then
+			if wrangler_profile_exists "$WRANGLER_PROFILE"; then
+				name=$WRANGLER_PROFILE;
+			else
+				print -ru2 -- "wrangler: WRANGLER_PROFILE='$WRANGLER_PROFILE' is neither a mapped account nor an existing wrangler profile; ignoring it";
+				return 1;
+			fi;
+		fi;
+	else
+		slug="$(git_origin_slug)" || return 1;
+		name="$(command git config --get "wrangler.$slug.profile" 2>/dev/null)";
+		if [[ -z $name ]]; then
+			acct="$(gh_account_for_cwd)" || return 1;
+			name="$(command git config --get "wrangler.profile.$acct" 2>/dev/null)";
+		fi;
+	fi;
+	[[ -n $name ]] || return 1;
+	print -r -- "$name";
+}
+
+# Wrangler's global config directory, resolved the way wrangler does it:
+# legacy ~/.wrangler if that directory exists, else $XDG_CONFIG_HOME, else the
+# platform default (~/Library/Preferences on macOS, ~/.config elsewhere), each
+# with a `.wrangler` segment appended. Profiles live in config/<name>.toml
+# (or .enc), directory bindings in profiles/directory-bindings.json.
+function wrangler_config_dir() {
+	[[ -d ~/.wrangler ]] && { print -r -- ~/.wrangler; return; };
+	local base=$XDG_CONFIG_HOME;
+	if [[ -z $base ]]; then
+		[[ $OSTYPE == darwin* ]] && base=~/Library/Preferences || base=~/.config;
+	fi;
+	print -r -- "$base/.wrangler";
+}
+
+function wrangler_profile_exists() {
+	local dir;
+	[[ $1 == default ]] && return 0;
+	dir="$(wrangler_config_dir)/config";
+	[[ -e "$dir/$1.toml" || -e "$dir/$1.enc" ]];
+}
+
+# Make sure the cwd's repo root is bound to profile $1, binding it with
+# wrangler's own `auth activate` when it is not. Returns 1 — and the caller
+# must not run its command — when the bind fails, e.g. the profile has not
+# been created yet: running on would silently use another account.
+function wrangler_bind() {
+	local top file out;
+	[[ $1 == default ]] && return 0;
+	top="$(command git rev-parse --show-toplevel 2>/dev/null)" || return 0;
+	file="$(wrangler_config_dir)/profiles/directory-bindings.json";
+	# wrangler stores bindings as {"<abs dir>": "<profile>"}; a matching pair
+	# means nothing to do. A wrong guess at the file (or a future format
+	# change) only costs a redundant, idempotent activate per command.
+	command grep -Fq -- "\"$top\": \"$1\"" "$file" 2>/dev/null && return 0;
+	if out="$(command wrangler auth activate "$1" "$top" 2>&1)"; then
+		print -ru2 -- "wrangler: bound $top to profile '$1'";
+	else
+		# Keep wrangler's error, drop its banner / experimental-warning /
+		# log-path chatter and blank lines.
+		local -a lines;
+		lines=("${(@f)out}");
+		lines=("${(@)lines:#(|*experimental command*|*Logs were written to*|*wrangler [0-9]*|*───*)}");
+		print -ru2 -- "${(F)lines}";
+		print -ru2 -- "wrangler: cannot bind $top to profile '$1'; refusing to run as another account (create it with: wrangler auth create $1)";
+		return 1;
+	fi;
+}
+
+# Run wrangler pinned to an explicit profile for this one command, ignoring
+# the cwd: `wrangler-as <profile> [args...]`. The profile is an account or
+# alias mapped in `wrangler.profile.*` or an existing wrangler profile;
+# anything else is an error — an explicit request must never silently run as
+# another account. Uses wrangler's `--profile=` flag, which the auth, login,
+# logout, and whoami commands reject.
+function wrangler-as() {
+	local profile names;
+	names="$(command git config --get-regexp '^wrangler\.profile\.' 2>/dev/null | command sed 's/^wrangler\.profile\.//; s/ .*//')";
+	[[ -n $names ]] || names="<none mapped in wrangler.profile.*>";
+	if (( $# == 0 )); then
+		print -ru2 -- "usage: wrangler-as <profile> [wrangler args...]";
+		print -ru2 -- "available profiles:";
+		print -ru2 -- "$names";
+		return 1;
+	fi;
+	profile=$1;
+	shift;
+	if ! WRANGLER_PROFILE=$profile wrangler_profile >/dev/null 2>&1; then
+		print -ru2 -- "wrangler-as: unknown profile '$profile'";
+		print -ru2 -- "available profiles:";
+		print -ru2 -- "$names";
+		return 1;
+	fi;
+	WRANGLER_PROFILE=$profile wrangler "$@";
+}
+
+# Diagnose what `wrangler` would do right here: is the wrapper loaded, what
+# do the cwd's origin, repo pin, and account mapping resolve to, does that
+# profile exist, what is the repo root bound to, and which profile wrangler
+# itself will therefore use. Paste the output when profile selection
+# misbehaves. Reads the same files wrangler does; never runs wrangler.
+function wrangler-doctor() {
+	local origin slug acct repopin map profile cfg top bound line dir prof best;
+	print -r -- "wrapper: $(whence -w wrangler)";
+	print -r -- "cwd:     $PWD";
+	origin="$(command git config --get remote.origin.url 2>/dev/null)";
+	print -r -- "origin:  ${origin:-<none — not a git repo or no origin>}";
+	slug="$(git_origin_slug)";
+	acct="$(gh_account_for_cwd)";
+	print -r -- "account: ${acct:-<no credential pin matched>}";
+	repopin="";
+	[[ -n $slug ]] && repopin="$(command git config --get "wrangler.$slug.profile" 2>/dev/null)";
+	if [[ -n $repopin ]]; then
+		print -r -- "repo pin: wrangler.$slug.profile = $repopin";
+	else
+		print -r -- "repo pin: <none>";
+	fi;
+	map="";
+	[[ -n $acct ]] && map="$(command git config --get "wrangler.profile.$acct" 2>/dev/null)";
+	if [[ -n $map ]]; then
+		print -r -- "mapping: wrangler.profile.$acct = $map";
+	else
+		print -r -- "mapping: <none>";
+	fi;
+	# Never echo the token itself — only whether it is set.
+	print -r -- "env:     WRANGLER_PROFILE=${WRANGLER_PROFILE-<unset>} CLOUDFLARE_API_TOKEN=$([[ -n $CLOUDFLARE_API_TOKEN ]] && print -r -- '<set — overrides every profile>' || print -r -- '<unset>')";
+	if profile="$(wrangler_profile 2>/dev/null)"; then
+		print -r -- "wants:   $profile${WRANGLER_PROFILE:+ (via WRANGLER_PROFILE, passed as --profile=)}";
+	else
+		profile="";
+		print -r -- "wants:   <nothing mapped — wrangler's own resolution>";
+	fi;
+	cfg="$(wrangler_config_dir)";
+	print -r -- "config:  $cfg";
+	if [[ -n $profile ]]; then
+		if wrangler_profile_exists "$profile"; then
+			print -r -- "profile: '$profile' exists";
+		else
+			print -r -- "profile: '$profile' NOT CREATED — run: wrangler auth create $profile";
+		fi;
+	fi;
+	# Bindings: what the repo root is bound to, and the longest-prefix match
+	# for the cwd, which is what wrangler will use absent --profile.
+	top="$(command git rev-parse --show-toplevel 2>/dev/null)";
+	bound=""; best="";
+	if [[ -r $cfg/profiles/directory-bindings.json ]]; then
+		while IFS= read -r line; do
+			dir="${${line#*\"}%%\"*}";
+			prof="${${line##*: \"}%\"*}";
+			[[ -n $dir && -n $prof ]] || continue;
+			[[ -n $top && $dir == "$top" ]] && bound=$prof;
+			if [[ $PWD == "$dir" || $PWD == "$dir"/* ]] && (( ${#dir} > ${#best%%:*} )); then
+				best="$dir: $prof";
+			fi;
+		done < <(command grep -E '^[[:space:]]*"/' "$cfg/profiles/directory-bindings.json" 2>/dev/null);
+	fi;
+	if [[ -n $top ]]; then
+		local note="";
+		if [[ -n $profile && $profile != default && -z $WRANGLER_PROFILE ]]; then
+			if [[ -z $bound ]]; then
+				note="  (wrapper will bind it to '$profile' on the next run)";
+			elif [[ $bound != "$profile" ]]; then
+				note="  (wrapper will rebind it to '$profile' on the next run)";
+			fi;
+		fi;
+		print -r -- "binding: ${bound:+$top -> $bound}${bound:-<repo root not bound>}$note";
+	fi;
+	if [[ -n $CLOUDFLARE_API_TOKEN ]]; then
+		print -r -- "uses:    CLOUDFLARE_API_TOKEN";
+	elif [[ -n $WRANGLER_PROFILE && -n $profile ]]; then
+		print -r -- "uses:    $profile (--profile=)";
+	elif [[ -n $best ]]; then
+		print -r -- "uses:    ${best#*: } (bound at ${best%%: *})";
+	else
+		print -r -- "uses:    default (no binding covers this directory)";
+	fi;
 }
 
 # `gh` wrapper that picks the GitHub account for each invocation, mirroring
