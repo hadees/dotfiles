@@ -4,6 +4,7 @@
 # Repo-level files — never deployed. (Dot-prefixed source files like .macos,
 # .github, and .gitignore are invisible to chezmoi already and need no entry.)
 README.md
+docs
 LICENSE-MIT.txt
 Brewfile
 packages-apt.txt

@@ -61,6 +61,18 @@ is never deployed at all.
 
 You could also use `~/.extra` to override settings, functions and aliases from my dotfiles repository. It’s probably better to [fork this repository](https://github.com/hadees/dotfiles/fork) instead, though.
 
+### Private overlays (identity, accounts, secrets)
+
+This repo is public and contains no names, emails, accounts, orgs, or
+secrets — on purpose. Those live in **private chezmoi overlays**: further
+chezmoi sources in private repos, applied after this one by the `dotfiles`
+function. Almost everything they hold is git config (credential pins,
+per-account Claude Code / wrangler profile mappings, identity, signing); the
+rest is Finicky rule fragments and 1Password references for `~/.extra`.
+`docs/private-overlays.md` is the manual: how an overlay is built, how a
+machine loads one, where each kind of private thing goes, and how the
+overlay's own leak test keeps this repo clean.
+
 ### Sensible macOS defaults
 
 When setting up a new Mac, you may want to set some sensible macOS defaults:
