@@ -166,6 +166,7 @@ teardown() {
   [ -f "$TMPHOME/.gitconfig" ]
   grep -q "path = ~/.gitconfig.local" "$TMPHOME/.gitconfig"
   [ -x "$TMPHOME/bin/git-credential-gh-user" ]
+  [ -x "$TMPHOME/bin/tailnet" ]
   # Machine-local memory is created when missing
   [ -f "$TMPHOME/.claude/CLAUDE.local.md" ]
 }
