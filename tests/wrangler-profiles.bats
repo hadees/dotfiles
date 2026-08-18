@@ -283,3 +283,36 @@ wrangler_in() {
   run zsh -c "source '$DOTFUNCTIONS'; wrangler_config_dir"
   [ "$output" = "$HOME/.wrangler" ]
 }
+
+@test "wrangler-doctor: traces a repo pin, missing profile, and pending binding" {
+  git config --file "$GIT_CONFIG_GLOBAL" wrangler.octo-personal/side-project.profile side-profile
+  repo=$(make_repo 'git@github.com:octo-personal/side-project.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; wrangler-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"wrapper: wrangler: function"* ]]
+  [[ "$output" == *"account: personal-account"* ]]
+  [[ "$output" == *"repo pin: wrangler.octo-personal/side-project.profile = side-profile"* ]]
+  [[ "$output" == *"mapping: wrangler.profile.personal-account = personal-profile"* ]]
+  [[ "$output" == *"wants:   side-profile"* ]]
+  [[ "$output" == *"profile: 'side-profile' NOT CREATED — run: wrangler auth create side-profile"* ]]
+  [[ "$output" == *"binding: <repo root not bound>  (wrapper will bind it to 'side-profile' on the next run)"* ]]
+  [[ "$output" == *"uses:    default (no binding covers this directory)"* ]]
+  # The doctor only reads; it must never invoke wrangler.
+  [ ! -s "$WRANGLER_LOG" ]
+}
+
+@test "wrangler-doctor: reports an existing binding, incl. from a subdirectory, and never prints tokens" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  printf '{\n\t"%s": "%s"\n}\n' "$repo" "personal-profile" > "$WRANGLER_CFG/profiles/directory-bindings.json"
+  mkdir -p "$repo/sub/dir"
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo/sub/dir'; CLOUDFLARE_API_TOKEN=sekrit-token wrangler-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"profile: 'personal-profile' exists"* ]]
+  [[ "$output" == *"binding: $repo -> personal-profile"* ]]
+  [[ "$output" != *"will bind"* ]]
+  [[ "$output" == *"CLOUDFLARE_API_TOKEN=<set"* ]]
+  [[ "$output" == *"uses:    CLOUDFLARE_API_TOKEN"* ]]
+  [[ "$output" != *"sekrit"* ]]
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo/sub/dir'; wrangler-doctor"
+  [[ "$output" == *"uses:    personal-profile (bound at $repo)"* ]]
+}
