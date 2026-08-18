@@ -288,6 +288,13 @@ applying overlays. Debug with `~/Library/Logs/Finicky/` (`logRequests` is
 on) or `Finicky --dry-run` + `open -a Finicky <url>`. macOS-only: ignored
 elsewhere via `.chezmoiignore`.
 
+Tests: `tests/finicky.bats` loads the real composer + lib under Node (≥ 22.6
+runs `.ts` natively — keep `lib.ts` to type annotations only) with fixture
+fragments and asserts routing (helper semantics, work-before-personal
+order, default fallthrough, stubs-only config); `tests/chezmoi.bats` covers
+deployment/ignore/`create_` semantics. CI installs Node 22 for this; the
+test skips where Node is too old.
+
 ### Machine-local secrets (~/.extra)
 
 `~/.extra` is rendered by chezmoi from `private_dot_extra.tmpl` (mode 0600)
