@@ -34,12 +34,12 @@ setup() {
   git config --file "$GIT_CONFIG_GLOBAL" credential.https://github.com/octo-work-org.username work-account
   git config --file "$GIT_CONFIG_GLOBAL" credential.https://github.com/octo-personal.username personal-account
   git config --file "$GIT_CONFIG_GLOBAL" credential.https://github.com/octo-nomail.username nomail-account
-  git config --file "$GIT_CONFIG_GLOBAL" identity.work-account.email work@example.test
-  git config --file "$GIT_CONFIG_GLOBAL" --add identity.personal-account.email 12345+personal@users.noreply.example
-  git config --file "$GIT_CONFIG_GLOBAL" --add identity.personal-account.email personal@example.test
+  git config --file "$GIT_CONFIG_GLOBAL" identity.work-account.email work@example.com
+  git config --file "$GIT_CONFIG_GLOBAL" --add identity.personal-account.email 12345+personal@example.net
+  git config --file "$GIT_CONFIG_GLOBAL" --add identity.personal-account.email personal@example.org
   # The "wrong" default identity, as a personal overlay would set globally.
   git config --file "$GIT_CONFIG_GLOBAL" user.name Fixture
-  git config --file "$GIT_CONFIG_GLOBAL" user.email personal@example.test
+  git config --file "$GIT_CONFIG_GLOBAL" user.email personal@example.org
 }
 
 make_repo() {
@@ -67,9 +67,9 @@ make_repo() {
   repo=$(make_repo 'git@github-work:octo-work-org/some-repo.git')
   run git -C "$repo" commit -q -m init
   [ "$status" -ne 0 ]
-  [[ "$output" == *"refusing to commit as personal@example.test"* ]]
+  [[ "$output" == *"refusing to commit as personal@example.org"* ]]
   [[ "$output" == *"owned by 'octo-work-org' (pinned to account 'work-account'"* ]]
-  [[ "$output" == *"work@example.test"* ]]
+  [[ "$output" == *"work@example.com"* ]]
   [[ "$output" == *"GIT_IDENTITY_CHECK=0"* ]]
   run git -C "$repo" rev-parse --verify HEAD
   [ "$status" -ne 0 ]
@@ -77,16 +77,16 @@ make_repo() {
 
 @test "pre-commit: the account's own email passes; the check is case-insensitive and honours --author" {
   repo=$(make_repo 'git@github-work:octo-work-org/some-repo.git')
-  git -C "$repo" config user.email Work@Example.test
+  git -C "$repo" config user.email WORK@example.com
   run git -C "$repo" commit -q -m init
   [ "$status" -eq 0 ]
   # A --author override that is wrong is still caught (author is checked,
   # not just user.email); a right one with a wrong committer is caught too.
   echo y >> "$repo/f"; git -C "$repo" add f
-  run git -C "$repo" commit -q -m two --author='Someone <personal@example.test>'
+  run git -C "$repo" commit -q -m two --author='Someone <personal@example.org>'
   [ "$status" -ne 0 ]
-  [[ "$output" == *"refusing to commit as personal@example.test"* ]]
-  run env GIT_COMMITTER_EMAIL=personal@example.test git -C "$repo" commit -q -m two
+  [[ "$output" == *"refusing to commit as personal@example.org"* ]]
+  run env GIT_COMMITTER_EMAIL=personal@example.org git -C "$repo" commit -q -m two
   [ "$status" -ne 0 ]
 }
 
@@ -95,7 +95,7 @@ make_repo() {
   run git -C "$repo" commit -q -m init
   [ "$status" -eq 0 ]
   echo y >> "$repo/f"; git -C "$repo" add f
-  git -C "$repo" config user.email 12345+personal@users.noreply.example
+  git -C "$repo" config user.email 12345+personal@example.net
   run git -C "$repo" commit -q -m two
   [ "$status" -eq 0 ]
 }
@@ -103,18 +103,18 @@ make_repo() {
 @test "pre-commit: a per-repo identity pin outranks the owner's account emails" {
   # A side project hosted under the personal account but committed under its
   # own identity: identity.<owner>/<repo>.email wins, mirroring wrangler's pin.
-  git config --file "$GIT_CONFIG_GLOBAL" identity.octo-personal/side-project.email side@side-project.example
+  git config --file "$GIT_CONFIG_GLOBAL" identity.octo-personal/side-project.email side@example.com
   repo=$(make_repo 'git@github.com:Octo-Personal/Side-Project.git')
-  run git -C "$repo" commit -q -m init            # personal@example.test — the account's email — is now wrong here
+  run git -C "$repo" commit -q -m init            # personal@example.org — the account's email — is now wrong here
   [ "$status" -ne 0 ]
   [[ "$output" == *"pinned to repo 'octo-personal/side-project'"* ]]
-  [[ "$output" == *"side@side-project.example"* ]]
-  git -C "$repo" config user.email side@side-project.example
+  [[ "$output" == *"side@example.com"* ]]
+  git -C "$repo" config user.email side@example.com
   run git -C "$repo" commit -q -m init
   [ "$status" -eq 0 ]
   DOTFUNCTIONS="$BATS_TEST_DIRNAME/../dot_functions"
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; git-doctor"
-  [[ "$output" == *"gate:    on — 'side@side-project.example' is an identity.octo-personal/side-project.email (per-repo pin); commits pass"* ]]
+  [[ "$output" == *"gate:    on — 'side@example.com' is an identity.octo-personal/side-project.email (per-repo pin); commits pass"* ]]
 }
 
 @test "pre-commit: no origin, unpinned owner, or non-GitHub-shaped remote means no opinion" {
@@ -144,7 +144,7 @@ make_repo() {
 
 @test "hooks chain to the repo's own .git/hooks/<name>, and a failing local hook still blocks" {
   repo=$(make_repo 'git@github-work:octo-work-org/some-repo.git')
-  git -C "$repo" config user.email work@example.test
+  git -C "$repo" config user.email work@example.com
   local_hooks="$repo/.git/hooks"   # absolute — never let this land in the cwd's .git
   mkdir -p "$local_hooks"
   printf '#!/bin/sh\necho LOCAL-PRE-COMMIT-RAN >&2\nexit 0\n' > "$local_hooks/pre-commit"
@@ -164,10 +164,10 @@ make_repo() {
   repo=$(make_repo 'git@github-work:octo-work-org/some-repo.git')
   DOTFUNCTIONS="$BATS_TEST_DIRNAME/../dot_functions"
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; git-doctor"
-  [[ "$output" == *"gate:    on — WOULD REFUSE: 'personal@example.test' is not one of identity.work-account.email (work@example.test)"* ]]
-  git -C "$repo" config user.email work@example.test
+  [[ "$output" == *"gate:    on — WOULD REFUSE: 'personal@example.org' is not one of identity.work-account.email (work@example.com)"* ]]
+  git -C "$repo" config user.email work@example.com
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; git-doctor"
-  [[ "$output" == *"gate:    on — 'work@example.test' is an identity.work-account.email; commits pass"* ]]
+  [[ "$output" == *"gate:    on — 'work@example.com' is an identity.work-account.email; commits pass"* ]]
   repo=$(make_repo 'git@github.com:someone-else/some-repo.git')
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; git-doctor"
   [[ "$output" == *"gate:    on, no opinion here (owner unpinned)"* ]]
