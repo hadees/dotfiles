@@ -93,6 +93,24 @@ VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 - **`init/`** — one-time setup scripts
 - **`theme/`** — Base16 Eighties color themes (darkened bg `#1a1a1a`) for iTerm2, Terminal.app, and Alfred; VSCode uses the `bsides.Theme-Base16-Eighties` extension installed by `.macos`. Terminal apps (bat, delta, fzf, k9s, vim) use `base16-256`/`base16-eighties` and inherit the iTerm palette.
 
+### Commit identity gate (global git hooks)
+
+`dot_gitconfig` sets `core.hooksPath = ~/.git-hooks` (`dot_git-hooks/`).
+`pre-commit` refuses a commit whose author or committer email is not one of
+`identity.<account>.email` for the account the origin's owner is pinned to
+(same credential pins as the wrappers; the mapping is overlay-supplied, so
+a public-only clone has no opinion), or of `identity.<owner>/<repo>.email`
+when that per-repo pin exists (a side project committing under its own
+identity — mirrors `wrangler.<owner>/<repo>.profile`). `GIT_IDENTITY_CHECK=0` bypasses one
+commit; `git-doctor` shows the verdict (`gate:`). Every hook name there is
+a shim that first runs any `hook.<name>.run` git-config commands (repeatable,
+per-repo `.git/config`; a failure blocks) and then the repo's own
+`.git/hooks/<name>` — via `git rev-parse --git-common-dir`, never
+`--git-path hooks`, which honours `core.hooksPath` and would exec the shim
+itself. Tests: `tests/git-hooks.bats` — its fixture repos must use
+absolute paths for anything under `.git/`, or a relative path lands in this
+clone's `.git/hooks`. Full guide: `docs/private-overlays.md`.
+
 ### Commit signing
 
 Commits are signed with **SSH-format signatures via 1Password**, not GPG.
@@ -136,7 +154,10 @@ Add `~/.extra` (from the private overlay, or hand-written) for per-machine overr
 **This repo is public and must stay identity-free.** Anything that names a
 person, an account, an organization, or a private repo lives in **private
 chezmoi overlays** — additional chezmoi configs in `~/.config/chezmoi/*.toml`,
-each pointing at its own source clone. Ownership follows content:
+each pointing at its own source clone. `docs/private-overlays.md` is the
+full manual (building an overlay, loading it, what goes where, the leak
+test, the add-an-account checklist); this section is the summary. Ownership
+follows content:
 
 - the **personal overlay** (`hadees/dotfiles-private`, cloned to
   `~/code/dotfiles-private`) carries the personal identity;
@@ -240,10 +261,21 @@ wrapper. Consequences:
   the command (it never logs you in and never falls back to another
   account); create it once with `wrangler auth create <name>`.
 - Mapping an account to `default` means wrangler's default login and manages
-  no binding. `auth`/`login`/`logout` pass straight through, and a set
-  `CLOUDFLARE_API_TOKEN` disables profile management entirely.
+  no binding — prefer a named profile for every account, including the main
+  one, so each repo gets an explicit binding and nothing depends on which
+  login `wrangler login` last stored. `auth`/`login`/`logout` pass straight
+  through, and a set `CLOUDFLARE_API_TOKEN` disables profile management
+  entirely.
 - Unpinned repos and non-repo directories are left to wrangler's own
   resolution.
+- **Which wrangler runs** is resolved the way `npx wrangler` resolves it:
+  the nearest `node_modules/.bin/wrangler` at or above the cwd (a project
+  that vendors wrangler as a devDependency gets the version it pinned, on
+  the node it was installed under), else whatever `wrangler` is on PATH —
+  an asdf/nodenv shim, `npm -g`, etc. asdf answers "which wrangler", the
+  wrapper answers "as whom"; profiles and bindings live in wrangler's
+  per-user config dir, so every install sees the same logins. No wrangler
+  anywhere is a clear error, not a fallback.
 - Override for one run with `WRANGLER_PROFILE=<mapped name or existing
   profile> wrangler …` or `wrangler-as <name> [args...]` (strict: unknown
   names error out listing the mapped ones); both pass `--profile=`, so they
@@ -256,7 +288,11 @@ wrapper. Consequences:
   and `git-doctor` covers git itself: the commit identity the include chain
   selected and which file supplied it, signing config and whether its
   key/signer exist, the origin's SSH alias resolution, https credential
-  routing. `doctor` runs all four.
+  routing. Each wrapper's doctor also prints a `binary:` line — which
+  executable will run, a version-manager shim followed to the install it
+  selects for the cwd (or "not installed under the selected node"), and the
+  version read off the install without executing it (npm `package.json`,
+  cask/native path segment). `doctor` runs all four.
 
 ### Link routing (Finicky → Chrome profiles)
 
@@ -302,7 +338,14 @@ test skips where Node is too old.
 functions — secret *values* come from the 1Password CLI at apply time, only
 references live in that repo:
 
-    export GITHUB_TOKEN={{ onepasswordRead "op://Private/GitHub PAT/token" | quote }}
+    export SOME_SERVICE_TOKEN={{ onepasswordRead "op://Private/Some Service/token" | quote }}
+
+Never export a token that one of the per-repo wrappers routes
+(`GH_TOKEN`/`GITHUB_TOKEN`, `CLOUDFLARE_API_TOKEN`, `ANTHROPIC_API_KEY`,
+`CLAUDE_CONFIG_DIR`, …) from `~/.extra`: it is sourced by every shell, so
+such a token overrides the account routing everywhere. Project tokens belong
+in that project's `op run --env-file`. The overlay's `tests/extra-tmpl.bats`
+enforces this too.
 
 Get a reference path from the 1Password app: right-click a field →
 "Copy Secret Reference".

@@ -70,6 +70,7 @@ teardown() {
   [ ! -e "$TMPHOME/CLAUDE.md" ]
   # Repo-level files never deploy
   [ ! -e "$TMPHOME/README.md" ]
+  [ ! -e "$TMPHOME/docs" ]
   [ ! -e "$TMPHOME/Brewfile" ]
   [ ! -e "$TMPHOME/packages-apt.txt" ]
   [ ! -e "$TMPHOME/tests" ]
