@@ -271,6 +271,21 @@ make_overlay_cfg() {
   echo "$2" > "$HOME/.config/chezmoi/$1.src"
 }
 
+@test "dotfiles: touches ~/.finicky.ts after applying, only if it exists" {
+  make_chezmoi_stub
+  # Finicky caches its bundled config on this file's mtime; overlay fragments
+  # it imports change without touching it, so dotfiles() bumps it.
+  touch -t 200001010000 "$HOME/.finicky.ts"
+  run zsh -c "source '$DOTFUNCTIONS'; dotfiles"
+  [ "$status" -eq 0 ]
+  [ "$(date -r "$HOME/.finicky.ts" +%Y)" != 2000 ]
+  # Absent, it must not be created.
+  rm "$HOME/.finicky.ts"
+  run zsh -c "source '$DOTFUNCTIONS'; dotfiles"
+  [ "$status" -eq 0 ]
+  [ ! -e "$HOME/.finicky.ts" ]
+}
+
 @test "dotfiles: no overlay configs means exactly one apply" {
   make_chezmoi_stub
   run zsh -c "source '$DOTFUNCTIONS'; dotfiles"
