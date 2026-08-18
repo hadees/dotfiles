@@ -118,6 +118,13 @@
 	# https://git-scm.com/docs/git-update-index#_untracked_cache
 	untrackedCache = true
 
+	# Global hooks: pre-commit refuses a commit whose author email does not
+	# belong to the account the origin's owner is pinned to (see
+	# ~/.git-hooks/pre-commit and docs/private-overlays.md); every hook name
+	# there chains to the repo's own .git/hooks/<name>, so repo-local hooks
+	# keep working. A repo setting its own core.hooksPath overrides this.
+	hooksPath = ~/.git-hooks
+
 [color]
 
 	# Use colors in Git commands that are capable of colored output when

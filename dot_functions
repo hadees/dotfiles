@@ -906,6 +906,32 @@ function git-doctor() {
 	elif [[ $origin == https://github.com/* ]]; then
 		print -r -- "https:   pushes authenticate via credential helper as '${acct:-<active gh account>}'";
 	fi;
+	# The pre-commit identity gate (~/.git-hooks/pre-commit): is it installed
+	# for this repo, and what would it decide about the identity above?
+	local hooks expected;
+	hooks="$(command git config --get core.hooksPath 2>/dev/null)";
+	if [[ -z $hooks ]]; then
+		print -r -- "gate:    OFF — core.hooksPath unset (no pre-commit identity check)";
+	elif [[ ! -x ${hooks/#\~/$HOME}/pre-commit ]]; then
+		print -r -- "gate:    OFF — core.hooksPath=$hooks has no executable pre-commit";
+	elif [[ -z $acct ]]; then
+		print -r -- "gate:    on, no opinion here (owner unpinned)";
+	else
+		local slug key;
+		slug="$(git_origin_slug)";
+		key="identity.$acct.email";
+		expected="";
+		[[ -n $slug ]] && expected="$(command git config --get-all "identity.$slug.email" 2>/dev/null | command paste -sd, - | command sed 's/,/, /g')";
+		[[ -n $expected ]] && key="identity.$slug.email (per-repo pin)";
+		[[ -n $expected ]] || expected="$(command git config --get-all "identity.$acct.email" 2>/dev/null | command paste -sd, - | command sed 's/,/, /g')";
+		if [[ -z $expected ]]; then
+			print -r -- "gate:    on, cannot verify — no identity.$acct.email declared for '$acct' (declare it in the overlay)";
+		elif [[ -n $email && ", ${(L)expected}, " == *", ${(L)email}, "* ]]; then
+			print -r -- "gate:    on — '$email' is an $key; commits pass";
+		else
+			print -r -- "gate:    on — WOULD REFUSE: '${email:-<no email>}' is not one of $key ($expected)";
+		fi;
+	fi;
 	# Every config file consulted from here — the include chain made visible.
 	print -r -- "configs: $(command git config --list --show-origin --name-only 2>/dev/null | command awk -F'\t' '$1 ~ /^file:/ {print substr($1, 6)}' | command awk '!seen[$0]++' | command paste -sd, - | command sed 's/,/, /g')";
 }

@@ -1,0 +1,72 @@
+#!/bin/sh
+# Refuse a commit whose author or committer email does not belong to the
+# GitHub account this repo's origin is pinned to — the same pins gh(),
+# claude(), and wrangler() route on (`credential.https://github.com/<owner>
+# .username`), plus an `identity.<account>.email` mapping (repeatable) that
+# the private overlays declare next to them. Turns `git-doctor`'s "author:"
+# line from advice into a gate: a work repo cloned with a URL shape the
+# includeIf routing doesn't match, or a fresh clone before the overlay is
+# applied, fails closed instead of committing under the wrong identity.
+#
+# A repo that commits as an identity other than its owner's (a side project
+# hosted under a personal account but run under its own name) is pinned by
+# slug instead — `identity.<owner>/<repo>.email` (lowercase, repeatable)
+# outranks the account's emails, mirroring wrangler's per-repo pin.
+#
+# No opinion (passes) when: the repo has no origin, the owner is unpinned,
+# no email is declared for the account, or GIT_IDENTITY_CHECK=0 is set for
+# the one commit. Never touches the network. Chains to the repo's own
+# .git/hooks/pre-commit afterwards (see run-local-hook).
+hooks_dir=$(dirname "$0")
+chain() { HOOK_NAME=pre-commit exec "$hooks_dir/run-local-hook" "$@"; }
+
+[ "${GIT_IDENTITY_CHECK:-1}" = 0 ] && chain "$@"
+
+url=$(git config --get remote.origin.url 2>/dev/null)
+[ -n "$url" ] || chain "$@"
+url=${url%/}; url=${url%.git}
+case $url in
+	*://*) path=${url#*://*/} ;;   # https://host/owner/repo
+	*:*)   path=${url#*:} ;;       # [user@]host:owner/repo (ssh, incl. aliases)
+	*)     chain "$@" ;;           # local path — no owner
+esac
+slug=$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')
+owner=${slug%%/*}
+[ -n "$owner" ] || chain "$@"
+
+acct=$(git config --get "credential.https://github.com/$owner.username" 2>/dev/null)
+[ -n "$acct" ] || chain "$@"
+# Per-repo pin first, else the account's declared emails.
+scope="repo '$slug'"
+expected=$(git config --get-all "identity.$slug.email" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+if [ -z "$expected" ]; then
+	scope="account '$acct'"
+	expected=$(git config --get-all "identity.$acct.email" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+fi
+if [ -z "$expected" ]; then
+	echo "pre-commit: origin owner '$owner' is pinned to account '$acct' but no identity.$acct.email is declared; cannot verify the author (declare it in the overlay's gitconfig)" >&2
+	chain "$@"
+fi
+
+# What git will actually record — honours user.*, GIT_AUTHOR_EMAIL, --author.
+author=$(git var GIT_AUTHOR_IDENT 2>/dev/null);   author=${author#*<};   author=${author%%>*}
+committer=$(git var GIT_COMMITTER_IDENT 2>/dev/null); committer=${committer#*<}; committer=${committer%%>*}
+bad=""
+for who in "$author" "$committer"; do
+	lc=$(printf '%s' "$who" | tr '[:upper:]' '[:lower:]')
+	case "
+$expected
+" in
+		*"
+$lc
+"*) ;;
+		*) bad="$bad $who" ;;
+	esac
+done
+if [ -n "$bad" ]; then
+	echo "pre-commit: refusing to commit as$bad in a repo owned by '$owner' (pinned to $scope, whose email(s):" >&2
+	printf '  %s\n' $expected >&2
+	echo "  ). Fix the identity (git-doctor shows which config file supplied it), or bypass once with GIT_IDENTITY_CHECK=0." >&2
+	exit 1
+fi
+chain "$@"
