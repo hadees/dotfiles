@@ -240,10 +240,21 @@ wrapper. Consequences:
   the command (it never logs you in and never falls back to another
   account); create it once with `wrangler auth create <name>`.
 - Mapping an account to `default` means wrangler's default login and manages
-  no binding. `auth`/`login`/`logout` pass straight through, and a set
-  `CLOUDFLARE_API_TOKEN` disables profile management entirely.
+  no binding — prefer a named profile for every account, including the main
+  one, so each repo gets an explicit binding and nothing depends on which
+  login `wrangler login` last stored. `auth`/`login`/`logout` pass straight
+  through, and a set `CLOUDFLARE_API_TOKEN` disables profile management
+  entirely.
 - Unpinned repos and non-repo directories are left to wrangler's own
   resolution.
+- **Which wrangler runs** is resolved the way `npx wrangler` resolves it:
+  the nearest `node_modules/.bin/wrangler` at or above the cwd (a project
+  that vendors wrangler as a devDependency gets the version it pinned, on
+  the node it was installed under), else whatever `wrangler` is on PATH —
+  an asdf/nodenv shim, `npm -g`, etc. asdf answers "which wrangler", the
+  wrapper answers "as whom"; profiles and bindings live in wrangler's
+  per-user config dir, so every install sees the same logins. No wrangler
+  anywhere is a clear error, not a fallback.
 - Override for one run with `WRANGLER_PROFILE=<mapped name or existing
   profile> wrangler …` or `wrangler-as <name> [args...]` (strict: unknown
   names error out listing the mapped ones); both pass `--profile=`, so they
@@ -256,7 +267,11 @@ wrapper. Consequences:
   and `git-doctor` covers git itself: the commit identity the include chain
   selected and which file supplied it, signing config and whether its
   key/signer exist, the origin's SSH alias resolution, https credential
-  routing. `doctor` runs all four.
+  routing. Each wrapper's doctor also prints a `binary:` line — which
+  executable will run, a version-manager shim followed to the install it
+  selects for the cwd (or "not installed under the selected node"), and the
+  version read off the install without executing it (npm `package.json`,
+  cask/native path segment). `doctor` runs all four.
 
 ### Link routing (Finicky → Chrome profiles)
 

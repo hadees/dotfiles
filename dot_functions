@@ -259,6 +259,40 @@ function git_origin_slug() {
 	print -r -- "$slug";
 }
 
+# For the doctors: describe the executable $1 without running it — where a
+# version manager's shim points for this cwd (asdf, nodenv), and the version
+# when it can be read off the install itself: an npm package's package.json
+# (npm -g and node_modules/.bin symlink into one) or a version segment in the
+# resolved path (Homebrew casks, Claude's native installer). Prints
+# "<path>[ -> <shim target>][ (<version>)]"; a shim whose manager selects a
+# node with no such command is reported as "-> <not installed under the
+# selected node>", which is exactly why running it would fail.
+function bin_trace() {
+	local bin=$1 target real ver seg pkg;
+	if [[ $bin == */shims/* ]]; then
+		if (( $+commands[asdf] )) && [[ $bin == "${ASDF_DATA_DIR:-$HOME/.asdf}"/shims/* ]]; then
+			target="$(command asdf which "${bin:t}" 2>/dev/null)" || target="";
+		elif (( $+commands[nodenv] )); then
+			target="$(command nodenv which "${bin:t}" 2>/dev/null)" || target="";
+		fi;
+		[[ -n $target ]] || { print -r -- "$bin -> <not installed under the selected node>"; return 0; };
+	fi;
+	real=${${target:-$bin}:A};
+	if [[ -e $real ]]; then
+		for pkg in "${real:h}/package.json" "${real:h:h}/package.json"; do
+			[[ -r $pkg ]] || continue;
+			ver="$(command sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$pkg" | command head -n1)";
+			[[ -n $ver ]] && break;
+		done;
+		if [[ -z $ver && $real != *node_modules* ]]; then
+			for seg in "${(@s:/:)real}"; do
+				[[ $seg == <->.<->.<->* ]] && ver=$seg;
+			done;
+		fi;
+	fi;
+	print -r -- "$bin${target:+ -> $target}${ver:+ ($ver)}";
+}
+
 # Claude Code keeps each account in its own config directory — separate login,
 # settings, plugins, and session history — selected by CLAUDE_CONFIG_DIR. Each
 # profile must be logged in once with `claude auth login`; credentials live in
@@ -357,6 +391,7 @@ function claude-as() {
 function claude-doctor() {
 	local origin acct map dir cred email;
 	print -r -- "wrapper: $(whence -w claude)";
+	print -r -- "binary:  $(bin="$(whence -p claude)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH')";
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
 	print -r -- "origin:  ${origin:-<none — not a git repo or no origin>}";
@@ -430,15 +465,27 @@ function claude-doctor() {
 # reject it). Each profile must be created once with `wrangler auth create
 # <name>` — the wrapper never logs in for you and refuses to run a command as
 # another account when the mapped profile is missing.
+#
+# Which wrangler runs is resolved the way `npx wrangler` resolves it (see
+# wrangler_bin): a project that vendors wrangler in its package.json gets its
+# own node_modules/.bin/wrangler — the version it pinned, on the node it was
+# installed under — and everything else gets whatever `wrangler` is on PATH
+# (an asdf/nodenv shim, `npm -g`, ...). Profiles and bindings live in
+# wrangler's per-user config dir either way, so every install sees the same
+# logins.
 function wrangler() {
-	local profile;
+	local profile bin;
+	bin="$(wrangler_bin)" || {
+		print -ru2 -- "wrangler: not found — no node_modules/.bin/wrangler at or above $PWD and none on PATH";
+		return 127;
+	};
 	# Account management passes straight through (as gh() does with `gh
 	# auth`); an API token in the environment overrides every profile and
 	# makes wrangler refuse binding changes, so there is nothing to manage.
 	case $1 in
-		(auth|login|logout) command wrangler "$@"; return;;
+		(auth|login|logout) "$bin" "$@"; return;;
 	esac;
-	[[ -n $CLOUDFLARE_API_TOKEN ]] && { command wrangler "$@"; return; };
+	[[ -n $CLOUDFLARE_API_TOKEN ]] && { "$bin" "$@"; return; };
 	if [[ -n $WRANGLER_PROFILE ]]; then
 		if profile="$(wrangler_profile)"; then
 			# One-shot override: wrangler's flag outranks any binding. Left
@@ -446,14 +493,32 @@ function wrangler() {
 			# flag makes yargs reject the command.
 			[[ " $* " == *" --profile "* || " $* " == *" --profile="* ]] \
 				|| set -- --profile="$profile" "$@";
-			command wrangler "$@";
+			"$bin" "$@";
 			return;
 		fi;
 		# A typo'd override warned on stderr; fall through to the cwd.
 	fi;
-	profile="$(WRANGLER_PROFILE= wrangler_profile)" || { command wrangler "$@"; return; };
-	wrangler_bind "$profile" || return;
-	command wrangler "$@";
+	profile="$(WRANGLER_PROFILE= wrangler_profile)" || { "$bin" "$@"; return; };
+	wrangler_bind "$profile" "$bin" || return;
+	"$bin" "$@";
+}
+
+# The wrangler executable a command in the cwd should run, resolved as npx
+# and package.json scripts resolve it: the nearest node_modules/.bin/wrangler
+# at or above the cwd — a project that vendors wrangler pinned that version
+# for a reason, and it is what its own scripts run — else whatever `wrangler`
+# is on PATH, shims included (a version manager's shim picks the node it
+# selects for the cwd; if that node has no wrangler, the shim's own error
+# shows through). Prints the path; prints nothing and returns 1 when there
+# is none anywhere.
+function wrangler_bin() {
+	local d=$PWD;
+	while :; do
+		[[ -x $d/node_modules/.bin/wrangler ]] && { print -r -- "$d/node_modules/.bin/wrangler"; return 0; };
+		[[ $d == / ]] && break;
+		d=${d:h};
+	done;
+	whence -p wrangler;
 }
 
 # The profile name wrangler() acts on: WRANGLER_PROFILE (a mapped account or
@@ -510,11 +575,12 @@ function wrangler_profile_exists() {
 }
 
 # Make sure the cwd's repo root is bound to profile $1, binding it with
-# wrangler's own `auth activate` when it is not. Returns 1 — and the caller
-# must not run its command — when the bind fails, e.g. the profile has not
-# been created yet: running on would silently use another account.
+# wrangler's own `auth activate` (run via the executable $2, default
+# wrangler_bin) when it is not. Returns 1 — and the caller must not run its
+# command — when the bind fails, e.g. the profile has not been created yet:
+# running on would silently use another account.
 function wrangler_bind() {
-	local top file out;
+	local top file out bin;
 	[[ $1 == default ]] && return 0;
 	top="$(command git rev-parse --show-toplevel 2>/dev/null)" || return 0;
 	file="$(wrangler_config_dir)/profiles/directory-bindings.json";
@@ -522,7 +588,8 @@ function wrangler_bind() {
 	# means nothing to do. A wrong guess at the file (or a future format
 	# change) only costs a redundant, idempotent activate per command.
 	command grep -Fq -- "\"$top\": \"$1\"" "$file" 2>/dev/null && return 0;
-	if out="$(command wrangler auth activate "$1" "$top" 2>&1)"; then
+	bin=${2:-$(wrangler_bin)};
+	if out="$("$bin" auth activate "$1" "$top" 2>&1)"; then
 		print -ru2 -- "wrangler: bound $top to profile '$1'";
 	else
 		# Keep wrangler's error, drop its banner / experimental-warning /
@@ -531,7 +598,15 @@ function wrangler_bind() {
 		lines=("${(@f)out}");
 		lines=("${(@)lines:#(|*experimental command*|*Logs were written to*|*wrangler [0-9]*|*───*)}");
 		print -ru2 -- "${(F)lines}";
-		print -ru2 -- "wrangler: cannot bind $top to profile '$1'; refusing to run as another account (create it with: wrangler auth create $1)";
+		# The usual cause is a profile that was never created; when it does
+		# exist the error above (an old wrangler without `auth activate`, a
+		# version-manager shim with no wrangler under the selected node, ...)
+		# is the whole story, so don't send anyone to `auth create`.
+		if wrangler_profile_exists "$1"; then
+			print -ru2 -- "wrangler: cannot bind $top to profile '$1' (see above; \`wrangler-doctor\` shows which wrangler ran); refusing to run as another account";
+		else
+			print -ru2 -- "wrangler: cannot bind $top to profile '$1'; refusing to run as another account (create it with: wrangler auth create $1)";
+		fi;
 		return 1;
 	fi;
 }
@@ -567,10 +642,21 @@ function wrangler-as() {
 # do the cwd's origin, repo pin, and account mapping resolve to, does that
 # profile exist, what is the repo root bound to, and which profile wrangler
 # itself will therefore use. Paste the output when profile selection
-# misbehaves. Reads the same files wrangler does; never runs wrangler.
+# misbehaves. Reads the same files wrangler does; never runs wrangler (the
+# binary line is derived from the filesystem, see bin_trace).
 function wrangler-doctor() {
-	local origin slug acct repopin map profile cfg top bound line dir prof best;
+	local origin slug acct repopin map profile cfg top bound line dir prof best bin onpath;
 	print -r -- "wrapper: $(whence -w wrangler)";
+	if bin="$(wrangler_bin)"; then
+		onpath="$(whence -p wrangler)";
+		if [[ $bin == */node_modules/.bin/wrangler ]]; then
+			print -r -- "binary:  $(bin_trace "$bin") [repo-local, as npx would run; PATH has ${onpath:-none}]";
+		else
+			print -r -- "binary:  $(bin_trace "$bin")";
+		fi;
+	else
+		print -r -- "binary:  NOT FOUND — no node_modules/.bin/wrangler at or above the cwd and none on PATH";
+	fi;
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
 	print -r -- "origin:  ${origin:-<none — not a git repo or no origin>}";
@@ -632,7 +718,11 @@ function wrangler-doctor() {
 				note="  (wrapper will rebind it to '$profile' on the next run)";
 			fi;
 		fi;
-		print -r -- "binding: ${bound:+$top -> $bound}${bound:-<repo root not bound>}$note";
+		if [[ -n $bound ]]; then
+			print -r -- "binding: $top -> $bound$note";
+		else
+			print -r -- "binding: <repo root not bound>$note";
+		fi;
 	fi;
 	if [[ -n $CLOUDFLARE_API_TOKEN ]]; then
 		print -r -- "uses:    CLOUDFLARE_API_TOKEN";
@@ -723,6 +813,7 @@ function gh() {
 function gh-doctor() {
 	local origin acct tok who;
 	print -r -- "wrapper: $(whence -w gh)";
+	print -r -- "binary:  $(bin="$(whence -p gh)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH')";
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
 	print -r -- "origin:  ${origin:-<none — not a git repo or no origin>}";
