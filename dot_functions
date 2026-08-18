@@ -742,6 +742,89 @@ function gh-doctor() {
 	fi;
 }
 
+# Diagnose what `git` itself would do right here — the third per-repo
+# routing mechanism next to gh()/claude()/wrangler(): which commit identity
+# the includeIf chain selects (and which file supplied it), whether signing
+# is on and its signer/key actually exist, how the origin's SSH alias
+# resolves, and which account https pushes would authenticate as. A wrong
+# author email is the leak the private overlay's tests police after the
+# fact; this shows it before the commit. Read-only, no network.
+function git-doctor() {
+	local origin acct name email src sign fmt key prog agent alias hostname idfile;
+	print -r -- "cwd:     $PWD";
+	origin="$(command git config --get remote.origin.url 2>/dev/null)";
+	print -r -- "origin:  ${origin:-<none — not a git repo or no origin>}";
+	if command git rev-parse --git-dir >/dev/null 2>&1; then
+		print -r -- "root:    $(command git rev-parse --show-toplevel 2>/dev/null)";
+	fi;
+	acct="$(gh_account_for_cwd)";
+	print -r -- "account: ${acct:-<no credential pin matched>}";
+	# Identity, with the file it came from — that is what shows whether the
+	# includeIf for this remote fired.
+	name="$(command git config --get user.name 2>/dev/null)";
+	email="$(command git config --get user.email 2>/dev/null)";
+	src="$(command git config --show-origin --get user.email 2>/dev/null)";
+	src=${src%%	*}; src=${src#file:};
+	if [[ -n $email ]]; then
+		print -r -- "author:  ${name:-<no user.name>} <$email>";
+		print -r -- "from:    ${src:-<unknown>}";
+	else
+		print -r -- "author:  NOT SET — no user.email in effect here (public-only clone, or no include matched this remote); git will refuse or guess";
+	fi;
+	# Signing: entirely machine-local (see CLAUDE.md), so report what is on
+	# and whether the parts it points at exist.
+	sign="$(command git config --get commit.gpgsign 2>/dev/null)";
+	if [[ ${(L)sign} == true ]]; then
+		fmt="$(command git config --get gpg.format 2>/dev/null)";
+		key="$(command git config --get user.signingkey 2>/dev/null)";
+		prog="$(command git config --get "gpg.${fmt:-openpgp}.program" 2>/dev/null)";
+		[[ -n $prog ]] || prog="$(command git config --get gpg.program 2>/dev/null)";
+		print -r -- "signing: on (format ${fmt:-openpgp}), key ${key:-<user.signingkey NOT SET>}";
+		if [[ -n $key && $key == (\~|/)* && ! -e ${key/#\~/$HOME} ]]; then
+			print -r -- "         WARNING: signing key file ${key} does not exist";
+		fi;
+		if [[ -n $prog ]]; then
+			if [[ -x ${prog/#\~/$HOME} ]] || command -v "$prog" >/dev/null 2>&1; then
+				print -r -- "signer:  $prog";
+			else
+				print -r -- "signer:  $prog — NOT FOUND (commits will fail; on a remote box, unset commit.gpgsign or forward the agent)";
+			fi;
+		fi;
+	else
+		print -r -- "signing: off";
+	fi;
+	# SSH: an scp-style origin's host part is often an alias picking the key;
+	# show what ssh resolves it to (no connection made).
+	if [[ -n $origin && $origin != *://* && $origin == *:* ]]; then
+		alias=${origin%%:*}; alias=${alias#*@};
+		if command -v ssh >/dev/null 2>&1; then
+			local sshcfg;
+			sshcfg="$(command ssh -G "$alias" 2>/dev/null)";
+			hostname="$(print -r -- "$sshcfg" | command sed -n 's/^hostname //p' | command head -n1)";
+			idfile="$(print -r -- "$sshcfg" | command sed -n 's/^identityfile //p' | command head -n1)";
+			agent="$(print -r -- "$sshcfg" | command sed -n 's/^identityagent //p' | command head -n1)";
+			agent=${agent/#$HOME/\~};
+			print -r -- "ssh:     $alias -> ${hostname:-?}${idfile:+, key $idfile}${agent:+, agent $agent}";
+		fi;
+	elif [[ $origin == https://github.com/* ]]; then
+		print -r -- "https:   pushes authenticate via credential helper as '${acct:-<active gh account>}'";
+	fi;
+	# Every config file consulted from here — the include chain made visible.
+	print -r -- "configs: $(command git config --list --show-origin --name-only 2>/dev/null | command awk -F'\t' '$1 ~ /^file:/ {print substr($1, 6)}' | command awk '!seen[$0]++' | command paste -sd, - | command sed 's/,/, /g')";
+}
+
+# All four per-repo routing diagnoses for the cwd in one go — git identity,
+# gh account, Claude Code profile, wrangler profile. First thing to run when
+# a repo "behaves weird" on a machine.
+function doctor() {
+	local d;
+	for d in git gh claude wrangler; do
+		print -r -- "== $d-doctor";
+		"$d-doctor";
+		print -r -- "";
+	done;
+}
+
 # Get macOS Software Updates, and update installed Ruby gems, Homebrew, npm, uv, and their installed packages
 function update() {
 	setopt localoptions nomonitor nonotify;
