@@ -124,3 +124,55 @@ gh_in() {
   [ "$status" -eq 0 ]
   [ "$output" = "GH_TOKEN=tok-work-acct args: api /repos/octo-work-org/some-repo" ]
 }
+
+# --- gh-doctor -------------------------------------------------------------
+#
+# The stub answers `gh api user --jq .login` with $GH_STUB_API_LOGIN when set,
+# else with the account the token was minted for (tok-<acct> -> <acct>).
+
+@test "gh-doctor: traces the pin, finds the token, and verifies identity" {
+  cat > "$BATS_TEST_TMPDIR/bin/gh" <<'EOF'
+#!/bin/sh
+if [ "$1" = auth ] && [ "$2" = token ] && [ "$3" = --user ]; then
+  [ "$4" = "${GH_STUB_NO_TOKEN_FOR-}" ] && exit 0
+  echo "tok-$4"
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = user ]; then
+  [ -n "${GH_STUB_API_LOGIN-}" ] && { echo "$GH_STUB_API_LOGIN"; exit 0; }
+  echo "${GH_TOKEN#tok-}"
+  exit 0
+fi
+echo "GH_TOKEN=${GH_TOKEN-UNSET} args: $*"
+EOF
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; gh-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"wrapper: gh: function"* ]]
+  [[ "$output" == *"account: personal-acct"* ]]
+  [[ "$output" == *"pins:    octo-work-org -> work-acct, octo-personal -> personal-acct"* ]]
+  [[ "$output" == *"token:   present for 'personal-acct'"* ]]
+  [[ "$output" == *"verify:  token authenticates as personal-acct — OK"* ]]
+
+  # Keyring handed back another user's token: flagged loudly.
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; GH_STUB_API_LOGIN=work-acct gh-doctor"
+  [[ "$output" == *"verify:  MISMATCH — token for 'personal-acct' authenticates as 'work-acct'"* ]]
+
+  # No token stored for the pinned account.
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; GH_STUB_NO_TOKEN_FOR=personal-acct gh-doctor"
+  [[ "$output" == *"token:   NONE for 'personal-acct'"* ]]
+  [[ "$output" != *"verify:"* ]]
+
+  # A GH_TOKEN in the environment is reported as set, never echoed.
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; GH_TOKEN=sekrit gh-doctor"
+  [[ "$output" == *"GH_TOKEN=<set"* ]]
+  [[ "$output" != *"sekrit"* ]]
+}
+
+@test "gh-doctor: unpinned repo says gh runs as the active account and stops" {
+  repo=$(make_repo 'git@github.com:someone-else/some-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; gh-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"account: <no credential pin matched"* ]]
+  [[ "$output" != *"token:"* ]]
+}
