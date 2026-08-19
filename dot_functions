@@ -767,6 +767,17 @@ function wrangler-doctor() {
 # vouch for — and `tailnet-as <name> <cmd…>` does that plus exports the proxy
 # environment (ALL_PROXY/HTTPS_PROXY/…) so any proxy-aware tool follows.
 # `tailnet-doctor [host]` traces every step without routing anything.
+#
+# Every function below starts with `emulate -L zsh`: they glob and
+# pattern-match, and the shells that source this file do not all share the
+# interactive shell's options. Claude Code's Bash tool runs zsh with
+# NO_BARE_GLOB_QUAL (and NOMATCH), where a bare `(N)` qualifier is literal
+# text, the pattern matches nothing, and the whole function aborts — the
+# first real-world failure was every `curl` in such a session dying with
+# "no matches found: …/tailnet/*/port(N)", localhost included, the moment
+# the first tailnet was installed. `emulate -L zsh` gives each function the
+# default option set for its own scope (and its callees') whatever the
+# caller's shell has set, so the behaviour is the same everywhere.
 
 # The tailnet name the cwd prefers: TAILNET (vetted: an installed name, or a
 # `tailnet.profile.*` key naming one) -> the repo pin `tailnet.<slug>.profile`
@@ -774,6 +785,7 @@ function wrangler-doctor() {
 # returns 1 when nothing applies (the wrappers then just try every installed
 # tailnet in order).
 function tailnet_for_cwd() {
+	emulate -L zsh;
 	local slug acct name;
 	if [[ -n $TAILNET ]]; then
 		name="$(command git config --get "tailnet.profile.$TAILNET" 2>/dev/null)";
@@ -802,12 +814,14 @@ function tailnet_state_root() {
 }
 
 function tailnet_installed() {
+	emulate -L zsh;
 	[[ -n $1 && $1 != */* && -f "$(tailnet_state_root)/$1/port" ]];
 }
 
 # Is the machinery there at all: the script on PATH and at least one tailnet
 # installed. When not, every wrapper is a plain passthrough at zero cost.
 function tailnet_active() {
+	emulate -L zsh;
 	(( $+commands[tailnet] )) || return 1;
 	local d;
 	for d in "$(tailnet_state_root)"/*/port(N); do
@@ -821,6 +835,7 @@ function tailnet_active() {
 # 100.64/10 IPv4, or a fd7a:115c:a1e0::/48 IPv6. Everything else — a public
 # FQDN, localhost, another IP — runs direct without a single tailscale call.
 function tailnet_hostish() {
+	emulate -L zsh;
 	local h=${(L)1};
 	h=${h%.};
 	[[ -n $h ]] || return 1;
@@ -839,6 +854,7 @@ function tailnet_hostish() {
 # node of the tailnet the app is on, or the machinery is absent). TAILNET, when
 # valid, forces its tailnet and skips the shape check.
 function tailnet_route() {
+	emulate -L zsh;
 	local prefer;
 	tailnet_active || return 0;
 	prefer="$(tailnet_for_cwd)";
@@ -862,6 +878,7 @@ function tailnet_route() {
 # command line would silently override a configured ProxyJump, so those hosts
 # are left entirely alone.
 function tailnet_ssh_host() {
+	emulate -L zsh;
 	local out l host;
 	out="$(command ssh -G "$@" 2>/dev/null)" || return 1;
 	for l in "${(@f)out}"; do
@@ -880,6 +897,7 @@ function tailnet_ssh_host() {
 # line, then resolved through ssh's config like tailnet_ssh_host. Prints
 # nothing when unsure — unsure means untouched.
 function tailnet_scp_host() {
+	emulate -L zsh;
 	local mode=$1 a host skip=0;
 	shift;
 	for a in "$@"; do
@@ -922,6 +940,7 @@ function tailnet_scp_host() {
 # proxying (-x/--proxy/--socks*/--noproxy, or proxy variables in the
 # environment) — the user's choice wins.
 function tailnet_curl_host() {
+	emulate -L zsh;
 	local a host bare;
 	[[ -z $ALL_PROXY$all_proxy$HTTPS_PROXY$https_proxy$HTTP_PROXY$http_proxy ]] || return 1;
 	for a in "$@"; do
@@ -955,6 +974,7 @@ function tailnet_curl_host() {
 }
 
 function ssh() {
+	emulate -L zsh;
 	local host name;
 	if tailnet_active && host="$(tailnet_ssh_host "$@")" && name="$(tailnet_route "$host")" && [[ -n $name ]]; then
 		command ssh -o "ProxyCommand=${commands[tailnet]} nc $name %h %p" "$@";
@@ -964,6 +984,7 @@ function ssh() {
 }
 
 function scp() {
+	emulate -L zsh;
 	local host name;
 	if tailnet_active && host="$(tailnet_scp_host scp "$@")" && name="$(tailnet_route "$host")" && [[ -n $name ]]; then
 		command scp -o "ProxyCommand=${commands[tailnet]} nc $name %h %p" "$@";
@@ -973,6 +994,7 @@ function scp() {
 }
 
 function sftp() {
+	emulate -L zsh;
 	local host name;
 	if tailnet_active && host="$(tailnet_scp_host sftp "$@")" && name="$(tailnet_route "$host")" && [[ -n $name ]]; then
 		command sftp -o "ProxyCommand=${commands[tailnet]} nc $name %h %p" "$@";
@@ -982,6 +1004,7 @@ function sftp() {
 }
 
 function curl() {
+	emulate -L zsh;
 	local host name;
 	if tailnet_active && host="$(tailnet_curl_host "$@")" && name="$(tailnet_route "$host")" && [[ -n $name ]]; then
 		command curl --proxy "$(command tailnet proxy-url "$name")" "$@";
@@ -999,6 +1022,7 @@ function curl() {
 # curl-based programs — go through that tailnet's daemon too. Runs in this
 # shell, so the wrappers apply and functions/aliases work.
 function tailnet-as() {
+	emulate -L zsh;
 	local req name names url;
 	names="$(command tailnet names 2>/dev/null)";
 	[[ -n $names ]] || names="<none installed — tailnet install <name>>";
@@ -1027,6 +1051,7 @@ function tailnet-as() {
 # preference, and — given a host — the routing verdict for it. Reads state
 # and asks the daemons for status; never routes anything.
 function tailnet-doctor() {
+	emulate -L zsh;
 	local root n origin slug acct repopin map prefer host verdict;
 	local -a pref;
 	print -r -- "wrapper: $(whence -w ssh) / $(whence -w curl)";

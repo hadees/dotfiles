@@ -239,8 +239,16 @@ make_repo() {
 
 in_repo() { # <repo> <zsh code…>
   local repo=$1; shift
-  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; $*"
+  # $ZOPTS, when set, is applied before the functions are sourced — to run
+  # them under another program's zsh options (see CLAUDE_CODE_OPTS).
+  run zsh -c "${ZOPTS:+setopt $ZOPTS;} source '$DOTFUNCTIONS'; cd '$repo'; $*"
 }
+
+# The option set Claude Code's Bash tool runs zsh with (read off `setopt` in
+# such a session): bare glob qualifiers off, so a `(N)` is literal text and
+# NOMATCH aborts the function that globbed. Every wrapper must behave the
+# same there as in an interactive shell.
+CLAUDE_CODE_OPTS="no_bare_glob_qual no_case_glob glob_star_short no_extended_glob nomatch"
 
 # --- script: registry ------------------------------------------------------
 
@@ -662,6 +670,44 @@ in_repo() { # <repo> <zsh code…>
   rm "$TAILNET_BIN"
   in_repo "$repo" ssh workbox
   [ "$output" = "RAN ssh: workbox" ]
+}
+
+# --- functions: option independence -------------------------------------------
+
+@test "wrappers: behave the same under Claude Code's zsh options (no bare glob qualifiers, no extendedglob)" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  # The crash: with tailnets installed, tailnet_active's `*/port(N)` glob
+  # aborted every wrapper under NO_BARE_GLOB_QUAL — a curl to loopback died
+  # with "no matches found" and never ran.
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" tailnet_active
+  [ "$status" -eq 0 ]
+  [ "$output" = "" ]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" curl -s http://127.0.0.1:8321/
+  [ "$status" -eq 0 ]
+  [ "$output" = "RAN curl: -s http://127.0.0.1:8321/" ]
+  [ ! -s "$TS_LOG" ]
+  # And routing still works there — the same verdicts as the default shell.
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" ssh -p 2222 admin@workbox uptime
+  [ "$output" = "RAN ssh: -o ProxyCommand=$TAILNET_BIN nc work %h %p -p 2222 admin@workbox uptime" ]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" ssh homebox
+  [ "$output" = "RAN ssh: homebox" ]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" curl workbox:9000/health
+  [ "$output" = "RAN curl: --proxy socks5h://localhost:1056 workbox:9000/health" ]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" scp -P 2222 ./file.txt admin@workbox:/tmp/
+  [ "$output" = "RAN scp: -o ProxyCommand=$TAILNET_BIN nc work %h %p -P 2222 ./file.txt admin@workbox:/tmp/" ]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" sftp admin@workbox:/srv
+  [ "$output" = "RAN sftp: -o ProxyCommand=$TAILNET_BIN nc work %h %p admin@workbox:/srv" ]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" "TAILNET=work ssh 10.9.8.7"
+  [ "$output" = "RAN ssh: -o ProxyCommand=$TAILNET_BIN nc work %h %p 10.9.8.7" ]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" "tailnet-as work sh -c 'echo T=\$TAILNET A=\$ALL_PROXY'"
+  [ "$output" = "T=work A=socks5h://localhost:1056" ]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" tailnet-doctor workbox
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"route:   workbox -> via work (ProxyCommand=$TAILNET_BIN nc work %h %p; curl --proxy socks5h://localhost:1056)"* ]]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" tailnet_hostish 100.102.3.4
+  [ "$status" -eq 0 ]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" tailnet_hostish github.com
+  [ "$status" -eq 1 ]
 }
 
 # --- doctor ------------------------------------------------------------------
