@@ -400,7 +400,7 @@ identity in overlays:
 | Target | Source | Role |
 | --- | --- | --- |
 | `~/.finicky.ts` | public `dot_finicky.ts` | composer: imports the two fragments, work rules first, options |
-| `~/.config/finicky/lib.ts` | public | helpers: `chrome(profileName)`, `hosts(...)`, `githubOwners(...)`, `openedBy(bundleIds...)`, `any(...)` |
+| `~/.config/finicky/lib.ts` | public | helpers: `chrome(profileName)`, `hosts(...)`, `githubOwners(...)`, `openedBy(bundleIds...)`, `any(...)`, `tagged(token)` (opaque `#token` from `bin/open-as` → profile; see the tailnet section) |
 | `~/.config/finicky/personal.ts` | personal overlay (public deploys a `create_` stub) | personal/per-company rules **and the `defaultBrowser`** for unmatched links |
 | `~/.config/finicky/work.ts` | work overlay (public deploys a `create_` stub) | work domains, work GitHub orgs, work Cloudflare account |
 

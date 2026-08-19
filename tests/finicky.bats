@@ -26,21 +26,23 @@ setup() {
 
   # Fixture fragments, in the shape the overlays deploy.
   cat > "$HOME/.config/finicky/work.ts" <<'EOF'
-import { any, chrome, githubOwners, hosts, openedBy } from "./lib.ts";
+import { any, chrome, githubOwners, hosts, openedBy, tagged } from "./lib.ts";
 export const rewrite = [];
 export default [
   { match: any(hosts("work.example"), githubOwners("Octo-Work-Org")), browser: chrome("Work Profile") },
   { match: openedBy("com.example.workchat"), browser: chrome("Work Profile") },
+  { match: tagged("wk94fjq2x"), browser: chrome("Work Profile") },
 ];
 EOF
   cat > "$HOME/.config/finicky/personal.ts" <<'EOF'
-import { chrome, githubOwners, hosts } from "./lib.ts";
+import { chrome, githubOwners, hosts, tagged } from "./lib.ts";
 export const defaultBrowser = chrome("Personal Profile");
 export const rewrite = [];
 export default [
   { match: hosts("sideproject.example"), browser: chrome("Side Project Profile") },
   // Deliberately overlaps with work's owner rule: work must win by order.
   { match: githubOwners("octo-work-org", "octo-personal"), browser: chrome("Personal Profile") },
+  { match: tagged("sd83hnq2x"), browser: chrome("Side Project Profile") },
 ];
 EOF
 
@@ -112,6 +114,25 @@ route() {
   [ "${lines[0]}" = "https://nothing.example/ -> Google Chrome:Work Profile" ]
   [ "${lines[1]}" = "https://nothing.example/ -> Google Chrome:Personal Profile" ]
   [ "${lines[2]}" = "https://nothing.example/ -> Google Chrome:Personal Profile" ]
+}
+
+@test "finicky: tagged() routes an opaque #token fragment to its profile, on any host" {
+  # The token is host-independent by design (open-as tags URLs no rule can
+  # route — auth links that look identical for every account); an untagged,
+  # wrongly-tagged, or lookalike-fragment URL falls through to the default.
+  route "https://login.tailscale.example/a/abc123#wk94fjq2x" \
+        "https://device.oauth.example/activate#wk94fjq2x" \
+        "https://login.tailscale.example/a/abc123#sd83hnq2x" \
+        "https://login.tailscale.example/a/abc123" \
+        "https://login.tailscale.example/a/abc123#other" \
+        "https://nothing.example/docs#section-wk94fjq2x"
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "https://login.tailscale.example/a/abc123#wk94fjq2x -> Google Chrome:Work Profile" ]
+  [ "${lines[1]}" = "https://device.oauth.example/activate#wk94fjq2x -> Google Chrome:Work Profile" ]
+  [ "${lines[2]}" = "https://login.tailscale.example/a/abc123#sd83hnq2x -> Google Chrome:Side Project Profile" ]
+  [ "${lines[3]}" = "https://login.tailscale.example/a/abc123 -> Google Chrome:Personal Profile" ]
+  [ "${lines[4]}" = "https://login.tailscale.example/a/abc123#other -> Google Chrome:Personal Profile" ]
+  [ "${lines[5]}" = "https://nothing.example/docs#section-wk94fjq2x -> Google Chrome:Personal Profile" ]
 }
 
 @test "finicky: the public create_ stubs compose to an empty, plain-Chrome config" {
