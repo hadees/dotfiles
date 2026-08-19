@@ -50,7 +50,7 @@ Interactive (the "GUI" is the two-line prompt with git indicators):
 .claude/skills/run-dotfiles/driver.sh tui
 .claude/skills/run-dotfiles/driver.sh send 'cd ~ && git init -q demo && cd demo && touch a && git add a && echo x > b'
 .claude/skills/run-dotfiles/driver.sh send 'wrangler-doctor | head -3'
-.claude/skills/run-dotfiles/driver.sh pane      # → "… in ~/demo on master [+?]" then the doctor lines
+.claude/skills/run-dotfiles/driver.sh pane      # → "… in ~/demo on main [+?]" then the doctor lines
 .claude/skills/run-dotfiles/driver.sh stop
 ```
 
