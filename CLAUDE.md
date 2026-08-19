@@ -307,7 +307,13 @@ wrapper. Consequences:
   selects for the cwd (or "not installed under the selected node"), and the
   version read off the install without executing it (npm `package.json`,
   cask/native path segment). `doctor` runs all five (git, gh, claude,
-  wrangler, tailnet).
+  wrangler, tailnet). Every doctor also opens with a `defined:` line — are
+  the helpers its wrapper (and the doctor itself) call actually defined in
+  this shell — printed before any line that depends on one, because a
+  missing helper makes a doctor misreport confidently (`account: <no pin
+  matched>`) rather than fail; Claude Code's shell snapshot has dropped
+  functions silently before. The lists are checked against the function
+  bodies by `tests/git-doctor.bats`, so they cannot go stale.
 
 ### Tailnets (two Tailscale networks at once)
 

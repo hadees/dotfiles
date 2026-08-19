@@ -41,6 +41,7 @@ doctor_in() {
   make_repo 'git@github-personal:octo-personal/some-repo.git'
   doctor_in "$REPO"
   [ "$status" -eq 0 ]
+  [[ "$output" == *"defined: ok (2 helpers)"* ]]
   [[ "$output" == *"origin:  git@github-personal:octo-personal/some-repo.git"* ]]
   [[ "$output" == *"account: personal-acct"* ]]
   [[ "$output" == *"author:  Octo Person <octo@example.com>"* ]]
@@ -49,6 +50,9 @@ doctor_in() {
   # No ~/.ssh/config in the sandbox: the alias resolves to itself.
   [[ "$output" == *"ssh:     github-personal -> github-personal"* ]]
   [[ "$output" == *"configs: "*".gitconfig-personal"* ]]
+  # A dropped helper is named before the account line that depends on it.
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$REPO'; unfunction git_origin_slug; git-doctor 2>/dev/null"
+  [[ "$output" == *"defined: MISSING git_origin_slug — "* ]]
 }
 
 @test "git-doctor: no identity in effect is called out loudly" {
@@ -84,13 +88,57 @@ doctor_in() {
   [[ "$output" == *"signer:  /bin/sh"* ]]
 }
 
-@test "doctor: runs all four doctors in order" {
+@test "doctor: runs all five doctors in order" {
   make_repo 'git@github-personal:octo-personal/some-repo.git'
   # Stubs so gh-/wrangler-doctor have something harmless to talk to.
   mkdir -p "$BATS_TEST_TMPDIR/bin"
   printf '#!/bin/sh\nexit 0\n' > "$BATS_TEST_TMPDIR/bin/gh"; chmod +x "$BATS_TEST_TMPDIR/bin/gh"
   run zsh -c "PATH='$BATS_TEST_TMPDIR/bin':\$PATH; source '$DOTFUNCTIONS'; cd '$REPO'; doctor"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"== git-doctor"*"== gh-doctor"*"== claude-doctor"*"== wrangler-doctor"* ]]
+  [[ "$output" == *"== git-doctor"*"== gh-doctor"*"== claude-doctor"*"== wrangler-doctor"*"== tailnet-doctor"* ]]
   [[ "$output" == *"author:  Octo Person <octo@example.com>"* ]]
+}
+
+# Every doctor's `defined:` list must name every helper its wrapper (and the
+# doctor itself) can reach, or a dropped one goes unreported. Derived from
+# the compiled function bodies rather than a second hand-kept list: any word
+# of a body that is a defined function with a `_` in its name is a helper
+# (wrappers and doctors are hyphenated or bare; env vars are uppercase),
+# followed transitively. Black-box check: unfunction each derived helper and
+# the doctor must report it. PATH is cut to the base system so no real
+# gh/wrangler/tailnet is consulted.
+@test "doctors: every reachable helper is covered by the defined: line" {
+  make_repo 'git@github-personal:octo-personal/some-repo.git'
+  run zsh -c '
+    PATH=/usr/bin:/bin; source "$1"; cd "$2"
+    callees() {
+      emulate -L zsh
+      local -A seen; local -a queue; local f w
+      queue=("$@")
+      while (( ${#queue} )); do
+        f=$queue[1]; shift queue
+        for w in ${(s: :)${"$(functions -- $f)"//[^A-Za-z0-9_-]/ }}; do
+          [[ $w == *_* && $w != $f && $w != defined_trace && -n ${functions[$w]-} && -z ${seen[$w]-} ]] || continue
+          seen[$w]=1; queue+=($w)
+        done
+      done
+      print -r -- ${(ok)seen}
+    }
+    typeset -A wrapped=(claude claude wrangler wrangler gh gh tailnet "ssh scp sftp curl tailnet-as" git "")
+    local d h n=0 bad=0
+    for d in claude wrangler gh tailnet git; do
+      for h in $(callees ${=wrapped[$d]} $d-doctor); do
+        n=$((n+1))
+        [[ "$( (unfunction $h; $d-doctor) 2>/dev/null )" == *"defined: MISSING"*" $h "* ]] \
+          || { print -r -- "$d-doctor: defined: does not cover $h"; bad=1; }
+      done
+    done
+    print -r -- "checked $n"
+    exit $bad
+  ' zsh "$DOTFUNCTIONS" "$REPO"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "checked "* ]]
+  # Sanity: the derivation found a plausible number of helpers.
+  n=${output#checked }
+  [ "$n" -ge 25 ]
 }
