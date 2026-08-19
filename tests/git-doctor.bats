@@ -14,6 +14,7 @@ setup() {
   export GIT_CONFIG_SYSTEM=/dev/null
   export GIT_CONFIG_NOSYSTEM=1
   unset GIT_AUTHOR_EMAIL GIT_COMMITTER_EMAIL
+  unset CLAUDECODE
 
   git config --file "$GIT_CONFIG_GLOBAL" credential.https://github.com/octo-personal.username personal-acct
   git config --file "$GIT_CONFIG_GLOBAL" init.defaultBranch main
@@ -95,7 +96,7 @@ doctor_in() {
   printf '#!/bin/sh\nexit 0\n' > "$BATS_TEST_TMPDIR/bin/gh"; chmod +x "$BATS_TEST_TMPDIR/bin/gh"
   run zsh -c "PATH='$BATS_TEST_TMPDIR/bin':\$PATH; source '$DOTFUNCTIONS'; cd '$REPO'; doctor"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"== git-doctor"*"== gh-doctor"*"== claude-doctor"*"== wrangler-doctor"*"== tailnet-doctor"* ]]
+  [[ "$output" == "shell:   zsh "*"== git-doctor"*"== gh-doctor"*"== claude-doctor"*"== wrangler-doctor"*"== tailnet-doctor"* ]]
   [[ "$output" == *"author:  Octo Person <octo@example.com>"* ]]
 }
 

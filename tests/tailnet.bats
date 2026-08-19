@@ -16,6 +16,9 @@ setup() {
   export GIT_CONFIG_SYSTEM=/dev/null
   export GIT_CONFIG_NOSYSTEM=1
   unset TAILNET TAILNET_STATE XDG_STATE_HOME XDG_CONFIG_HOME
+  # bats inherits CLAUDECODE when run from a Claude Code session; the
+  # doctor's shell: line reports it, so the default case must not see it.
+  unset CLAUDECODE
   unset ALL_PROXY all_proxy HTTPS_PROXY https_proxy HTTP_PROXY http_proxy NO_PROXY no_proxy
   DOTFUNCTIONS="$BATS_TEST_DIRNAME/../dot_functions"
   # The state dir holds unix sockets, and a socket path is limited to ~104
@@ -482,9 +485,9 @@ CLAUDE_CODE_OPTS="no_bare_glob_qual no_case_glob glob_star_short no_extended_glo
 # --- functions: cwd preference ---------------------------------------------
 
 @test "dot_functions defines the tailnet helpers and wrappers" {
-  run zsh -c "source '$DOTFUNCTIONS'; whence -w tailnet_for_cwd tailnet_route tailnet_hostish tailnet_ssh_host tailnet_scp_host tailnet_curl_host tailnet_for_cmd tailnet_exec ssh scp sftp curl tailnet-as tailnet-doctor defined_trace"
+  run zsh -c "source '$DOTFUNCTIONS'; whence -w tailnet_for_cwd tailnet_route tailnet_hostish tailnet_ssh_host tailnet_scp_host tailnet_curl_host tailnet_for_cmd tailnet_exec ssh scp sftp curl tailnet-as tailnet-doctor defined_trace shell_trace"
   [ "$status" -eq 0 ]
-  for f in tailnet_for_cwd tailnet_route tailnet_hostish tailnet_ssh_host tailnet_scp_host tailnet_curl_host tailnet_for_cmd tailnet_exec ssh scp sftp curl tailnet-as tailnet-doctor defined_trace; do
+  for f in tailnet_for_cwd tailnet_route tailnet_hostish tailnet_ssh_host tailnet_scp_host tailnet_curl_host tailnet_for_cmd tailnet_exec ssh scp sftp curl tailnet-as tailnet-doctor defined_trace shell_trace; do
     [[ "$output" == *"$f: function"* ]]
   done
 }
@@ -887,4 +890,26 @@ STUB
   in_repo "$repo" doctor
   [ "$status" -eq 0 ]
   [[ "$output" == *"== wrangler-doctor"*"== tailnet-doctor"*"wants:   personal first"* ]]
+}
+
+@test "doctor: opens with the calling shell's version and pattern options, read before any emulate" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  ver=$(zsh -c 'print -r -- $ZSH_VERSION')
+  # A plain non-interactive zsh with no rc files: nothing off default.
+  in_repo "$repo" doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == "shell:   zsh $ver, options: none"$'\n'* ]]
+  # Claude Code's Bash tool: its marker and its option set, in setopt's order.
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" "CLAUDECODE=1 doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "shell:   zsh $ver, under Claude Code, options: nobareglobqual nocaseglob globstarshort (the tailnet wrappers reset these with emulate -L zsh)"$'\n'* ]]
+  # The marker alone, options alone.
+  in_repo "$repo" "CLAUDECODE=1 doctor"
+  [[ "$output" == "shell:   zsh $ver, under Claude Code, options: none"$'\n'* ]]
+  ZOPTS="extendedglob nomatch" in_repo "$repo" doctor
+  [[ "$output" == "shell:   zsh $ver, options: extendedglob (the tailnet wrappers reset these with emulate -L zsh)"$'\n'* ]]
+  # The line comes from the caller's options even though the doctors that
+  # follow emulate their own: the tailnet doctor still works underneath.
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" doctor
+  [[ "$output" == *"== tailnet-doctor"*"helpers: ok"* ]]
 }

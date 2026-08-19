@@ -317,7 +317,11 @@ wrapper. Consequences:
   `tailnet-doctor` adds `helpers:` — it runs the wrappers' real decision
   path on a loopback URL and a host no tailnet has and reports the first
   thing that goes wrong; the wrappers fail open, so a broken helper is
-  silent there and this is where it shows.
+  silent there and this is where it shows. `doctor` itself opens with a
+  `shell:` line — zsh version, `under Claude Code` when its Bash tool is
+  the caller, and the calling shell's non-default pattern/glob options —
+  read before any `emulate`, so a pasted transcript says which shell it
+  came from.
 
 ### Tailnets (two Tailscale networks at once)
 
