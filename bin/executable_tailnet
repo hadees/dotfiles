@@ -1,0 +1,483 @@
+#!/bin/sh
+# tailnet — one always-on userspace tailscaled per Tailscale network, so a
+# machine whose Tailscale app (or root tailscaled) can only be *on* one
+# tailnet at a time still reaches every other tailnet it belongs to, from the
+# terminal, without switching.
+#
+# Each tailnet you want reachable is a "tailnet profile" <name> with its own
+# unprivileged daemon (`--tun=userspace-networking`, no root, no TUN device),
+# state under $TAILNET_STATE/<name>/, and a local SOCKS5+HTTP proxy on
+# 127.0.0.1:<port>. Whichever tailnet the app is on, the other daemons' proxies
+# stay up; the daemon for the app's own tailnet simply idles. The proxy
+# resolves MagicDNS names inside its tailnet and dials everything else through
+# the normal OS stack. It is unauthenticated on loopback — any local process
+# may use it — which is fine on a single-user machine.
+#
+# This script owns everything that touches the machine: statedirs, ports,
+# which tailscaled/tailscale binaries run, the launchd agent / systemd user
+# unit, login, and the routing decision (`route`, `nc`) that the ssh/scp/sftp/
+# curl wrappers in ~/.functions act on. Which tailnet a *repo* prefers is the
+# shell's business (`tailnet.profile.<account>` in git config, supplied by the
+# private overlays); nothing here names an account or a tailnet.
+#
+# Layout of $TAILNET_STATE/<name>/ (default ~/.local/state/tailnet/<name>/):
+#   port             the proxy port, recorded by `install`
+#   tailscaled.sock  the daemon's control socket
+#   tailscaled.state, logs/, tailscaled.log
+#
+# Usage: tailnet <command> [args]
+#   names                    installed tailnet names, one per line
+#   dir|sock|port <name>     that tailnet's statedir / socket / proxy port
+#   proxy-url <name>         socks5h://localhost:<port> (also an HTTP proxy)
+#   daemon-bin | cli         which tailscaled / tailscale drive the daemons
+#   install <name> [port]    write + start the per-user service (macOS launchd,
+#                            Linux systemd --user); idempotent
+#   uninstall <name> [--purge]
+#   run <name>               the daemon in the foreground (no supervisor: WSL)
+#   up <name> [tailscale up flags]   log that daemon in (browser auth), also
+#                            re-auth after key expiry; same fixed flags every time
+#   status [name]            supervisor + backend state, tailnet, hostname, expiry
+#   logs <name> [tail args]  the daemon's log
+#   system                   the app's / root daemon's tailnet (the "system" one)
+#   peer <name> <host>       exit 0 if <host> is a node of that tailnet
+#   route [--force] [--prefer <name>] <host>
+#                            print the tailnet to proxy <host> through, nothing
+#                            when the system tailnet already reaches it (go
+#                            direct); exit 1 when it is a node nowhere
+#   nc <name> <host> <port>  TCP to <host>:<port> inside that tailnet on
+#                            stdin/stdout — the ssh ProxyCommand
+set -u
+
+TAILNET_STATE=${TAILNET_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/tailnet}
+TAILNET_LABEL_PREFIX=local.tailnet   # launchd label local.tailnet.<name>
+
+die() { printf 'tailnet: %s\n' "$*" >&2; exit 1; }
+usage() { sed -n '/^# Usage:/,/^set -u/{ /^set -u/d; s/^# \{0,1\}//p; }' "$0" >&2; exit 2; }
+
+valid_name() {
+  case $1 in
+    ''|*[!A-Za-z0-9_-]*|-*) return 1;;
+  esac
+  return 0
+}
+need_name() { valid_name "${1-}" || die "invalid tailnet name '${1-}' (letters, digits, - and _)"; }
+need_installed() {
+  need_name "$1"
+  [ -f "$TAILNET_STATE/$1/port" ] || die "tailnet '$1' is not installed (run: tailnet install $1)"
+}
+
+# --- paths and binaries -----------------------------------------------------
+
+state_dir() { printf '%s\n' "$TAILNET_STATE/$1"; }
+sock_path() { printf '%s\n' "$TAILNET_STATE/$1/tailscaled.sock"; }
+port_of() { cat "$TAILNET_STATE/$1/port" 2>/dev/null; }
+
+names() {
+  [ -d "$TAILNET_STATE" ] || return 0
+  for d in "$TAILNET_STATE"/*/; do
+    [ -f "$d/port" ] || continue
+    d=${d%/}
+    printf '%s\n' "${d##*/}"
+  done
+}
+
+# The tailscaled that runs the daemons: PATH first (Homebrew's
+# /opt/homebrew/bin/tailscaled is a stable symlink), else Homebrew's `opt`
+# path (survives upgrades, unlike Cellar). The Tailscale.app bundle has no
+# standalone tailscaled, so nothing under /Applications is ever a candidate.
+daemon_bin() {
+  d=$(command -v tailscaled 2>/dev/null) || d=
+  if [ -z "$d" ] && command -v brew >/dev/null 2>&1; then
+    p=$(brew --prefix 2>/dev/null)/opt/tailscale/bin/tailscaled
+    [ -x "$p" ] && d=$p
+  fi
+  [ -n "$d" ] || return 1
+  printf '%s\n' "$d"
+}
+
+# The tailscale CLI that talks to *our* daemons: the sibling of the tailscaled
+# above (same build, no version-mismatch warning), else whatever is on PATH —
+# but never the Tailscale.app CLI: its /usr/local/bin/tailscale shim can talk
+# to the app, not to a --socket of ours in every version, and it makes the
+# routing depend on which GUI is installed.
+cli() {
+  if d=$(daemon_bin); then
+    c=${d%/*}/tailscale
+    [ -x "$c" ] && { printf '%s\n' "$c"; return 0; }
+  fi
+  c=$(command -v tailscale 2>/dev/null) || return 1
+  case $c in
+    /Applications/*) return 1;;
+  esac
+  # A shim script that execs the app bundle counts as the app.
+  if head -c 512 "$c" 2>/dev/null | grep -q '/Applications/'; then
+    return 1
+  fi
+  printf '%s\n' "$c"
+}
+
+# The CLI for the machine's own daemon (Tailscale.app on macOS, root
+# tailscaled on Linux). The open-source CLI finds the app's daemon too and
+# answers several times faster than the app's own shim (measured 50 ms vs
+# 250 ms), so it is tried first; the app's CLI is the fallback.
+system_cli() {
+  cli 2>/dev/null || command -v tailscale 2>/dev/null
+}
+system_run() { # tailscale args… against the system daemon, first CLI that answers
+  c=$(cli 2>/dev/null) && "$c" "$@" 2>/dev/null && return 0
+  c=$(command -v tailscale 2>/dev/null) || return 1
+  "$c" "$@" 2>/dev/null
+}
+
+daemon_argv() {
+  dir=$(state_dir "$1")
+  printf '%s\n' \
+    --tun=userspace-networking \
+    "--statedir=$dir" \
+    "--socket=$dir/tailscaled.sock" \
+    "--socks5-server=localhost:$(port_of "$1")" \
+    "--outbound-http-proxy-listen=localhost:$(port_of "$1")"
+}
+
+# --- JSON helpers (tailscale status --json is pretty-printed, one key per
+# line, Self before Peer, so line-oriented sed is enough and jq is optional) --
+
+json_first() { # key  <json on stdin> -> first string value of that key
+  sed -n "s/^[[:space:]]*\"$1\": *\"\([^\"]*\)\".*\$/\1/p" | head -n 1
+}
+
+daemon_status_json() { # name -> status --json, or nothing when unreachable
+  s=$(sock_path "$1")
+  [ -S "$s" ] || return 1
+  c=$(cli) || return 1
+  "$c" --socket="$s" status --json 2>/dev/null
+}
+
+system_status_json() {
+  system_run status --json --peers=false --self=false
+}
+
+# Is <host> a node of tailnet <name>? Match its DNSName (short label or FQDN,
+# case-folded; DNSName carries a trailing dot) or a quoted tailnet IP. Never
+# a DNS lookup: `tailscale ip <host>` falls back to OS DNS for anything it
+# doesn't recognise, which is a network round-trip per candidate.
+peer_in() { # name host
+  json=$(daemon_status_json "$1") || return 2
+  h=$(printf '%s' "$2" | tr 'A-Z' 'a-z')
+  h=${h%.}
+  case $h in
+    *[!0-9.]*) ;;   # not an IPv4
+    *) printf '%s\n' "$json" | grep -q "\"$h\"" ; return $? ;;
+  esac
+  case $h in
+    *:*) printf '%s\n' "$json" | grep -qi "\"$h\"" ; return $? ;;  # IPv6
+  esac
+  hq=$(printf '%s' "$h" | sed 's/[.]/\\./g')
+  printf '%s\n' "$json" | grep -q "^[[:space:]]*\"DNSName\": *\"$hq\\."
+}
+
+# --- supervisor -------------------------------------------------------------
+
+os() { uname -s 2>/dev/null; }
+have_systemd_user() {
+  command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1
+}
+plist_path() { printf '%s\n' "$HOME/Library/LaunchAgents/$TAILNET_LABEL_PREFIX.$1.plist"; }
+unit_path() { printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/tailnet-$1.service"; }
+uid() { id -u; }
+
+xml_escape() { sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+
+write_plist() { # name daemon-bin
+  dir=$(state_dir "$1")
+  {
+    printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+      '<plist version="1.0">' '<dict>' \
+      '	<key>Label</key>' "	<string>$TAILNET_LABEL_PREFIX.$1</string>" \
+      '	<key>ProgramArguments</key>' '	<array>'
+    printf '		<string>%s</string>\n' "$(printf '%s' "$2" | xml_escape)"
+    daemon_argv "$1" | xml_escape | sed 's/^/		<string>/; s/$/<\/string>/'
+    printf '%s\n' '	</array>' \
+      '	<key>EnvironmentVariables</key>' '	<dict>' \
+      '		<key>TS_LOGS_DIR</key>' "		<string>$(printf '%s' "$dir/logs" | xml_escape)</string>" \
+      '	</dict>' \
+      '	<key>RunAtLoad</key>' '	<true/>' \
+      '	<key>KeepAlive</key>' '	<true/>' \
+      '	<key>WorkingDirectory</key>' "	<string>$(printf '%s' "$dir" | xml_escape)</string>" \
+      '	<key>StandardOutPath</key>' "	<string>$(printf '%s' "$dir/tailscaled.log" | xml_escape)</string>" \
+      '	<key>StandardErrorPath</key>' "	<string>$(printf '%s' "$dir/tailscaled.log" | xml_escape)</string>" \
+      '	<key>LimitLoadToSessionType</key>' '	<array>' \
+      '		<string>Aqua</string>' '		<string>Background</string>' '	</array>' \
+      '</dict>' '</plist>'
+  } > "$(plist_path "$1")"
+}
+
+write_unit() { # name daemon-bin
+  dir=$(state_dir "$1")
+  u=$(unit_path "$1")
+  mkdir -p "${u%/*}"
+  {
+    printf '[Unit]\nDescription=tailnet %s: userspace tailscaled\nAfter=network-online.target\n\n' "$1"
+    printf '[Service]\nEnvironment=TS_LOGS_DIR=%s\nWorkingDirectory=%s\n' "$dir/logs" "$dir"
+    printf 'ExecStart=%s' "$2"
+    daemon_argv "$1" | while IFS= read -r a; do printf ' "%s"' "$a"; done
+    printf '\nRestart=always\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n'
+  } > "$u"
+}
+
+port_in_use() { # port -> 0 if some tailnet already recorded it or something listens
+  for n in $(names); do
+    [ "$(port_of "$n")" = "$1" ] && return 0
+  done
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1 && return 0
+  fi
+  return 1
+}
+
+pick_port() { # name [port]
+  if [ -n "${2-}" ]; then
+    case $2 in *[!0-9]*|'') die "port must be a number";; esac
+    printf '%s\n' "$2"; return 0
+  fi
+  p=$(port_of "$1")
+  [ -n "$p" ] && { printf '%s\n' "$p"; return 0; }
+  p=1055
+  while port_in_use "$p"; do p=$((p + 1)); done
+  printf '%s\n' "$p"
+}
+
+supervisor_state() { # name -> "running (pid N)" | "loaded, not running" | "not loaded" | "none (foreground only)"
+  case $(os) in
+    Darwin)
+      out=$(launchctl print "gui/$(uid)/$TAILNET_LABEL_PREFIX.$1" 2>/dev/null) || { printf 'not loaded\n'; return; }
+      pid=$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*pid = \([0-9]*\).*/\1/p' | head -n 1)
+      [ -n "$pid" ] && printf 'running (pid %s)\n' "$pid" || printf 'loaded, not running\n'
+      ;;
+    *)
+      if have_systemd_user; then
+        st=$(systemctl --user is-active "tailnet-$1" 2>/dev/null)
+        pid=$(systemctl --user show -p MainPID --value "tailnet-$1" 2>/dev/null)
+        [ "$st" = active ] && printf 'running (pid %s)\n' "$pid" || printf '%s\n' "${st:-not loaded}"
+      else
+        printf 'none (foreground only: tailnet run %s)\n' "$1"
+      fi
+      ;;
+  esac
+}
+
+cmd_install() {
+  need_name "${1-}"
+  name=$1
+  bin=$(daemon_bin) || die "tailscaled not found — install the tailscale package (Homebrew: brew install tailscale; it is not the app)"
+  cli >/dev/null || die "no usable tailscale CLI next to $bin (the Tailscale.app CLI cannot drive these daemons)"
+  dir=$(state_dir "$name")
+  mkdir -p "$dir/logs" || die "cannot create $dir"
+  chmod 700 "$dir"
+  port=$(pick_port "$name" "${2-}") || exit 1
+  printf '%s\n' "$port" > "$dir/port"
+  case $(os) in
+    Darwin)
+      if launchctl print "gui/$(uid)/homebrew.mxcl.tailscale" >/dev/null 2>&1; then
+        printf 'tailnet: WARNING: brew services has tailscale loaded (homebrew.mxcl.tailscale); that root-less run crash-loops. Stop it: brew services stop tailscale\n' >&2
+      fi
+      mkdir -p "$HOME/Library/LaunchAgents"
+      write_plist "$name" "$bin"
+      launchctl bootout "gui/$(uid)/$TAILNET_LABEL_PREFIX.$name" >/dev/null 2>&1
+      launchctl bootstrap "gui/$(uid)" "$(plist_path "$name")" || die "launchctl bootstrap failed (see $(plist_path "$name"))"
+      launchctl kickstart -k "gui/$(uid)/$TAILNET_LABEL_PREFIX.$name" >/dev/null 2>&1
+      printf 'tailnet: %s installed — proxy on 127.0.0.1:%s, agent %s\n' "$name" "$port" "$TAILNET_LABEL_PREFIX.$name"
+      ;;
+    *)
+      if have_systemd_user; then
+        write_unit "$name" "$bin"
+        systemctl --user daemon-reload || die "systemctl --user daemon-reload failed"
+        systemctl --user enable --now "tailnet-$name" || die "systemctl --user enable --now tailnet-$name failed"
+        printf 'tailnet: %s installed — proxy on 127.0.0.1:%s, unit tailnet-%s (loginctl enable-linger keeps it up while logged out)\n' "$name" "$port" "$name"
+      else
+        write_unit "$name" "$bin"
+        printf 'tailnet: %s recorded (port %s); no systemd user session here — run it in the foreground: tailnet run %s\n' "$name" "$port" "$name"
+      fi
+      ;;
+  esac
+  printf 'tailnet: next: tailnet up %s   (logs in as that tailnet'"'"'s account)\n' "$name"
+}
+
+cmd_uninstall() {
+  need_name "${1-}"
+  name=$1
+  case $(os) in
+    Darwin)
+      launchctl bootout "gui/$(uid)/$TAILNET_LABEL_PREFIX.$name" >/dev/null 2>&1
+      rm -f "$(plist_path "$name")"
+      ;;
+    *)
+      if have_systemd_user; then
+        systemctl --user disable --now "tailnet-$name" >/dev/null 2>&1
+        rm -f "$(unit_path "$name")"
+        systemctl --user daemon-reload >/dev/null 2>&1
+      else
+        rm -f "$(unit_path "$name")"
+      fi
+      ;;
+  esac
+  if [ "${2-}" = --purge ]; then
+    rm -rf "$(state_dir "$name")"
+    printf 'tailnet: %s uninstalled and its state removed\n' "$name"
+  else
+    rm -f "$(state_dir "$name")/port"
+    printf 'tailnet: %s uninstalled (state kept in %s; --purge removes it)\n' "$name" "$(state_dir "$name")"
+  fi
+}
+
+cmd_run() {
+  need_installed "${1-}"
+  name=$1
+  bin=$(daemon_bin) || die "tailscaled not found"
+  dir=$(state_dir "$name")
+  mkdir -p "$dir/logs"
+  set --
+  while IFS= read -r a; do set -- "$@" "$a"; done <<EOF
+$(daemon_argv "$name")
+EOF
+  TS_LOGS_DIR="$dir/logs" exec "$bin" "$@"
+}
+
+cmd_up() {
+  need_installed "${1-}"
+  name=$1; shift
+  c=$(cli) || die "no usable tailscale CLI"
+  s=$(sock_path "$name")
+  [ -S "$s" ] || die "daemon for '$name' is not running (socket $s missing) — tailnet status $name"
+  h=$(hostname 2>/dev/null | tr 'A-Z' 'a-z'); h=${h%%.*}
+  # Always the same flag set: tailscale refuses `up` with a flag subset once
+  # any non-default flag was used, so this stays idempotent and doubles as
+  # re-auth after key expiry. --hostname keeps the node from being <host>-1
+  # next to the app's node in the same tailnet.
+  exec "$c" --socket="$s" up --hostname="$h-$name" --accept-routes "$@"
+}
+
+print_daemon_status() { # name
+  n=$1
+  s=$(sock_path "$n")
+  printf '%s:\n' "$n"
+  printf '  port:       %s (socks5h://localhost:%s, also http)\n' "$(port_of "$n")" "$(port_of "$n")"
+  printf '  service:    %s\n' "$(supervisor_state "$n")"
+  if [ ! -S "$s" ]; then
+    printf '  socket:     MISSING %s\n' "$s"
+    return
+  fi
+  if json=$(daemon_status_json "$n"); then
+    st=$(printf '%s\n' "$json" | json_first BackendState)
+    printf '  backend:    %s' "$st"
+    case $st in
+      NeedsLogin) printf ' — run: tailnet up %s' "$n";;
+      NeedsMachineAuth) printf ' — approve the device in that tailnet'"'"'s admin console';;
+    esac
+    printf '\n'
+    printf '  tailnet:    %s\n' "$(printf '%s\n' "$json" | json_first MagicDNSSuffix)"
+    printf '  hostname:   %s\n' "$(printf '%s\n' "$json" | json_first DNSName)"
+    printf '  key expiry: %s\n' "$(printf '%s\n' "$json" | json_first KeyExpiry)"
+  else
+    printf '  backend:    UNREACHABLE (socket present, daemon not answering)\n'
+  fi
+}
+
+cmd_status() {
+  if [ -n "${1-}" ]; then
+    need_installed "$1"
+    print_daemon_status "$1"
+    return
+  fi
+  found=0
+  for n in $(names); do
+    found=1
+    print_daemon_status "$n"
+  done
+  [ "$found" = 1 ] || printf 'tailnet: nothing installed (tailnet install <name>)\n'
+}
+
+cmd_system() {
+  system_cli >/dev/null || { printf 'system: no tailscale CLI on PATH\n'; return 1; }
+  if json=$(system_status_json); then
+    printf 'system: %s, tailnet %s\n' "$(printf '%s\n' "$json" | json_first BackendState)" "$(printf '%s\n' "$json" | json_first MagicDNSSuffix)"
+  else
+    printf 'system: not running\n'
+  fi
+  system_run switch --list | sed 's/^/  /'
+}
+
+cmd_route() {
+  force=0 prefer=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --force) force=1;;
+      --prefer) shift; prefer=${1-};;
+      --prefer=*) prefer=${1#--prefer=};;
+      --) shift; break;;
+      -*) die "route: unknown flag $1";;
+      *) break;;
+    esac
+    shift
+  done
+  [ $# -eq 1 ] || usage
+  host=$1
+  hit=
+  if [ "$force" = 1 ]; then
+    [ -n "$prefer" ] || die "route --force needs --prefer <name>"
+    hit=$prefer
+  else
+    prefer_done=
+    for n in $prefer $(names); do
+      [ -f "$TAILNET_STATE/$n/port" ] || continue
+      if [ "$n" = "$prefer" ]; then
+        [ "$prefer_done" = 1 ] && continue
+        prefer_done=1
+      fi
+      if peer_in "$n" "$host"; then hit=$n; break; fi
+    done
+    [ -n "$hit" ] || return 1
+  fi
+  # Direct when the system daemon is on the very same tailnet: kernel
+  # networking and the app's MagicDNS already reach the host.
+  dsuf=$(daemon_status_json "$hit" | json_first MagicDNSSuffix)
+  ssuf=$(system_status_json | json_first MagicDNSSuffix)
+  if [ -n "$dsuf" ] && [ "$dsuf" = "$ssuf" ]; then
+    return 0
+  fi
+  printf '%s\n' "$hit"
+}
+
+cmd_nc() {
+  need_installed "${1-}"
+  [ $# -eq 3 ] || usage
+  c=$(cli) || die "no usable tailscale CLI"
+  exec "$c" --socket="$(sock_path "$1")" nc "$2" "$3"
+}
+
+# --- dispatch ---------------------------------------------------------------
+
+[ $# -ge 1 ] || usage
+cmd=$1; shift
+case $cmd in
+  names)      names;;
+  dir)        need_name "${1-}"; state_dir "$1";;
+  sock)       need_name "${1-}"; sock_path "$1";;
+  port)       need_installed "${1-}"; port_of "$1";;
+  proxy-url)  need_installed "${1-}"; printf 'socks5h://localhost:%s\n' "$(port_of "$1")";;
+  daemon-bin) daemon_bin || die "tailscaled not found";;
+  cli)        cli || die "no usable tailscale CLI (not the Tailscale.app one)";;
+  install)    cmd_install "$@";;
+  uninstall)  cmd_uninstall "$@";;
+  run)        cmd_run "$@";;
+  up)         cmd_up "$@";;
+  status)     cmd_status "$@";;
+  logs)       need_installed "${1-}"; n=$1; shift; [ $# -gt 0 ] || set -- -n 50; tail "$@" "$(state_dir "$n")/tailscaled.log";;
+  system)     cmd_system;;
+  peer)       need_installed "${1-}"; [ $# -eq 2 ] || usage; peer_in "$1" "$2";;
+  route)      cmd_route "$@";;
+  nc)         cmd_nc "$@";;
+  -h|--help|help) usage;;
+  *)          die "unknown command '$cmd' (tailnet help)";;
+esac

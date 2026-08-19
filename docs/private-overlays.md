@@ -106,6 +106,7 @@ repo (Keychain / the tool's own config dir):
 | gh | `gh auth login` (as each account) | gh's keyring |
 | Claude Code | `claude auth login` under each profile dir (`claude-as <name> auth login`) | macOS Keychain, keyed on the config dir — cannot be copied between profiles |
 | wrangler | `wrangler auth create <profile>` (browser OAuth as that Cloudflare account) | `~/Library/Preferences/.wrangler/config/<profile>.toml` (macOS) / `~/.config/.wrangler/config/` |
+| tailnet | `tailnet install <name> && tailnet up <name>` (browser login as that Tailscale account) | `~/.local/state/tailnet/<name>/` — the daemon's node key and its proxy port |
 | git signing | nothing — 1Password's SSH agent holds the key | 1Password |
 | `~/.extra` secrets | `op signin` once; chezmoi reads them at apply | 1Password; the file is regenerated (0600) |
 
@@ -203,6 +204,23 @@ labels: pick short ones (an account handle, a company nickname); they never
 appear in the public repo, only in the overlay's gitconfig and in wrangler's
 local config dir.
 
+### Tailnet (Tailscale network) per account — and per repo
+
+```gitconfig
+[tailnet "profile"]
+	<account> = <name>               # a tailnet installed with `tailnet install <name>`
+	<alias>   = <name>               # friendly name for tailnet-as / TAILNET
+
+[tailnet "<owner>/<repo>"]         # a repo whose hosts live on another tailnet
+	profile = <other-name>           # than its owner's usual one
+```
+
+Names are labels for `~/bin/tailnet`'s per-tailnet daemons ("personal",
+"work", a company nickname); the port and node key are machine-local state,
+not overlay content. The mapping is only a *preference* — the wrappers still
+try every installed tailnet for a host — so an unmapped account merely loses
+the tie-break when two tailnets share a node name.
+
 ### Link routing (Finicky) — `~/.config/finicky/personal.ts` / `work.ts`
 
 Per-account/per-company rules and Chrome profile display names — the personal
@@ -277,7 +295,8 @@ npx", not "pin <side-company> to its profile").
 2. Overlay gitconfig: `credential.https://github.com/<owner>.username` pin;
    `identity.<account>.email`; `claude.profile.<account>`;
    `wrangler.profile.<account>` (or a `wrangler.<owner>/<repo>.profile` pin
-   for a one-off repo); Finicky rules. Personal overlay only:
+   for a one-off repo); `tailnet.profile.<account>` if that account has a
+   tailnet; Finicky rules. Personal overlay only:
    `claude.profile.default` names the profile stray, unpinned directories
    get (unset, they get bare `claude` = the default config dir).
 3. `dotfiles` to apply; `doctor` in a repo of that owner to confirm every

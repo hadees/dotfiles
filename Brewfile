@@ -98,7 +98,7 @@ brew 'sqlite' # Command-line interface for SQLite
 brew 'sqlmap' # Penetration testing for SQL injection and database servers
 brew 'ssdeep' # Recursive piecewise hashing tool
 brew 'ssh-copy-id' # Add a public key to a remote machine's authorized_keys file
-brew 'tailscale' # Mesh VPN based on WireGuard
+brew 'tailscale' # Mesh VPN based on WireGuard — the formula's tailscaled runs bin/tailnet's per-tailnet userspace daemons next to Tailscale.app (which owns the system tailnet); never `brew services start tailscale`, it needs root
 brew 'tcpflow' # TCP flow recorder
 brew 'tcpreplay' # Replay saved tcpdump files at arbitrary speeds
 brew 'terminal-notifier'
