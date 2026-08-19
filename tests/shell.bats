@@ -61,3 +61,19 @@ setup() {
   # (Homebrew's: PATH="$(brew --prefix)/bin:$PATH" bats tests) — CI does.
   [ "${BASH_VERSINFO[0]}" -ge 4 ]
 }
+
+@test "exports put Homebrew's bin and sbin ahead of the system dirs" {
+  # Simulate a brew that lives in a prefix of our choosing; the exports must
+  # prepend both <prefix>/bin and <prefix>/sbin, bin first, so Homebrew's
+  # bash/git/ssh/curl win over the macOS copies (see the comment in
+  # dot_exports; bats under /bin/bash 3.2 was how this surfaced).
+  cd "$BATS_TEST_DIRNAME/.."
+  fake="$BATS_TEST_TMPDIR/fakebrew"
+  mkdir -p "$fake/bin" "$fake/sbin" "$BATS_TEST_TMPDIR/stub"
+  printf '#!/bin/sh\necho "%s"\n' "$fake" > "$BATS_TEST_TMPDIR/stub/brew"
+  chmod +x "$BATS_TEST_TMPDIR/stub/brew"
+  run zsh -c "export PATH='$BATS_TEST_TMPDIR/stub:/usr/bin:/bin'; source dot_exports; print -r -- \$PATH"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "$fake/bin:$fake/sbin:"* ]]
+  [[ "$output" == *":/usr/bin:/bin"* ]]
+}
