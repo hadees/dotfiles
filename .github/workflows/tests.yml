@@ -18,9 +18,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bats zsh
+      # macOS's /bin/bash is 3.2, under which bats silently ignores a failing
+      # `[[ ]]` that is not a test's last command; a modern bash must be
+      # first on PATH (tests/shell.bats enforces it).
       - name: Install Bats on macOS
         if: matrix.os == 'macos-latest'
-        run: brew install bats-core
+        run: |
+          brew install bats-core bash
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
       - name: Install chezmoi
         run: |
           sh -c "$(curl -fsLS get.chezmoi.io)" -- -b "$HOME/.local/bin"

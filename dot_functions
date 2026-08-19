@@ -738,6 +738,380 @@ function wrangler-doctor() {
 	fi;
 }
 
+# Two (or more) Tailscale networks at once. The Tailscale app — or a root
+# tailscaled — is *on* one tailnet at a time; ~/bin/tailnet runs an always-on
+# unprivileged userspace tailscaled per additional tailnet, each with a local
+# SOCKS5/HTTP proxy, so whichever tailnet the app is on, the others stay
+# reachable from the terminal. The script owns the machine side (daemons,
+# ports, sockets, the routing decision); these functions own the repo side —
+# which tailnet the cwd prefers — and wrap ssh/scp/sftp/curl to act on it,
+# the way claude()/wrangler() pick an account from the cwd.
+#
+# The account -> tailnet mapping is `tailnet.profile.<account>` in machine-local
+# git config (set by the private overlays; nothing here names one), with a
+# per-repo pin `tailnet.<owner>/<repo>.profile` outranking it (a side project
+# living in one account's repos but deployed on another tailnet). The cwd's
+# tailnet is only a *preference*: for a target host, `tailnet route` asks each
+# installed daemon whether the host is one of its nodes — the cwd's tailnet
+# first, then the rest — and the first hit wins; a host that is a node nowhere
+# (github.com, a VPS) runs untouched, and a hit on the tailnet the app is
+# currently on also runs direct (kernel networking, the app's MagicDNS). Only
+# a hit on another tailnet is routed: ssh/scp/sftp get a ProxyCommand through
+# that daemon (`tailnet nc`), curl a `--proxy socks5h://` on its port. Hosts
+# whose shape cannot be a tailnet node (public FQDNs, non-CGNAT IPs,
+# localhost) cost nothing — no daemon is asked.
+#
+# TAILNET=<name> (an installed tailnet, or an account/alias mapped in
+# `tailnet.profile.*`) forces that tailnet for one command regardless of the
+# node check — the way to reach subnet-router destinations the daemons can't
+# vouch for — and `tailnet-as <name> <cmd…>` does that plus exports the proxy
+# environment (ALL_PROXY/HTTPS_PROXY/…) so any proxy-aware tool follows.
+# `tailnet-doctor [host]` traces every step without routing anything.
+
+# The tailnet name the cwd prefers: TAILNET (vetted: an installed name, or a
+# `tailnet.profile.*` key naming one) -> the repo pin `tailnet.<slug>.profile`
+# -> the pinned account's `tailnet.profile.<account>`. Prints nothing and
+# returns 1 when nothing applies (the wrappers then just try every installed
+# tailnet in order).
+function tailnet_for_cwd() {
+	local slug acct name;
+	if [[ -n $TAILNET ]]; then
+		name="$(command git config --get "tailnet.profile.$TAILNET" 2>/dev/null)";
+		[[ -n $name ]] || name=$TAILNET;
+		if tailnet_installed "$name"; then
+			print -r -- "$name";
+			return 0;
+		fi;
+		print -ru2 -- "tailnet: TAILNET='$TAILNET' is neither an installed tailnet nor a mapped account (tailnet names); ignoring it";
+		return 1;
+	fi;
+	slug="$(git_origin_slug)" || return 1;
+	name="$(command git config --get "tailnet.$slug.profile" 2>/dev/null)";
+	if [[ -z $name ]]; then
+		acct="$(gh_account_for_cwd)" || return 1;
+		name="$(command git config --get "tailnet.profile.$acct" 2>/dev/null)";
+	fi;
+	[[ -n $name ]] || return 1;
+	print -r -- "$name";
+}
+
+# Where ~/bin/tailnet keeps its per-tailnet state; mirrors the script's default
+# so "is anything installed" is answerable without running it.
+function tailnet_state_root() {
+	print -r -- "${TAILNET_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/tailnet}";
+}
+
+function tailnet_installed() {
+	[[ -n $1 && $1 != */* && -f "$(tailnet_state_root)/$1/port" ]];
+}
+
+# Is the machinery there at all: the script on PATH and at least one tailnet
+# installed. When not, every wrapper is a plain passthrough at zero cost.
+function tailnet_active() {
+	(( $+commands[tailnet] )) || return 1;
+	local d;
+	for d in "$(tailnet_state_root)"/*/port(N); do
+		return 0;
+	done;
+	return 1;
+}
+
+# Could $1 be a node of some tailnet? Only shapes that can are worth asking the
+# daemons about: a bare label (MagicDNS short name), *.ts.net, a CGNAT
+# 100.64/10 IPv4, or a fd7a:115c:a1e0::/48 IPv6. Everything else — a public
+# FQDN, localhost, another IP — runs direct without a single tailscale call.
+function tailnet_hostish() {
+	local h=${(L)1};
+	h=${h%.};
+	[[ -n $h ]] || return 1;
+	case $h in
+		(localhost) return 1;;
+		(*.ts.net) return 0;;
+		(100.<64-127>.<0-255>.<0-255>) return 0;;
+		(fd7a:115c:a1e0:*) return 0;;
+		(*[.:]*) return 1;;
+		(*) return 0;;
+	esac;
+}
+
+# The routing verdict for host $1: prints the tailnet to proxy through, prints
+# nothing when the host should be reached directly (not a node anywhere, or a
+# node of the tailnet the app is on, or the machinery is absent). TAILNET, when
+# valid, forces its tailnet and skips the shape check.
+function tailnet_route() {
+	local prefer;
+	tailnet_active || return 0;
+	prefer="$(tailnet_for_cwd)";
+	if [[ -n $TAILNET && -n $prefer ]]; then
+		command tailnet route --force --prefer "$prefer" -- "$1" 2>/dev/null;
+		return 0;
+	fi;
+	tailnet_hostish "$1" || return 0;
+	if [[ -n $prefer ]]; then
+		command tailnet route --prefer "$prefer" -- "$1" 2>/dev/null;
+	else
+		command tailnet route -- "$1" 2>/dev/null;
+	fi;
+	return 0;
+}
+
+# The destination ssh will actually connect to, from ssh's own parsing of the
+# arguments and config (`ssh -G` prints the resolved `hostname`). Prints
+# nothing when ssh cannot make sense of the arguments, or when a ProxyCommand /
+# ProxyJump is already in play (config or -J/-o): a `-o ProxyCommand` on the
+# command line would silently override a configured ProxyJump, so those hosts
+# are left entirely alone.
+function tailnet_ssh_host() {
+	local out l host;
+	out="$(command ssh -G "$@" 2>/dev/null)" || return 1;
+	for l in "${(@f)out}"; do
+		case $l in
+			(hostname\ *) host=${l#hostname };;
+			(proxycommand\ none|proxyjump\ none) ;;
+			(proxycommand\ *|proxyjump\ *) return 1;;
+		esac;
+	done;
+	[[ -n $host ]] || return 1;
+	print -r -- "$host";
+}
+
+# The remote host of an scp ($1=scp: needs a `[user@]host:path` or scp:// /
+# sftp:// operand) or sftp ($1=sftp: that, or the first bare operand) command
+# line, then resolved through ssh's config like tailnet_ssh_host. Prints
+# nothing when unsure — unsure means untouched.
+function tailnet_scp_host() {
+	local mode=$1 a host skip=0;
+	shift;
+	for a in "$@"; do
+		if (( skip )); then skip=0; continue; fi;
+		case $a in
+			(-b|-B|-c|-D|-F|-i|-J|-l|-o|-P|-R|-S|-s|-X) skip=1; continue;;
+			(-*) continue;;
+			(scp://*|sftp://*)
+				host=${a#*://};
+				host=${host%%/*};
+				host=${host##*@};
+				if [[ $host == \[* ]]; then host=${host#\[}; host=${host%%\]*};
+				else host=${host%%:*}; fi;
+				;;
+			(*:*)
+				# A local path with a colon after a slash (./a:b) is not remote.
+				[[ ${a%%:*} == */* ]] && continue;
+				host=${a%%:*};
+				;;
+			(*)
+				[[ $mode == sftp ]] || continue;
+				host=$a;
+				;;
+		esac;
+		host=${host##*@};
+		host=${host#\[};
+		host=${host%\]};
+		[[ -n $host ]] || return 1;
+		tailnet_ssh_host "$host";
+		return;
+	done;
+	return 1;
+}
+
+# The host curl will talk to: the first URL argument, else the first bare
+# `host[:port][/path]` argument whose host could be a tailnet node (curl takes
+# URLs anywhere among options, so an option's value can be mistaken for one —
+# the only cost is a lookup, and at worst a public URL is fetched through a
+# daemon's ordinary outbound path). Prints nothing when the user is already
+# proxying (-x/--proxy/--socks*/--noproxy, or proxy variables in the
+# environment) — the user's choice wins.
+function tailnet_curl_host() {
+	local a host bare;
+	[[ -z $ALL_PROXY$all_proxy$HTTPS_PROXY$https_proxy$HTTP_PROXY$http_proxy ]] || return 1;
+	for a in "$@"; do
+		case $a in
+			(-x|--proxy|--proxy=*|--socks4*|--socks5*|--noproxy|--noproxy=*|--preproxy*) return 1;;
+		esac;
+	done;
+	for a in "$@"; do
+		case $a in
+			(-*) continue;;
+			(*://*)
+				host=${a#*://};
+				host=${host%%[/?#]*};
+				host=${host##*@};
+				if [[ $host == \[* ]]; then host=${host#\[}; host=${host%%\]*};
+				else host=${host%%:*}; fi;
+				[[ -n $host ]] && { print -r -- "$host"; return 0; };
+				;;
+			(*)
+				[[ -n $bare ]] && continue;
+				host=${a%%[/?#]*};
+				host=${host##*@};
+				if [[ $host == \[* ]]; then host=${host#\[}; host=${host%%\]*};
+				else host=${host%%:*}; fi;
+				tailnet_hostish "$host" && bare=$host;
+				;;
+		esac;
+	done;
+	[[ -n $bare ]] || return 1;
+	print -r -- "$bare";
+}
+
+function ssh() {
+	local host name;
+	if tailnet_active && host="$(tailnet_ssh_host "$@")" && name="$(tailnet_route "$host")" && [[ -n $name ]]; then
+		command ssh -o "ProxyCommand=${commands[tailnet]} nc $name %h %p" "$@";
+	else
+		command ssh "$@";
+	fi;
+}
+
+function scp() {
+	local host name;
+	if tailnet_active && host="$(tailnet_scp_host scp "$@")" && name="$(tailnet_route "$host")" && [[ -n $name ]]; then
+		command scp -o "ProxyCommand=${commands[tailnet]} nc $name %h %p" "$@";
+	else
+		command scp "$@";
+	fi;
+}
+
+function sftp() {
+	local host name;
+	if tailnet_active && host="$(tailnet_scp_host sftp "$@")" && name="$(tailnet_route "$host")" && [[ -n $name ]]; then
+		command sftp -o "ProxyCommand=${commands[tailnet]} nc $name %h %p" "$@";
+	else
+		command sftp "$@";
+	fi;
+}
+
+function curl() {
+	local host name;
+	if tailnet_active && host="$(tailnet_curl_host "$@")" && name="$(tailnet_route "$host")" && [[ -n $name ]]; then
+		command curl --proxy "$(command tailnet proxy-url "$name")" "$@";
+	else
+		command curl "$@";
+	fi;
+}
+
+# Run one command pinned to a tailnet: `tailnet-as <name> <cmd…>`. <name> is
+# an installed tailnet or an account/alias mapped in `tailnet.profile.*`;
+# anything else errors out listing what exists. Sets TAILNET (so the
+# ssh/scp/sftp/curl wrappers force that tailnet, node check skipped) and the
+# proxy environment (ALL_PROXY, HTTP(S)_PROXY and lowercase twins, NO_PROXY for
+# loopback) so proxy-aware tools — gh, git over https, kubectl, pip, Go and
+# curl-based programs — go through that tailnet's daemon too. Runs in this
+# shell, so the wrappers apply and functions/aliases work.
+function tailnet-as() {
+	local req name names url;
+	names="$(command tailnet names 2>/dev/null)";
+	[[ -n $names ]] || names="<none installed — tailnet install <name>>";
+	if (( $# < 2 )); then
+		print -ru2 -- "usage: tailnet-as <name> <command> [args...]";
+		print -ru2 -- "installed tailnets:";
+		print -ru2 -- "$names";
+		return 1;
+	fi;
+	req=$1;
+	shift;
+	if ! name="$(TAILNET=$req tailnet_for_cwd 2>/dev/null)"; then
+		print -ru2 -- "tailnet-as: unknown tailnet '$req'";
+		print -ru2 -- "installed tailnets:";
+		print -ru2 -- "$names";
+		return 1;
+	fi;
+	url="$(command tailnet proxy-url "$name")" || return 1;
+	TAILNET=$name ALL_PROXY=$url all_proxy=$url HTTPS_PROXY=$url https_proxy=$url \
+		HTTP_PROXY=$url http_proxy=$url NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 \
+		"$@";
+}
+
+# Diagnose the tailnet setup and what the wrappers would do right here:
+# machinery, the app's tailnet, every installed daemon's state, the cwd's
+# preference, and — given a host — the routing verdict for it. Reads state
+# and asks the daemons for status; never routes anything.
+function tailnet-doctor() {
+	local root n origin slug acct repopin map prefer host verdict;
+	local -a pref;
+	print -r -- "wrapper: $(whence -w ssh) / $(whence -w curl)";
+	if (( $+commands[tailnet] )); then
+		print -r -- "script:  ${commands[tailnet]}";
+	else
+		print -r -- "script:  NOT FOUND — ~/bin/tailnet is not on PATH; the wrappers are plain passthroughs";
+	fi;
+	if (( $+commands[tailscaled] )); then
+		print -r -- "binary:  $(bin_trace "${commands[tailscaled]}")";
+	else
+		print -r -- "binary:  tailscaled NOT FOUND — install the tailscale package (Homebrew formula, not the app)";
+	fi;
+	if (( $+commands[tailnet] )); then
+		print -r -- "cli:     $(command tailnet cli 2>/dev/null || print -r -- 'NONE USABLE (only the Tailscale.app CLI found)')";
+		command tailnet system 2>/dev/null || print -r -- "system:  <no tailscale on PATH>";
+	fi;
+	root="$(tailnet_state_root)";
+	print -r -- "state:   $root";
+	if tailnet_active; then
+		command tailnet status 2>/dev/null | sed 's/^/  /';
+	else
+		print -r -- "  <no tailnet installed — tailnet install <name> && tailnet up <name>>";
+	fi;
+	print -r -- "cwd:     $PWD";
+	origin="$(command git config --get remote.origin.url 2>/dev/null)";
+	print -r -- "origin:  ${origin:-<none — not a git repo or no origin>}";
+	slug="$(git_origin_slug)";
+	acct="$(gh_account_for_cwd)";
+	print -r -- "account: ${acct:-<no credential pin matched>}";
+	repopin="";
+	[[ -n $slug ]] && repopin="$(command git config --get "tailnet.$slug.profile" 2>/dev/null)";
+	if [[ -n $repopin ]]; then
+		print -r -- "repo pin: tailnet.$slug.profile = $repopin";
+	else
+		print -r -- "repo pin: <none>";
+	fi;
+	map="";
+	[[ -n $acct ]] && map="$(command git config --get "tailnet.profile.$acct" 2>/dev/null)";
+	if [[ -n $map ]]; then
+		print -r -- "mapping: tailnet.profile.$acct = $map";
+	else
+		print -r -- "mapping: <none>";
+	fi;
+	print -r -- "env:     TAILNET=${TAILNET-<unset>}";
+	if prefer="$(tailnet_for_cwd 2>/dev/null)" && tailnet_installed "$prefer"; then
+		if [[ -n $TAILNET ]]; then
+			print -r -- "wants:   $prefer (forced via TAILNET — node check skipped)";
+		else
+			print -r -- "wants:   $prefer first, then the other installed tailnets";
+		fi;
+	else
+		# The mapping names something no daemon was installed for (the
+		# wrappers skip it and try the rest), or nothing is mapped at all.
+		n="${prefer:-${repopin:-$map}}";
+		prefer="";
+		if [[ -n $n ]] && ! tailnet_installed "$n"; then
+			print -r -- "wants:   $n — NOT INSTALLED — run: tailnet install $n && tailnet up $n";
+		else
+			print -r -- "wants:   <no preference — installed tailnets in order>";
+		fi;
+	fi;
+	if [[ -n $1 ]]; then
+		host=$1;
+		if ! tailnet_active; then
+			verdict="direct (no tailnet machinery)";
+		elif [[ -z $TAILNET ]] && ! tailnet_hostish "$host"; then
+			verdict="direct (shape cannot be a tailnet node; no daemon asked)";
+		else
+			# Empty verdict + exit 0 from the script means "a node of the
+			# system tailnet"; exit 1 means a node of nothing.
+			[[ -n $prefer ]] && pref=(--prefer "$prefer");
+			n="$(tailnet_route "$host")";
+			if [[ -n $n ]]; then
+				verdict="via $n (ProxyCommand=${commands[tailnet]} nc $n %h %p; curl --proxy $(command tailnet proxy-url "$n" 2>/dev/null))";
+			elif [[ -n $TAILNET ]] || command tailnet route "${pref[@]}" -- "$host" >/dev/null 2>&1; then
+				verdict="direct (a node of the tailnet the app is on)";
+			else
+				verdict="direct (a node of no installed tailnet)";
+			fi;
+		fi;
+		print -r -- "route:   $host -> $verdict";
+	fi;
+}
+
 # `gh` wrapper that picks the GitHub account for each invocation, mirroring
 # the git identity scheme in ~/.gitconfig.local. It injects GH_TOKEN for the
 # single gh invocation rather than running `gh auth switch`, so it never
@@ -944,7 +1318,7 @@ function git-doctor() {
 # a repo "behaves weird" on a machine.
 function doctor() {
 	local d;
-	for d in git gh claude wrangler; do
+	for d in git gh claude wrangler tailnet; do
 		print -r -- "== $d-doctor";
 		"$d-doctor";
 		print -r -- "";
