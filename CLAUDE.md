@@ -314,6 +314,10 @@ wrapper. Consequences:
   matched>`) rather than fail; Claude Code's shell snapshot has dropped
   functions silently before. The lists are checked against the function
   bodies by `tests/git-doctor.bats`, so they cannot go stale.
+  `tailnet-doctor` adds `helpers:` — it runs the wrappers' real decision
+  path on a loopback URL and a host no tailnet has and reports the first
+  thing that goes wrong; the wrappers fail open, so a broken helper is
+  silent there and this is where it shows.
 
 ### Tailnets (two Tailscale networks at once)
 

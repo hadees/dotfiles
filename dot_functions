@@ -1109,10 +1109,33 @@ function tailnet-as() {
 # and asks the daemons for status; never routes anything.
 function tailnet-doctor() {
 	emulate -L zsh;
-	local root n origin slug acct repopin map prefer host verdict;
+	local root n origin slug acct repopin map prefer host verdict probe prc;
 	local -a pref;
 	print -r -- "wrapper: $(whence -w ssh) / $(whence -w curl)";
 	print -r -- "defined: $(defined_trace tailnet_exec tailnet_for_cmd tailnet_route tailnet_active tailnet_installed tailnet_state_root tailnet_hostish tailnet_for_cwd tailnet_ssh_host tailnet_scp_host tailnet_curl_host gh_account_for_cwd git_origin_slug bin_trace)";
+	# Self-test: run the wrappers' real decision path (tailnet_for_cmd, the
+	# function tailnet_exec calls) on two probes — a loopback URL, which the
+	# shape gate must answer before any state is touched, and a node-shaped
+	# name no tailnet has, which walks the whole ladder (ssh -G, shape,
+	# state, daemons). The wrappers fail open, so a broken helper is silent
+	# there; this is where it shows. Anything on stderr, a non-zero exit,
+	# or a verdict for a host that is a node nowhere means BROKEN — the
+	# first stderr line already names the function (zsh prefixes errors
+	# with it). Captured in one command substitution: a NOMATCH-style
+	# error aborts a non-interactive shell outright, so the probe must not
+	# run bare — and this line comes before the doctor's own bare helper
+	# calls below for the same reason. TAILNET is blanked so a forced
+	# tailnet (tailnet-as) does not read as a wrong verdict.
+	probe="$( { TAILNET= tailnet_for_cmd curl http://127.0.0.1/; TAILNET= tailnet_for_cmd ssh tailnet-doctor-probe; } 2>&1 )"; prc=$?;
+	if [[ -z $probe && $prc -eq 0 ]]; then
+		print -r -- "helpers: ok";
+	elif [[ -n $probe && $probe != *[[:space:]]* ]] && tailnet_installed "$probe"; then
+		print -r -- "helpers: BROKEN — verdict '$probe' for tailnet-doctor-probe, a host no tailnet has (the wrappers would proxy hosts that are nodes nowhere)";
+	elif [[ -n $probe ]]; then
+		print -r -- "helpers: BROKEN — ${probe%%$'\n'*} (the wrappers run every command direct until this is fixed)";
+	else
+		print -r -- "helpers: BROKEN — tailnet_for_cmd exited $prc silently (the wrappers run every command direct until this is fixed)";
+	fi;
 	if (( $+commands[tailnet] )); then
 		print -r -- "script:  ${commands[tailnet]}";
 	else

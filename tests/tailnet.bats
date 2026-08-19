@@ -802,6 +802,7 @@ STUB
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: ssh: function / curl: function"* ]]
   [[ "$output" == *"defined: ok (14 helpers)"* ]]
+  [[ "$output" == *"helpers: ok"* ]]
   [[ "$output" == *"script:  $TAILNET_BIN"* ]]
   [[ "$output" == *"binary:  $BIN/tailscaled"* ]]
   [[ "$output" == *"cli:     $BIN/tailscale"* ]]
@@ -824,6 +825,44 @@ STUB
   # first, before any line that would silently misreport without it.
   in_repo "$repo" "unfunction tailnet_for_cmd; tailnet-doctor 2>/dev/null"
   [[ "$output" == *"defined: MISSING tailnet_for_cmd — a shell snapshot or partial source dropped them; source ~/.functions again"* ]]
+  [[ "$output" == *"helpers: BROKEN — tailnet-doctor:"*"command not found: tailnet_for_cmd (the wrappers run every command direct until this is fixed)"* ]]
+}
+
+@test "tailnet-doctor: helpers: runs the real decision path and reports the first thing that breaks" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  # The wrappers fail open, so a crashed helper is silent there; the doctor
+  # names it — in the default shell and under Claude Code's options.
+  for shell_opts in "" "$CLAUDE_CODE_OPTS"; do
+    ZOPTS=$shell_opts in_repo "$repo" "tailnet_ssh_host() { $CRASH; }; tailnet-doctor"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"helpers: BROKEN — tailnet_ssh_host: no matches found: /nonexistent-tailnet-test/*/port (the wrappers run every command direct until this is fixed)"* ]]
+    ZOPTS=$shell_opts in_repo "$repo" "tailnet_curl_host() { $CRASH; }; tailnet-doctor"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"helpers: BROKEN — tailnet_curl_host: no matches found:"* ]]
+  done
+  # A crash in a helper the doctor itself later calls bare (tailnet_active)
+  # kills a non-interactive shell mid-doctor — which is exactly why helpers:
+  # is printed first: the diagnosis is on screen before that happens.
+  in_repo "$repo" "tailnet_active() { $CRASH; }; tailnet-doctor"
+  [[ "$output" == *"helpers: BROKEN — tailnet_active: no matches found:"* ]]
+  # A verdict for a host no tailnet has means misrouting, the opposite of
+  # direct — its own wording.
+  cat > "$TAILNET_BIN" <<'STUB'
+#!/bin/sh
+case $1 in route) echo work;; names) printf 'personal\nwork\n';; *) exit 0;; esac
+STUB
+  in_repo "$repo" tailnet-doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"helpers: BROKEN — verdict 'work' for tailnet-doctor-probe, a host no tailnet has (the wrappers would proxy hosts that are nodes nowhere)"* ]]
+  # Under tailnet-as, TAILNET is set: the probe must not read the forced
+  # verdict as breakage.
+  cp "$BATS_TEST_DIRNAME/../bin/executable_tailnet" "$TAILNET_BIN"
+  in_repo "$repo" "TAILNET=work tailnet-doctor"
+  [[ "$output" == *"helpers: ok"* ]]
+  # No machinery at all: the decision path exits early, and that is fine.
+  rm -rf "$STATE"
+  in_repo "$repo" tailnet-doctor
+  [[ "$output" == *"helpers: ok"* ]]
 }
 
 @test "tailnet-doctor: mapped but not installed, repo pin, forced TAILNET" {
