@@ -1421,11 +1421,41 @@ function git-doctor() {
 	print -r -- "configs: $(command git config --list --show-origin --name-only 2>/dev/null | command awk -F'\t' '$1 ~ /^file:/ {print substr($1, 6)}' | command awk '!seen[$0]++' | command paste -sd, - | command sed 's/,/, /g')";
 }
 
+# For doctor: the calling shell's version and the non-default options that
+# change how patterns, globs, and words behave — the context a pasted
+# transcript otherwise lacks. Reads the CALLER's options: `setopt` lists
+# deviations from the defaults, captured before this function emulates
+# anything (under `emulate -L zsh` the picture would be the defaults'), so
+# neither this nor doctor() may start with `emulate`. Claude Code's Bash
+# tool sets CLAUDECODE and runs zsh with NO_BARE_GLOB_QUAL and friends —
+# the shell that made every wrapped curl die until the tailnet functions
+# learned to emulate their own options; those are unaffected now, but
+# anything else sourced (~/.extra, overlay functions) still runs under
+# whatever this reports.
+function shell_trace() {
+	local -a all opts;
+	local o ia="" list;
+	all=(${(f)"$(setopt)"});
+	[[ -o interactive ]] && ia=", interactive";
+	emulate -L zsh;
+	for o in "${all[@]}"; do
+		case $o in
+			((no|)(bareglobqual|caseglob|casematch|extendedglob|glob|globassign|globdots|globstarshort|globsubst|ksharrays|kshglob|kshtypeset|magicequalsubst|nomatch|nullglob|cshnullglob|shglob|shwordsplit)) opts+=("$o");;
+		esac;
+	done;
+	list="${(j: :)opts}";
+	print -r -- "zsh $ZSH_VERSION$ia${CLAUDECODE:+, under Claude Code}, options: ${list:-none}${list:+ (the tailnet wrappers reset these with emulate -L zsh)}";
+}
+
 # All five per-repo routing diagnoses for the cwd in one go — git identity,
-# gh account, Claude Code profile, wrangler profile, tailnet routing. First
-# thing to run when a repo "behaves weird" on a machine.
+# gh account, Claude Code profile, wrangler profile, tailnet routing —
+# headed by the calling shell's version and pattern options (shell_trace;
+# this function must not emulate, see there). First thing to run when a
+# repo "behaves weird" on a machine.
 function doctor() {
 	local d;
+	print -r -- "shell:   $(shell_trace)";
+	print -r -- "";
 	for d in git gh claude wrangler tailnet; do
 		print -r -- "== $d-doctor";
 		"$d-doctor";
