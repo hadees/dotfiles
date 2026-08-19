@@ -198,6 +198,10 @@ function tre() {
 # personal box gets the personal overlay, a work box the work one, a
 # machine used for both gets both.
 function dotfiles() {
+	# The overlay glob needs bare glob qualifiers, which not every shell
+	# sourcing this file has on (Claude Code's Bash tool sets
+	# NO_BARE_GLOB_QUAL, making `(N)` literal and NOMATCH fatal).
+	emulate -L zsh;
 	chezmoi apply "$@" || return;
 	local cfg src;
 	for cfg in ~/.config/chezmoi/*.toml(N); do
@@ -257,6 +261,31 @@ function git_origin_slug() {
 	slug=${(L)slug};
 	[[ $slug == */* ]] || return 1;
 	print -r -- "$slug";
+}
+
+# For the doctors: are the helper functions a wrapper (and the doctor itself)
+# call actually defined in this shell? Prints "ok (N helpers)" or names the
+# missing ones. A wrapper whose callee is gone does not fail loudly: the
+# doctor's own `acct="$(gh_account_for_cwd)"` just yields empty and the
+# `account:` line confidently reports "no pin matched" — so every doctor
+# prints this before any line that depends on a helper. The failure this
+# catches is real: Claude Code's shell snapshot once dropped functions on
+# their name alone (see the note above gh_account_for_cwd), leaving the
+# wrappers half-defined only inside its sessions. Each doctor's list is
+# checked against the function bodies by tests/git-doctor.bats, so it
+# cannot quietly go stale.
+function defined_trace() {
+	emulate -L zsh;
+	local f;
+	local -a missing;
+	for f in "$@"; do
+		(( $+functions[$f] )) || missing+=("$f");
+	done;
+	if (( ${#missing} )); then
+		print -r -- "MISSING ${missing[*]} — a shell snapshot or partial source dropped them; source ~/.functions again";
+		return 0;
+	fi;
+	print -r -- "ok ($# helpers)";
 }
 
 # For the doctors: describe the executable $1 without running it — where a
@@ -394,6 +423,7 @@ function claude-as() {
 function claude-doctor() {
 	local origin acct map dir cred email;
 	print -r -- "wrapper: $(whence -w claude)";
+	print -r -- "defined: $(defined_trace claude_profile_dir gh_account_for_cwd git_origin_slug bin_trace)";
 	print -r -- "binary:  $(bin="$(whence -p claude)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH')";
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
@@ -650,6 +680,7 @@ function wrangler-as() {
 function wrangler-doctor() {
 	local origin slug acct repopin map profile cfg top bound line dir prof best bin onpath;
 	print -r -- "wrapper: $(whence -w wrangler)";
+	print -r -- "defined: $(defined_trace wrangler_bin wrangler_profile wrangler_bind wrangler_config_dir wrangler_profile_exists gh_account_for_cwd git_origin_slug bin_trace)";
 	if bin="$(wrangler_bin)"; then
 		onpath="$(whence -p wrangler)";
 		if [[ $bin == */node_modules/.bin/wrangler ]]; then
@@ -759,7 +790,10 @@ function wrangler-doctor() {
 # a hit on another tailnet is routed: ssh/scp/sftp get a ProxyCommand through
 # that daemon (`tailnet nc`), curl a `--proxy socks5h://` on its port. Hosts
 # whose shape cannot be a tailnet node (public FQDNs, non-CGNAT IPs,
-# localhost) cost nothing — no daemon is asked.
+# localhost) cost nothing — that shape check is a pure string match and runs
+# before the state dir or a daemon is even looked at. And the wrappers fail
+# open: the whole routing decision runs in a subshell, so a helper that
+# breaks leaves the command running direct, never blocked.
 #
 # TAILNET=<name> (an installed tailnet, or an account/alias mapped in
 # `tailnet.profile.*`) forces that tailnet for one command regardless of the
@@ -767,6 +801,17 @@ function wrangler-doctor() {
 # vouch for — and `tailnet-as <name> <cmd…>` does that plus exports the proxy
 # environment (ALL_PROXY/HTTPS_PROXY/…) so any proxy-aware tool follows.
 # `tailnet-doctor [host]` traces every step without routing anything.
+#
+# Every function below starts with `emulate -L zsh`: they glob and
+# pattern-match, and the shells that source this file do not all share the
+# interactive shell's options. Claude Code's Bash tool runs zsh with
+# NO_BARE_GLOB_QUAL (and NOMATCH), where a bare `(N)` qualifier is literal
+# text, the pattern matches nothing, and the whole function aborts — the
+# first real-world failure was every `curl` in such a session dying with
+# "no matches found: …/tailnet/*/port(N)", localhost included, the moment
+# the first tailnet was installed. `emulate -L zsh` gives each function the
+# default option set for its own scope (and its callees') whatever the
+# caller's shell has set, so the behaviour is the same everywhere.
 
 # The tailnet name the cwd prefers: TAILNET (vetted: an installed name, or a
 # `tailnet.profile.*` key naming one) -> the repo pin `tailnet.<slug>.profile`
@@ -774,6 +819,7 @@ function wrangler-doctor() {
 # returns 1 when nothing applies (the wrappers then just try every installed
 # tailnet in order).
 function tailnet_for_cwd() {
+	emulate -L zsh;
 	local slug acct name;
 	if [[ -n $TAILNET ]]; then
 		name="$(command git config --get "tailnet.profile.$TAILNET" 2>/dev/null)";
@@ -802,12 +848,14 @@ function tailnet_state_root() {
 }
 
 function tailnet_installed() {
+	emulate -L zsh;
 	[[ -n $1 && $1 != */* && -f "$(tailnet_state_root)/$1/port" ]];
 }
 
 # Is the machinery there at all: the script on PATH and at least one tailnet
 # installed. When not, every wrapper is a plain passthrough at zero cost.
 function tailnet_active() {
+	emulate -L zsh;
 	(( $+commands[tailnet] )) || return 1;
 	local d;
 	for d in "$(tailnet_state_root)"/*/port(N); do
@@ -821,6 +869,7 @@ function tailnet_active() {
 # 100.64/10 IPv4, or a fd7a:115c:a1e0::/48 IPv6. Everything else — a public
 # FQDN, localhost, another IP — runs direct without a single tailscale call.
 function tailnet_hostish() {
+	emulate -L zsh;
 	local h=${(L)1};
 	h=${h%.};
 	[[ -n $h ]] || return 1;
@@ -835,17 +884,25 @@ function tailnet_hostish() {
 }
 
 # The routing verdict for host $1: prints the tailnet to proxy through, prints
-# nothing when the host should be reached directly (not a node anywhere, or a
-# node of the tailnet the app is on, or the machinery is absent). TAILNET, when
-# valid, forces its tailnet and skips the shape check.
+# nothing when the host should be reached directly — its shape cannot be a
+# node, it is a node nowhere or of the tailnet the app is on, or the
+# machinery is absent. Cheapest test first: the shape check is a pure string
+# match and runs before any state or daemon is consulted, so a host that
+# cannot be a node costs nothing and is never exposed to the machinery at
+# all. TAILNET, when valid, forces its tailnet and skips the shape check
+# (subnet-router destinations the daemons cannot vouch for). Always returns
+# 0: no verdict is not an error.
 function tailnet_route() {
+	emulate -L zsh;
 	local prefer;
+	[[ -n $TAILNET ]] || tailnet_hostish "$1" || return 0;
 	tailnet_active || return 0;
 	prefer="$(tailnet_for_cwd)";
 	if [[ -n $TAILNET && -n $prefer ]]; then
 		command tailnet route --force --prefer "$prefer" -- "$1" 2>/dev/null;
 		return 0;
 	fi;
+	# TAILNET set but rejected (warned about above): ordinary routing.
 	tailnet_hostish "$1" || return 0;
 	if [[ -n $prefer ]]; then
 		command tailnet route --prefer "$prefer" -- "$1" 2>/dev/null;
@@ -862,6 +919,7 @@ function tailnet_route() {
 # command line would silently override a configured ProxyJump, so those hosts
 # are left entirely alone.
 function tailnet_ssh_host() {
+	emulate -L zsh;
 	local out l host;
 	out="$(command ssh -G "$@" 2>/dev/null)" || return 1;
 	for l in "${(@f)out}"; do
@@ -880,6 +938,7 @@ function tailnet_ssh_host() {
 # line, then resolved through ssh's config like tailnet_ssh_host. Prints
 # nothing when unsure — unsure means untouched.
 function tailnet_scp_host() {
+	emulate -L zsh;
 	local mode=$1 a host skip=0;
 	shift;
 	for a in "$@"; do
@@ -922,6 +981,7 @@ function tailnet_scp_host() {
 # proxying (-x/--proxy/--socks*/--noproxy, or proxy variables in the
 # environment) — the user's choice wins.
 function tailnet_curl_host() {
+	emulate -L zsh;
 	local a host bare;
 	[[ -z $ALL_PROXY$all_proxy$HTTPS_PROXY$https_proxy$HTTP_PROXY$http_proxy ]] || return 1;
 	for a in "$@"; do
@@ -954,41 +1014,61 @@ function tailnet_curl_host() {
 	print -r -- "$bare";
 }
 
-function ssh() {
-	local host name;
-	if tailnet_active && host="$(tailnet_ssh_host "$@")" && name="$(tailnet_route "$host")" && [[ -n $name ]]; then
-		command ssh -o "ProxyCommand=${commands[tailnet]} nc $name %h %p" "$@";
-	else
-		command ssh "$@";
-	fi;
+# The routing verdict for a whole command line: the tailnet that <ssh|scp|
+# sftp|curl> "$@" should go through, or nothing. The script on PATH first (a
+# hash lookup — absent, every wrapper is a passthrough at zero cost), then the
+# destination parsed from the arguments (unparseable, or the user already
+# proxying: nothing), then tailnet_route's shape -> machinery -> daemon
+# ladder. A verdict naming a tailnet that is not installed (the script
+# misbehaving) is no verdict. Always returns 0.
+function tailnet_for_cmd() {
+	emulate -L zsh;
+	local cmd=$1 host name;
+	shift;
+	(( $+commands[tailnet] )) || return 0;
+	case $cmd in
+		(ssh) host="$(tailnet_ssh_host "$@")" || return 0;;
+		(scp|sftp) host="$(tailnet_scp_host "$cmd" "$@")" || return 0;;
+		(curl) host="$(tailnet_curl_host "$@")" || return 0;;
+		(*) return 0;;
+	esac;
+	name="$(tailnet_route "$host")";
+	[[ -n $name ]] && tailnet_installed "$name" && print -r -- "$name";
+	return 0;
 }
 
-function scp() {
-	local host name;
-	if tailnet_active && host="$(tailnet_scp_host scp "$@")" && name="$(tailnet_route "$host")" && [[ -n $name ]]; then
-		command scp -o "ProxyCommand=${commands[tailnet]} nc $name %h %p" "$@";
-	else
-		command scp "$@";
+# Run <ssh|scp|sftp|curl> "$@", routed through a tailnet when — and only
+# when — tailnet_for_cmd says so: ssh/scp/sftp get a ProxyCommand through
+# that daemon, curl its SOCKS proxy. The decision runs inside a command
+# substitution, so whatever goes wrong in the helpers — a glob aborting the
+# function, a broken state dir, the script misbehaving — the verdict is empty
+# and the command runs direct, exactly as typed. Routing is an optimization;
+# the command is the point. Nothing outside that substitution may call a
+# helper that could fail.
+function tailnet_exec() {
+	emulate -L zsh;
+	local cmd=$1 name url;
+	shift;
+	name="$(tailnet_for_cmd "$cmd" "$@")";
+	if [[ -n $name ]]; then
+		case $cmd in
+			(curl)
+				if url="$(command tailnet proxy-url "$name" 2>/dev/null)" && [[ -n $url ]]; then
+					command curl --proxy "$url" "$@";
+					return;
+				fi;;
+			(*)
+				command "$cmd" -o "ProxyCommand=${commands[tailnet]} nc $name %h %p" "$@";
+				return;;
+		esac;
 	fi;
+	command "$cmd" "$@";
 }
 
-function sftp() {
-	local host name;
-	if tailnet_active && host="$(tailnet_scp_host sftp "$@")" && name="$(tailnet_route "$host")" && [[ -n $name ]]; then
-		command sftp -o "ProxyCommand=${commands[tailnet]} nc $name %h %p" "$@";
-	else
-		command sftp "$@";
-	fi;
-}
-
-function curl() {
-	local host name;
-	if tailnet_active && host="$(tailnet_curl_host "$@")" && name="$(tailnet_route "$host")" && [[ -n $name ]]; then
-		command curl --proxy "$(command tailnet proxy-url "$name")" "$@";
-	else
-		command curl "$@";
-	fi;
-}
+function ssh() { tailnet_exec ssh "$@"; }
+function scp() { tailnet_exec scp "$@"; }
+function sftp() { tailnet_exec sftp "$@"; }
+function curl() { tailnet_exec curl "$@"; }
 
 # Run one command pinned to a tailnet: `tailnet-as <name> <cmd…>`. <name> is
 # an installed tailnet or an account/alias mapped in `tailnet.profile.*`;
@@ -999,6 +1079,7 @@ function curl() {
 # curl-based programs — go through that tailnet's daemon too. Runs in this
 # shell, so the wrappers apply and functions/aliases work.
 function tailnet-as() {
+	emulate -L zsh;
 	local req name names url;
 	names="$(command tailnet names 2>/dev/null)";
 	[[ -n $names ]] || names="<none installed — tailnet install <name>>";
@@ -1027,9 +1108,34 @@ function tailnet-as() {
 # preference, and — given a host — the routing verdict for it. Reads state
 # and asks the daemons for status; never routes anything.
 function tailnet-doctor() {
-	local root n origin slug acct repopin map prefer host verdict;
+	emulate -L zsh;
+	local root n origin slug acct repopin map prefer host verdict probe prc;
 	local -a pref;
 	print -r -- "wrapper: $(whence -w ssh) / $(whence -w curl)";
+	print -r -- "defined: $(defined_trace tailnet_exec tailnet_for_cmd tailnet_route tailnet_active tailnet_installed tailnet_state_root tailnet_hostish tailnet_for_cwd tailnet_ssh_host tailnet_scp_host tailnet_curl_host gh_account_for_cwd git_origin_slug bin_trace)";
+	# Self-test: run the wrappers' real decision path (tailnet_for_cmd, the
+	# function tailnet_exec calls) on two probes — a loopback URL, which the
+	# shape gate must answer before any state is touched, and a node-shaped
+	# name no tailnet has, which walks the whole ladder (ssh -G, shape,
+	# state, daemons). The wrappers fail open, so a broken helper is silent
+	# there; this is where it shows. Anything on stderr, a non-zero exit,
+	# or a verdict for a host that is a node nowhere means BROKEN — the
+	# first stderr line already names the function (zsh prefixes errors
+	# with it). Captured in one command substitution: a NOMATCH-style
+	# error aborts a non-interactive shell outright, so the probe must not
+	# run bare — and this line comes before the doctor's own bare helper
+	# calls below for the same reason. TAILNET is blanked so a forced
+	# tailnet (tailnet-as) does not read as a wrong verdict.
+	probe="$( { TAILNET= tailnet_for_cmd curl http://127.0.0.1/; TAILNET= tailnet_for_cmd ssh tailnet-doctor-probe; } 2>&1 )"; prc=$?;
+	if [[ -z $probe && $prc -eq 0 ]]; then
+		print -r -- "helpers: ok";
+	elif [[ -n $probe && $probe != *[[:space:]]* ]] && tailnet_installed "$probe"; then
+		print -r -- "helpers: BROKEN — verdict '$probe' for tailnet-doctor-probe, a host no tailnet has (the wrappers would proxy hosts that are nodes nowhere)";
+	elif [[ -n $probe ]]; then
+		print -r -- "helpers: BROKEN — ${probe%%$'\n'*} (the wrappers run every command direct until this is fixed)";
+	else
+		print -r -- "helpers: BROKEN — tailnet_for_cmd exited $prc silently (the wrappers run every command direct until this is fixed)";
+	fi;
 	if (( $+commands[tailnet] )); then
 		print -r -- "script:  ${commands[tailnet]}";
 	else
@@ -1091,10 +1197,10 @@ function tailnet-doctor() {
 	fi;
 	if [[ -n $1 ]]; then
 		host=$1;
-		if ! tailnet_active; then
-			verdict="direct (no tailnet machinery)";
-		elif [[ -z $TAILNET ]] && ! tailnet_hostish "$host"; then
+		if [[ -z $TAILNET ]] && ! tailnet_hostish "$host"; then
 			verdict="direct (shape cannot be a tailnet node; no daemon asked)";
+		elif ! tailnet_active; then
+			verdict="direct (no tailnet machinery)";
 		else
 			# Empty verdict + exit 0 from the script means "a node of the
 			# system tailnet"; exit 1 means a node of nothing.
@@ -1190,6 +1296,7 @@ function gh() {
 function gh-doctor() {
 	local origin acct tok who;
 	print -r -- "wrapper: $(whence -w gh)";
+	print -r -- "defined: $(defined_trace gh_account_for_cwd git_origin_slug bin_trace)";
 	print -r -- "binary:  $(bin="$(whence -p gh)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH')";
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
@@ -1225,6 +1332,7 @@ function gh-doctor() {
 # fact; this shows it before the commit. Read-only, no network.
 function git-doctor() {
 	local origin acct name email src sign fmt key prog agent alias hostname idfile;
+	print -r -- "defined: $(defined_trace gh_account_for_cwd git_origin_slug)";
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
 	print -r -- "origin:  ${origin:-<none — not a git repo or no origin>}";
@@ -1313,11 +1421,41 @@ function git-doctor() {
 	print -r -- "configs: $(command git config --list --show-origin --name-only 2>/dev/null | command awk -F'\t' '$1 ~ /^file:/ {print substr($1, 6)}' | command awk '!seen[$0]++' | command paste -sd, - | command sed 's/,/, /g')";
 }
 
-# All four per-repo routing diagnoses for the cwd in one go — git identity,
-# gh account, Claude Code profile, wrangler profile. First thing to run when
-# a repo "behaves weird" on a machine.
+# For doctor: the calling shell's version and the non-default options that
+# change how patterns, globs, and words behave — the context a pasted
+# transcript otherwise lacks. Reads the CALLER's options: `setopt` lists
+# deviations from the defaults, captured before this function emulates
+# anything (under `emulate -L zsh` the picture would be the defaults'), so
+# neither this nor doctor() may start with `emulate`. Claude Code's Bash
+# tool sets CLAUDECODE and runs zsh with NO_BARE_GLOB_QUAL and friends —
+# the shell that made every wrapped curl die until the tailnet functions
+# learned to emulate their own options; those are unaffected now, but
+# anything else sourced (~/.extra, overlay functions) still runs under
+# whatever this reports.
+function shell_trace() {
+	local -a all opts;
+	local o ia="" list;
+	all=(${(f)"$(setopt)"});
+	[[ -o interactive ]] && ia=", interactive";
+	emulate -L zsh;
+	for o in "${all[@]}"; do
+		case $o in
+			((no|)(bareglobqual|caseglob|casematch|extendedglob|glob|globassign|globdots|globstarshort|globsubst|ksharrays|kshglob|kshtypeset|magicequalsubst|nomatch|nullglob|cshnullglob|shglob|shwordsplit)) opts+=("$o");;
+		esac;
+	done;
+	list="${(j: :)opts}";
+	print -r -- "zsh $ZSH_VERSION$ia${CLAUDECODE:+, under Claude Code}, options: ${list:-none}${list:+ (the tailnet wrappers reset these with emulate -L zsh)}";
+}
+
+# All five per-repo routing diagnoses for the cwd in one go — git identity,
+# gh account, Claude Code profile, wrangler profile, tailnet routing —
+# headed by the calling shell's version and pattern options (shell_trace;
+# this function must not emulate, see there). First thing to run when a
+# repo "behaves weird" on a machine.
 function doctor() {
 	local d;
+	print -r -- "shell:   $(shell_trace)";
+	print -r -- "";
 	for d in git gh claude wrangler tailnet; do
 		print -r -- "== $d-doctor";
 		"$d-doctor";

@@ -16,6 +16,9 @@ setup() {
   export GIT_CONFIG_SYSTEM=/dev/null
   export GIT_CONFIG_NOSYSTEM=1
   unset TAILNET TAILNET_STATE XDG_STATE_HOME XDG_CONFIG_HOME
+  # bats inherits CLAUDECODE when run from a Claude Code session; the
+  # doctor's shell: line reports it, so the default case must not see it.
+  unset CLAUDECODE
   unset ALL_PROXY all_proxy HTTPS_PROXY https_proxy HTTP_PROXY http_proxy NO_PROXY no_proxy
   DOTFUNCTIONS="$BATS_TEST_DIRNAME/../dot_functions"
   # The state dir holds unix sockets, and a socket path is limited to ~104
@@ -239,8 +242,16 @@ make_repo() {
 
 in_repo() { # <repo> <zsh code…>
   local repo=$1; shift
-  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; $*"
+  # $ZOPTS, when set, is applied before the functions are sourced — to run
+  # them under another program's zsh options (see CLAUDE_CODE_OPTS).
+  run zsh -c "${ZOPTS:+setopt $ZOPTS;} source '$DOTFUNCTIONS'; cd '$repo'; $*"
 }
+
+# The option set Claude Code's Bash tool runs zsh with (read off `setopt` in
+# such a session): bare glob qualifiers off, so a `(N)` is literal text and
+# NOMATCH aborts the function that globbed. Every wrapper must behave the
+# same there as in an interactive shell.
+CLAUDE_CODE_OPTS="no_bare_glob_qual no_case_glob glob_star_short no_extended_glob nomatch"
 
 # --- script: registry ------------------------------------------------------
 
@@ -474,9 +485,9 @@ in_repo() { # <repo> <zsh code…>
 # --- functions: cwd preference ---------------------------------------------
 
 @test "dot_functions defines the tailnet helpers and wrappers" {
-  run zsh -c "source '$DOTFUNCTIONS'; whence -w tailnet_for_cwd tailnet_route tailnet_hostish tailnet_ssh_host tailnet_scp_host tailnet_curl_host ssh scp sftp curl tailnet-as tailnet-doctor"
+  run zsh -c "source '$DOTFUNCTIONS'; whence -w tailnet_for_cwd tailnet_route tailnet_hostish tailnet_ssh_host tailnet_scp_host tailnet_curl_host tailnet_for_cmd tailnet_exec ssh scp sftp curl tailnet-as tailnet-doctor defined_trace shell_trace"
   [ "$status" -eq 0 ]
-  for f in tailnet_for_cwd tailnet_route tailnet_hostish tailnet_ssh_host tailnet_scp_host tailnet_curl_host ssh scp sftp curl tailnet-as tailnet-doctor; do
+  for f in tailnet_for_cwd tailnet_route tailnet_hostish tailnet_ssh_host tailnet_scp_host tailnet_curl_host tailnet_for_cmd tailnet_exec ssh scp sftp curl tailnet-as tailnet-doctor defined_trace shell_trace; do
     [[ "$output" == *"$f: function"* ]]
   done
 }
@@ -664,6 +675,128 @@ in_repo() { # <repo> <zsh code…>
   [ "$output" = "RAN ssh: workbox" ]
 }
 
+# --- functions: option independence -------------------------------------------
+
+@test "wrappers: behave the same under Claude Code's zsh options (no bare glob qualifiers, no extendedglob)" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  # The crash: with tailnets installed, tailnet_active's `*/port(N)` glob
+  # aborted every wrapper under NO_BARE_GLOB_QUAL — a curl to loopback died
+  # with "no matches found" and never ran.
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" tailnet_active
+  [ "$status" -eq 0 ]
+  [ "$output" = "" ]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" curl -s http://127.0.0.1:8321/
+  [ "$status" -eq 0 ]
+  [ "$output" = "RAN curl: -s http://127.0.0.1:8321/" ]
+  [ ! -s "$TS_LOG" ]
+  # And routing still works there — the same verdicts as the default shell.
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" ssh -p 2222 admin@workbox uptime
+  [ "$output" = "RAN ssh: -o ProxyCommand=$TAILNET_BIN nc work %h %p -p 2222 admin@workbox uptime" ]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" ssh homebox
+  [ "$output" = "RAN ssh: homebox" ]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" curl workbox:9000/health
+  [ "$output" = "RAN curl: --proxy socks5h://localhost:1056 workbox:9000/health" ]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" scp -P 2222 ./file.txt admin@workbox:/tmp/
+  [ "$output" = "RAN scp: -o ProxyCommand=$TAILNET_BIN nc work %h %p -P 2222 ./file.txt admin@workbox:/tmp/" ]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" sftp admin@workbox:/srv
+  [ "$output" = "RAN sftp: -o ProxyCommand=$TAILNET_BIN nc work %h %p admin@workbox:/srv" ]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" "TAILNET=work ssh 10.9.8.7"
+  [ "$output" = "RAN ssh: -o ProxyCommand=$TAILNET_BIN nc work %h %p 10.9.8.7" ]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" "tailnet-as work sh -c 'echo T=\$TAILNET A=\$ALL_PROXY'"
+  [ "$output" = "T=work A=socks5h://localhost:1056" ]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" tailnet-doctor workbox
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"route:   workbox -> via work (ProxyCommand=$TAILNET_BIN nc work %h %p; curl --proxy socks5h://localhost:1056)"* ]]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" tailnet_hostish 100.102.3.4
+  [ "$status" -eq 0 ]
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" tailnet_hostish github.com
+  [ "$status" -eq 1 ]
+}
+
+# --- functions: fail open ------------------------------------------------------
+
+# A function body that aborts the shell running it: NOMATCH on a glob that
+# matches nothing — the exact failure mode of the original crash. Redefined
+# over a helper, it stands in for "something unexpected broke in here".
+CRASH='local d; for d in /nonexistent-tailnet-test/*/port; do :; done; print -ru2 -- "SHOULD NOT GET HERE"'
+
+# What the stub for the command line $1 prints when it runs it untouched.
+ran() { echo "RAN ${1%% *}: ${1#* }"; }
+
+@test "wrappers: a destination whose shape cannot be a node runs direct before any state or daemon lookup" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  # tailnet_active is the state lookup; crashing it proves it is never
+  # reached for these destinations. The real script/state are all present.
+  for shell_opts in "" "$CLAUDE_CODE_OPTS"; do
+    for cmd in "curl -s http://127.0.0.1:8321/" "curl localhost:3000" "curl -sSL https://api.github.com/user" \
+               "curl http://10.0.0.5/" "ssh localhost" "ssh git@github.com" "ssh -p 22 admin@192.168.1.9" \
+               "scp ./file.txt git@github.com:/srv/" "sftp user@example.org"; do
+      : > "$TS_LOG"
+      ZOPTS=$shell_opts in_repo "$repo" "tailnet_active() { $CRASH; }; $cmd"
+      [ "$status" -eq 0 ]
+      # Exact: no crash output either, since the crashing helper never ran.
+      [ "$output" = "$(ran "$cmd")" ]
+      [ ! -s "$TS_LOG" ]
+    done
+  done
+}
+
+@test "wrappers: any helper breaking degrades to running the command direct, never to blocking it" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  for helper in tailnet_state_root tailnet_installed tailnet_active tailnet_hostish tailnet_for_cwd \
+                tailnet_route tailnet_ssh_host tailnet_scp_host tailnet_curl_host tailnet_for_cmd; do
+    for shell_opts in "" "$CLAUDE_CODE_OPTS"; do
+      # Non-node destinations: direct, and still no tailscale call.
+      for cmd in "curl -s http://127.0.0.1:8321/" "ssh localhost" "curl https://api.github.com/user" "ssh git@github.com"; do
+        : > "$TS_LOG"
+        ZOPTS=$shell_opts in_repo "$repo" "$helper() { $CRASH; }; $cmd"
+        [ "$status" -eq 0 ]
+        # `run` merges stderr: the crash message may precede the run line.
+        [[ "$output" == *"$(ran "$cmd")" ]]
+        [ ! -s "$TS_LOG" ]
+      done
+      # A destination that would have been routed: the command still runs —
+      # direct when a helper on its path broke, routed (without a
+      # preference) when only tailnet_for_cwd did or the helper is not on
+      # this command's path at all — never dead. Blocking is the one outcome
+      # that must not happen.
+      for cmd in "ssh workbox" "curl http://workbox:8080/" "scp ./f workbox:/tmp/" "sftp workbox"; do
+        ZOPTS=$shell_opts in_repo "$repo" "$helper() { $CRASH; }; $cmd"
+        [ "$status" -eq 0 ]
+        [[ "$output" == *"RAN ${cmd%% *}: "*"${cmd#* }" ]]
+      done
+    done
+  done
+}
+
+@test "wrappers: a misbehaving script (garbage verdict, failing proxy-url) means direct" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  # A verdict that names no installed tailnet is not acted on.
+  cat > "$TAILNET_BIN" <<'STUB'
+#!/bin/sh
+case $1 in route) echo "oops: something went wrong";; *) exit 3;; esac
+STUB
+  in_repo "$repo" ssh workbox
+  [ "$status" -eq 0 ]
+  [ "$output" = "RAN ssh: workbox" ]
+  in_repo "$repo" curl http://workbox/
+  [ "$output" = "RAN curl: http://workbox/" ]
+  # A good verdict whose proxy-url cannot be produced: curl runs direct.
+  cat > "$TAILNET_BIN" <<'STUB'
+#!/bin/sh
+case $1 in route) echo work;; *) exit 3;; esac
+STUB
+  in_repo "$repo" curl http://workbox/
+  [ "$status" -eq 0 ]
+  [ "$output" = "RAN curl: http://workbox/" ]
+  # The script exiting non-zero with no output: direct.
+  printf '#!/bin/sh\nexit 7\n' > "$TAILNET_BIN"
+  in_repo "$repo" ssh workbox
+  [ "$output" = "RAN ssh: workbox" ]
+  in_repo "$repo" curl workbox:9000/health
+  [ "$output" = "RAN curl: workbox:9000/health" ]
+}
+
 # --- doctor ------------------------------------------------------------------
 
 @test "tailnet-doctor: traces the machinery, the cwd's preference, and a host's route" {
@@ -671,6 +804,8 @@ in_repo() { # <repo> <zsh code…>
   in_repo "$repo" tailnet-doctor workbox
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: ssh: function / curl: function"* ]]
+  [[ "$output" == *"defined: ok (14 helpers)"* ]]
+  [[ "$output" == *"helpers: ok"* ]]
   [[ "$output" == *"script:  $TAILNET_BIN"* ]]
   [[ "$output" == *"binary:  $BIN/tailscaled"* ]]
   [[ "$output" == *"cli:     $BIN/tailscale"* ]]
@@ -689,6 +824,48 @@ in_repo() { # <repo> <zsh code…>
   [[ "$output" == *"route:   github.com -> direct (shape cannot be a tailnet node; no daemon asked)"* ]]
   in_repo "$repo" tailnet-doctor nobody
   [[ "$output" == *"route:   nobody -> direct (a node of no installed tailnet)"* ]]
+  # A dropped helper (Claude Code's shell snapshot has done this) is named
+  # first, before any line that would silently misreport without it.
+  in_repo "$repo" "unfunction tailnet_for_cmd; tailnet-doctor 2>/dev/null"
+  [[ "$output" == *"defined: MISSING tailnet_for_cmd — a shell snapshot or partial source dropped them; source ~/.functions again"* ]]
+  [[ "$output" == *"helpers: BROKEN — tailnet-doctor:"*"command not found: tailnet_for_cmd (the wrappers run every command direct until this is fixed)"* ]]
+}
+
+@test "tailnet-doctor: helpers: runs the real decision path and reports the first thing that breaks" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  # The wrappers fail open, so a crashed helper is silent there; the doctor
+  # names it — in the default shell and under Claude Code's options.
+  for shell_opts in "" "$CLAUDE_CODE_OPTS"; do
+    ZOPTS=$shell_opts in_repo "$repo" "tailnet_ssh_host() { $CRASH; }; tailnet-doctor"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"helpers: BROKEN — tailnet_ssh_host: no matches found: /nonexistent-tailnet-test/*/port (the wrappers run every command direct until this is fixed)"* ]]
+    ZOPTS=$shell_opts in_repo "$repo" "tailnet_curl_host() { $CRASH; }; tailnet-doctor"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"helpers: BROKEN — tailnet_curl_host: no matches found:"* ]]
+  done
+  # A crash in a helper the doctor itself later calls bare (tailnet_active)
+  # kills a non-interactive shell mid-doctor — which is exactly why helpers:
+  # is printed first: the diagnosis is on screen before that happens.
+  in_repo "$repo" "tailnet_active() { $CRASH; }; tailnet-doctor"
+  [[ "$output" == *"helpers: BROKEN — tailnet_active: no matches found:"* ]]
+  # A verdict for a host no tailnet has means misrouting, the opposite of
+  # direct — its own wording.
+  cat > "$TAILNET_BIN" <<'STUB'
+#!/bin/sh
+case $1 in route) echo work;; names) printf 'personal\nwork\n';; *) exit 0;; esac
+STUB
+  in_repo "$repo" tailnet-doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"helpers: BROKEN — verdict 'work' for tailnet-doctor-probe, a host no tailnet has (the wrappers would proxy hosts that are nodes nowhere)"* ]]
+  # Under tailnet-as, TAILNET is set: the probe must not read the forced
+  # verdict as breakage.
+  cp "$BATS_TEST_DIRNAME/../bin/executable_tailnet" "$TAILNET_BIN"
+  in_repo "$repo" "TAILNET=work tailnet-doctor"
+  [[ "$output" == *"helpers: ok"* ]]
+  # No machinery at all: the decision path exits early, and that is fine.
+  rm -rf "$STATE"
+  in_repo "$repo" tailnet-doctor
+  [[ "$output" == *"helpers: ok"* ]]
 }
 
 @test "tailnet-doctor: mapped but not installed, repo pin, forced TAILNET" {
@@ -713,4 +890,26 @@ in_repo() { # <repo> <zsh code…>
   in_repo "$repo" doctor
   [ "$status" -eq 0 ]
   [[ "$output" == *"== wrangler-doctor"*"== tailnet-doctor"*"wants:   personal first"* ]]
+}
+
+@test "doctor: opens with the calling shell's version and pattern options, read before any emulate" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  ver=$(zsh -c 'print -r -- $ZSH_VERSION')
+  # A plain non-interactive zsh with no rc files: nothing off default.
+  in_repo "$repo" doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == "shell:   zsh $ver, options: none"$'\n'* ]]
+  # Claude Code's Bash tool: its marker and its option set, in setopt's order.
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" "CLAUDECODE=1 doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "shell:   zsh $ver, under Claude Code, options: nobareglobqual nocaseglob globstarshort (the tailnet wrappers reset these with emulate -L zsh)"$'\n'* ]]
+  # The marker alone, options alone.
+  in_repo "$repo" "CLAUDECODE=1 doctor"
+  [[ "$output" == "shell:   zsh $ver, under Claude Code, options: none"$'\n'* ]]
+  ZOPTS="extendedglob nomatch" in_repo "$repo" doctor
+  [[ "$output" == "shell:   zsh $ver, options: extendedglob (the tailnet wrappers reset these with emulate -L zsh)"$'\n'* ]]
+  # The line comes from the caller's options even though the doctors that
+  # follow emulate their own: the tailnet doctor still works underneath.
+  ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" doctor
+  [[ "$output" == *"== tailnet-doctor"*"helpers: ok"* ]]
 }
