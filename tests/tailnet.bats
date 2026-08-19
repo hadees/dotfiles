@@ -482,9 +482,9 @@ CLAUDE_CODE_OPTS="no_bare_glob_qual no_case_glob glob_star_short no_extended_glo
 # --- functions: cwd preference ---------------------------------------------
 
 @test "dot_functions defines the tailnet helpers and wrappers" {
-  run zsh -c "source '$DOTFUNCTIONS'; whence -w tailnet_for_cwd tailnet_route tailnet_hostish tailnet_ssh_host tailnet_scp_host tailnet_curl_host tailnet_for_cmd tailnet_exec ssh scp sftp curl tailnet-as tailnet-doctor"
+  run zsh -c "source '$DOTFUNCTIONS'; whence -w tailnet_for_cwd tailnet_route tailnet_hostish tailnet_ssh_host tailnet_scp_host tailnet_curl_host tailnet_for_cmd tailnet_exec ssh scp sftp curl tailnet-as tailnet-doctor defined_trace"
   [ "$status" -eq 0 ]
-  for f in tailnet_for_cwd tailnet_route tailnet_hostish tailnet_ssh_host tailnet_scp_host tailnet_curl_host tailnet_for_cmd tailnet_exec ssh scp sftp curl tailnet-as tailnet-doctor; do
+  for f in tailnet_for_cwd tailnet_route tailnet_hostish tailnet_ssh_host tailnet_scp_host tailnet_curl_host tailnet_for_cmd tailnet_exec ssh scp sftp curl tailnet-as tailnet-doctor defined_trace; do
     [[ "$output" == *"$f: function"* ]]
   done
 }
@@ -801,6 +801,7 @@ STUB
   in_repo "$repo" tailnet-doctor workbox
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: ssh: function / curl: function"* ]]
+  [[ "$output" == *"defined: ok (14 helpers)"* ]]
   [[ "$output" == *"script:  $TAILNET_BIN"* ]]
   [[ "$output" == *"binary:  $BIN/tailscaled"* ]]
   [[ "$output" == *"cli:     $BIN/tailscale"* ]]
@@ -819,6 +820,10 @@ STUB
   [[ "$output" == *"route:   github.com -> direct (shape cannot be a tailnet node; no daemon asked)"* ]]
   in_repo "$repo" tailnet-doctor nobody
   [[ "$output" == *"route:   nobody -> direct (a node of no installed tailnet)"* ]]
+  # A dropped helper (Claude Code's shell snapshot has done this) is named
+  # first, before any line that would silently misreport without it.
+  in_repo "$repo" "unfunction tailnet_for_cmd; tailnet-doctor 2>/dev/null"
+  [[ "$output" == *"defined: MISSING tailnet_for_cmd — a shell snapshot or partial source dropped them; source ~/.functions again"* ]]
 }
 
 @test "tailnet-doctor: mapped but not installed, repo pin, forced TAILNET" {

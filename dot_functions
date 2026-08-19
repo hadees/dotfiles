@@ -263,6 +263,31 @@ function git_origin_slug() {
 	print -r -- "$slug";
 }
 
+# For the doctors: are the helper functions a wrapper (and the doctor itself)
+# call actually defined in this shell? Prints "ok (N helpers)" or names the
+# missing ones. A wrapper whose callee is gone does not fail loudly: the
+# doctor's own `acct="$(gh_account_for_cwd)"` just yields empty and the
+# `account:` line confidently reports "no pin matched" — so every doctor
+# prints this before any line that depends on a helper. The failure this
+# catches is real: Claude Code's shell snapshot once dropped functions on
+# their name alone (see the note above gh_account_for_cwd), leaving the
+# wrappers half-defined only inside its sessions. Each doctor's list is
+# checked against the function bodies by tests/git-doctor.bats, so it
+# cannot quietly go stale.
+function defined_trace() {
+	emulate -L zsh;
+	local f;
+	local -a missing;
+	for f in "$@"; do
+		(( $+functions[$f] )) || missing+=("$f");
+	done;
+	if (( ${#missing} )); then
+		print -r -- "MISSING ${missing[*]} — a shell snapshot or partial source dropped them; source ~/.functions again";
+		return 0;
+	fi;
+	print -r -- "ok ($# helpers)";
+}
+
 # For the doctors: describe the executable $1 without running it — where a
 # version manager's shim points for this cwd (asdf, nodenv), and the version
 # when it can be read off the install itself: an npm package's package.json
@@ -398,6 +423,7 @@ function claude-as() {
 function claude-doctor() {
 	local origin acct map dir cred email;
 	print -r -- "wrapper: $(whence -w claude)";
+	print -r -- "defined: $(defined_trace claude_profile_dir gh_account_for_cwd git_origin_slug bin_trace)";
 	print -r -- "binary:  $(bin="$(whence -p claude)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH')";
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
@@ -654,6 +680,7 @@ function wrangler-as() {
 function wrangler-doctor() {
 	local origin slug acct repopin map profile cfg top bound line dir prof best bin onpath;
 	print -r -- "wrapper: $(whence -w wrangler)";
+	print -r -- "defined: $(defined_trace wrangler_bin wrangler_profile wrangler_bind wrangler_config_dir wrangler_profile_exists gh_account_for_cwd git_origin_slug bin_trace)";
 	if bin="$(wrangler_bin)"; then
 		onpath="$(whence -p wrangler)";
 		if [[ $bin == */node_modules/.bin/wrangler ]]; then
@@ -1085,6 +1112,7 @@ function tailnet-doctor() {
 	local root n origin slug acct repopin map prefer host verdict;
 	local -a pref;
 	print -r -- "wrapper: $(whence -w ssh) / $(whence -w curl)";
+	print -r -- "defined: $(defined_trace tailnet_exec tailnet_for_cmd tailnet_route tailnet_active tailnet_installed tailnet_state_root tailnet_hostish tailnet_for_cwd tailnet_ssh_host tailnet_scp_host tailnet_curl_host gh_account_for_cwd git_origin_slug bin_trace)";
 	if (( $+commands[tailnet] )); then
 		print -r -- "script:  ${commands[tailnet]}";
 	else
@@ -1245,6 +1273,7 @@ function gh() {
 function gh-doctor() {
 	local origin acct tok who;
 	print -r -- "wrapper: $(whence -w gh)";
+	print -r -- "defined: $(defined_trace gh_account_for_cwd git_origin_slug bin_trace)";
 	print -r -- "binary:  $(bin="$(whence -p gh)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH')";
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
@@ -1280,6 +1309,7 @@ function gh-doctor() {
 # fact; this shows it before the commit. Read-only, no network.
 function git-doctor() {
 	local origin acct name email src sign fmt key prog agent alias hostname idfile;
+	print -r -- "defined: $(defined_trace gh_account_for_cwd git_origin_slug)";
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
 	print -r -- "origin:  ${origin:-<none — not a git repo or no origin>}";
@@ -1368,9 +1398,9 @@ function git-doctor() {
 	print -r -- "configs: $(command git config --list --show-origin --name-only 2>/dev/null | command awk -F'\t' '$1 ~ /^file:/ {print substr($1, 6)}' | command awk '!seen[$0]++' | command paste -sd, - | command sed 's/,/, /g')";
 }
 
-# All four per-repo routing diagnoses for the cwd in one go — git identity,
-# gh account, Claude Code profile, wrangler profile. First thing to run when
-# a repo "behaves weird" on a machine.
+# All five per-repo routing diagnoses for the cwd in one go — git identity,
+# gh account, Claude Code profile, wrangler profile, tailnet routing. First
+# thing to run when a repo "behaves weird" on a machine.
 function doctor() {
 	local d;
 	for d in git gh claude wrangler tailnet; do

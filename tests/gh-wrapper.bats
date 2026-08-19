@@ -149,6 +149,7 @@ EOF
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; gh-doctor"
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: gh: function"* ]]
+  [[ "$output" == *"defined: ok (3 helpers)"* ]]
   [[ "$output" == *"binary:  $BATS_TEST_TMPDIR/bin/gh"* ]]
   [[ "$output" == *"account: personal-acct"* ]]
   [[ "$output" == *"pins:    octo-work-org -> work-acct, octo-personal -> personal-acct"* ]]
@@ -168,6 +169,11 @@ EOF
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; GH_TOKEN=sekrit gh-doctor"
   [[ "$output" == *"GH_TOKEN=<set"* ]]
   [[ "$output" != *"sekrit"* ]]
+
+  # A dropped helper is named before the account line that would otherwise
+  # misreport "no pin matched".
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; unfunction gh_account_for_cwd; gh-doctor 2>/dev/null"
+  [[ "$output" == *"defined: MISSING gh_account_for_cwd — "* ]]
 }
 
 @test "gh-doctor: unpinned repo says gh runs as the active account and stops" {

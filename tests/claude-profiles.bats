@@ -139,10 +139,15 @@ claude_in() {
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: claude: function"* ]]
+  [[ "$output" == *"defined: ok (4 helpers)"* ]]
   [[ "$output" == *"binary:  $BATS_TEST_TMPDIR/bin/claude"* ]]
   [[ "$output" == *"account: personal-account"* ]]
   [[ "$output" == *"launch:  $HOME/.claude-personal"* ]]
   [[ "$output" == *"NOT LOGGED IN"* ]]
+  # A helper the wrapper needs is gone (Claude Code's shell snapshot has
+  # dropped functions before): named, before any line that depends on it.
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; unfunction claude_profile_dir; claude-doctor 2>/dev/null"
+  [[ "$output" == *"defined: MISSING claude_profile_dir — a shell snapshot or partial source dropped them; source ~/.functions again"* ]]
 }
 
 @test "claude-doctor: names the logged-in account from the profile's .claude.json" {
