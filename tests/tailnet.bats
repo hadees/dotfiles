@@ -597,8 +597,10 @@ in_repo() { # <repo> <zsh code…>
   repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
   in_repo "$repo" curl -sS -H "'Accept: application/json'" http://workbox:8080/api/x
   [ "$output" = "RAN curl: --proxy socks5h://localhost:1056 -sS -H Accept: application/json http://workbox:8080/api/x" ]
-  in_repo "$repo" curl https://admin@WorkBox.work-net.ts.net/
-  [ "$output" = "RAN curl: --proxy socks5h://localhost:1056 https://admin@WorkBox.work-net.ts.net/" ]
+  in_repo "$repo" curl https://WorkBox.work-net.ts.net/
+  [ "$output" = "RAN curl: --proxy socks5h://localhost:1056 https://WorkBox.work-net.ts.net/" ]
+  in_repo "$repo" curl http://admin@workbox/
+  [ "$output" = "RAN curl: --proxy socks5h://localhost:1056 http://admin@workbox/" ]
   in_repo "$repo" curl workbox:9000/health
   [ "$output" = "RAN curl: --proxy socks5h://localhost:1056 workbox:9000/health" ]
   in_repo "$repo" curl http://homebox/

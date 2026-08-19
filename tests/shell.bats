@@ -53,3 +53,11 @@ setup() {
   [[ "$output" != *"parse error"* ]]
   [[ "$output" != *"no such file"* ]]
 }
+
+@test "bats itself runs under bash >= 4" {
+  # bash 3.2 (macOS's /bin/bash) does not fail a test on a failing `[[ ]]`
+  # unless it is the last command, so every mid-test [[ ]] assertion in
+  # this suite would be silently ignored. Put a modern bash first on PATH
+  # (Homebrew's: PATH="$(brew --prefix)/bin:$PATH" bats tests) — CI does.
+  [ "${BASH_VERSINFO[0]}" -ge 4 ]
+}
