@@ -1058,6 +1058,48 @@ function tailnet_exec() {
 					return;
 				fi;;
 			(*)
+				# Tailscale SSH "check mode" prints a login.tailscale.com URL
+				# on ssh's stderr mid-session and blocks until it is visited —
+				# and that URL is identical for every tailnet, so clicked by
+				# hand it lands in whatever browser profile was active last.
+				# We know the tailnet here, so: stderr streams through tee
+				# byte-for-byte (prompts and progress meters intact) into a
+				# copy that a disowned watcher greps, and the first auth URL
+				# is auto-opened via `open-as <name>` (~/bin), which tags it
+				# for the link router so it lands in this tailnet's browser
+				# profile. All of it is best-effort: no open-as and the URL
+				# stays a line in the terminal; no copy and the command runs
+				# exactly as before.
+				local copy;
+				if copy="$(command mktemp "${TMPDIR:-/tmp}/tailnet-auth.XXXXXX" 2>/dev/null)"; then
+					(
+						local authurl i;
+						# Bounded: the copy is removed when the command ends,
+						# but if that cleanup is ever skipped the watcher must
+						# still die (a leftover held bats' fd on a CI runner
+						# for 97 minutes once), so ~1h is the hard ceiling.
+						for i in {1..3600}; do
+							[[ -e $copy ]] || break;
+							authurl="$(command grep -oam1 'https://login\.tailscale\.com/[A-Za-z0-9/_-]*' "$copy" 2>/dev/null)";
+							if [[ -n $authurl ]]; then
+								(( $+commands[open-as] )) && command open-as "$name" "$authurl" >/dev/null 2>&1;
+								break;
+							fi;
+							command sleep 1;
+						done;
+						# Stdio detached and fd 3 closed so the watcher never
+						# holds open a pipe belonging to whatever ran the
+						# wrapper — a captured `$(ssh …)` would wait out the
+						# last poll, and bats blocks on fd 3 until every
+						# background holder exits.
+					) >/dev/null 2>&1 </dev/null 3>&- &!
+					{
+						command "$cmd" -o "ProxyCommand=${commands[tailnet]} nc $name %h %p" "$@" 2> >(command tee -a -- "$copy" >&2);
+					} always {
+						command rm -f -- "$copy";
+					};
+					return;
+				fi;
 				command "$cmd" -o "ProxyCommand=${commands[tailnet]} nc $name %h %p" "$@";
 				return;;
 		esac;

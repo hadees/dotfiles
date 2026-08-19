@@ -30,6 +30,24 @@ export const openedBy =
   (_url: unknown, { opener }: { opener: { bundleId: string } | null }) =>
     !!opener && bundleIds.includes(opener.bundleId);
 
+// Match links our own tooling tagged for a profile with `open-as <alias>
+// <url>` (~/bin): some URLs are identical no matter which account they will
+// authenticate (Tailscale auth/check links, OAuth device-code pages, …), so
+// no URL rule can route them — but the tool that printed the URL knows whose
+// it is, and open-as appends an opaque token as a #fragment. A fragment is
+// never sent to the server, and the token is random (lowercase [a-z0-9]
+// plus the standard suffix "q2x", itself random-looking — see open-as for
+// the generator), so the page's own scripts learn nothing — only the
+// overlay fragment that pairs the token with its profile can decode it,
+// host-independently by design:
+//   { match: tagged("k3v9qwq2x"), browser: chrome("Some Profile") }
+// The other half of the pair is machine-local git config
+// (browser.tag.<alias> = <token>), supplied by the same overlay.
+export const tagged =
+  (token: string) =>
+  ({ hash }: { hash?: string }) =>
+    !!token && (hash ?? "") === "#" + token;
+
 // Combine matchers: any(hosts("a.com"), githubOwners("x")).
 export const any =
   (...matchers: Array<(url: any, options: any) => boolean>) =>
