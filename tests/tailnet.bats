@@ -253,6 +253,10 @@ make_socket() {
 
 teardown() {
   [ -n "$TAILNET_STATE" ] && [ -d "$TAILNET_STATE" ] && rm -rf "$TAILNET_STATE"
+  # The auth-URL watchers poll while their copy file exists; removing any
+  # leftovers here guarantees no watcher survives a test (a survivor holds
+  # bats' fd 3 and blocks the whole run until its loop bound hits).
+  rm -f "${TMPDIR:-/tmp}"/tailnet-auth.?????? "${TMPDIR:-/tmp}"/tailnet-up.??????
   return 0
 }
 

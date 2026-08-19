@@ -1073,8 +1073,13 @@ function tailnet_exec() {
 				local copy;
 				if copy="$(command mktemp "${TMPDIR:-/tmp}/tailnet-auth.XXXXXX" 2>/dev/null)"; then
 					(
-						local authurl;
-						while [[ -e $copy ]]; do
+						local authurl i;
+						# Bounded: the copy is removed when the command ends,
+						# but if that cleanup is ever skipped the watcher must
+						# still die (a leftover held bats' fd on a CI runner
+						# for 97 minutes once), so ~1h is the hard ceiling.
+						for i in {1..3600}; do
+							[[ -e $copy ]] || break;
 							authurl="$(command grep -oam1 'https://login\.tailscale\.com/[A-Za-z0-9/_-]*' "$copy" 2>/dev/null)";
 							if [[ -n $authurl ]]; then
 								(( $+commands[open-as] )) && command open-as "$name" "$authurl" >/dev/null 2>&1;
@@ -1082,10 +1087,12 @@ function tailnet_exec() {
 							fi;
 							command sleep 1;
 						done;
-						# The watcher's stdio is detached so it never holds a
-						# pipe open past the command it watched (a captured
-						# `$(ssh …)` would otherwise wait out its last poll).
-					) >/dev/null 2>&1 </dev/null &!
+						# Stdio detached and fd 3 closed so the watcher never
+						# holds open a pipe belonging to whatever ran the
+						# wrapper — a captured `$(ssh …)` would wait out the
+						# last poll, and bats blocks on fd 3 until every
+						# background holder exits.
+					) >/dev/null 2>&1 </dev/null 3>&- &!
 					{
 						command "$cmd" -o "ProxyCommand=${commands[tailnet]} nc $name %h %p" "$@" 2> >(command tee -a -- "$copy" >&2);
 					} always {

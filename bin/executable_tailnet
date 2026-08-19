@@ -366,15 +366,20 @@ cmd_up() {
   # the terminal, exactly as before.
   if copy=$(mktemp "${TMPDIR:-/tmp}/tailnet-up.XXXXXX" 2>/dev/null); then
     (
-      while [ -e "$copy" ]; do
+      # Bounded, stdio detached, fd 3 closed: even if the cleanup below is
+      # ever skipped the watcher must still die and must never hold a pipe
+      # (bats blocks on fd 3 until every background holder exits).
+      i=0
+      while [ -e "$copy" ] && [ $i -lt 3600 ]; do
         url=$(grep -oam1 'https://login\.tailscale\.com/[A-Za-z0-9/_-]*' "$copy" 2>/dev/null)
         if [ -n "$url" ]; then
           command -v open-as >/dev/null 2>&1 && open-as "$name" "$url" >/dev/null 2>&1
           break
         fi
         sleep 1
+        i=$((i + 1))
       done
-    ) >/dev/null 2>&1 </dev/null &
+    ) >/dev/null 2>&1 </dev/null 3>&- &
     { "$c" --socket="$s" up --hostname="$h-$name" --accept-routes "$@" 2>&1; echo "$?" >"$copy.rc"; } | tee -a "$copy"
     rc=$(cat "$copy.rc" 2>/dev/null); [ -n "$rc" ] || rc=1
     rm -f "$copy" "$copy.rc"
