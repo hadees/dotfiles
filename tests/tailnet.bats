@@ -482,9 +482,9 @@ CLAUDE_CODE_OPTS="no_bare_glob_qual no_case_glob glob_star_short no_extended_glo
 # --- functions: cwd preference ---------------------------------------------
 
 @test "dot_functions defines the tailnet helpers and wrappers" {
-  run zsh -c "source '$DOTFUNCTIONS'; whence -w tailnet_for_cwd tailnet_route tailnet_hostish tailnet_ssh_host tailnet_scp_host tailnet_curl_host ssh scp sftp curl tailnet-as tailnet-doctor"
+  run zsh -c "source '$DOTFUNCTIONS'; whence -w tailnet_for_cwd tailnet_route tailnet_hostish tailnet_ssh_host tailnet_scp_host tailnet_curl_host tailnet_for_cmd tailnet_exec ssh scp sftp curl tailnet-as tailnet-doctor"
   [ "$status" -eq 0 ]
-  for f in tailnet_for_cwd tailnet_route tailnet_hostish tailnet_ssh_host tailnet_scp_host tailnet_curl_host ssh scp sftp curl tailnet-as tailnet-doctor; do
+  for f in tailnet_for_cwd tailnet_route tailnet_hostish tailnet_ssh_host tailnet_scp_host tailnet_curl_host tailnet_for_cmd tailnet_exec ssh scp sftp curl tailnet-as tailnet-doctor; do
     [[ "$output" == *"$f: function"* ]]
   done
 }
@@ -708,6 +708,90 @@ CLAUDE_CODE_OPTS="no_bare_glob_qual no_case_glob glob_star_short no_extended_glo
   [ "$status" -eq 0 ]
   ZOPTS=$CLAUDE_CODE_OPTS in_repo "$repo" tailnet_hostish github.com
   [ "$status" -eq 1 ]
+}
+
+# --- functions: fail open ------------------------------------------------------
+
+# A function body that aborts the shell running it: NOMATCH on a glob that
+# matches nothing — the exact failure mode of the original crash. Redefined
+# over a helper, it stands in for "something unexpected broke in here".
+CRASH='local d; for d in /nonexistent-tailnet-test/*/port; do :; done; print -ru2 -- "SHOULD NOT GET HERE"'
+
+# What the stub for the command line $1 prints when it runs it untouched.
+ran() { echo "RAN ${1%% *}: ${1#* }"; }
+
+@test "wrappers: a destination whose shape cannot be a node runs direct before any state or daemon lookup" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  # tailnet_active is the state lookup; crashing it proves it is never
+  # reached for these destinations. The real script/state are all present.
+  for shell_opts in "" "$CLAUDE_CODE_OPTS"; do
+    for cmd in "curl -s http://127.0.0.1:8321/" "curl localhost:3000" "curl -sSL https://api.github.com/user" \
+               "curl http://10.0.0.5/" "ssh localhost" "ssh git@github.com" "ssh -p 22 admin@192.168.1.9" \
+               "scp ./file.txt git@github.com:/srv/" "sftp user@example.org"; do
+      : > "$TS_LOG"
+      ZOPTS=$shell_opts in_repo "$repo" "tailnet_active() { $CRASH; }; $cmd"
+      [ "$status" -eq 0 ]
+      # Exact: no crash output either, since the crashing helper never ran.
+      [ "$output" = "$(ran "$cmd")" ]
+      [ ! -s "$TS_LOG" ]
+    done
+  done
+}
+
+@test "wrappers: any helper breaking degrades to running the command direct, never to blocking it" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  for helper in tailnet_state_root tailnet_installed tailnet_active tailnet_hostish tailnet_for_cwd \
+                tailnet_route tailnet_ssh_host tailnet_scp_host tailnet_curl_host tailnet_for_cmd; do
+    for shell_opts in "" "$CLAUDE_CODE_OPTS"; do
+      # Non-node destinations: direct, and still no tailscale call.
+      for cmd in "curl -s http://127.0.0.1:8321/" "ssh localhost" "curl https://api.github.com/user" "ssh git@github.com"; do
+        : > "$TS_LOG"
+        ZOPTS=$shell_opts in_repo "$repo" "$helper() { $CRASH; }; $cmd"
+        [ "$status" -eq 0 ]
+        # `run` merges stderr: the crash message may precede the run line.
+        [[ "$output" == *"$(ran "$cmd")" ]]
+        [ ! -s "$TS_LOG" ]
+      done
+      # A destination that would have been routed: the command still runs —
+      # direct when a helper on its path broke, routed (without a
+      # preference) when only tailnet_for_cwd did or the helper is not on
+      # this command's path at all — never dead. Blocking is the one outcome
+      # that must not happen.
+      for cmd in "ssh workbox" "curl http://workbox:8080/" "scp ./f workbox:/tmp/" "sftp workbox"; do
+        ZOPTS=$shell_opts in_repo "$repo" "$helper() { $CRASH; }; $cmd"
+        [ "$status" -eq 0 ]
+        [[ "$output" == *"RAN ${cmd%% *}: "*"${cmd#* }" ]]
+      done
+    done
+  done
+}
+
+@test "wrappers: a misbehaving script (garbage verdict, failing proxy-url) means direct" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  # A verdict that names no installed tailnet is not acted on.
+  cat > "$TAILNET_BIN" <<'STUB'
+#!/bin/sh
+case $1 in route) echo "oops: something went wrong";; *) exit 3;; esac
+STUB
+  in_repo "$repo" ssh workbox
+  [ "$status" -eq 0 ]
+  [ "$output" = "RAN ssh: workbox" ]
+  in_repo "$repo" curl http://workbox/
+  [ "$output" = "RAN curl: http://workbox/" ]
+  # A good verdict whose proxy-url cannot be produced: curl runs direct.
+  cat > "$TAILNET_BIN" <<'STUB'
+#!/bin/sh
+case $1 in route) echo work;; *) exit 3;; esac
+STUB
+  in_repo "$repo" curl http://workbox/
+  [ "$status" -eq 0 ]
+  [ "$output" = "RAN curl: http://workbox/" ]
+  # The script exiting non-zero with no output: direct.
+  printf '#!/bin/sh\nexit 7\n' > "$TAILNET_BIN"
+  in_repo "$repo" ssh workbox
+  [ "$output" = "RAN ssh: workbox" ]
+  in_repo "$repo" curl workbox:9000/health
+  [ "$output" = "RAN curl: workbox:9000/health" ]
 }
 
 # --- doctor ------------------------------------------------------------------

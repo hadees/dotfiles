@@ -759,7 +759,10 @@ function wrangler-doctor() {
 # a hit on another tailnet is routed: ssh/scp/sftp get a ProxyCommand through
 # that daemon (`tailnet nc`), curl a `--proxy socks5h://` on its port. Hosts
 # whose shape cannot be a tailnet node (public FQDNs, non-CGNAT IPs,
-# localhost) cost nothing — no daemon is asked.
+# localhost) cost nothing — that shape check is a pure string match and runs
+# before the state dir or a daemon is even looked at. And the wrappers fail
+# open: the whole routing decision runs in a subshell, so a helper that
+# breaks leaves the command running direct, never blocked.
 #
 # TAILNET=<name> (an installed tailnet, or an account/alias mapped in
 # `tailnet.profile.*`) forces that tailnet for one command regardless of the
@@ -850,18 +853,25 @@ function tailnet_hostish() {
 }
 
 # The routing verdict for host $1: prints the tailnet to proxy through, prints
-# nothing when the host should be reached directly (not a node anywhere, or a
-# node of the tailnet the app is on, or the machinery is absent). TAILNET, when
-# valid, forces its tailnet and skips the shape check.
+# nothing when the host should be reached directly — its shape cannot be a
+# node, it is a node nowhere or of the tailnet the app is on, or the
+# machinery is absent. Cheapest test first: the shape check is a pure string
+# match and runs before any state or daemon is consulted, so a host that
+# cannot be a node costs nothing and is never exposed to the machinery at
+# all. TAILNET, when valid, forces its tailnet and skips the shape check
+# (subnet-router destinations the daemons cannot vouch for). Always returns
+# 0: no verdict is not an error.
 function tailnet_route() {
 	emulate -L zsh;
 	local prefer;
+	[[ -n $TAILNET ]] || tailnet_hostish "$1" || return 0;
 	tailnet_active || return 0;
 	prefer="$(tailnet_for_cwd)";
 	if [[ -n $TAILNET && -n $prefer ]]; then
 		command tailnet route --force --prefer "$prefer" -- "$1" 2>/dev/null;
 		return 0;
 	fi;
+	# TAILNET set but rejected (warned about above): ordinary routing.
 	tailnet_hostish "$1" || return 0;
 	if [[ -n $prefer ]]; then
 		command tailnet route --prefer "$prefer" -- "$1" 2>/dev/null;
@@ -973,45 +983,61 @@ function tailnet_curl_host() {
 	print -r -- "$bare";
 }
 
-function ssh() {
+# The routing verdict for a whole command line: the tailnet that <ssh|scp|
+# sftp|curl> "$@" should go through, or nothing. The script on PATH first (a
+# hash lookup — absent, every wrapper is a passthrough at zero cost), then the
+# destination parsed from the arguments (unparseable, or the user already
+# proxying: nothing), then tailnet_route's shape -> machinery -> daemon
+# ladder. A verdict naming a tailnet that is not installed (the script
+# misbehaving) is no verdict. Always returns 0.
+function tailnet_for_cmd() {
 	emulate -L zsh;
-	local host name;
-	if tailnet_active && host="$(tailnet_ssh_host "$@")" && name="$(tailnet_route "$host")" && [[ -n $name ]]; then
-		command ssh -o "ProxyCommand=${commands[tailnet]} nc $name %h %p" "$@";
-	else
-		command ssh "$@";
-	fi;
+	local cmd=$1 host name;
+	shift;
+	(( $+commands[tailnet] )) || return 0;
+	case $cmd in
+		(ssh) host="$(tailnet_ssh_host "$@")" || return 0;;
+		(scp|sftp) host="$(tailnet_scp_host "$cmd" "$@")" || return 0;;
+		(curl) host="$(tailnet_curl_host "$@")" || return 0;;
+		(*) return 0;;
+	esac;
+	name="$(tailnet_route "$host")";
+	[[ -n $name ]] && tailnet_installed "$name" && print -r -- "$name";
+	return 0;
 }
 
-function scp() {
+# Run <ssh|scp|sftp|curl> "$@", routed through a tailnet when — and only
+# when — tailnet_for_cmd says so: ssh/scp/sftp get a ProxyCommand through
+# that daemon, curl its SOCKS proxy. The decision runs inside a command
+# substitution, so whatever goes wrong in the helpers — a glob aborting the
+# function, a broken state dir, the script misbehaving — the verdict is empty
+# and the command runs direct, exactly as typed. Routing is an optimization;
+# the command is the point. Nothing outside that substitution may call a
+# helper that could fail.
+function tailnet_exec() {
 	emulate -L zsh;
-	local host name;
-	if tailnet_active && host="$(tailnet_scp_host scp "$@")" && name="$(tailnet_route "$host")" && [[ -n $name ]]; then
-		command scp -o "ProxyCommand=${commands[tailnet]} nc $name %h %p" "$@";
-	else
-		command scp "$@";
+	local cmd=$1 name url;
+	shift;
+	name="$(tailnet_for_cmd "$cmd" "$@")";
+	if [[ -n $name ]]; then
+		case $cmd in
+			(curl)
+				if url="$(command tailnet proxy-url "$name" 2>/dev/null)" && [[ -n $url ]]; then
+					command curl --proxy "$url" "$@";
+					return;
+				fi;;
+			(*)
+				command "$cmd" -o "ProxyCommand=${commands[tailnet]} nc $name %h %p" "$@";
+				return;;
+		esac;
 	fi;
+	command "$cmd" "$@";
 }
 
-function sftp() {
-	emulate -L zsh;
-	local host name;
-	if tailnet_active && host="$(tailnet_scp_host sftp "$@")" && name="$(tailnet_route "$host")" && [[ -n $name ]]; then
-		command sftp -o "ProxyCommand=${commands[tailnet]} nc $name %h %p" "$@";
-	else
-		command sftp "$@";
-	fi;
-}
-
-function curl() {
-	emulate -L zsh;
-	local host name;
-	if tailnet_active && host="$(tailnet_curl_host "$@")" && name="$(tailnet_route "$host")" && [[ -n $name ]]; then
-		command curl --proxy "$(command tailnet proxy-url "$name")" "$@";
-	else
-		command curl "$@";
-	fi;
-}
+function ssh() { tailnet_exec ssh "$@"; }
+function scp() { tailnet_exec scp "$@"; }
+function sftp() { tailnet_exec sftp "$@"; }
+function curl() { tailnet_exec curl "$@"; }
 
 # Run one command pinned to a tailnet: `tailnet-as <name> <cmd…>`. <name> is
 # an installed tailnet or an account/alias mapped in `tailnet.profile.*`;
@@ -1116,10 +1142,10 @@ function tailnet-doctor() {
 	fi;
 	if [[ -n $1 ]]; then
 		host=$1;
-		if ! tailnet_active; then
-			verdict="direct (no tailnet machinery)";
-		elif [[ -z $TAILNET ]] && ! tailnet_hostish "$host"; then
+		if [[ -z $TAILNET ]] && ! tailnet_hostish "$host"; then
 			verdict="direct (shape cannot be a tailnet node; no daemon asked)";
+		elif ! tailnet_active; then
+			verdict="direct (no tailnet machinery)";
 		else
 			# Empty verdict + exit 0 from the script means "a node of the
 			# system tailnet"; exit 1 means a node of nothing.
