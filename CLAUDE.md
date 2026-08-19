@@ -353,7 +353,17 @@ argument. `TAILNET` forces its tailnet with the node check skipped (subnet
 routes the daemons can't vouch for); `tailnet-as <name> <cmd…>` does that and
 exports `ALL_PROXY`/`HTTP(S)_PROXY`/`NO_PROXY` so any proxy-aware tool
 follows. `tailnet-doctor [host]` traces all of it. Without the script or an
-installed tailnet the wrappers are plain passthroughs.
+installed tailnet the wrappers are plain passthroughs. Order and failure
+mode are deliberate: the wrappers decide by host **shape first** (a pure
+string check, before the state dir or any daemon is looked at), and the
+whole routing decision runs in a subshell (`tailnet_exec` →
+`tailnet_for_cmd`), so a broken helper leaves the command running direct —
+routing is an optimization, the command is the point. Every tailnet
+function starts with `emulate -L zsh` because not every shell sourcing
+`.functions` has the interactive options: Claude Code's Bash tool runs zsh
+with `NO_BARE_GLOB_QUAL`, where a bare `(N)` qualifier is literal and the
+glob in `tailnet_active` aborted every wrapped curl/ssh in the session,
+localhost included, the day the first tailnet was installed.
 
 Once per machine: `tailnet install <name> && tailnet up <name>` per tailnet
 (browser login as that account; approve the device in its admin console),
