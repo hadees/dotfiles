@@ -355,6 +355,31 @@ cmd_up() {
   # any non-default flag was used, so this stays idempotent and doubles as
   # re-auth after key expiry. --hostname keeps the node from being <host>-1
   # next to the app's node in the same tailnet.
+  #
+  # `up` prints a login.tailscale.com URL and blocks until it is visited, and
+  # that URL is identical for every tailnet — clicked by hand it lands in
+  # whatever browser profile was active last. So the output streams through
+  # tee into a copy that a background watcher greps, and the first auth URL
+  # is auto-opened via open-as <name> (~/bin), which tags it for the link
+  # router so it lands in this tailnet's browser profile. All of it is
+  # best-effort: no open-as (or no copy) and the URL simply stays a line in
+  # the terminal, exactly as before.
+  if copy=$(mktemp "${TMPDIR:-/tmp}/tailnet-up.XXXXXX" 2>/dev/null); then
+    (
+      while [ -e "$copy" ]; do
+        url=$(grep -oam1 'https://login\.tailscale\.com/[A-Za-z0-9/_-]*' "$copy" 2>/dev/null)
+        if [ -n "$url" ]; then
+          command -v open-as >/dev/null 2>&1 && open-as "$name" "$url" >/dev/null 2>&1
+          break
+        fi
+        sleep 1
+      done
+    ) >/dev/null 2>&1 </dev/null &
+    { "$c" --socket="$s" up --hostname="$h-$name" --accept-routes "$@" 2>&1; echo "$?" >"$copy.rc"; } | tee -a "$copy"
+    rc=$(cat "$copy.rc" 2>/dev/null); [ -n "$rc" ] || rc=1
+    rm -f "$copy" "$copy.rc"
+    exit "$rc"
+  fi
   exec "$c" --socket="$s" up --hostname="$h-$name" --accept-routes "$@"
 }
 
