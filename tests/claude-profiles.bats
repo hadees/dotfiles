@@ -287,6 +287,23 @@ make_overlay_cfg() {
   [ ! -e "$HOME/.finicky.ts" ]
 }
 
+@test "dotfiles: works under Claude Code's zsh options (no bare glob qualifiers)" {
+  make_chezmoi_stub
+  # Under NO_BARE_GLOB_QUAL the overlay glob's `(N)` is literal text and
+  # NOMATCH aborted the function after the public apply, so no overlay was
+  # ever applied from such a shell. Same options as tests/tailnet.bats.
+  opts="no_bare_glob_qual no_case_glob glob_star_short no_extended_glob nomatch"
+  run zsh -c "setopt $opts; source '$DOTFUNCTIONS'; dotfiles"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$CHEZMOI_LOG")" = "apply" ]
+  mkdir -p "$BATS_TEST_TMPDIR/src1"
+  make_overlay_cfg one.toml "$BATS_TEST_TMPDIR/src1"
+  : > "$CHEZMOI_LOG"
+  run zsh -c "setopt $opts; source '$DOTFUNCTIONS'; dotfiles"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$CHEZMOI_LOG")" = $'apply\n--config '"$HOME"$'/.config/chezmoi/one.toml source-path\n--config '"$HOME"$'/.config/chezmoi/one.toml apply' ]
+}
+
 @test "dotfiles: no overlay configs means exactly one apply" {
   make_chezmoi_stub
   run zsh -c "source '$DOTFUNCTIONS'; dotfiles"

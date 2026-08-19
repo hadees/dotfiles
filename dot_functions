@@ -198,6 +198,10 @@ function tre() {
 # personal box gets the personal overlay, a work box the work one, a
 # machine used for both gets both.
 function dotfiles() {
+	# The overlay glob needs bare glob qualifiers, which not every shell
+	# sourcing this file has on (Claude Code's Bash tool sets
+	# NO_BARE_GLOB_QUAL, making `(N)` literal and NOMATCH fatal).
+	emulate -L zsh;
 	chezmoi apply "$@" || return;
 	local cfg src;
 	for cfg in ~/.config/chezmoi/*.toml(N); do
