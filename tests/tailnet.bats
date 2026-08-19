@@ -38,6 +38,9 @@ setup() {
   git config --file "$GIT_CONFIG_GLOBAL" tailnet.profile.newbie-account never-installed
   git config --file "$GIT_CONFIG_GLOBAL" tailnet.octo-personal/side-project.profile work
   git config --file "$GIT_CONFIG_GLOBAL" init.defaultBranch main
+  # Alias -> opaque-token pins for open-as (overlay-supplied in real life);
+  # "personal" deliberately has none, to cover the untagged fallback.
+  git config --file "$GIT_CONFIG_GLOBAL" browser.tag.work wk94fjq2x
 
   # Two installed tailnets with live sockets: the system daemon (the app) is
   # on the personal one, so personal hosts go direct and work hosts via the
@@ -60,7 +63,8 @@ setup() {
   export SYSTEMCTL_LOG="$BATS_TEST_TMPDIR/systemctl.log"
   export SSH_LOG="$BATS_TEST_TMPDIR/ssh.log"
   export CURL_LOG="$BATS_TEST_TMPDIR/curl.log"
-  : > "$TS_LOG"; : > "$LAUNCHCTL_LOG"; : > "$SYSTEMCTL_LOG"; : > "$SSH_LOG"; : > "$CURL_LOG"
+  export OPEN_LOG="$BATS_TEST_TMPDIR/open.log"
+  : > "$TS_LOG"; : > "$LAUNCHCTL_LOG"; : > "$SYSTEMCTL_LOG"; : > "$SSH_LOG"; : > "$CURL_LOG"; : > "$OPEN_LOG"
   export FAKE_OS=Darwin
 
   cat > "$BIN/tailscaled" <<'STUB'
@@ -82,7 +86,12 @@ case " $* " in
     fi;;
   *" switch --list "*) printf 'ID    Tailnet          Account\n0001  personal-net     someone@example.com*\n0002  work-net         someone@example.org\n';;
   *" nc "*) echo "NC: $*";;
-  *" up "*) echo "UP: $*";;
+  *" up "*)
+    echo "UP: $*"
+    if [ -n "${FAKE_UP_URL:-}" ]; then
+      printf 'To authenticate, visit:\n\n\t%s\n' "$FAKE_UP_URL"
+      sleep 3
+    fi;;
 esac
 STUB
   cat > "$BIN/launchctl" <<'STUB'
@@ -145,6 +154,13 @@ if [ "$1" = -G ]; then
   exit 0
 fi
 printf '%s\n' "$*" >> "$SSH_LOG"
+if [ -n "${FAKE_SSH_CHECK_URL:-}" ]; then
+  # Tailscale SSH check mode: the server banner with the auth URL arrives on
+  # stderr mid-session and the connection waits; the sleep gives the
+  # wrapper's watcher (1s poll) time to see it before ssh "exits".
+  printf '# Tailscale SSH requires an additional check.\n# To authenticate, visit: %s\n' "$FAKE_SSH_CHECK_URL" >&2
+  sleep 3
+fi
 echo "RAN ssh: $*"
 STUB
   cat > "$BIN/scp" <<'STUB'
@@ -162,9 +178,16 @@ STUB
 printf '%s\n' "$*" >> "$CURL_LOG"
 echo "RAN curl: $*"
 STUB
+  # `open` records instead of opening (shadows the real /usr/bin/open on
+  # macOS — the tests must never reach a browser).
+  cat > "$BIN/open" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$OPEN_LOG"
+STUB
   chmod +x "$BIN"/*
   cp "$BATS_TEST_DIRNAME/../bin/executable_tailnet" "$BIN/tailnet"
-  chmod +x "$BIN/tailnet"
+  cp "$BATS_TEST_DIRNAME/../bin/executable_open-as" "$BIN/open-as"
+  chmod +x "$BIN/tailnet" "$BIN/open-as"
   TAILNET_BIN="$BIN/tailnet"
   export PATH="$BIN:$PATH"
 }
@@ -582,6 +605,57 @@ CLAUDE_CODE_OPTS="no_bare_glob_qual no_case_glob glob_star_short no_extended_glo
   [ "$output" = "RAN ssh: -o ProxyCommand=$TAILNET_BIN nc work %h %p 10.9.8.7" ]
   in_repo "$repo" "TAILNET=personal ssh 10.9.8.7"
   [ "$output" = "RAN ssh: 10.9.8.7" ]
+}
+
+# --- open-as: auth URLs to the right browser profile ------------------------
+# Some URLs are identical no matter which account they authenticate
+# (Tailscale auth/check links), so the tool that knows whose they are tags
+# them with an opaque #token (browser.tag.<alias> in git config) for the
+# link router. The `open` stub records instead of opening.
+
+@test "open-as: appends the pinned opaque token as a fragment and opens" {
+  run open-as work https://device.oauth.example/activate
+  [ "$status" -eq 0 ]
+  [ "$output" = "" ]
+  [ "$(cat "$OPEN_LOG")" = "https://device.oauth.example/activate#wk94fjq2x" ]
+}
+
+@test "open-as: an alias with no pin opens untagged and says so; bad usage errors out" {
+  run open-as personal https://device.oauth.example/activate
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no browser.tag.personal pin"* ]]
+  [ "$(cat "$OPEN_LOG")" = "https://device.oauth.example/activate" ]
+  run open-as 'bad alias' https://x.example/
+  [ "$status" -eq 2 ]
+  run open-as lonely-alias
+  [ "$status" -eq 2 ]
+  # Neither error opened anything beyond the first (untagged) open.
+  [ "$(wc -l < "$OPEN_LOG")" -eq 1 ]
+}
+
+@test "ssh: a Tailscale SSH check-mode URL on stderr is auto-opened, tagged for the tailnet's profile" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  FAKE_SSH_CHECK_URL=https://login.tailscale.com/a/def456 in_repo "$repo" ssh workbox hostname
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"RAN ssh: -o ProxyCommand=$TAILNET_BIN nc work %h %p workbox hostname"* ]]
+  [[ "$output" == *"additional check"* ]]
+  [ "$(cat "$OPEN_LOG")" = "https://login.tailscale.com/a/def456#wk94fjq2x" ]
+}
+
+@test "ssh: the check watcher failing to set up never blocks the command" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  TMPDIR=/nonexistent-tailnet-test in_repo "$repo" ssh workbox hostname
+  [ "$status" -eq 0 ]
+  [ "$output" = "RAN ssh: -o ProxyCommand=$TAILNET_BIN nc work %h %p workbox hostname" ]
+  [ ! -s "$OPEN_LOG" ]
+}
+
+@test "tailnet up: an auth URL in the output is auto-opened, tagged; output and status untouched" {
+  FAKE_UP_URL=https://login.tailscale.com/a/ghi789 run tailnet up work
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "UP: --socket=$STATE/work/tailscaled.sock up --hostname=testbox-work --accept-routes" ]
+  [[ "$output" == *"To authenticate, visit:"* ]]
+  [ "$(cat "$OPEN_LOG")" = "https://login.tailscale.com/a/ghi789#wk94fjq2x" ]
 }
 
 @test "scp/sftp: the remote operand is found (user@host:path, -P, URLs); local colons are not remote" {

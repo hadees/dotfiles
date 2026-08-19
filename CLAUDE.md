@@ -379,6 +379,21 @@ with `NO_BARE_GLOB_QUAL`, where a bare `(N)` qualifier is literal and the
 glob in `tailnet_active` aborted every wrapped curl/ssh in the session,
 localhost included, the day the first tailnet was installed.
 
+Tailnet auth URLs — the `up` login link, Tailscale SSH's check-mode link —
+are identical for every tailnet, so no URL rule can route them to the right
+browser profile; the tooling that printed them knows, and opens them itself
+via `bin/open-as <alias> <url>`: it appends an opaque token from
+machine-local git config (`browser.tag.<alias>`, overlay-supplied; tailnet
+names double as aliases) as a `#fragment` — never sent to the server, and
+random so the page's scripts learn nothing — and the Finicky overlay
+fragments map token → profile (`tagged(<token>)` in lib.ts,
+host-independent: any tool with an account-ambiguous auth URL can use the
+same trick). `tailnet up` and the wrapped ssh/scp/sftp watch their own
+output for the URL (stderr streams byte-for-byte through `tee` into a copy
+a disowned watcher greps, so prompts and progress meters survive) and fail
+open: no open-as, no pin, or no tempdir and the URL simply stays a printed
+line, the command untouched.
+
 Once per machine: `tailnet install <name> && tailnet up <name>` per tailnet
 (browser login as that account; approve the device in its admin console),
 overlays supply the mappings. Tests: `tests/tailnet.bats` (stub
