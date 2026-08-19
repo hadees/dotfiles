@@ -1,0 +1,52 @@
+#!/bin/sh
+# open-as — open a URL so the link router (Finicky) sends it to a specific
+# browser profile, named by an alias:
+#
+#   open-as <alias> <url>
+#
+# The trick: some URLs are identical no matter which account they will
+# authenticate (login.tailscale.com auth links, OAuth device-code pages, …),
+# so no URL rule can route them — but whatever printed the URL usually knows
+# whose it is. This script appends an opaque token as a #fragment and opens
+# the result; the router's overlay fragments map that token to a browser
+# profile (`tagged(<token>)` in ~/.config/finicky/lib.ts). A fragment is
+# never sent to the server — the page arrives untouched — and the token is
+# random, so the page's own scripts learn nothing from location.hash either.
+#
+# The alias -> token pin is machine-local git config, supplied by the private
+# overlays (nothing here names a profile):
+#
+#   git config --global browser.tag.<alias> <token>
+#
+# Token convention: random lowercase [a-z0-9] plus the standard suffix "q2x"
+# — itself chosen to look random, so the whole fragment reads as nonsense
+# (no word like "token", no profile name) while we can still spot our own
+# tags in logs. Mint one with:
+#
+#   printf '%sq2x\n' "$(LC_ALL=C tr -dc a-z0-9 < /dev/urandom | head -c 8)"
+#
+# Aliases are whatever the overlays choose — the tailnet tooling calls
+# `open-as <tailnet-name> <url>` for its auth URLs, so tailnet names double
+# as aliases; any other tool can do the same with its own. An alias with no
+# pin still opens the URL, untagged (the router's default handling applies) —
+# opening is the point, routing is an optimization — but says so on stderr.
+# With no GUI opener at all the URL is printed instead of opened.
+set -u
+
+[ $# -eq 2 ] || { printf 'usage: open-as <alias> <url>\n' >&2; exit 2; }
+alias=$1 url=$2
+
+case $alias in
+  ''|*[!A-Za-z0-9_-]*) printf 'open-as: invalid alias %s (letters, digits, - and _)\n' "$alias" >&2; exit 2;;
+esac
+
+token=$(git config --get "browser.tag.$alias" 2>/dev/null) || token=
+if [ -n "$token" ]; then
+  url="$url#$token"
+else
+  printf 'open-as: no browser.tag.%s pin in git config; opening untagged\n' "$alias" >&2
+fi
+
+if command -v open >/dev/null 2>&1; then exec open "$url"
+elif command -v xdg-open >/dev/null 2>&1; then exec xdg-open "$url"
+else printf '%s\n' "$url"; fi
