@@ -999,7 +999,7 @@ function curl() {
 # curl-based programs — go through that tailnet's daemon too. Runs in this
 # shell, so the wrappers apply and functions/aliases work.
 function tailnet-as() {
-	local name names url;
+	local req name names url;
 	names="$(command tailnet names 2>/dev/null)";
 	[[ -n $names ]] || names="<none installed — tailnet install <name>>";
 	if (( $# < 2 )); then
@@ -1008,10 +1008,10 @@ function tailnet-as() {
 		print -ru2 -- "$names";
 		return 1;
 	fi;
-	name=$1;
+	req=$1;
 	shift;
-	if ! name="$(TAILNET=$name tailnet_for_cwd 2>/dev/null)"; then
-		print -ru2 -- "tailnet-as: unknown tailnet '$1'";
+	if ! name="$(TAILNET=$req tailnet_for_cwd 2>/dev/null)"; then
+		print -ru2 -- "tailnet-as: unknown tailnet '$req'";
 		print -ru2 -- "installed tailnets:";
 		print -ru2 -- "$names";
 		return 1;
@@ -1028,6 +1028,7 @@ function tailnet-as() {
 # and asks the daemons for status; never routes anything.
 function tailnet-doctor() {
 	local root n origin slug acct repopin map prefer host verdict;
+	local -a pref;
 	print -r -- "wrapper: $(whence -w ssh) / $(whence -w curl)";
 	if (( $+commands[tailnet] )); then
 		print -r -- "script:  ${commands[tailnet]}";
@@ -1071,15 +1072,17 @@ function tailnet-doctor() {
 		print -r -- "mapping: <none>";
 	fi;
 	print -r -- "env:     TAILNET=${TAILNET-<unset>}";
-	if prefer="$(tailnet_for_cwd 2>/dev/null)"; then
+	if prefer="$(tailnet_for_cwd 2>/dev/null)" && tailnet_installed "$prefer"; then
 		if [[ -n $TAILNET ]]; then
 			print -r -- "wants:   $prefer (forced via TAILNET — node check skipped)";
 		else
 			print -r -- "wants:   $prefer first, then the other installed tailnets";
 		fi;
 	else
+		# The mapping names something no daemon was installed for (the
+		# wrappers skip it and try the rest), or nothing is mapped at all.
+		n="${prefer:-${repopin:-$map}}";
 		prefer="";
-		n="${repopin:-$map}";
 		if [[ -n $n ]] && ! tailnet_installed "$n"; then
 			print -r -- "wants:   $n — NOT INSTALLED — run: tailnet install $n && tailnet up $n";
 		else
@@ -1093,10 +1096,13 @@ function tailnet-doctor() {
 		elif [[ -z $TAILNET ]] && ! tailnet_hostish "$host"; then
 			verdict="direct (shape cannot be a tailnet node; no daemon asked)";
 		else
+			# Empty verdict + exit 0 from the script means "a node of the
+			# system tailnet"; exit 1 means a node of nothing.
+			[[ -n $prefer ]] && pref=(--prefer "$prefer");
 			n="$(tailnet_route "$host")";
 			if [[ -n $n ]]; then
 				verdict="via $n (ProxyCommand=${commands[tailnet]} nc $n %h %p; curl --proxy $(command tailnet proxy-url "$n" 2>/dev/null))";
-			elif [[ -n $TAILNET ]] || command tailnet route ${prefer:+--prefer "$prefer"} -- "$host" >/dev/null 2>&1; then
+			elif [[ -n $TAILNET ]] || command tailnet route "${pref[@]}" -- "$host" >/dev/null 2>&1; then
 				verdict="direct (a node of the tailnet the app is on)";
 			else
 				verdict="direct (a node of no installed tailnet)";
