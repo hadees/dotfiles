@@ -12,7 +12,7 @@ work conventions — no Conventional Commits prefixes, no emoji anchors.
 
 - Branch name shape: `<type>/<descriptive-slug>` — e.g. `feat/claude-code-profiles`,
   `chore/split-identity-to-private-overlay`, `fix/gitconfig-https-work-identity`.
-- Trivial one-file tweaks may commit directly to `master` when the repo's
+- Trivial one-file tweaks may commit directly to `main` when the repo's
   history shows that pattern; anything with more than one moving part gets a
   branch and PR, even when self-merged — the PR is the record of the work.
 - Merge with a merge commit and clean up: `gh pr merge <N> --merge --delete-branch`.
@@ -43,7 +43,7 @@ the moved files, so `git log --follow` stays clean.
 ## Force-push safely
 
 On feature branches use `git push --force-with-lease --force-if-includes`,
-never bare `--force`. Never force-push `master`.
+never bare `--force`. Never force-push `main`.
 
 ## Tests ride with the change
 
