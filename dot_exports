@@ -39,9 +39,18 @@ fi
 # Homebrew preferences. -gU, not -U: a bare typeset localizes (and empties)
 # path/PATH when this file is sourced from inside a function, e.g. via
 # bootstrap.sh's doIt.
+#
+# Homebrew's bin AND sbin go first (what `brew shellenv` does). Apple's
+# path_helper only appends /opt/homebrew/bin, after /usr/bin and /bin, so
+# without this every Homebrew tool that macOS also ships — bash, git, ssh,
+# curl, python3, vim, openssl — is shadowed by the system copy. The visible
+# casualty was bats: its `#!/usr/bin/env bash` picked /bin/bash 3.2, under
+# which a failing `[[ ]]` that is not a test's last command is silently
+# ignored, so the whole suite ran with inert assertions (tests/shell.bats
+# now refuses bash < 4).
 typeset -gU path PATH
 if (( $+commands[brew] )); then
-	path=("$(brew --prefix)/sbin" $path)
+	path=("$(brew --prefix)/bin" "$(brew --prefix)/sbin" $path)
 fi
 export PATH
 export HOMEBREW_CASK_OPTS='--appdir=/Applications'

@@ -63,9 +63,10 @@ bats tests/bootstrap.bats
 
 `bats` must run under **bash ≥ 4**: macOS's `/bin/bash` 3.2 does not fail a
 test on a failing `[[ ]]` unless it is the test's last command, so mid-test
-assertions are silently skipped. `tests/shell.bats` refuses to run under it;
-put Homebrew's bash first (`PATH="$(brew --prefix)/bin:$PATH" bats tests`),
-which is what CI's macOS runner has.
+assertions are silently skipped. `tests/shell.bats` refuses to run under it.
+A shell that sourced `.exports` already has Homebrew's `bin` first on PATH
+(so its bash 5 wins), and CI's macOS job does the same; elsewhere use
+`PATH="$(brew --prefix)/bin:$PATH" bats tests`.
 
 To *run* the dotfiles rather than test them — render a machine class into a
 sandbox `$HOME`, drive the resulting zsh (prompt, wrappers, doctors) one-shot
