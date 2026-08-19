@@ -391,6 +391,7 @@ STUB
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; wrangler-doctor"
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: wrangler: function"* ]]
+  [[ "$output" == *"defined: ok (8 helpers)"* ]]
   [[ "$output" == *"binary:  $BATS_TEST_TMPDIR/bin/wrangler"* ]]
   [[ "$output" != *"repo-local"* ]]
   [[ "$output" == *"account: personal-account"* ]]
@@ -402,6 +403,9 @@ STUB
   [[ "$output" == *"uses:    default (no binding covers this directory)"* ]]
   # The doctor only reads; it must never invoke wrangler.
   [ ! -s "$WRANGLER_LOG" ]
+  # A dropped helper is named up front.
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; unfunction wrangler_bind; wrangler-doctor 2>/dev/null"
+  [[ "$output" == *"defined: MISSING wrangler_bind — "* ]]
 }
 
 @test "wrangler-doctor: reports an existing binding, incl. from a subdirectory, and never prints tokens" {

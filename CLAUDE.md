@@ -307,7 +307,21 @@ wrapper. Consequences:
   selects for the cwd (or "not installed under the selected node"), and the
   version read off the install without executing it (npm `package.json`,
   cask/native path segment). `doctor` runs all five (git, gh, claude,
-  wrangler, tailnet).
+  wrangler, tailnet). Every doctor also opens with a `defined:` line — are
+  the helpers its wrapper (and the doctor itself) call actually defined in
+  this shell — printed before any line that depends on one, because a
+  missing helper makes a doctor misreport confidently (`account: <no pin
+  matched>`) rather than fail; Claude Code's shell snapshot has dropped
+  functions silently before. The lists are checked against the function
+  bodies by `tests/git-doctor.bats`, so they cannot go stale.
+  `tailnet-doctor` adds `helpers:` — it runs the wrappers' real decision
+  path on a loopback URL and a host no tailnet has and reports the first
+  thing that goes wrong; the wrappers fail open, so a broken helper is
+  silent there and this is where it shows. `doctor` itself opens with a
+  `shell:` line — zsh version, `under Claude Code` when its Bash tool is
+  the caller, and the calling shell's non-default pattern/glob options —
+  read before any `emulate`, so a pasted transcript says which shell it
+  came from.
 
 ### Tailnets (two Tailscale networks at once)
 
@@ -353,7 +367,17 @@ argument. `TAILNET` forces its tailnet with the node check skipped (subnet
 routes the daemons can't vouch for); `tailnet-as <name> <cmd…>` does that and
 exports `ALL_PROXY`/`HTTP(S)_PROXY`/`NO_PROXY` so any proxy-aware tool
 follows. `tailnet-doctor [host]` traces all of it. Without the script or an
-installed tailnet the wrappers are plain passthroughs.
+installed tailnet the wrappers are plain passthroughs. Order and failure
+mode are deliberate: the wrappers decide by host **shape first** (a pure
+string check, before the state dir or any daemon is looked at), and the
+whole routing decision runs in a subshell (`tailnet_exec` →
+`tailnet_for_cmd`), so a broken helper leaves the command running direct —
+routing is an optimization, the command is the point. Every tailnet
+function starts with `emulate -L zsh` because not every shell sourcing
+`.functions` has the interactive options: Claude Code's Bash tool runs zsh
+with `NO_BARE_GLOB_QUAL`, where a bare `(N)` qualifier is literal and the
+glob in `tailnet_active` aborted every wrapped curl/ssh in the session,
+localhost included, the day the first tailnet was installed.
 
 Once per machine: `tailnet install <name> && tailnet up <name>` per tailnet
 (browser login as that account; approve the device in its admin console),
