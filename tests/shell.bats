@@ -72,7 +72,10 @@ setup() {
   mkdir -p "$fake/bin" "$fake/sbin" "$BATS_TEST_TMPDIR/stub"
   printf '#!/bin/sh\necho "%s"\n' "$fake" > "$BATS_TEST_TMPDIR/stub/brew"
   chmod +x "$BATS_TEST_TMPDIR/stub/brew"
-  run zsh -c "export PATH='$BATS_TEST_TMPDIR/stub:/usr/bin:/bin'; source dot_exports; print -r -- \$PATH"
+  # stderr is dropped: dot_exports sets LC_ALL=en_US.UTF-8, and on a box
+  # without that locale (the Rocky container) the brew subshell then warns
+  # about it, which `run` would fold into $output ahead of the PATH line.
+  run zsh -c "export PATH='$BATS_TEST_TMPDIR/stub:/usr/bin:/bin'; source dot_exports 2>/dev/null; print -r -- \$PATH"
   [ "$status" -eq 0 ]
   [[ "$output" == "$fake/bin:$fake/sbin:"* ]]
   [[ "$output" == *":/usr/bin:/bin"* ]]
