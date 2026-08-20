@@ -23,5 +23,9 @@ git-delta
 git-filter-repo
 git-lfs
 xclip
+whois
+jc
+gallery-dl
 # lazygit and k9s are not in Ubuntu's repos — install manually if wanted
+# actionlint, cloudflared, and countdown are not in Ubuntu's repos either — install manually if wanted
 # tailscale is not in Ubuntu's repos either (needs pkgs.tailscale.com's apt source) — install manually; bin/tailnet's userspace daemons need its tailscaled

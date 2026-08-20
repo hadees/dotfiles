@@ -1,5 +1,6 @@
 
 brew 'ack' # a tool like grep, optimized for programmers
+brew 'actionlint' # Static checker for GitHub Actions workflow files
 brew 'asdf' # multi-language version manager (ruby, node, python, etc.)
 brew 'aircrack-ng' # a complete suite of tools to assess WiFi network security.
 brew 'ansible' # Radically simple IT automation
@@ -14,7 +15,9 @@ brew 'bfg' # Removes large or troublesome blobs like git-filter-branch does, but
 brew 'binutils' # The GNU Binutils are a collection of binary tools
 brew 'chezmoi' # manage your dotfiles across multiple diverse machines, securely
 brew 'cifer' # Work on automating classical cipher cracking in C.
+brew 'cloudflared' # Cloudflare Tunnel client
 brew 'coreutils' # The GNU Core Utilities are the basic file, shell and text manipulation utilities of the GNU operating system.
+brew 'countdown' # Terminal countdown timer
 brew 'curl'
 brew 'delta' # Better git diffs with syntax highlighting
 brew 'direnv' # Per-directory environment variable loading
@@ -27,6 +30,7 @@ brew 'findutils' # The GNU Find Utilities are the basic directory searching util
 brew 'foremost' # a console program to recover files based on their headers, footers, and internal data structures.
 brew 'freetype' # a freely available software library to render fonts.
 brew 'fzf' # Command-line fuzzy finder
+brew 'gallery-dl' # Command-line downloader for image-hosting site galleries and collections
 brew 'gcc' # The GNU Compiler Collection includes front ends for C, C++, Objective-C, Fortran, Ada, and Go, as well as libraries for these languages (libstdc++,...)
 brew 'gh' # GitHub CLI — the official GitHub command-line tool.
 brew 'git' # a free and open source distributed version control system designed to handle everything from small to very large projects with speed and efficiency.
@@ -39,6 +43,7 @@ brew 'gnu-sed' # sed (stream editor) is a non-interactive command-line text edit
 brew 'grep' # searches one or more input files for lines containing a match to a specified pattern.
 brew 'heroku' # a tool for creating and managing Heroku apps from the command line / shell of various operating systems.
 brew 'imagemagick'
+brew 'jc' # Serializes the output of command-line tools to structured JSON
 brew 'john' # John the Ripper password cracker
 brew 'jpeg' # Image manipulation library
 brew 'jq' # Lightweight JSON processor
@@ -93,7 +98,7 @@ brew 'ruby-build' # Install various Ruby versions and implementations
 brew 'scrcpy' # Display and control Android devices over USB or TCP/IP
 brew 'screen' # a full-screen window manager that multiplexes a physical terminal between several processes, typically interactive shells.
 brew 'socat' # netcat on steroids
-brew 'speedtest_cli' # Command-line interface for https://speedtest.net bandwidth tests
+brew 'speedtest-cli' # Command-line interface for https://speedtest.net bandwidth tests
 brew 'sqlite' # Command-line interface for SQLite
 brew 'sqlmap' # Penetration testing for SQL injection and database servers
 brew 'ssdeep' # Recursive piecewise hashing tool
@@ -103,6 +108,7 @@ brew 'tcpflow' # TCP flow recorder
 brew 'tcpreplay' # Replay saved tcpdump files at arbitrary speeds
 brew 'terminal-notifier'
 brew 'testssl' # Tool which checks for the support of TLS/SSL ciphers and flaws
+brew 'tmux' # Terminal multiplexer — dot_tmux.conf is deployed and the run-dotfiles skill drives sessions under it
 brew 'tor' # Anonymizing overlay network for TCP
 brew 'tree' # Display directories as trees (with optional color/HTML output)
 brew 'ucspi-tcp' # Tools for building TCP client-server applications
@@ -112,6 +118,7 @@ brew 'vim' # Vi 'workalike' with many additional features
 brew 'webkit2png' # Create screenshots of webpages from the terminal
 brew 'webp' # Image format providing lossless and lossy compression for web images
 brew 'wget' # for retrieving files using HTTP, HTTPS, FTP and FTPS the most widely-used Internet protocols.
+brew 'whois' # Lookup tool for domain names and other internet resources
 brew 'x264' # H.264/AVC encoder
 brew 'xvid' # High-performance, high-quality MPEG-4 video library
 brew 'xz' # General-purpose data compression with high compression ratio
@@ -133,7 +140,9 @@ cask 'airserver'
 cask 'alfred'
 cask 'android-commandlinetools' # Android SDK command-line tools
 cask 'android-platform-tools'
+cask 'androidtool' # Screen recording and app installs for connected Android/iOS devices
 cask 'anki'
+cask 'antigravity' # Google Antigravity — agentic AI IDE
 cask 'balenaetcher' # Flash OS images to SD cards and USB drives
 cask 'bartender'
 cask 'caffeine'
@@ -159,18 +168,24 @@ cask 'font-source-code-pro'
 cask 'font-source-code-pro-for-powerline'
 cask 'forklift'
 cask 'gcloud-cli' # Google Cloud SDK and CLI tools
+cask 'ghostty' # GPU-accelerated terminal emulator with platform-native UI
 cask 'github' # GitHub Desktop
 cask 'finicky' # URL router set as the default browser: routes links to the right browser / Chrome profile (rules: ~/.finicky.ts + overlay fragments)
 cask 'google-chrome'
 cask 'google-drive'
 cask 'gpg-suite'
+cask 'hakuneko' # Manga and anime downloader
 cask 'handbrake-app'
 cask 'hazel'
+cask 'hermes-desktop' # Hermes Agent — open-source desktop AI agent
+cask 'huggingchat' # Chat client for models on Hugging Face
 cask 'imageoptim'
 cask 'inkscape'
 cask 'istat-menus'
 cask 'iterm2'
+cask 'jdiskreport' # Disk usage visualizer
 cask 'kaleidoscope'
+cask 'keyboardcleantool' # Blocks all keyboard/Touch Bar input while cleaning
 cask 'libreoffice'
 cask 'little-snitch'
 cask 'lm-studio' # GUI for running local LLMs
@@ -182,6 +197,7 @@ cask 'namechanger'
 cask 'neardrop' # AirDrop-like sharing with nearby Android and Windows devices (needs one-time: brew trust grishka/grishka)
 cask 'ngrok'
 cask 'nzbvortex'
+cask 'obsidian' # Knowledge base on top of a local folder of Markdown files
 cask 'openaudible' # Audible audiobook manager and converter
 cask 'opera'
 cask 'plex' # Plex media player
@@ -198,13 +214,14 @@ cask 'quickjson'
 cask 'quicklook-csv'
 cask 'quicklook-video'
 cask 'quicklookase'
+cask 'raspberry-pi-imager' # Flash operating system images to microSD cards
 cask 'shimo'
 cask 'simple-comic'
 cask 'simplenote'
 cask 'slack'
 cask 'snagit'
 cask 'sourcetree'
-cask 'spark-app'
+cask 'readdle-spark' # Spark email client (the 'spark-app' cask is an unrelated shortcut manager)
 cask 'spotify'
 cask 'steam'
 cask 'suspicious-package'
@@ -224,8 +241,11 @@ cask 'xscreensaver'
 mas 'DaVinci Resolve', id: 571213070
 mas 'Ethernet Status', id: 1186187538
 mas 'Folder Preview', id: 6698876601
+mas 'Keynote', id: 409183694
 mas 'MacDroid', id: 1476545828
 mas 'Magnet', id: 441258766
 mas 'Mp3tag', id: 1532597159
+mas 'Numbers', id: 409203825
+mas 'Pages', id: 409201541
 mas 'Sleepytime', id: 404302586
-mas 'Spark', id: 1176895641
+mas 'Tailscale', id: 1475387142 # Tailscale.app — owns the system tailnet; bin/tailnet's userspace daemons run beside it
