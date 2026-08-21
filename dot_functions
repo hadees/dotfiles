@@ -470,38 +470,123 @@ function claude-doctor() {
 
 # The Hermes harness (NousResearch/hermes-agent) keeps per-agent state in
 # profiles (`hermes profile create <name>` — each its own HERMES_HOME with its
-# own config, approval rules, and memory). A repo that must only ever run
-# Hermes under a hardened profile pins that in its own .git/config
+# own config, approval rules, memory, and .env keys). A repo that must only
+# ever run Hermes under a hardened profile pins that in its own .git/config
 # (machine-local, so a fresh clone re-pins deliberately):
 #
-#   git config hermes.profile <name>        # route `hermes` through -p <name>
-#   git config hermes.launcher <repo-path>  # optional: exec this script instead
+#   git config hermes.profile <name>   # route `hermes` through -p <name>
+#   git config hermes.model <model>    # optional: also append --model <model>
 #
-# The launcher (a path relative to the repo root, e.g. a bin/ script that goes
-# through `ollama launch`) outranks the profile pin when both are set — a repo
-# whose launch needs more than a flag owns the whole command line — and a
-# pinned-but-missing launcher is an error, never a fallback to the default
-# profile (same stance as wrangler(): an explicit pin must not silently run as
-# something else). Unpinned directories run hermes untouched. This is routing,
-# not a sandbox: `command hermes` still bypasses it.
+# In a pinned repo an explicit -p/--profile naming a *different* profile is a
+# loud error, never an override (same stance as claude-as/wrangler: an
+# explicit pin must not silently run as something else). It was never a
+# working override anyway: hermes' pre-argparse scanner honours the first
+# -p it sees and the leftover second flag then dies as an argparse usage
+# error. Naming the pinned profile explicitly is a harmless no-op, and
+# `command hermes` stays the bypass — this is routing, not a sandbox.
+# `hermes.model` covers the light case (same profile, memory, and keys —
+# different LLM, CLI args outrank config); full isolation is a profile per
+# purpose, whose own config/.env carry that provider. The old
+# hermes.launcher pin is retired (with the server handling below its only
+# remaining job was -p); a lingering one is refused with the migration
+# printed, never silently ignored. Unpinned directories pass through, flags
+# untouched. The arg scan stops at `--` and at `--args` (`mcp add --args`
+# is child-command passthrough, mirroring hermes itself) and mirrors
+# hermes' profile-name check so a non-name value (pytest's `-p no:xdist`)
+# is never mistaken for a profile.
+#
+# Most profiles here point model.base_url at a local Ollama server, and
+# hermes only ever speaks HTTP to that URL — nothing in it starts the
+# server (that was `ollama launch`'s only real job). So before launching,
+# the wrapper reads the effective profile's config.yaml and, only when
+# model.provider is ollama-ish AND base_url is loopback, probes the port
+# and starts `ollama serve` disowned (with a bounded readiness wait) when
+# nothing answers. A cloud profile (Anthropic/OpenAI/OpenRouter, or a LAN
+# ollama) never waits on or spawns anything. Every failure here warns and
+# falls open — hermes prints the real connection error; launching is the
+# point. The config lookup mirrors hermes' own resolution approximately
+# (explicit flag > pin > profile-dir HERMES_HOME > sticky active_profile >
+# root) and skips the probe when no config is readable.
+function hermes_ensure_ollama() {
+	emulate -L zsh;
+	local cfg=$1 block provider base hostport i;
+	[[ -r $cfg ]] || return 0;
+	block="$(command awk '/^model:/{f=1;next} f&&/^[^[:space:]]/{exit} f' "$cfg" 2>/dev/null)";
+	provider="$(print -r -- "$block" | command sed -n 's/^[[:space:]]*provider:[[:space:]]*//p' | command head -n1)";
+	base="$(print -r -- "$block" | command sed -n 's/^[[:space:]]*base_url:[[:space:]]*//p' | command head -n1)";
+	[[ $provider == *ollama* ]] || return 0;
+	[[ -n $base ]] || base="http://127.0.0.1:11434/v1";
+	[[ $base == http://127.0.0.1:* || $base == http://localhost:* ]] || return 0;
+	hostport="${${base#http://}%%/*}";
+	command curl -sf -m 1 -o /dev/null "http://$hostport/" 2>/dev/null && return 0;
+	if ! command -v ollama >/dev/null 2>&1; then
+		print -ru2 -- "hermes: profile wants a local ollama at $hostport but no ollama is on PATH; launching anyway";
+		return 0;
+	fi;
+	( OLLAMA_HOST="127.0.0.1:${hostport##*:}" command ollama serve >/dev/null 2>&1 & ) 2>/dev/null;
+	for i in {1..50}; do
+		command curl -sf -m 1 -o /dev/null "http://$hostport/" 2>/dev/null && return 0;
+		command sleep 0.2;
+	done;
+	print -ru2 -- "hermes: started 'ollama serve' but $hostport never answered; launching anyway";
+	return 0;
+}
 function hermes() {
-	local launcher root profile;
+	emulate -L zsh;
+	local launcher pin model a uprofile='' uflag='' umodel=0 eff='' active cfg;
+	local -a args inject;
 	launcher="$(command git config --get hermes.launcher 2>/dev/null)";
 	if [[ -n $launcher ]]; then
-		root="$(command git rev-parse --show-toplevel 2>/dev/null)";
-		if [[ -n $root && -x "$root/$launcher" ]]; then
-			"$root/$launcher" "$@";
-			return;
-		fi;
-		print -ru2 -- "hermes: pinned launcher '$launcher' missing or not executable under ${root:-<no repo root>}; refusing to fall back to the default profile";
+		print -ru2 -- "hermes: the hermes.launcher pin is retired — pin the profile instead:";
+		print -ru2 -- "  git config --unset hermes.launcher";
+		print -ru2 -- "  git config hermes.profile <name>";
 		return 1;
 	fi;
-	profile="$(command git config --get hermes.profile 2>/dev/null)";
-	if [[ -n $profile ]]; then
-		command hermes -p "$profile" "$@";
-		return;
+	pin="$(command git config --get hermes.profile 2>/dev/null)";
+	model="$(command git config --get hermes.model 2>/dev/null)";
+	args=("$@");
+	local i=1 n=$#args;
+	while (( i <= n )); do
+		a=${args[i]};
+		case $a in
+			--|--args) break ;;
+			-p|--profile)
+				if [[ -z $uflag ]] && (( i < n )) \
+					&& [[ ${args[i+1]} =~ '^[a-z0-9][a-z0-9_-]{0,63}$' ]]; then
+					uprofile=${args[i+1]}; uflag=$a;
+				fi;
+				(( i++ )) ;;
+			--profile=*)
+				[[ -z $uflag ]] && { uprofile=${a#--profile=}; uflag='--profile'; } ;;
+			-m|--model) umodel=1; (( i++ )) ;;
+			--model=*) umodel=1 ;;
+		esac;
+		(( i++ ));
+	done;
+	if [[ -n $pin && -n $uprofile && $uprofile != "$pin" ]]; then
+		print -ru2 -- "hermes: this repo is pinned to profile '$pin'; refusing explicit '$uflag $uprofile' (bypass: command hermes)";
+		return 1;
 	fi;
-	command hermes "$@";
+	[[ -n $pin && -z $uflag ]] && inject+=(-p "$pin");
+	[[ -n $model ]] && (( ! umodel )) && inject+=(--model "$model");
+	[[ -n $uprofile ]] && eff=$uprofile;
+	[[ -z $eff ]] && eff=$pin;
+	if [[ -n $eff ]]; then
+		cfg="$HOME/.hermes/profiles/$eff/config.yaml";
+		[[ $eff == default ]] && cfg="$HOME/.hermes/config.yaml";
+	elif [[ -n $HERMES_HOME ]]; then
+		cfg="$HERMES_HOME/config.yaml";
+	else
+		active="";
+		[[ -r $HOME/.hermes/active_profile ]] && active="$(<"$HOME/.hermes/active_profile")";
+		if [[ -n $active && $active != default ]]; then
+			cfg="$HOME/.hermes/profiles/$active/config.yaml";
+		else
+			cfg="$HOME/.hermes/config.yaml";
+		fi;
+	fi;
+	hermes_ensure_ollama "$cfg";
+	command hermes "${inject[@]}" "$@";
 }
 
 # Wrangler (Cloudflare) keeps one OAuth login per *auth profile* — a named

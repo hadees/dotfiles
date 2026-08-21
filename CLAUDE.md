@@ -323,6 +323,34 @@ wrapper. Consequences:
   read before any `emulate`, so a pasted transcript says which shell it
   came from.
 
+### Hermes (per-repo agent profiles)
+
+The Hermes harness (NousResearch/hermes-agent) keeps per-agent state in
+profiles (`hermes profile create <name>` — each its own HERMES_HOME with its
+own config, approval rules, memory, and .env keys). The `hermes()` wrapper
+in `.functions` routes by machine-local per-repo pins: `git config
+hermes.profile <name>` injects `-p <name>`; optional `git config
+hermes.model <model>` appends `--model <model>` (hermes CLI args outrank
+config — same profile/memory/keys, different LLM; full isolation is a
+profile per purpose, whose own config/.env carry that provider). In a
+pinned repo an explicit `-p`/`--profile` naming a *different* profile is a
+loud error, never an override (same stance as claude-as/wrangler; it was
+never a working override anyway — hermes honours the first `-p` and the
+leftover flag dies as an argparse usage error); the pinned name itself is a
+no-op, `command hermes` is the bypass, unpinned directories pass through
+untouched. The retired `hermes.launcher` pin is refused with its migration
+printed, never silently ignored.
+
+Hermes never starts a model server — it only speaks HTTP to the profile's
+`model.base_url` (auto-starting the server was `ollama launch`'s only real
+job). So the wrapper reads the effective profile's `config.yaml` and, only
+when `model.provider` is ollama-ish AND `base_url` is loopback, probes the
+port and starts `ollama serve` disowned with a bounded readiness wait when
+nothing answers; a cloud profile (Anthropic/OpenAI/OpenRouter) or a
+LAN/WireGuard ollama never waits on or spawns anything, and every failure
+warns and falls open — hermes prints the real connection error. Tests:
+`tests/hermes.bats` (stub hermes/ollama/curl; fixture profile names only).
+
 ### Tailnets (two Tailscale networks at once)
 
 Tailscale.app holds several accounts but is *on* one tailnet at a time
