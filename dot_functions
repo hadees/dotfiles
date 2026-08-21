@@ -468,6 +468,42 @@ function claude-doctor() {
 	print -r -- "creds:   $cred";
 }
 
+# The Hermes harness (NousResearch/hermes-agent) keeps per-agent state in
+# profiles (`hermes profile create <name>` — each its own HERMES_HOME with its
+# own config, approval rules, and memory). A repo that must only ever run
+# Hermes under a hardened profile pins that in its own .git/config
+# (machine-local, so a fresh clone re-pins deliberately):
+#
+#   git config hermes.profile <name>        # route `hermes` through -p <name>
+#   git config hermes.launcher <repo-path>  # optional: exec this script instead
+#
+# The launcher (a path relative to the repo root, e.g. a bin/ script that goes
+# through `ollama launch`) outranks the profile pin when both are set — a repo
+# whose launch needs more than a flag owns the whole command line — and a
+# pinned-but-missing launcher is an error, never a fallback to the default
+# profile (same stance as wrangler(): an explicit pin must not silently run as
+# something else). Unpinned directories run hermes untouched. This is routing,
+# not a sandbox: `command hermes` still bypasses it.
+function hermes() {
+	local launcher root profile;
+	launcher="$(command git config --get hermes.launcher 2>/dev/null)";
+	if [[ -n $launcher ]]; then
+		root="$(command git rev-parse --show-toplevel 2>/dev/null)";
+		if [[ -n $root && -x "$root/$launcher" ]]; then
+			"$root/$launcher" "$@";
+			return;
+		fi;
+		print -ru2 -- "hermes: pinned launcher '$launcher' missing or not executable under ${root:-<no repo root>}; refusing to fall back to the default profile";
+		return 1;
+	fi;
+	profile="$(command git config --get hermes.profile 2>/dev/null)";
+	if [[ -n $profile ]]; then
+		command hermes -p "$profile" "$@";
+		return;
+	fi;
+	command hermes "$@";
+}
+
 # Wrangler (Cloudflare) keeps one OAuth login per *auth profile* — a named
 # login created with `wrangler auth create <name>`, plus the unnamed `default`
 # one that `wrangler login` manages. Wrangler picks the profile for a command
@@ -1198,6 +1234,20 @@ function tailnet-doctor() {
 		command tailnet status 2>/dev/null | sed 's/^/  /';
 	else
 		print -r -- "  <no tailnet installed — tailnet install <name> && tailnet up <name>>";
+	fi;
+	# Mounts (tailnet mount): reported only when a tailnet-mount.* key is
+	# configured, so machines without the overlay stay noise-free. The list
+	# body comes from the script itself — single source of truth.
+	if command git config --get-regexp '^tailnet-mount\.' >/dev/null 2>&1; then
+		if (( $+commands[rclone] )); then
+			print -r -- "rclone:  $(bin_trace "${commands[rclone]}")";
+		else
+			print -r -- "rclone:  NOT FOUND — brew install rclone (tailnet mount needs it)";
+		fi;
+		if (( $+commands[tailnet] )); then
+			print -r -- "mounts:";
+			command tailnet mounts 2>/dev/null | sed 's/^/  /';
+		fi;
 	fi;
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
