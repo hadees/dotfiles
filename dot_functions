@@ -1658,9 +1658,11 @@ function update() {
 	command -v uv > /dev/null 2>&1 && uv tool upgrade --all;
 
 	# One password prompt for the rest; keep the sudo timestamp alive
-	# until the updates finish (same pattern as ~/.macos)
+	# until the updates finish (same pattern as ~/.macos). Disowned (&!):
+	# the localoptions above are restored before the shell would report
+	# the trap's kill, so a job-table entry prints "terminated" anyway.
 	sudo -v || return;
-	while true; do sudo -n true; sleep 60; kill -0 $$ 2>/dev/null || exit; done 2>/dev/null &
+	while true; do sudo -n true; sleep 60; kill -0 $$ 2>/dev/null || exit; done 2>/dev/null &!
 	local keepalive_pid=$!;
 	# Expand the PID now: by the time the trap fires the local is gone.
 	trap "kill $keepalive_pid 2>/dev/null" EXIT;
