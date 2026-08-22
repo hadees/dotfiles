@@ -220,6 +220,57 @@ hermes_in() {
   grep -q '^OLLAMA_HOST=127.0.0.1:11500 serve$' "$BATS_TEST_TMPDIR/ollama.log"
 }
 
+@test "hermes-doctor reports pins, profile, config, and a down server — without starting it" {
+  repo=$(make_repo hardened)
+  git -C "$repo" config hermes.model fixture-model
+  make_profile hardened ollama-launch 'http://127.0.0.1:11434/v1'
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; hermes-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"wrapper: hermes: function"* ]]
+  [[ "$output" == *"defined: ok"* ]]
+  [[ "$output" == *"pin:     hardened (hermes.profile)"* ]]
+  [[ "$output" == *"model:   fixture-model (hermes.model"* ]]
+  [[ "$output" == *"profile: hardened (pinned)"* ]]
+  [[ "$output" == *"config:  $HOME/.hermes/profiles/hardened/config.yaml"* ]]
+  [[ "$output" == *"ollama:  DOWN at 127.0.0.1:11434"* ]]
+  # Report-only: the wrapper starts the server, the doctor never does.
+  [ ! -e "$BATS_TEST_TMPDIR/ollama.log" ]
+}
+
+@test "hermes-doctor: running server and cloud provider read correctly" {
+  repo=$(make_repo hardened)
+  make_profile hardened ollama-launch 'http://127.0.0.1:11434/v1'
+  touch "$BATS_TEST_TMPDIR/ollama-up"
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; hermes-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ollama:  listening at 127.0.0.1:11434 (model.provider: ollama-launch)"* ]]
+  make_profile hardened openrouter 'https://example.invalid/api/v1'
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; hermes-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ollama:  not involved (model.provider: openrouter)"* ]]
+}
+
+@test "hermes-doctor calls out a missing profile and a lingering launcher pin" {
+  repo=$(make_repo hardened)
+  git -C "$repo" config hermes.launcher bin/hermes
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; hermes-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"stale:   hermes.launcher='bin/hermes' is RETIRED"* ]]
+  [[ "$output" == *"git config --unset hermes.launcher"* ]]
+  [[ "$output" == *"profile MISSING — run: hermes profile create hardened"* ]]
+}
+
+@test "hermes-doctor: unpinned cwd follows the sticky active_profile" {
+  mkdir -p "$HOME/.hermes"
+  echo side > "$HOME/.hermes/active_profile"
+  make_profile side openrouter 'https://example.invalid/api/v1'
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$BATS_TEST_TMPDIR'; hermes-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pin:     <none"* ]]
+  [[ "$output" == *"profile: side (sticky ~/.hermes/active_profile)"* ]]
+  [[ "$output" == *"config:  $HOME/.hermes/profiles/side/config.yaml"* ]]
+}
+
 @test "works under Claude Code's zsh options (no bare glob qualifiers)" {
   # Same non-default options as tests/tailnet.bats; emulate -L zsh in the
   # wrapper must shield the routing from them.
