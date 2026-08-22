@@ -306,8 +306,8 @@ wrapper. Consequences:
   executable will run, a version-manager shim followed to the install it
   selects for the cwd (or "not installed under the selected node"), and the
   version read off the install without executing it (npm `package.json`,
-  cask/native path segment). `doctor` runs all five (git, gh, claude,
-  wrangler, tailnet). Every doctor also opens with a `defined:` line — are
+  cask/native path segment). `doctor` runs all six (git, gh, claude,
+  wrangler, hermes, tailnet). Every doctor also opens with a `defined:` line — are
   the helpers its wrapper (and the doctor itself) call actually defined in
   this shell — printed before any line that depends on one, because a
   missing helper makes a doctor misreport confidently (`account: <no pin
@@ -348,8 +348,12 @@ when `model.provider` is ollama-ish AND `base_url` is loopback, probes the
 port and starts `ollama serve` disowned with a bounded readiness wait when
 nothing answers; a cloud profile (Anthropic/OpenAI/OpenRouter) or a
 LAN/WireGuard ollama never waits on or spawns anything, and every failure
-warns and falls open — hermes prints the real connection error. Tests:
-`tests/hermes.bats` (stub hermes/ollama/curl; fixture profile names only).
+warns and falls open — hermes prints the real connection error.
+`hermes-doctor` traces all of it for the cwd (pins, effective profile and
+its config via the same helpers the wrapper calls — the two cannot drift —
+and, for a local-ollama profile, whether the server answers) without
+starting anything; `doctor` includes it. Tests: `tests/hermes.bats` (stub
+hermes/ollama/curl; fixture profile names only).
 
 ### Tailnets (two Tailscale networks at once)
 

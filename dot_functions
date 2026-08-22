@@ -507,13 +507,44 @@ function claude-doctor() {
 # point. The config lookup mirrors hermes' own resolution approximately
 # (explicit flag > pin > profile-dir HERMES_HOME > sticky active_profile >
 # root) and skips the probe when no config is readable.
+# Read one key out of a profile config.yaml's top-level model: block —
+# `hermes_model_get <config> <key>`. The awk stops at the next top-level key
+# so a providers: section below never bleeds in. Shared by the wrapper's
+# server check and hermes-doctor so the two read the same answer.
+function hermes_model_get() {
+	emulate -L zsh;
+	local cfg=$1 key=$2;
+	[[ -r $cfg ]] || return 1;
+	command awk '/^model:/{f=1;next} f&&/^[^[:space:]]/{exit} f' "$cfg" 2>/dev/null \
+		| command sed -n "s/^[[:space:]]*$key:[[:space:]]*//p" | command head -n1;
+}
+# The config file the wrapper's server check reads for effective profile $1
+# (may be empty), mirroring hermes' own resolution approximately: profile >
+# HERMES_HOME > sticky active_profile > root config. Extracted so
+# hermes-doctor reports the same path hermes() acts on — the two can never
+# drift.
+function hermes_cfg_path() {
+	emulate -L zsh;
+	local eff=$1 active;
+	if [[ -n $eff ]]; then
+		[[ $eff == default ]] || { print -r -- "$HOME/.hermes/profiles/$eff/config.yaml"; return; };
+	elif [[ -n $HERMES_HOME ]]; then
+		print -r -- "$HERMES_HOME/config.yaml"; return;
+	else
+		active="";
+		[[ -r $HOME/.hermes/active_profile ]] && active="$(<"$HOME/.hermes/active_profile")";
+		if [[ -n $active && $active != default ]]; then
+			print -r -- "$HOME/.hermes/profiles/$active/config.yaml"; return;
+		fi;
+	fi;
+	print -r -- "$HOME/.hermes/config.yaml";
+}
 function hermes_ensure_ollama() {
 	emulate -L zsh;
-	local cfg=$1 block provider base hostport i;
+	local cfg=$1 provider base hostport i;
 	[[ -r $cfg ]] || return 0;
-	block="$(command awk '/^model:/{f=1;next} f&&/^[^[:space:]]/{exit} f' "$cfg" 2>/dev/null)";
-	provider="$(print -r -- "$block" | command sed -n 's/^[[:space:]]*provider:[[:space:]]*//p' | command head -n1)";
-	base="$(print -r -- "$block" | command sed -n 's/^[[:space:]]*base_url:[[:space:]]*//p' | command head -n1)";
+	provider="$(hermes_model_get "$cfg" provider)";
+	base="$(hermes_model_get "$cfg" base_url)";
 	[[ $provider == *ollama* ]] || return 0;
 	[[ -n $base ]] || base="http://127.0.0.1:11434/v1";
 	[[ $base == http://127.0.0.1:* || $base == http://localhost:* ]] || return 0;
@@ -533,7 +564,7 @@ function hermes_ensure_ollama() {
 }
 function hermes() {
 	emulate -L zsh;
-	local launcher pin model a uprofile='' uflag='' umodel=0 eff='' active cfg;
+	local launcher pin model a uprofile='' uflag='' umodel=0 eff='';
 	local -a args inject;
 	launcher="$(command git config --get hermes.launcher 2>/dev/null)";
 	if [[ -n $launcher ]]; then
@@ -571,22 +602,68 @@ function hermes() {
 	[[ -n $model ]] && (( ! umodel )) && inject+=(--model "$model");
 	[[ -n $uprofile ]] && eff=$uprofile;
 	[[ -z $eff ]] && eff=$pin;
-	if [[ -n $eff ]]; then
-		cfg="$HOME/.hermes/profiles/$eff/config.yaml";
-		[[ $eff == default ]] && cfg="$HOME/.hermes/config.yaml";
-	elif [[ -n $HERMES_HOME ]]; then
-		cfg="$HERMES_HOME/config.yaml";
-	else
-		active="";
-		[[ -r $HOME/.hermes/active_profile ]] && active="$(<"$HOME/.hermes/active_profile")";
-		if [[ -n $active && $active != default ]]; then
-			cfg="$HOME/.hermes/profiles/$active/config.yaml";
+	hermes_ensure_ollama "$(hermes_cfg_path "$eff")";
+	command hermes "${inject[@]}" "$@";
+}
+
+# Diagnose what `hermes` would do right here: is the wrapper loaded, which
+# binary runs, which pins apply, the effective profile and its config, and —
+# only when that config wants a local Ollama — whether the server answers.
+# Report-only: unlike the wrapper it never starts `ollama serve`. The config
+# path and the model keys come from the same helpers the wrapper calls, so
+# doctor and wrapper cannot drift. Mirrors gh-/claude-/wrangler-doctor.
+function hermes-doctor() {
+	local pin model launcher eff src cfg provider base hostport bin;
+	print -r -- "wrapper: $(whence -w hermes)";
+	print -r -- "defined: $(defined_trace hermes_cfg_path hermes_model_get hermes_ensure_ollama bin_trace)";
+	print -r -- "binary:  $(bin="$(whence -p hermes)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH')";
+	print -r -- "cwd:     $PWD";
+	launcher="$(command git config --get hermes.launcher 2>/dev/null)";
+	[[ -n $launcher ]] && print -r -- "stale:   hermes.launcher='$launcher' is RETIRED and the wrapper refuses to run — git config --unset hermes.launcher";
+	pin="$(command git config --get hermes.profile 2>/dev/null)";
+	print -r -- "pin:     ${pin:-<none — flags and hermes' own resolution apply>} (hermes.profile)";
+	model="$(command git config --get hermes.model 2>/dev/null)";
+	[[ -n $model ]] && print -r -- "model:   $model (hermes.model — appended as --model; an explicit -m/--model outranks it)";
+	cfg="$(hermes_cfg_path "$pin")";
+	eff=$pin; src="pinned";
+	if [[ -z $pin ]]; then
+		if [[ -n $HERMES_HOME ]]; then
+			src="HERMES_HOME";
+		elif [[ $cfg == */profiles/*/config.yaml ]]; then
+			eff=${${cfg:h}:t}; src="sticky ~/.hermes/active_profile";
 		else
-			cfg="$HOME/.hermes/config.yaml";
+			src="root config";
 		fi;
 	fi;
-	hermes_ensure_ollama "$cfg";
-	command hermes "${inject[@]}" "$@";
+	print -r -- "profile: ${eff:-<none>} ($src)";
+	if [[ -n $eff && $eff != default && ! -d ${cfg:h} ]]; then
+		print -r -- "config:  $cfg (profile MISSING — run: hermes profile create $eff)";
+	elif [[ ! -r $cfg ]]; then
+		print -r -- "config:  $cfg (missing — the wrapper skips the server check)";
+	else
+		print -r -- "config:  $cfg";
+	fi;
+	provider="$(hermes_model_get "$cfg" provider)";
+	base="$(hermes_model_get "$cfg" base_url)";
+	if [[ ! -r $cfg ]]; then
+		print -r -- "ollama:  unknown (no readable config)";
+	elif [[ $provider != *ollama* ]]; then
+		print -r -- "ollama:  not involved (model.provider: ${provider:-<unset>})";
+	else
+		[[ -n $base ]] || base="http://127.0.0.1:11434/v1";
+		if [[ $base != http://127.0.0.1:* && $base != http://localhost:* ]]; then
+			print -r -- "ollama:  $base is not loopback — the wrapper leaves it alone";
+		else
+			hostport="${${base#http://}%%/*}";
+			if command curl -sf -m 1 -o /dev/null "http://$hostport/" 2>/dev/null; then
+				print -r -- "ollama:  listening at $hostport (model.provider: $provider)";
+			elif command -v ollama >/dev/null 2>&1; then
+				print -r -- "ollama:  DOWN at $hostport — the wrapper will start 'ollama serve' at launch";
+			else
+				print -r -- "ollama:  DOWN at $hostport and no ollama on PATH — the wrapper will warn and launch anyway";
+			fi;
+		fi;
+	fi;
 }
 
 # Wrangler (Cloudflare) keeps one OAuth login per *auth profile* — a named
@@ -1624,16 +1701,16 @@ function shell_trace() {
 	print -r -- "zsh $ZSH_VERSION$ia${CLAUDECODE:+, under Claude Code}, options: ${list:-none}${list:+ (the tailnet wrappers reset these with emulate -L zsh)}";
 }
 
-# All five per-repo routing diagnoses for the cwd in one go — git identity,
-# gh account, Claude Code profile, wrangler profile, tailnet routing —
-# headed by the calling shell's version and pattern options (shell_trace;
-# this function must not emulate, see there). First thing to run when a
-# repo "behaves weird" on a machine.
+# All six per-repo routing diagnoses for the cwd in one go — git identity,
+# gh account, Claude Code profile, wrangler profile, hermes profile, tailnet
+# routing — headed by the calling shell's version and pattern options
+# (shell_trace; this function must not emulate, see there). First thing to
+# run when a repo "behaves weird" on a machine.
 function doctor() {
 	local d;
 	print -r -- "shell:   $(shell_trace)";
 	print -r -- "";
-	for d in git gh claude wrangler tailnet; do
+	for d in git gh claude wrangler hermes tailnet; do
 		print -r -- "== $d-doctor";
 		"$d-doctor";
 		print -r -- "";
