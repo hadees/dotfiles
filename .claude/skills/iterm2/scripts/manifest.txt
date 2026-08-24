@@ -1,0 +1,177 @@
+# Machine-checkable facts this skill records about iTerm2.
+#
+# Everything here was read off an installed iTerm.app rather than recalled,
+# and scripts/verify.sh re-reads it the same way. That is the whole point of
+# the file: prose rots silently when the app updates, but a list of names
+# that either are or are not in the bundle cannot.
+#
+# Verbs:
+#   version <v>     the release this skill was researched against
+#   sdef <literal>  substring that must appear in Contents/Resources/iTerm2.sdef
+#   binstr <s>      exact string in the main executable (a defaults key,
+#                   a Dynamic Profile key, a user-visible sentence)
+#   util <name>     executable in Contents/Resources/utilities
+#   info <k> <v>    Info.plist key that must still read exactly <v>
+#   tipcount <n>    how many features iTerm2's own tour (the bundled it2tip)
+#                   lists; the only verb here that notices an ADDITION
+#   bundle <N.app>  sibling app bundle; advisory only, never fails the run
+#
+# Add a fact here the moment you rely on it in a reference file, and delete
+# it when the reference stops claiming it. A fact nobody documents is noise;
+# a claim nothing checks is the failure mode this skill exists to prevent.
+
+version 3.6.11
+
+# --- AppleScript dictionary -------------------------------------------
+# The sdef ships in the bundle and is the dictionary Script Editor shows.
+# Present in full in 3.6.11 despite the documentation calling the
+# AppleScript API deprecated. See references/applescript.md.
+sdef <suite name="Standard Suite"
+sdef <suite name="iTerm2 Suite"
+sdef <class name="application"
+sdef <class name="window"
+sdef <class name="tab"
+sdef <class name="session"
+sdef <command name="create window with profile"
+sdef <command name="create window with default profile"
+sdef <command name="create hotkey window with profile"
+sdef <command name="create tab"
+sdef <command name="create tab with default profile"
+sdef <command name="split vertically"
+sdef <command name="split vertically with default profile"
+sdef <command name="split vertically with same profile"
+sdef <command name="split horizontally"
+sdef <command name="split horizontally with default profile"
+sdef <command name="split horizontally with same profile"
+sdef <command name="variable"
+sdef <command name="set variable"
+sdef <command name="write"
+sdef <command name="select"
+sdef <command name="close"
+sdef <command name="request cookie"
+sdef <command name="launch API script named"
+sdef <command name="invoke API expression"
+sdef <command name="reveal hotkey window"
+sdef <command name="hide hotkey window"
+sdef <command name="toggle hotkey window"
+# Properties the reference files name explicitly, with their four-char codes.
+sdef name="profile name" code="Pfnm"
+sdef name="hotkey window profile" code="hkwp"
+sdef name="is at shell prompt" code="Iaps"
+sdef name="alternate identifier" code="Twid"
+sdef name="answerback string" code="Answ"
+sdef name="unique ID" code="Uniq"
+sdef name="tty" code="Stty"
+
+# --- Dynamic Profile keys ---------------------------------------------
+# See references/dynamic-profiles.md.
+binstr Guid
+binstr Name
+binstr Tags
+binstr Command
+binstr Custom Command
+binstr Working Directory
+binstr Custom Directory
+binstr Initial Text
+binstr Badge Text
+binstr Dynamic Profile Parent Name
+binstr Dynamic Profile Parent GUID
+binstr Dynamic Profile Filename
+binstr Rewritable
+
+# --- Profile keys behind the interactive features ----------------------
+# See references/workflow.md. These are the keys a Dynamic Profile would
+# write to configure Automatic Profile Switching, Smart Selection and
+# Semantic History without touching the UI.
+binstr Bound Hosts
+binstr Prevent Automatic Profile Switching
+binstr Smart Selection Rules
+binstr Semantic History
+binstr Smart Selection Actions Use Interpolated Strings
+binstr Smart Selection Ignoring Newlines
+binstr Smart Selection Playground
+binstr Default Toolbelt Width
+binstr Open Toolbelt
+binstr Codecierge
+binstr Named Marks
+
+# --- SSH Integration ---------------------------------------------------
+# See references/ssh.md.
+binstr sshIntegrationLevel
+binstr sshURLsSupportPath
+binstr Terminal: Command to run when handling an ssh:// URL.
+
+# --- Preference keys ---------------------------------------------------
+# See references/preferences.md.
+binstr LoadPrefsFromCustomFolder
+binstr PrefsCustomFolder
+binstr OpenNoWindowsAtStartup
+binstr OpenArrangementAtStartup
+binstr AlwaysOpenWindowAtStartup
+binstr EnableAPIServer
+binstr CheckTestRelease
+binstr SUEnableAutomaticChecks
+binstr AiModel
+binstr aiProxyUserDefaultsKey
+binstr llmPlatformUserDefaultsKey
+binstr NoSyncMoveOpenAIAPIKeyIntoKeychain
+
+# --- Python API --------------------------------------------------------
+# The cookie the app injects, the header the client sends back, the bundled
+# runtime's directory name, and the administrator escape hatch (the file and
+# the magic string its contents must end with).
+binstr ITERM2_COOKIE
+binstr ITERM2_KEY
+binstr x-iterm2-cookie
+binstr iterm2env
+binstr disable-automation-auth
+binstr 61DF88DC-3423-4823-B725-22570E01C027
+
+# --- Escape-code names the reference files use -------------------------
+binstr SetUserVar
+binstr SetBadgeFormat
+
+# --- The security claim the AI section rests on ------------------------
+# If this sentence ever leaves the binary, re-check where the key is
+# stored before trusting references/ai-plugin.md.
+binstr Enter the API key for your AI provider. The key will be stored securely in the Keychain.
+
+# --- Bundled utilities -------------------------------------------------
+# See references/shell-integration.md. Shell integration installs copies of
+# these into ~/.iterm2; the bundle copies are the authoritative list.
+util imgcat
+util imgls
+util it2api
+util it2attention
+util it2cat
+util it2check
+util it2copy
+util it2dl
+util it2getvar
+util it2git
+util it2profile
+util it2setcolor
+util it2setkeylabel
+util it2ssh
+util it2tip
+util it2ul
+util it2universion
+
+# --- iTerm2's own feature inventory ------------------------------------
+# it2tip is a Python script carrying the app's whole feature tour, one entry
+# per feature, and it grows as the app does. Its length is the only check
+# here that can notice a feature being ADDED rather than removed — every
+# other verb asks whether a name still exists. When this trips, run
+# `.../Contents/Resources/utilities/it2tip` and read what is new.
+tipcount 123
+
+# --- Updater wiring ----------------------------------------------------
+# See references/releases.md. These are iTerm2's own Info.plist keys, not
+# Sparkle's: the app picks one at launch and writes it to the user-defaults
+# SUFeedURL that Sparkle actually reads.
+info SUFeedURLForFinal https://iterm2.com/appcasts/final_modern.xml
+info SUFeedURLForTesting https://iterm2.com/appcasts/testing_modern.xml
+
+# --- Separate bundles since 3.5 ---------------------------------------
+bundle iTermAI.app
+bundle iTermBrowserPlugin.app

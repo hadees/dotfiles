@@ -448,8 +448,8 @@ wrapper. Consequences:
   executable will run, a version-manager shim followed to the install it
   selects for the cwd (or "not installed under the selected node"), and the
   version read off the install without executing it (npm `package.json`,
-  cask/native path segment). `doctor` runs all seven (git, gh, claude,
-  wrangler, hermes, tailnet, workspace). Every doctor also opens with a `defined:` line — are
+  cask/native path segment). `doctor` runs them all (git, gh, claude,
+  wrangler, hermes, tailnet, workspace, iterm2). Every doctor also opens with a `defined:` line — are
   the helpers its wrapper (and the doctor itself) call actually defined in
   this shell — printed before any line that depends on one, because a
   missing helper makes a doctor misreport confidently (`account: <no pin
@@ -685,6 +685,68 @@ Facts that shape the setup:
 
 Not in Ubuntu's repos; on Linux it is a `.deb` from the project's GitHub
 releases, so `packages-apt.txt` only carries a note.
+
+### iTerm2, and the skill that records what it can do
+
+iTerm2 updates itself through Sparkle without asking, so anything written
+about it decays on its own and the only symptom is confident, wrong advice.
+The `.claude/skills/iterm2/` skill exists to make that decay visible instead:
+it is a **version-stamped, machine-checkable record** of one release —
+AppleScript dictionary, Python API and its cookie/socket auth model, Dynamic
+Profiles, shell integration and the `it2*` utilities, triggers, badges, status
+bar, hotkey windows, `tmux -CC`, Automatic Profile Switching, Smart Selection
+and Semantic History, the Toolbelt, SSH Integration and `ssh://` URLs,
+preferences and startup behaviour, the AI plugin and its permission model, and
+how the project ships releases. Every claim was read off the installed bundle
+rather than recalled, and the mechanically checkable part of it — sdef
+commands, Dynamic Profile / APS / Smart Selection / preference key names, the
+bundled utilities, updater `Info.plist` keys — is one fact per line in
+`scripts/manifest.txt`. `scripts/verify.sh` re-reads all of it from the bundle
+and exits non-zero on any drift.
+
+One entry in that manifest is a different shape from the rest and is the most
+useful: `tipcount`. iTerm2 ships `Contents/Resources/utilities/it2tip`, a
+Python script holding the app's own feature tour — 123 entries in 3.6.11, each
+with a menu path, documented nowhere on iterm2.com. Every other check asks
+whether a name still *exists*, so they are all blind to a feature being
+**added**; counting that list is the one tripwire that is not. When it trips,
+run `it2tip` and read what is new.
+
+Three consequences shape the code here:
+
+- **The version is read off the bundle, never from Homebrew.** `auto_updates
+  true` on the cask means brew installs once and Sparkle takes over; on this
+  machine the Caskroom says 3.6.3 while the app says 3.6.11. The house rule
+  (`defaults read /Applications/iTerm.app/Contents/Info
+  CFBundleShortVersionString` — read the version, never execute the thing) is
+  not a stylistic preference here, it is the only correct answer.
+- **The stamp is duplicated on purpose.** It lives in `manifest.txt`, in
+  `SKILL.md`, and as a `local stamp=` in `iterm2-doctor` — because the doctor
+  is deployed to machines with no copy of the skill and has to carry its own.
+  `tests/iterm2-doctor.bats` extracts all three from the source and fails if
+  they disagree, so a half-done refresh cannot land.
+- **`iterm2-doctor` is in the `doctor` aggregator** even though it is not
+  per-repo routing like the others: it is the terminal all of them run inside,
+  and a stale skill is exactly the silent change `doctor` exists to surface.
+  It reports the bundle and version, the stamp comparison, the Caskroom
+  channel, the plugin bundles, the prefs/API/startup keys, and **counts, never
+  names**, of dynamic profiles and AutoLaunch scripts — those are usually
+  named after a host or a client.
+
+Two facts from that research matter to this repo directly. `PrefsCustomFolder`
+points at this clone, so `com.googlecode.iterm2.plist` is tracked here — safe
+only because the AI provider key goes to the **Keychain**, not the plist (the
+binary says so, and `verify.sh` checks that sentence is still there), and
+because keys prefixed `NoSync*` are excluded from the custom folder (verified:
+26 in the live domain, 0 in the tracked copy). And none of
+`LoadPrefsFromCustomFolder`, `PrefsCustomFolder`, `NoSync*` or
+`EnableAPIServer` is documented anywhere on iterm2.com — they are real keys,
+reverse-engineered, and free to change in a point release. Where the docs and
+the binary disagree the skill records both and trusts the binary; that
+disagreement is half of what makes it worth keeping.
+
+Tests: `tests/iterm2-doctor.bats` (fake `iTerm.app` bundles and a stub
+`defaults`; nothing ever touches the real iTerm2 or opens a dialog).
 
 ### Machine-local secrets (~/.extra)
 

@@ -1731,6 +1731,149 @@ function git-doctor() {
 	print -r -- "configs: $(command git config --list --show-origin --name-only 2>/dev/null | command awk -F'\t' '$1 ~ /^file:/ {print substr($1, 6)}' | command awk '!seen[$0]++' | command paste -sd, - | command sed 's/,/, /g')";
 }
 
+# Where iTerm2 is installed, or nothing. $ITERM2_APP names a non-standard
+# location and, when set, is used *exclusively* — an override that quietly
+# fell back to /Applications would make every answer below a lie about a
+# different app. Returns a path and never launches anything: every fact this
+# doctor reports is read off disk.
+function iterm2_app_path() {
+	emulate -L zsh;
+	local p;
+	if [[ -n $ITERM2_APP ]]; then
+		[[ -d $ITERM2_APP ]] && print -r -- "$ITERM2_APP";
+		return;
+	fi;
+	for p in /Applications/iTerm.app "$HOME/Applications/iTerm.app"; do
+		[[ -d $p ]] || continue;
+		print -r -- "$p";
+		return 0;
+	done;
+	return 1;
+}
+
+# An app bundle's marketing version, read off its Info.plist. This is the
+# house rule for version lines — never execute the thing to ask it what it
+# is — and here it is also the only correct source: iTerm2 updates itself
+# through Sparkle, so Homebrew's Caskroom records the version it last
+# installed, not the one on disk.
+function iterm2_bundle_version() {
+	emulate -L zsh;
+	local app=$1 v;
+	[[ -n $app && -r $app/Contents/Info.plist ]] || return 1;
+	(( $+commands[defaults] )) || return 1;
+	v="$(command defaults read "$app/Contents/Info" CFBundleShortVersionString 2>/dev/null)";
+	[[ -n $v ]] || return 1;
+	print -r -- "$v";
+}
+
+# One key from iTerm2's preference domain, rendered for a doctor line. Reads
+# the domain, not a file, so a custom prefs folder resolves the way the app
+# sees it. An absent key prints <unset> rather than nothing, because "the
+# key is missing" and "the key is empty" mean different things here.
+function iterm2_pref() {
+	emulate -L zsh;
+	local v;
+	(( $+commands[defaults] )) || { print -r -- "$1=<no defaults(1)>"; return 0; };
+	v="$(command defaults read com.googlecode.iterm2 "$1" 2>/dev/null)";
+	print -r -- "$1=${v:-<unset>}";
+}
+
+# Diagnose the iTerm2 this machine actually has: the bundle and its version,
+# whether that still matches the version the .claude/skills/iterm2 skill was
+# researched against, which release channel Homebrew thinks it installed,
+# the plugin bundles, and the handful of preferences that change how the app
+# behaves at startup and towards scripts. Report-only — it reads plists and
+# directory listings and never talks to a running iTerm2, so it is safe from
+# inside one.
+#
+# The stamp is the point. A skill that describes an app is a claim about a
+# version; when the app updates underneath it the claim silently rots. Here
+# the drift is a line of output instead. The literal below mirrors the
+# skill's own stamp and tests/iterm2-doctor.bats pins the two together, so
+# refreshing one without the other fails the suite.
+function iterm2-doctor() {
+	emulate -L zsh;
+	local stamp=3.6.11;
+	local app ver skill c d v cmp;
+	local -a chans vers plugs profiles autopy;
+	print -r -- "defined: $(defined_trace iterm2_app_path iterm2_bundle_version iterm2_pref)";
+	app="$(iterm2_app_path)";
+	if [[ -z $app ]]; then
+		print -r -- "app:     NOT INSTALLED — no iTerm.app in /Applications or ~/Applications$([[ $(uname) == Darwin ]] || print -r -- ' (macOS-only app)')";
+		print -r -- "skill:   written against iTerm2 $stamp";
+		return 0;
+	fi;
+	ver="$(iterm2_bundle_version "$app")";
+	print -r -- "app:     $app (${ver:-<version unreadable>})";
+	# Direction matters for what to do about a mismatch, so work it out with
+	# zsh's own version comparison — but only after proving it loaded, or a
+	# missing autoload would read as "older" and send you the wrong way.
+	autoload -Uz is-at-least;
+	if is-at-least 0 0 2>/dev/null; then
+		is-at-least "$stamp" "$ver" && cmp=newer || cmp=older;
+	fi;
+	if [[ -z $ver ]]; then
+		print -r -- "skill:   written against iTerm2 $stamp — installed version unreadable, cannot compare";
+	elif [[ $ver == "$stamp" ]]; then
+		print -r -- "skill:   written against iTerm2 $stamp — matches";
+	elif [[ $cmp == older ]]; then
+		print -r -- "skill:   written against iTerm2 $stamp — installed is $ver, which is OLDER; the skill may describe features this app does not have";
+	else
+		print -r -- "skill:   written against iTerm2 $stamp — installed is $ver; refresh it and check the changelog (see .claude/skills/iterm2/references/releases.md)";
+	fi;
+	# Which channel Homebrew last installed. Read straight out of the
+	# Caskroom rather than by running brew: brew is slow, and the answer is
+	# a directory name. A version here that trails the bundle above is
+	# normal and expected — Sparkle updated the app in place.
+	for c in iterm2 iterm2@beta iterm2@nightly; do
+		for d in "$HOMEBREW_PREFIX/Caskroom" /opt/homebrew/Caskroom /usr/local/Caskroom; do
+			[[ -n $d && -d $d/$c ]] || continue;
+			vers=("$d"/"$c"/*(N/:t));
+			chans+=("$c ${${(j:,:)vers}:-<no version dir>}");
+			break;
+		done;
+	done;
+	if (( ${#chans} )); then
+		print -r -- "channel: ${(j:; :)chans} (Homebrew's record; iTerm2 self-updates via Sparkle, so the bundle version above wins)";
+	else
+		print -r -- "channel: no iterm2 cask in the Caskroom — installed by hand or by another manager";
+	fi;
+	# The generative-AI and browser features ship as separate bundles since
+	# 3.5; their absence is why an AI menu item can be missing on an app that
+	# otherwise looks current. They install alongside iTerm.app, so look
+	# beside it and nowhere else — searching /Applications regardless would
+	# report plugins for an app that is not the one named above.
+	for c in iTermAI iTermBrowserPlugin; do
+		d="${app:h}/$c.app";
+		[[ -d $d ]] || continue;
+		v="$(iterm2_bundle_version "$d")";
+		plugs+=("$c ${v:-<version unreadable>}");
+	done;
+	print -r -- "plugins: ${${(j:, :)plugs}:-none installed (no iTermAI.app / iTermBrowserPlugin.app)}";
+	print -r -- "prefs:   $(iterm2_pref LoadPrefsFromCustomFolder), $(iterm2_pref PrefsCustomFolder)";
+	print -r -- "api:     $(iterm2_pref EnableAPIServer)";
+	print -r -- "startup: $(iterm2_pref OpenNoWindowsAtStartup), $(iterm2_pref OpenArrangementAtStartup), $(iterm2_pref AlwaysOpenWindowAtStartup)";
+	# Counts, never names: a dynamic profile or an autolaunch script is
+	# usually named after the host or client it exists for.
+	local support="$HOME/Library/Application Support/iTerm2";
+	profiles=("$support"/DynamicProfiles/*(N.));
+	autopy=("$support"/Scripts/AutoLaunch/**/*.py(N.));
+	print -r -- "dynamic: ${#profiles} profile file(s) in ~/Library/Application Support/iTerm2/DynamicProfiles";
+	print -r -- "scripts: AutoLaunch.scpt $([[ -e $support/Scripts/AutoLaunch.scpt ]] && print -r -- present || print -r -- absent), ${#autopy} AutoLaunch python script(s)";
+	# Shell integration is opt-in and per-shell; without it the marks,
+	# prompt navigation, and `is at shell prompt` all quietly do nothing.
+	local -a si;
+	si=("$HOME"/.iterm2_shell_integration.*(N.:e));
+	print -r -- "integ:   ${${(j:, :)si}:-not installed (~/.iterm2_shell_integration.* absent)}; utilities $([[ -d $HOME/.iterm2 ]] && print -r -- "in ~/.iterm2" || print -r -- "only in the app bundle")";
+	print -r -- "session: ${TERM_PROGRAM:-<TERM_PROGRAM unset>}${ITERM_SESSION_ID:+, ITERM_SESSION_ID set}";
+	skill="${ITERM2_SKILL_DIR:-$HOME/code/dotfiles/.claude/skills/iterm2}";
+	if [[ -x $skill/scripts/verify.sh ]]; then
+		print -r -- "verify:  $skill/scripts/verify.sh re-checks every recorded fact against this app";
+	else
+		print -r -- "verify:  skill not found at $skill (set ITERM2_SKILL_DIR); its scripts/verify.sh is what re-checks the recorded facts";
+	fi;
+}
+
 # For doctor: the calling shell's version and the non-default options that
 # change how patterns, globs, and words behave — the context a pasted
 # transcript otherwise lacks. Reads the CALLER's options: `setopt` lists
@@ -1757,16 +1900,19 @@ function shell_trace() {
 	print -r -- "zsh $ZSH_VERSION$ia${CLAUDECODE:+, under Claude Code}, options: ${list:-none}${list:+ (the tailnet wrappers reset these with emulate -L zsh)}";
 }
 
-# All seven routing diagnoses in one go — git identity, gh account, Claude
-# Code profile, the Claude Code session launcher, wrangler profile, hermes
-# profile, tailnet routing — headed by the calling shell's version and pattern
+# Every routing diagnosis for the cwd in one go — git identity, gh account,
+# Claude Code profile, the terminal-tab launcher, wrangler profile, hermes
+# profile, tailnet routing — plus iterm2, which is not per-repo but is the
+# terminal all of the above run inside, and whose version drifting past what
+# the skill documents is exactly the kind of silent change this command
+# exists to surface. Headed by the calling shell's version and pattern
 # options (shell_trace; this function must not emulate, see there). First
 # thing to run when a repo "behaves weird" on a machine.
 function doctor() {
 	local d;
 	print -r -- "shell:   $(shell_trace)";
 	print -r -- "";
-	for d in git gh claude wrangler hermes tailnet workspace; do
+	for d in git gh claude wrangler hermes tailnet workspace iterm2; do
 		print -r -- "== $d-doctor";
 		"$d-doctor";
 		print -r -- "";
