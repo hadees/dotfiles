@@ -314,6 +314,31 @@ yields the string "missing value", which would make every untagged session
 look tagged. The AppleScript **returns what it actually opened**, so a re-run
 that opens nothing says so instead of reporting the whole plan as if it had.
 
+Tabs are additionally **created with** a dedicated profile — `Workspace`, a
+dynamic profile `install` writes to `~/Library/Application Support/iTerm2/
+DynamicProfiles/workspace.json`. Two marks, two jobs: the tag says *which*
+entry a tab is (idempotency needs the entry and its group, and a profile name
+is one string), the profile says the tab is **ours at all**. The profile is the
+better answer to "ours" because it is applied by the same command that creates
+the session, where the tag is a step afterwards — so there is no instant when a
+tab exists untagged, and a tab carrying the profile with no tag is a run that
+died in between, now reported rather than silently duplicated beside. It
+*inherits* rather than copies (`Dynamic Profile Parent Name: Default`), so it
+cannot drift from Default the way a hand-duplicated profile would, and it adds
+only a tag and a badge interpolating the group. Everything degrades: with no
+profile installed, creation falls back to the default profile and the tag alone
+carries idempotency, which is why `create … with profile` sits in a `try`.
+
+Two things were measured rather than assumed here, and one killed a better
+story. iTerm2 **restores nothing** across a quit on this setup (a marked window
+and a plain one both gone; one fresh window on relaunch), so "user variables do
+not survive restoration but profiles do" — the strongest-sounding argument for
+the profile — is simply not true and is not the reason. What the test *did*
+turn up is that iTerm2 opens **one window of its own** at every launch, which
+workspace neither created nor reuses; `OpenNoWindowsAtStartup` suppresses it,
+and `install`/`workspace-doctor` print that line rather than writing a
+preference into a tracked file behind you.
+
 Commands mirror `tailnet`'s shape: `list`, `groups`, `plan` (the decision
 table, tab-separated), `script` (the AppleScript `start` would run — a dry
 run), `start [name|group…]`, `alfred`, `install`, `uninstall`, `status`,

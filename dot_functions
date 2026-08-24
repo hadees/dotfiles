@@ -475,7 +475,7 @@ function claude-doctor() {
 # nothing, and it never asks iTerm2 for anything the script would not.
 function workspace-doctor() {
 	emulate -L zsh;
-	local ver scpt;
+	local ver scpt prof;
 	print -r -- "wrapper: <none — workspace is a script, not a shell wrapper>";
 	print -r -- "defined: <none — this doctor calls no helpers>";
 	if (( $+commands[workspace] )); then
@@ -502,6 +502,21 @@ function workspace-doctor() {
 		fi;
 	else
 		print -r -- "trigger: not installed — workspace install";
+	fi;
+	prof="$HOME/Library/Application Support/iTerm2/DynamicProfiles/workspace.json";
+	if [[ -e $prof ]]; then
+		print -r -- "profile: installed — every tab workspace opens carries it, so its own windows are distinguishable from yours";
+	else
+		print -r -- "profile: not installed — tabs open with the default profile and are told apart by their tag alone (workspace install)";
+	fi;
+	# iTerm2 opens a window of its own at launch that workspace neither created
+	# nor reuses. Report it; changing a preference is the user's call.
+	if [[ $(uname -s) == Darwin ]]; then
+		if [[ "$(command defaults read com.googlecode.iterm2 OpenNoWindowsAtStartup 2>/dev/null)" == 1 ]]; then
+			print -r -- "startup: iTerm2 opens no window of its own — only the ones workspace starts";
+		else
+			print -r -- "startup: iTerm2 also opens one window of its own at launch — defaults write com.googlecode.iterm2 OpenNoWindowsAtStartup -bool true";
+		fi;
 	fi;
 	if (( $+commands[workspace] )); then
 		command workspace status 2>&1 | sed 's/^/  /';

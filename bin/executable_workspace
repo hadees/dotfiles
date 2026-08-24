@@ -34,6 +34,15 @@
 # screen, adding only what is missing — to that group's existing window when it
 # can find one.
 #
+# Tabs are also *created with* a dedicated iTerm2 profile ("Workspace", a
+# dynamic profile inheriting Default that `install` writes). The tag says which
+# entry a tab is; the profile says the tab is ours at all, and it is applied by
+# the same command that creates the session rather than a step afterwards. So a
+# window you opened yourself is never adopted, and a tab left behind by a run
+# that died between creating and tagging is reported instead of quietly
+# duplicated. Without the profile installed everything still works — creation
+# falls back to the default profile and the tag alone carries the day.
+#
 # The trigger is iTerm2's own AutoLaunch: `workspace install` compiles a
 # one-line AppleScript to ~/Library/Application Support/iTerm2/Scripts/
 # AutoLaunch.scpt, which iTerm2 runs itself at every launch. That matters for
@@ -54,8 +63,8 @@
 #   start [name|group...]    open the windows and tabs (idempotent)
 #   alfred [query]           Script Filter JSON for the Alfred workflow
 #   alfred-install [dir]     build the Alfred workflow and hand it to Alfred
-#   install                  write the iTerm2 AutoLaunch script
-#   uninstall                remove it
+#   install                  write the iTerm2 AutoLaunch script and profile
+#   uninstall                remove them
 #   status                   trigger, configured entries, what is open now
 #   logs [tail args]         the AutoLaunch log
 #   dir                      the state directory
@@ -64,7 +73,15 @@ set -u
 WORKSPACE_STATE=${WORKSPACE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/workspace}
 MARK=user.workspaceSession          # iTerm2 session variable: the entry name
 MARK_WINDOW=user.workspaceWindow    # …and its group
+# Every tab this opens is created *with* this profile, so ownership is set by
+# the same command that creates the session rather than a step after it. The
+# marks above still carry identity — a profile name is one string and
+# idempotency needs both the entry and its group — but a session carrying the
+# profile and no mark is a run that died in between, which is now detectable
+# instead of silently duplicated.
+PROFILE=${WORKSPACE_PROFILE:-Workspace}
 ITERM_SCRIPTS=${ITERM_SCRIPTS:-$HOME/Library/Application Support/iTerm2/Scripts}
+ITERM_PROFILES=${ITERM_PROFILES:-$HOME/Library/Application Support/iTerm2/DynamicProfiles}
 
 die() { printf 'workspace: %s\n' "$*" >&2; exit 1; }
 warn() { printf 'workspace: %s\n' "$*" >&2; }
@@ -76,6 +93,7 @@ need_macos() {
 }
 log_path() { printf '%s\n' "$WORKSPACE_STATE/autolaunch.log"; }
 scpt_path() { printf '%s\n' "$ITERM_SCRIPTS/AutoLaunch.scpt"; }
+profile_path() { printf '%s\n' "$ITERM_PROFILES/workspace.json"; }
 
 # This script's own absolute path — what AutoLaunch must call. $0 is whatever
 # PATH lookup or the user typed; iTerm2's script runner gets neither, and its
@@ -222,11 +240,13 @@ tell application "iTerm2"
 	set openMarks to {}
 	set groupNames to {}
 	set groupWindows to {}
+	set orphans to 0
 	repeat with w in windows
 		repeat with t in tabs of w
 			repeat with s in sessions of t
 				set m to ""
 				set g to ""
+				set pn to ""
 				tell s
 					-- An unset iTerm2 user variable answers "missing value",
 					-- and coercing that to text yields the literal string
@@ -240,6 +260,9 @@ tell application "iTerm2"
 						set v to (variable named "$MARK_WINDOW")
 						if v is not missing value then set g to (v as text)
 					end try
+					try
+						set pn to (profile name)
+					end try
 				end tell
 				if m is not "" then
 					set end of openMarks to m
@@ -247,6 +270,10 @@ tell application "iTerm2"
 						set end of groupNames to g
 						set end of groupWindows to (id of w)
 					end if
+				else if pn is "$PROFILE" then
+					-- Carries the profile but no mark: a run that was cut off
+					-- between creating the tab and tagging it.
+					set orphans to orphans + 1
 				end if
 			end repeat
 		end repeat
@@ -263,14 +290,24 @@ tell application "iTerm2"
 				if item i of groupNames is g then set widx to i
 			end repeat
 			if widx is 0 then
-				set theWindow to (create window with default profile)
+				try
+					set theWindow to (create window with profile "$PROFILE")
+				on error
+					-- `workspace install` was never run, or the profile was
+					-- removed. Opening the tabs matters more than tagging them.
+					set theWindow to (create window with default profile)
+				end try
 				set theTab to current tab of theWindow
 				set end of groupNames to g
 				set end of groupWindows to (id of theWindow)
 			else
 				set theWindow to (first window whose id is (item widx of groupWindows))
 				tell theWindow
-					set theTab to (create tab with default profile)
+					try
+						set theTab to (create tab with profile "$PROFILE")
+					on error
+						set theTab to (create tab with default profile)
+					end try
 				end tell
 			end if
 			tell current session of theTab
@@ -286,7 +323,7 @@ tell application "iTerm2"
 		end if
 	end repeat
 	set AppleScript's text item delimiters to linefeed
-	return opened as text
+	return ("orphans=" & orphans) & linefeed & (opened as text)
 end tell
 APPLESCRIPT
 }
@@ -432,9 +469,16 @@ cmd_start() {
   # The AppleScript returns the entries it actually opened, one per line, so
   # the summary reports what happened rather than what was planned — a re-run
   # that skips everything says so instead of claiming credit.
-  opened=$(printf '%s\n' "$ok" | gen_script | run_script) ||
+  out=$(printf '%s\n' "$ok" | gen_script | run_script) ||
     die "osascript could not drive iTerm2 — if macOS asked for Automation permission and was denied, grant it in System Settings > Privacy & Security > Automation"
-  if [ -z "$opened" ]; then
+  # First line is the orphan count, the rest are the entries actually opened.
+  orphans=$(printf '%s\n' "$out" | sed -n '1s/^orphans=//p')
+  opened=$(printf '%s\n' "$out" | sed '1d')
+  case ${orphans:-0} in
+    0|"") ;;
+    *) warn "$orphans tab(s) carry the $PROFILE profile but no tag — left over from a run that was interrupted; close them or they will not be reused";;
+  esac
+  if [ -z "$(printf '%s' "$opened" | tr -d '[:space:]')" ]; then
     printf 'workspace: everything already open\n'
     return 0
   fi
@@ -443,6 +487,23 @@ cmd_start() {
     g=$(printf '%s\n' "$ok" | awk -F'\t' -v n="$n" '$2 == n { print $1; exit }')
     printf 'workspace: opened %s -> window %s\n' "$n" "$g"
   done
+}
+
+# A *dynamic* profile: a plain JSON file iTerm2 reloads on write, with no
+# restart and no click through its preferences. It inherits rather than copies
+# — "Dynamic Profile Parent Name" makes it Default plus a badge and a tag, so
+# it cannot drift from Default the way a hand-duplicated profile would. The
+# Guid is fixed so reinstalling updates this profile instead of adding another.
+# The badge is an iTerm2 interpolated string; it renders the group in the
+# corner of every tab workspace opened.
+profile_source() {
+  printf '{\n  "Profiles": [\n    {\n'
+  printf '      "Name": "%s",\n' "$(as_string "$PROFILE")"
+  printf '      "Guid": "workspace-launcher-profile",\n'
+  printf '      "Dynamic Profile Parent Name": "Default",\n'
+  printf '      "Tags": ["workspace"],\n'
+  printf '      "Badge Text": "\\\\(user.workspaceWindow)"\n'
+  printf '    }\n  ]\n}\n'
 }
 
 autolaunch_source() { # -> the AppleScript AutoLaunch runs
@@ -474,8 +535,19 @@ cmd_install() {
   src=$WORKSPACE_STATE/autolaunch.applescript
   autolaunch_source > "$src" || die "cannot write $src"
   osacompile -o "$target" "$src" || die "osacompile failed on $src"
+  mkdir -p "$ITERM_PROFILES" || die "cannot create $ITERM_PROFILES"
+  prof=$(profile_path)
+  profile_source > "$prof" || die "cannot write $prof"
   printf 'workspace: installed — iTerm2 runs %s at every launch\n' "$target"
+  printf 'workspace: profile "%s" written to %s (iTerm2 reloads it immediately)\n' "$PROFILE" "$prof"
   printf 'workspace: no Automation permission is needed; iTerm2 is automating itself\n'
+  # iTerm2 opens one window of its own at launch, which workspace did not
+  # create and will not reuse. Saying so beats silently rewriting a preference
+  # that lives in a tracked file.
+  if [ "$(defaults read com.googlecode.iterm2 OpenNoWindowsAtStartup 2>/dev/null)" != 1 ]; then
+    printf 'workspace: iTerm2 also opens one window of its own at launch. For only the windows workspace starts:\n'
+    printf '    defaults write com.googlecode.iterm2 OpenNoWindowsAtStartup -bool true\n'
+  fi
   [ -n "$(names)" ] ||
     printf 'workspace: nothing configured yet; it will do nothing until workspace.<name>.dir exists\n'
 }
@@ -487,6 +559,7 @@ cmd_uninstall() {
     die "$target was not written by workspace — leaving it alone"
   fi
   rm -f "$target"
+  rm -f "$(profile_path)"
   printf 'workspace: uninstalled (open windows are left alone)\n'
 }
 
@@ -501,6 +574,11 @@ trigger_state() {
 cmd_status() {
   printf 'trigger:  %s\n' "$(trigger_state)"
   printf 'script:   %s\n' "$(scpt_path)"
+  if [ -e "$(profile_path)" ]; then
+    printf 'profile:  %s (%s)\n' "$PROFILE" "$(profile_path)"
+  else
+    printf 'profile:  %s not installed — tabs open with the default profile and are tagged only\n' "$PROFILE"
+  fi
   printf 'log:      %s\n' "$(log_path)"
   rows=$(all_rows)
   if [ -z "$rows" ]; then

@@ -17,6 +17,7 @@ setup() {
   unset XDG_STATE_HOME
   export WORKSPACE_STATE="$BATS_TEST_TMPDIR/state"
   export ITERM_SCRIPTS="$BATS_TEST_TMPDIR/Scripts"
+  export ITERM_PROFILES="$BATS_TEST_TMPDIR/DynamicProfiles"
   git config --file "$GIT_CONFIG_GLOBAL" init.defaultBranch main
 
   WS="$BATS_TEST_DIRNAME/../bin/executable_workspace"
@@ -30,10 +31,12 @@ setup() {
   export FAKE_PROCS="iTerm2"
   export FAKE_MARKS=""
   export FAKE_OPENED=""
+  export FAKE_ORPHANS=0
 
   # osascript: record what it was handed. Answer the marker query with
   # FAKE_MARKS, and the start script with FAKE_OPENED — the start script now
   # returns the entries it actually opened, which is what the summary reports.
+  # Its first line is the count of sessions carrying the profile but no tag.
   cat > "$BIN/osascript" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$*" >> "$OSA_LOG"
@@ -41,7 +44,8 @@ cat > "$OSA_SCRIPT"
 [ -z "${FAKE_OSA_FAIL:-}" ] || { echo "-1743: not authorised" >&2; exit 1; }
 case "$(cat "$OSA_SCRIPT")" in
   *"return out"*)          printf '%s\n' "${FAKE_MARKS:-}";;
-  *"return opened as text"*) [ -z "${FAKE_OPENED:-}" ] || printf '%s\n' "$FAKE_OPENED";;
+  *"orphans="*) printf 'orphans=%s\n' "${FAKE_ORPHANS:-0}"
+                [ -z "${FAKE_OPENED:-}" ] || printf '%s\n' "$FAKE_OPENED";;
 esac
 exit 0
 STUB
@@ -468,4 +472,97 @@ ws() { run sh "$WS" "$@"; }
   ws bogus
   [ "$status" -ne 0 ]
   [[ "$output" == *"unknown command 'bogus'"* ]]
+}
+
+# --- the dedicated iTerm2 profile ---------------------------------------------
+
+@test "script: tabs are created with the workspace profile, falling back if absent" {
+  entry a dir "$PROJ/one"
+  ws script
+  [ "$status" -eq 0 ]
+  # Ownership is set by the same command that creates the session, not a step
+  # after it, so there is no instant where the tab exists untagged.
+  [[ "$output" == *'create window with profile "Workspace"'* ]]
+  [[ "$output" == *'create tab with profile "Workspace"'* ]]
+  # …but a machine that never ran `install` must still get its tabs.
+  [[ "$output" == *"create window with default profile"* ]]
+  [[ "$output" == *"create tab with default profile"* ]]
+}
+
+@test "script: WORKSPACE_PROFILE renames the profile everywhere it is used" {
+  entry a dir "$PROJ/one"
+  WORKSPACE_PROFILE=Scratch ws script
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'create window with profile "Scratch"'* ]]
+  [[ "$output" == *'is "Scratch" then'* ]]
+  [[ "$output" != *'"Workspace"'* ]]
+}
+
+@test "start: warns about tabs carrying the profile but no tag" {
+  entry a dir "$PROJ/one"
+  FAKE_ORPHANS=2 FAKE_OPENED="a" ws start
+  [ "$status" -eq 0 ]
+  # An interrupted run leaves a tab that can never be reused. Today that was
+  # silent and the next run simply opened a duplicate beside it.
+  [[ "$output" == *"2 tab(s)"* ]]
+  [[ "$output" == *"interrupted"* ]]
+  [[ "$output" == *"opened a"* ]]
+}
+
+@test "start: says nothing about orphans when there are none" {
+  entry a dir "$PROJ/one"
+  FAKE_ORPHANS=0 FAKE_OPENED="a" ws start
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"interrupted"* ]]
+  [[ "$output" == *"opened a"* ]]
+}
+
+@test "start: the orphan count is never mistaken for an opened entry" {
+  entry a dir "$PROJ/one"
+  FAKE_ORPHANS=1 FAKE_OPENED="" ws start
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"everything already open"* ]]
+  [[ "$output" != *"opened orphans"* ]]
+}
+
+@test "install: writes a dynamic profile that inherits Default" {
+  entry a dir "$PROJ/one"
+  ws install
+  [ "$status" -eq 0 ]
+  prof="$ITERM_PROFILES/workspace.json"
+  [ -f "$prof" ]
+  run python3 -c "import json,sys; d=json.load(open(sys.argv[1]))['Profiles'][0]; print(d['Name'], d['Dynamic Profile Parent Name'], d['Guid'])" "$prof"
+  [ "$status" -eq 0 ]
+  # Inherited, not copied: it cannot drift from Default the way a duplicate would.
+  [[ "$output" == "Workspace Default workspace-launcher-profile" ]]
+}
+
+@test "install: reinstalling keeps one profile rather than adding another" {
+  entry a dir "$PROJ/one"
+  ws install
+  first=$(cat "$ITERM_PROFILES/workspace.json")
+  ws install
+  [ "$status" -eq 0 ]
+  [ "$(ls "$ITERM_PROFILES" | wc -l | tr -d ' ')" = 1 ]
+  [ "$(cat "$ITERM_PROFILES/workspace.json")" = "$first" ]
+}
+
+@test "uninstall: removes the profile along with the trigger" {
+  entry a dir "$PROJ/one"
+  ws install
+  [ -f "$ITERM_PROFILES/workspace.json" ]
+  ws uninstall
+  [ "$status" -eq 0 ]
+  [ ! -f "$ITERM_PROFILES/workspace.json" ]
+}
+
+@test "status: reports whether the profile is installed" {
+  entry a dir "$PROJ/one"
+  ws status
+  [[ "$output" == *"profile:"*"not installed"* ]]
+  ws install
+  ws status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"profile:"*"Workspace"* ]]
+  [[ "$output" != *"not installed"* ]]
 }
