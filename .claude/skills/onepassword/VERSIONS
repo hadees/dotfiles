@@ -1,0 +1,21 @@
+# Versions the onepassword skill was written and verified against.
+#
+# onepassword-doctor (dot_functions) reads this file, compares it to what is
+# installed, and prints a `skill:` line that either says "matches what is
+# installed" or names the drift. That line is the whole point of the stamp:
+# these notes are worth exactly what their currency is worth, and 1Password
+# ships often enough that a year-old claim about the CLI is a guess.
+#
+# Format: one "<key> <version>" line per component. Comments and blank lines
+# are ignored; awk reads the first field, so nothing here may be indented.
+#
+# When you refresh the skill against newer docs or a newer install, bump the
+# line AND re-verify the claims it covers — a bumped stamp with stale prose
+# is worse than an honest mismatch, because the doctor then says nothing.
+#
+#   op   the `op` CLI, as reported by the resolved install path
+#        (Homebrew cask: .../Caskroom/1password-cli/<version>/op)
+#   app  the 1Password desktop app's CFBundleShortVersionString
+
+op 2.39.0
+app 8.12.33
