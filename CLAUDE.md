@@ -147,6 +147,58 @@ set `user.signingkey` to the literal public key (not `op-ssh-sign`, which
 only exists locally). There is **no GPG keypair** in this setup despite the
 `gpgsign` name.
 
+When signing breaks, read the next section before touching any config — the
+usual failure is transient and not a misconfiguration at all.
+
+### 1Password
+
+1Password is load-bearing in three unrelated places — it holds the SSH keys,
+it signs every commit, and it is where `~/.extra`'s secrets come from at
+apply time — over **three connections that fail independently**:
+
+1. the `op` CLI → the desktop app via `~/.config/op/op-daemon.sock`, gated by
+   `op signin` and a session that lapses;
+2. `ssh` and git-over-ssh → the agent socket named by `~/.ssh/config`'s
+   `IdentityAgent` (macOS: inside the app's group container — `~/.1password/
+   agent.sock` is the **Linux** path, and this repo deliberately names the
+   real one);
+3. `op-ssh-sign` → its own connection to the app.
+
+Treating those as one channel is the source of nearly every wasted hour here.
+Verified: **`op-ssh-sign` never reads `SSH_AUTH_SOCK`** (it signs with the
+variable unset, at the launchd default, and pointed at a nonexistent path),
+and **`ssh-add` never reads `~/.ssh/config`** (it speaks only to
+`$SSH_AUTH_SOCK`, which under Claude Code's Bash tool is macOS's launchd
+agent). So `ssh-add -l` listing keys is not evidence a commit will sign, and
+"The agent has no identities" is not evidence anything is broken.
+
+The concrete symptom that costs time: `git commit` dying with
+`error: 1Password: failed to fill whole buffer` / `fatal: failed to write
+commit object` while the agent lists keys and the app is running. That string
+is inside `op-ssh-sign` (Rust's `read_exact` error) and means the app's reply
+came up short — locked, approval unanswered, or restarting. It clears on
+unlock/approve + retry with **no config change**, which is itself the proof
+that nothing is misconfigured. Never respond by committing unsigned or
+turning `commit.gpgsign` off.
+
+`onepassword-doctor` reports all three channels separately (`ssh -G` for the
+`IdentityAgent`, `$SSH_AUTH_SOCK` on its own line), whether `~/.extra`
+mentions a routed token (**names only, never a value**), and a `skill:` line
+comparing the notes' version stamp to what is installed. `doctor` runs it
+last. Versions come off the install without executing anything — the CLI is a
+**cask**, so `bin_trace` reads it out of the Caskroom path, and the app's
+version comes from its `Info.plist`.
+
+The long form lives in the **`onepassword` skill**
+(`.claude/skills/onepassword/`, dot-prefixed so chezmoi never deploys it):
+the triage table, the `op` command surface and secret-reference grammar, the
+SSH agent in depth (`agent.toml`, the OpenSSH six-key limit), and 1Password's
+own release cadence and changelog locations. `VERSIONS` in that directory is
+the stamp the doctor compares against — **bump it only together with
+re-verifying the claims**, since a bumped stamp over stale prose silences the
+nudge without fixing anything. Tests: `tests/onepassword.bats` (stub
+op/ssh/ssh-add, sandboxed HOME; no vault or network touched).
+
 ### Package lists
 
 CLI tools are declared per-OS — `Brewfile` (macOS), `packages-apt.txt`
@@ -438,7 +490,10 @@ wrapper. Consequences:
   selects for the cwd (or "not installed under the selected node"), and the
   version read off the install without executing it (npm `package.json`,
   cask/native path segment). `doctor` runs them all (git, gh, claude,
-  wrangler, hermes, tailnet, workspace, iterm2). Every doctor also opens with a `defined:` line — are
+  wrangler, hermes, tailnet, workspace, onepassword, iterm2 — the last two
+  are not per-repo, but 1Password is what signing and `~/.extra` rest on and
+  iTerm2 is the terminal the rest run inside, so their failures arrive
+  disguised as per-repo ones). Every doctor also opens with a `defined:` line — are
   the helpers its wrapper (and the doctor itself) call actually defined in
   this shell — printed before any line that depends on one, because a
   missing helper makes a doctor misreport confidently (`account: <no pin
@@ -751,12 +806,20 @@ Never export a token that one of the per-repo wrappers routes
 `CLAUDE_CONFIG_DIR`, …) from `~/.extra`: it is sourced by every shell, so
 such a token overrides the account routing everywhere. Project tokens belong
 in that project's `op run --env-file`. The overlay's `tests/extra-tmpl.bats`
-enforces this too.
+enforces this too, and `onepassword-doctor`'s `extra:` line reports a routed
+name found in the deployed file (name only — never a value).
 
 Get a reference path from the 1Password app: right-click a field →
-"Copy Secret Reference".
+"Copy Secret Reference", or `op item get <item> --format json` and read the
+`reference` key off the field.
 
 CAUTION: chezmoi parses that template as a Go template, comments included —
 a stray `{{` anywhere breaks rendering. That's why these instructions live
 here and not in the template itself. The overlay's `tests/extra-tmpl.bats`
-enforces the invariant.
+enforces the invariant. The same collision is why a chezmoi-managed file can
+never use `op inject` syntax: `op inject`'s placeholder is a bare secret
+reference wrapped in `{{ }}`, which chezmoi reads as a template action.
+`onepasswordRead` is the chezmoi-side equivalent — don't convert between
+them. (Spelling that placeholder out here would itself trip the rendered-home
+leak guard in `tests/chezmoi.bats`, since this file deploys to `~/CLAUDE.md`;
+the skill has the literal form.)
