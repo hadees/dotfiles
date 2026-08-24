@@ -5,11 +5,14 @@ description: >-
   installed app rather than recalled — the AppleScript dictionary, the Python
   API and its auth model, Dynamic Profiles, shell integration and the it2*
   utilities, triggers, badges, the status bar, hotkey windows, tmux -CC,
-  preferences and startup behaviour, the AI plugin, and how the project ships
+  Automatic Profile Switching, Smart Selection and Semantic History, the
+  Toolbelt, SSH Integration and ssh:// URLs, preferences and startup
+  behaviour, the AI plugin and its permission model, and how the project ships
   releases. Use this skill whenever a task touches iTerm2 in any way: driving
   it from a script (AppleScript or Python), creating or editing profiles,
   writing an AutoLaunch script, setting a badge or a trigger or a status-bar
-  component, changing preferences or the custom prefs folder, debugging why a
+  component, making cmd-click or quad-click do something, switching profiles
+  by host, changing preferences or the custom prefs folder, debugging why a
   window did or did not appear at startup, wondering what a new iTerm2 version
   changed, or answering "can iTerm2 do X" at all. Reach for it even when the
   user says "the terminal" or "my terminal" and this is a Mac — guessing at
@@ -42,17 +45,20 @@ Before answering anything about iTerm2, confirm the record still applies:
 It prints the installed version, compares it to the stamp, and re-checks
 every recorded name against the bundle. Exit 0 means the record holds; exit 1
 lists exactly what no longer does; exit 2 means it could not check (no
-`iTerm.app`). `--quiet` suppresses everything but the failures, for a script. `iterm2-doctor` (in `~/.functions`) prints
-the same version comparison as one line alongside the rest of this machine's
-iTerm2 state, and `doctor` runs it with the others.
+`iTerm.app`). `--quiet` suppresses everything but the failures, for a script.
+
+`iterm2-doctor` (in `~/.functions`) prints the same version comparison as one
+line alongside the rest of this machine's iTerm2 state, and `doctor` runs it
+with the others.
 
 If the installed version is **newer** than the stamp, say so before advising,
 then read what changed: <https://iterm2.com/downloads.html> — expand the
 per-version notes. Do not look for a GitHub release or a `CHANGELOG` file;
-the repo publishes neither (see `references/releases.md`). Passing checks on
-a newer version prove only that nothing was *removed* — a release that adds a
-feature adds nothing for them to catch, which is why the version comparison
-matters more than the check count.
+the repo publishes neither (see `references/releases.md`). And note what the
+checks can and cannot prove: most of them only ask whether a name still
+exists, so they are blind to anything *added*. The one exception is the tip
+count — iTerm2's own feature tour, which grows with the app. That is why the
+version comparison still matters more than the check count.
 
 ## What is in here
 
@@ -63,14 +69,16 @@ matters more than the check count.
 | `references/dynamic-profiles.md` | Creating profiles from a file; the plist format, required keys, inheritance, hot reload, badges |
 | `references/preferences.md` | The prefs plist, the custom prefs folder, `NoSync*`, startup and window-restoration behaviour |
 | `references/shell-integration.md` | Marks, prompt navigation, the `it2*` utilities, escape codes, badges, triggers, the status bar, hotkey windows, `tmux -CC` |
-| `references/ai-plugin.md` | The separate AI plugin bundle, where the API key lives, why that matters when the prefs folder is a git repo |
+| `references/workflow.md` | Automatic Profile Switching, Smart Selection, Semantic History and cmd-click, the Toolbelt — and `it2tip`, the app's own list of its 123 features |
+| `references/ssh.md` | SSH Integration (the 3.5+ feature, not shell integration), `it2ssh` and how it really works, `ssh://` URL handling |
+| `references/ai-plugin.md` | The separate AI plugin, AI Chat and its tri-state permission model, which providers work, where the API key lives and why that matters when the prefs folder is a git repo |
 | `references/releases.md` | Channels, version-number shapes, appcasts, finding what changed between two versions |
 | `scripts/manifest.txt` | The machine-checkable facts, one per line, with the verbs explained at the top |
 | `scripts/verify.sh` | The checker |
 
 Read only the file the task needs. They are independent.
 
-## The five things most often gotten wrong from memory
+## The seven things most often gotten wrong from memory
 
 These are here rather than buried in a reference because they are the
 mistakes that survive being confidently stated.
@@ -107,9 +115,22 @@ mistakes that survive being confidently stated.
 5. **Half of what people configure has no official documentation.**
    `LoadPrefsFromCustomFolder`, `PrefsCustomFolder`, the `NoSync*` convention
    and `EnableAPIServer` appear nowhere on iterm2.com — not even on its
-   hidden-settings page. They are real keys in the binary, but they are
-   reverse-engineered, unsupported, and free to change in a point release.
-   Say that when recommending one.
+   hidden-settings page. Neither do `it2ssh`, `it2api`, `it2cat`, `it2git`,
+   `it2profile` or `it2tip`, and there is no Toolbelt page or SSH Integration
+   page at all. These are real, working things; they are simply unsupported
+   and free to change in a point release. Say that when recommending one.
+
+6. **Smart Selection and Semantic History both own cmd-click, and their
+   substitutions are numbered differently.** A Smart Selection rule with an
+   action pre-empts Semantic History. In Smart Selection `\1` is the first
+   capture group; in Semantic History `\1` is the *filename* and `\2` the
+   line number. Conflating them produces a rule that silently does the wrong
+   thing. See `references/workflow.md`.
+
+7. **The app ships its own feature list, and it is the best answer to "what
+   can this version do".** `Contents/Resources/utilities/it2tip` — 123
+   entries in 3.6.11, each with a menu path. `verify.sh` counts them, which
+   makes it the one check here that can notice a feature being *added*.
 
 ## Where the documentation and the binary disagree
 
@@ -131,6 +152,11 @@ Almost everything worth knowing can be read off disk. Prefer that:
 - **Dictionary**: read `/Applications/iTerm.app/Contents/Resources/iTerm2.sdef`
   as a file. It is plain XML.
 - **Preferences**: `defaults read com.googlecode.iterm2 <key>`.
+- **Feature list**: run `Contents/Resources/utilities/it2tip`, or read it as a
+  file — it is a Python script with the whole tour in a literal list.
+- **The bundled utilities themselves** are readable shell and Python. When
+  `it2ssh` or `it2ul` misbehaves, the script is the documentation; six of the
+  seventeen have no other.
 
 If you must script a live iTerm2, remember you are inside someone's working
 session: creating windows, splitting panes, and `write text` all land in

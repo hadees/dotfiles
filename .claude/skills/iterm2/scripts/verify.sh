@@ -120,6 +120,18 @@ while IFS= read -r line || [ -n "$line" ]; do
         record binstr fail "$rest"
       fi
       ;;
+    tipcount)
+      # The one check that can notice a feature being ADDED. Everything else
+      # here asks whether a name still exists; iTerm2's own tip list grows
+      # when the app grows, so its length is a cheap tripwire for "there is
+      # something new here you have not read about".
+      got=$(grep -c '"title":' "$utils/it2tip" 2>/dev/null || echo 0)
+      if [ "$got" = "$rest" ]; then
+        record tipcount ok
+      else
+        record tipcount fail "it2tip lists $got features, recorded as $rest - read the new ones with: $utils/it2tip"
+      fi
+      ;;
     util)
       if [ -e "$utils/$rest" ]; then
         record util ok
@@ -169,11 +181,14 @@ else
   say "stamp:   $stamp — INSTALLED IS $installed"
 fi
 
-for class in sdef binstr util info; do
+for class in sdef binstr util info tipcount; do
   n=${total[$class]:-0}
   [ "$n" -eq 0 ] && continue
   s=${skipped[$class]:-0}
-  say "$(printf '%-9s' "$class:")${ok[$class]:-0}/$n verified$( [ "$s" -gt 0 ] && printf ' (%s skipped: no strings(1))' "$s" )"
+  # "tipcount" is one character too wide for the label column every other
+  # line in this repo's reports uses; the manifest verb keeps its real name.
+  label=$class; [ "$class" = tipcount ] && label=tips
+  say "$(printf '%-9s' "$label:")${ok[$class]:-0}/$n verified$( [ "$s" -gt 0 ] && printf ' (%s skipped: no strings(1))' "$s" )"
 done
 
 if [ "${#failures[@]}" -gt 0 ]; then
@@ -185,8 +200,9 @@ if [ "$version_bad" -eq 1 ]; then
   cat <<EOF
 
 The skill was written against iTerm2 $stamp; this machine runs $installed.
-Even where every check above passed, the checks only cover names that exist
-or do not — new features add nothing for them to catch. Read what changed:
+Even where every check above passed, most of them only ask whether a name
+still exists. Only the tip count notices something being ADDED, and only
+when the feature is one the app tours. Read what changed:
 
 https://iterm2.com/downloads.html
 

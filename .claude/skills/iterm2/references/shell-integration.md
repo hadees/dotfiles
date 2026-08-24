@@ -207,6 +207,13 @@ backspace, `\e` ESC, `\n` newline, `\r` carriage return, `\t` tab, `\xNN` hex.
 (The docs describe `\r` as "A linefeed character" — wrong; `\n` is the
 linefeed.)
 
+Two actions are worth following up elsewhere: **Capture Output** feeds the
+Toolbelt tool of the same name, which is what turns a build log into
+clickable errors, and *Report User & Host* / *Report Directory* are how you
+get shell-integration behaviour — and therefore Automatic Profile Switching —
+on a host you cannot install anything on. Both are in
+`references/workflow.md`.
+
 ## Status bar
 
 Settings > Profiles > Session > **Status bar enabled** > **Configure Status
@@ -315,3 +322,4 @@ version mentioned and only for pausing.
 | `SetBadgeFormat` | Missing from the escape-codes reference. |
 | SCP config path `~/Library/Application Support/iTerm/ssh_config` | Missing the `2`; everything else in the app uses `iTerm2`. |
 | tmux minimum version | Not stated at all. |
+| Triggers, Smart Selection, Semantic History and APS are separate features | They share the Profiles > Advanced tab and interlock: a trigger feeds the Captured Output toolbelt tool, and triggers substitute for shell integration where APS needs it. See `references/workflow.md`. |

@@ -190,7 +190,7 @@ EOF
   [ -x "$SKILL/scripts/verify.sh" ]
   [ -f "$SKILL/scripts/manifest.txt" ]
   for f in applescript python-api dynamic-profiles preferences \
-           shell-integration ai-plugin releases; do
+           shell-integration workflow ssh ai-plugin releases; do
     [ -f "$SKILL/references/$f.md" ]
     grep -qF "references/$f.md" "$SKILL/SKILL.md"
   done
@@ -220,6 +220,16 @@ make_verifiable_app() {
   sed -n 's/^sdef //p' "$manifest" > "$APP/Contents/Resources/iTerm2.sdef"
   while read -r u; do : > "$APP/Contents/Resources/utilities/$u"; done \
     < <(sed -n 's/^util //p' "$manifest")
+  # it2tip carries the app's own feature tour; the manifest records how many
+  # entries it has, so the fake needs exactly that many.
+  local n
+  n=$(sed -n 's/^tipcount //p' "$manifest")
+  if [ -n "$n" ]; then
+    : > "$APP/Contents/Resources/utilities/it2tip"
+    for _ in $(seq 1 "$n"); do
+      printf '      "title": "Something",\n' >> "$APP/Contents/Resources/utilities/it2tip"
+    done
+  fi
   export ITERM2_APP="$APP"
 }
 
@@ -246,10 +256,15 @@ binstr KeptKey
 binstr RemovedKey
 util it2kept
 util it2removed
+tipcount 4
 info SUFeedURLForFinal https://example.invalid/kept
 EOF
   make_verifiable_app "$M" 9.9.9
   rm "$APP/Contents/Resources/utilities/it2removed"
+  # A shorter tip list stands in for a release that dropped (or, in real
+  # life, added) a feature — the one kind of change the name checks miss.
+  head -2 "$APP/Contents/Resources/utilities/it2tip" > "$APP/it2tip.short"
+  mv "$APP/it2tip.short" "$APP/Contents/Resources/utilities/it2tip"
   sed -i.bak '/removed/d;/Removed/d' "$APP/Contents/MacOS/iTerm2" \
     "$APP/Contents/Resources/iTerm2.sdef"
   write_info_plist "$APP" 9.9.9 "SUFeedURLForFinal https://example.invalid/moved"
@@ -260,6 +275,7 @@ EOF
   [[ "$output" == *'sdef: <command name="removed"'* ]]
   [[ "$output" == *"binstr: RemovedKey"* ]]
   [[ "$output" == *"util: it2removed"* ]]
+  [[ "$output" == *"tipcount: it2tip lists 2 features, recorded as 4"* ]]
   [[ "$output" == *"info: SUFeedURLForFinal is 'https://example.invalid/moved'"* ]]
   # The ones that still hold are not reported as failures.
   [[ "$output" != *"it2kept"* ]]
@@ -274,7 +290,7 @@ EOF
   [[ "$output" == *"INSTALLED IS 3.99.0"* ]]
   [[ "$output" == *"https://iterm2.com/downloads.html"* ]]
   # It says plainly that passing checks are not proof of currency.
-  [[ "$output" == *"new features add nothing for them to catch"* ]]
+  [[ "$output" == *"Only the tip count notices something being ADDED"* ]]
 }
 
 @test "verify.sh: no iTerm.app at all is a clear error, not a silent pass" {

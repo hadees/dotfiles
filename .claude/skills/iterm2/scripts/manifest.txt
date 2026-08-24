@@ -12,6 +12,8 @@
 #                   a Dynamic Profile key, a user-visible sentence)
 #   util <name>     executable in Contents/Resources/utilities
 #   info <k> <v>    Info.plist key that must still read exactly <v>
+#   tipcount <n>    how many features iTerm2's own tour (the bundled it2tip)
+#                   lists; the only verb here that notices an ADDITION
 #   bundle <N.app>  sibling app bundle; advisory only, never fails the run
 #
 # Add a fact here the moment you rely on it in a reference file, and delete
@@ -77,6 +79,28 @@ binstr Dynamic Profile Parent GUID
 binstr Dynamic Profile Filename
 binstr Rewritable
 
+# --- Profile keys behind the interactive features ----------------------
+# See references/workflow.md. These are the keys a Dynamic Profile would
+# write to configure Automatic Profile Switching, Smart Selection and
+# Semantic History without touching the UI.
+binstr Bound Hosts
+binstr Prevent Automatic Profile Switching
+binstr Smart Selection Rules
+binstr Semantic History
+binstr Smart Selection Actions Use Interpolated Strings
+binstr Smart Selection Ignoring Newlines
+binstr Smart Selection Playground
+binstr Default Toolbelt Width
+binstr Open Toolbelt
+binstr Codecierge
+binstr Named Marks
+
+# --- SSH Integration ---------------------------------------------------
+# See references/ssh.md.
+binstr sshIntegrationLevel
+binstr sshURLsSupportPath
+binstr Terminal: Command to run when handling an ssh:// URL.
+
 # --- Preference keys ---------------------------------------------------
 # See references/preferences.md.
 binstr LoadPrefsFromCustomFolder
@@ -132,6 +156,14 @@ util it2ssh
 util it2tip
 util it2ul
 util it2universion
+
+# --- iTerm2's own feature inventory ------------------------------------
+# it2tip is a Python script carrying the app's whole feature tour, one entry
+# per feature, and it grows as the app does. Its length is the only check
+# here that can notice a feature being ADDED rather than removed — every
+# other verb asks whether a name still exists. When this trips, run
+# `.../Contents/Resources/utilities/it2tip` and read what is new.
+tipcount 123
 
 # --- Updater wiring ----------------------------------------------------
 # See references/releases.md. These are iTerm2's own Info.plist keys, not

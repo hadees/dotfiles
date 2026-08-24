@@ -683,13 +683,23 @@ The `.claude/skills/iterm2/` skill exists to make that decay visible instead:
 it is a **version-stamped, machine-checkable record** of one release —
 AppleScript dictionary, Python API and its cookie/socket auth model, Dynamic
 Profiles, shell integration and the `it2*` utilities, triggers, badges, status
-bar, hotkey windows, `tmux -CC`, preferences and startup behaviour, the AI
-plugin, and how the project ships releases. Every claim was read off the
-installed bundle rather than recalled, and the mechanically checkable part of
-it — sdef commands, Dynamic Profile and preference key names, the bundled
-utilities, updater `Info.plist` keys — is one fact per line in
+bar, hotkey windows, `tmux -CC`, Automatic Profile Switching, Smart Selection
+and Semantic History, the Toolbelt, SSH Integration and `ssh://` URLs,
+preferences and startup behaviour, the AI plugin and its permission model, and
+how the project ships releases. Every claim was read off the installed bundle
+rather than recalled, and the mechanically checkable part of it — sdef
+commands, Dynamic Profile / APS / Smart Selection / preference key names, the
+bundled utilities, updater `Info.plist` keys — is one fact per line in
 `scripts/manifest.txt`. `scripts/verify.sh` re-reads all of it from the bundle
 and exits non-zero on any drift.
+
+One entry in that manifest is a different shape from the rest and is the most
+useful: `tipcount`. iTerm2 ships `Contents/Resources/utilities/it2tip`, a
+Python script holding the app's own feature tour — 123 entries in 3.6.11, each
+with a menu path, documented nowhere on iterm2.com. Every other check asks
+whether a name still *exists*, so they are all blind to a feature being
+**added**; counting that list is the one tripwire that is not. When it trips,
+run `it2tip` and read what is new.
 
 Three consequences shape the code here:
 

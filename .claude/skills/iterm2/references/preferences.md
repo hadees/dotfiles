@@ -60,6 +60,41 @@ reference, not in the FAQ, not on the hidden-settings page. They are real keys
 in the binary and stable in practice, but they are reverse-engineered and
 unsupported. Say so when recommending them.
 
+## Settings > General > Magic
+
+The pane whose name gives no clue what is in it. It is **not** the AI pane —
+AI has its own sections under Settings > General (`references/ai-plugin.md`),
+and confusing the two is the usual reason someone cannot find a setting.
+
+The eight documented options
+(<https://iterm2.com/documentation-preferences-general.html>):
+
+| Option | What it does |
+| --- | --- |
+| Add Bonjour hosts to profiles | "all Bonjour hosts on the local network have a profile created for them as long as they're around" |
+| Instant Replay Uses X MB per Session | Per tab or split pane; more memory means further back. Enter with View > Step Back in Time |
+| Save copy/paste and command history to disk | Copy/paste: the last 20 values, read via Edit > Open Paste History. With shell integration it also persists command history, directory history, and remote host/usernames. **Unchecking erases all of it** |
+| Enable Python API | The `EnableAPIServer` key; see `references/python-api.md` |
+| Custom Python API Scripts Folder | Overrides `~/Library/Application Support/iTerm2/Scripts` |
+| GPU Rendering | Plus two advanced settings: disable when on battery, and prefer the integrated GPU |
+| Maximize throughput at the cost of higher latency | Lowers the frame rate under heavy output and prioritises input over redraw. "You probably need to disable this to hit 120 FPS" |
+| Compress scrollback history in the background | More idle CPU, "significantly reduce memory usage when there are large scrollback buffers" |
+
+**A ninth option is in the pane but not in the pane's documentation**: *Allow
+all apps to connect*, the Python API's cookie escape hatch. It is described
+only on the Python API Security page — see `references/python-api.md` for the
+root-owned file it actually writes. That page still calls the pane
+"Prefs > General > Magic"; everything else says Settings.
+
+Two numbers on the same checkbox disagree across pages: "the last 20 values"
+(Magic) versus "up to 200 commands per user/hostname" (Shell Integration).
+Both are right — 20 is the copy/paste ring, 200 the command history.
+
+Adjacent and easily confused: **Settings > General > Experimental** holds
+exactly two options, *Enable support for right-to-left scripts* and *Use SSH
+integration for ssh: URLs* (`references/ssh.md`). There is no general
+"enable experimental features" switch.
+
 ## Startup and restoration — measured, not recalled
 
 Two behaviours that are easy to state wrongly from memory, both measured on
