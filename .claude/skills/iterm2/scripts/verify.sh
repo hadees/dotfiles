@@ -57,7 +57,11 @@ plist=$app/Contents/Info.plist
 # A missing strings(1) is not fatal: skip that class of check and say so.
 strdump=""
 if [ -r "$exe" ] && command -v strings >/dev/null 2>&1; then
-  strdump=$(mktemp -t iterm2-verify) || die "cannot create a temp file"
+  # Not `mktemp -t iterm2-verify`: that is BSD syntax. GNU coreutils reads the
+  # argument as a template and demands XXX in it, so the BSD form dies on every
+  # Linux runner — and this script is meant to be checkable anywhere a bundle
+  # can be copied. The explicit template works on both.
+  strdump=$(mktemp "${TMPDIR:-/tmp}/iterm2-verify.XXXXXX") || die "cannot create a temp file"
   trap 'rm -f "$strdump"' EXIT
   strings -a "$exe" > "$strdump" 2>/dev/null || : > "$strdump"
 fi

@@ -299,3 +299,30 @@ EOF
   [ "$status" -eq 2 ]
   [[ "$output" == *"no iTerm.app found"* ]]
 }
+
+@test "verify.sh: works where mktemp is GNU coreutils, not BSD" {
+  M="$SKILL/scripts/manifest.txt"
+  make_verifiable_app "$M" "$(sed -n 's/^version //p' "$M")"
+  # GNU mktemp reads the argument after -t as a template and refuses one with
+  # no X's; BSD mktemp treats it as a prefix and invents the suffix. Code
+  # written on macOS therefore dies on every Linux runner, which is exactly
+  # what happened here. Stub the GNU behaviour so this cannot regress on a
+  # machine where the real mktemp is forgiving.
+  mkdir -p "$BATS_TEST_TMPDIR/gnubin"
+  cat > "$BATS_TEST_TMPDIR/gnubin/mktemp" <<'STUB'
+#!/bin/sh
+for a in "$@"; do
+  case "$a" in
+    -*) continue ;;
+    *XXX*) ;;
+    *) printf "mktemp: too few X's in template '%s'\n" "$a" >&2; exit 1 ;;
+  esac
+done
+exec /usr/bin/mktemp "$@"
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/gnubin/mktemp"
+  PATH="$BATS_TEST_TMPDIR/gnubin:$PATH" run bash "$SKILL/scripts/verify.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK - every recorded fact still holds"* ]]
+  [[ "$output" != *"cannot create a temp file"* ]]
+}
