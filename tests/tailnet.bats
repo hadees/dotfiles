@@ -41,6 +41,15 @@ setup() {
   # Alias -> opaque-token pins for open-as (overlay-supplied in real life);
   # "personal" deliberately has none, to cover the untagged fallback.
   git config --file "$GIT_CONFIG_GLOBAL" browser.tag.work wk94fjq2x
+  # Mount specs (overlay-supplied in real life): one full, one minimal —
+  # no user and no mountpoint — to cover the defaults.
+  git config --file "$GIT_CONFIG_GLOBAL" tailnet-mount.workdata.tailnet work
+  git config --file "$GIT_CONFIG_GLOBAL" tailnet-mount.workdata.host workbox
+  git config --file "$GIT_CONFIG_GLOBAL" tailnet-mount.workdata.path /srv/data
+  git config --file "$GIT_CONFIG_GLOBAL" tailnet-mount.workdata.user tester
+  git config --file "$GIT_CONFIG_GLOBAL" tailnet-mount.baredata.tailnet work
+  git config --file "$GIT_CONFIG_GLOBAL" tailnet-mount.baredata.host workbox
+  git config --file "$GIT_CONFIG_GLOBAL" tailnet-mount.baredata.path /srv/bare
 
   # Two installed tailnets with live sockets: the system daemon (the app) is
   # on the personal one, so personal hosts go direct and work hosts via the
@@ -64,7 +73,11 @@ setup() {
   export SSH_LOG="$BATS_TEST_TMPDIR/ssh.log"
   export CURL_LOG="$BATS_TEST_TMPDIR/curl.log"
   export OPEN_LOG="$BATS_TEST_TMPDIR/open.log"
+  export RCLONE_LOG="$BATS_TEST_TMPDIR/rclone.log"
+  export UMOUNT_LOG="$BATS_TEST_TMPDIR/umount.log"
+  export MOUNT_TABLE="$BATS_TEST_TMPDIR/mount-table"
   : > "$TS_LOG"; : > "$LAUNCHCTL_LOG"; : > "$SYSTEMCTL_LOG"; : > "$SSH_LOG"; : > "$CURL_LOG"; : > "$OPEN_LOG"
+  : > "$RCLONE_LOG"; : > "$UMOUNT_LOG"; : > "$MOUNT_TABLE"
   export FAKE_OS=Darwin
 
   cat > "$BIN/tailscaled" <<'STUB'
@@ -184,6 +197,22 @@ STUB
 #!/bin/sh
 printf '%s\n' "$*" >> "$OPEN_LOG"
 STUB
+  # `mount` prints a fixture mount table (shadows the real one): whatever
+  # FAKE_MOUNTED names, plus every mountpoint the rclone stub "mounted".
+  cat > "$BIN/mount" <<'STUB'
+#!/bin/sh
+[ -n "${FAKE_MOUNTED:-}" ] && printf 'localhost:/ on %s (nfs, nodev, nosuid)\n' "$FAKE_MOUNTED"
+[ -n "${MOUNT_TABLE:-}" ] && [ -f "$MOUNT_TABLE" ] && cat "$MOUNT_TABLE"
+exit 0
+STUB
+  cat > "$BIN/umount" <<'STUB'
+#!/bin/sh
+printf 'umount %s\n' "$*" >> "$UMOUNT_LOG"
+STUB
+  cat > "$BIN/fusermount3" <<'STUB'
+#!/bin/sh
+printf 'fusermount3 %s\n' "$*" >> "$UMOUNT_LOG"
+STUB
   chmod +x "$BIN"/*
   cp "$BATS_TEST_DIRNAME/../bin/executable_tailnet" "$BIN/tailnet"
   cp "$BATS_TEST_DIRNAME/../bin/executable_open-as" "$BIN/open-as"
@@ -249,6 +278,22 @@ make_socket() {
   # zsh's socket module: present wherever the tests run, unlike a perl or
   # python that version-manager shims may hide once HOME is sandboxed.
   zsh -fc 'zmodload zsh/net/socket && zsocket -l "$1"' zsh "$STATE/$1/tailscaled.sock"
+}
+
+# An rclone stub, created per-test (its absence is the "not installed" case):
+# logs its argv one per line — so an argument that must arrive as ONE word
+# (the --sftp-ssh command) can be asserted exactly — and, on success, adds
+# the mountpoint ($3) to the fake mount table so the script's post-mount
+# check sees it. FAKE_RCLONE_RC exits early without "mounting".
+make_rclone_stub() {
+  cat > "$BIN/rclone" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$@" >> "$RCLONE_LOG"
+[ -n "${FAKE_RCLONE_RC:-}" ] && exit "$FAKE_RCLONE_RC"
+printf 'localhost:/ on %s (nfs, nodev, nosuid)\n' "$3" >> "$MOUNT_TABLE"
+exit 0
+STUB
+  chmod +x "$BIN/rclone"
 }
 
 teardown() {
@@ -507,6 +552,137 @@ CLAUDE_CODE_OPTS="no_bare_glob_qual no_case_glob glob_star_short no_extended_glo
   run tailnet nc work workbox 22
   [ "$status" -eq 0 ]
   [ "$output" = "NC: --socket=$STATE/work/tailscaled.sock nc workbox 22" ]
+}
+
+# --- script: mounts --------------------------------------------------------
+
+@test "tailnet mount: rclone nfsmount over the tailnet's ssh transit (macOS)" {
+  make_rclone_stub
+  run tailnet mount workdata
+  [ "$status" -eq 0 ]
+  [[ "$output" == "tailnet: workdata mounted — sftp://tester@workbox/srv/data via work on $STATE/mnt/workdata (log: $STATE/mnt/workdata.log)" ]]
+  # argv, one per line: subcommand, remote, mountpoint, and the ssh transit
+  # command as a single word with the ProxyCommand quoted inside it.
+  grep -qxF "nfsmount" "$RCLONE_LOG"
+  grep -qxF ":sftp:/srv/data" "$RCLONE_LOG"
+  grep -qxF "$STATE/mnt/workdata" "$RCLONE_LOG"
+  grep -qxF -- "--daemon" "$RCLONE_LOG"
+  grep -qxF -- "--log-file" "$RCLONE_LOG"
+  grep -qxF "$STATE/mnt/workdata.log" "$RCLONE_LOG"
+  grep -qxF -- "--sftp-ssh" "$RCLONE_LOG"
+  grep -qxF "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o \"ProxyCommand=$TAILNET_BIN nc work %h %p\" tester@workbox" "$RCLONE_LOG"
+  grep -qxF -- "--vfs-cache-mode" "$RCLONE_LOG"
+  grep -qxF "writes" "$RCLONE_LOG"
+  # The mountpoint exists and the mnt tree is private to the user.
+  [ -d "$STATE/mnt/workdata" ]
+  [[ $(ls -ld "$STATE/mnt") == drwx------* ]]
+}
+
+@test "tailnet mount: no user key -> no user@ prefix; mountpoint key honoured" {
+  make_rclone_stub
+  run tailnet mount baredata
+  [ "$status" -eq 0 ]
+  grep -qxF "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o \"ProxyCommand=$TAILNET_BIN nc work %h %p\" workbox" "$RCLONE_LOG"
+  git config --file "$GIT_CONFIG_GLOBAL" tailnet-mount.baredata.mountpoint "$BATS_TEST_TMPDIR/elsewhere"
+  run tailnet mount baredata
+  [ "$status" -eq 0 ]
+  grep -qxF "$BATS_TEST_TMPDIR/elsewhere" "$RCLONE_LOG"
+  [ -d "$BATS_TEST_TMPDIR/elsewhere" ]
+  # The log still lands in the state tree, not next to a foreign mountpoint.
+  grep -qxF "$STATE/mnt/baredata.log" "$RCLONE_LOG"
+}
+
+@test "tailnet mount: Linux uses rclone mount (FUSE), same transit" {
+  make_rclone_stub
+  FAKE_OS=Linux run tailnet mount workdata
+  [ "$status" -eq 0 ]
+  grep -qxF "mount" "$RCLONE_LOG"
+  ! grep -qxF "nfsmount" "$RCLONE_LOG"
+  grep -qxF ":sftp:/srv/data" "$RCLONE_LOG"
+}
+
+@test "tailnet mount: rclone-args config and extra argv are appended" {
+  make_rclone_stub
+  git config --file "$GIT_CONFIG_GLOBAL" tailnet-mount.workdata.rclone-args "--vfs-cache-max-size 5G"
+  run tailnet mount workdata --read-only
+  [ "$status" -eq 0 ]
+  grep -qxF -- "--vfs-cache-max-size" "$RCLONE_LOG"
+  grep -qxF "5G" "$RCLONE_LOG"
+  grep -qxF -- "--read-only" "$RCLONE_LOG"
+}
+
+@test "tailnet mount: already mounted is a cheap no-op" {
+  make_rclone_stub
+  FAKE_MOUNTED="$STATE/mnt/workdata" run tailnet mount workdata
+  [ "$status" -eq 0 ]
+  [ "$output" = "tailnet: workdata already mounted on $STATE/mnt/workdata" ]
+  [ ! -s "$RCLONE_LOG" ]
+}
+
+@test "tailnet mount: fails loud with remediation at every missing piece" {
+  # No such mount configured.
+  run tailnet mount nosuch
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no mount 'nosuch' configured — add [tailnet-mount \"nosuch\"]"* ]]
+  # Spec missing a required key.
+  git config --file "$GIT_CONFIG_GLOBAL" tailnet-mount.broken.tailnet work
+  run tailnet mount broken
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"tailnet-mount.broken.host is not set"* ]]
+  # rclone not installed (no stub was made; the host machine may have a real
+  # rclone, so this runs on a PATH of just the stub dir and the system dirs).
+  PATH="$BIN:/usr/bin:/bin" run tailnet mount workdata
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"rclone not found — brew install rclone"* ]]
+  make_rclone_stub
+  # The spec names a tailnet that was never installed.
+  git config --file "$GIT_CONFIG_GLOBAL" tailnet-mount.workdata.tailnet never-installed
+  run tailnet mount workdata
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"not installed (run: tailnet install never-installed)"* ]]
+  git config --file "$GIT_CONFIG_GLOBAL" tailnet-mount.workdata.tailnet work
+  # Daemon down: socket missing.
+  rm "$STATE/work/tailscaled.sock"
+  run tailnet mount workdata
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"daemon for 'work' is not running"* ]]
+  make_socket work
+  # rclone itself failing, and "succeeding" without the mount appearing.
+  FAKE_RCLONE_RC=1 run tailnet mount workdata
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"rclone nfsmount failed — see $STATE/mnt/workdata.log"* ]]
+  FAKE_RCLONE_RC=0 run tailnet mount workdata
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"mount 'workdata' did not come up — see $STATE/mnt/workdata.log"* ]]
+}
+
+@test "tailnet umount: detaches per-OS and is a no-op when not mounted" {
+  run tailnet umount workdata
+  [ "$status" -eq 0 ]
+  [ "$output" = "tailnet: workdata is not mounted" ]
+  [ ! -s "$UMOUNT_LOG" ]
+  FAKE_MOUNTED="$STATE/mnt/workdata" run tailnet umount workdata
+  [ "$status" -eq 0 ]
+  [ "$output" = "tailnet: workdata unmounted from $STATE/mnt/workdata" ]
+  grep -qxF "umount $STATE/mnt/workdata" "$UMOUNT_LOG"
+  : > "$UMOUNT_LOG"
+  FAKE_OS=Linux FAKE_MOUNTED="$STATE/mnt/workdata" run tailnet umount workdata
+  [ "$status" -eq 0 ]
+  grep -qxF "fusermount3 -u $STATE/mnt/workdata" "$UMOUNT_LOG"
+}
+
+@test "tailnet mounts: lists every spec and its state" {
+  run tailnet mounts
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "baredata: sftp://workbox/srv/bare via work on $STATE/mnt/baredata — not mounted" ]
+  [ "${lines[1]}" = "workdata: sftp://tester@workbox/srv/data via work on $STATE/mnt/workdata — not mounted" ]
+  FAKE_MOUNTED="$STATE/mnt/workdata" run tailnet mounts
+  [ "${lines[1]}" = "workdata: sftp://tester@workbox/srv/data via work on $STATE/mnt/workdata — mounted" ]
+  git config --file "$GIT_CONFIG_GLOBAL" --remove-section tailnet-mount.workdata
+  git config --file "$GIT_CONFIG_GLOBAL" --remove-section tailnet-mount.baredata
+  run tailnet mounts
+  [ "$status" -eq 0 ]
+  [[ "$output" == "tailnet: no mounts configured (tailnet-mount.<name>.* in machine-local git config"* ]]
 }
 
 # --- functions: cwd preference ---------------------------------------------
@@ -961,6 +1137,28 @@ STUB
   rm -rf "$STATE"
   in_repo "$repo" tailnet-doctor
   [[ "$output" == *"<no tailnet installed — tailnet install <name> && tailnet up <name>>"* ]]
+}
+
+@test "tailnet-doctor: reports rclone and the mounts when any are configured" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  # rclone missing: named with its remediation, mounts still listed. The
+  # host machine may have a real rclone, so these run on a PATH of just the
+  # stub dir and the system dirs.
+  in_repo "$repo" "PATH=$BIN:/usr/bin:/bin; tailnet-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"rclone:  NOT FOUND — brew install rclone (tailnet mount needs it)"* ]]
+  [[ "$output" == *"mounts:"$'\n'"  baredata: sftp://workbox/srv/bare via work on $STATE/mnt/baredata — not mounted"* ]]
+  [[ "$output" == *"  workdata: sftp://tester@workbox/srv/data via work on $STATE/mnt/workdata — not mounted"* ]]
+  # rclone present: its path, like the binary: line.
+  make_rclone_stub
+  in_repo "$repo" "PATH=$BIN:/usr/bin:/bin; tailnet-doctor"
+  [[ "$output" == *"rclone:  $BIN/rclone"* ]]
+  # No mounts configured anywhere: neither line appears.
+  git config --file "$GIT_CONFIG_GLOBAL" --remove-section tailnet-mount.workdata
+  git config --file "$GIT_CONFIG_GLOBAL" --remove-section tailnet-mount.baredata
+  in_repo "$repo" tailnet-doctor
+  [[ "$output" != *"rclone:"* ]]
+  [[ "$output" != *"mounts:"* ]]
 }
 
 @test "doctor: runs the tailnet doctor after the others" {

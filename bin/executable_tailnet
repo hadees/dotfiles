@@ -46,6 +46,14 @@
 #                            direct); exit 1 when it is a node nowhere
 #   nc <name> <host> <port>  TCP to <host>:<port> inside that tailnet on
 #                            stdin/stdout — the ssh ProxyCommand
+#   mount <name> [rclone flags]  mount a configured remote directory over its
+#                            tailnet — rclone sftp through `tailnet nc`,
+#                            served as loopback NFS (macOS) / FUSE (Linux);
+#                            spec in machine-local git config:
+#                            tailnet-mount.<name>.{tailnet,host,path,user,
+#                            mountpoint,rclone-args}
+#   umount <name>            unmount it (the rclone daemon exits with it)
+#   mounts                   configured mounts and whether each is mounted
 set -u
 
 TAILNET_STATE=${TAILNET_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/tailnet}
@@ -486,6 +494,124 @@ cmd_nc() {
   exec "$c" --socket="$(sock_path "$1")" nc "$2" "$3"
 }
 
+# --- mounts -----------------------------------------------------------------
+# A mount's spec lives in machine-local git config (overlay-supplied, like
+# open-as's browser.tag.*): tailnet-mount.<name>.{tailnet,host,path,user,
+# mountpoint,rclone-args}. rclone speaks sftp through the tailnet via an
+# external `ssh -o ProxyCommand=<this script> nc <tailnet> %h %p` — so the
+# user's ssh config, known_hosts, and ssh agent all apply (rclone ignores its
+# internal host/user config when --sftp-ssh is set and appends `-s sftp` to
+# the command) — and serves the result to the kernel as loopback NFS on macOS
+# (kext-free, no root; Linux NFS mounts would need root, so Linux FUSE-mounts
+# instead). The kernel only ever talks to localhost, so a tailnet blip is an
+# IO error plus an rclone retry, never a wedged mount. Unlike the fail-open
+# shell wrappers these commands fail loud: the mount is the point.
+
+mount_cfg() { command git config --get "tailnet-mount.$1.$2" 2>/dev/null; }
+
+mount_names() {
+  command -v git >/dev/null 2>&1 || return 0
+  command git config --get-regexp '^tailnet-mount\.' 2>/dev/null |
+    sed -n 's/^tailnet-mount\.\(.*\)\.[a-z-]* .*$/\1/p' | sort -u
+}
+
+mount_point() { # name -> configured mountpoint, else $TAILNET_STATE/mnt/<name>
+  mp=$(mount_cfg "$1" mountpoint)
+  [ -n "$mp" ] || mp=$TAILNET_STATE/mnt/$1
+  printf '%s\n' "$mp"
+}
+
+is_mounted() { # mountpoint ("on <mp> (nfs…" on macOS, "on <mp> type fuse…" on Linux)
+  mount 2>/dev/null | grep -qF " on $1 "
+}
+
+self_path() { # absolute path to this script (ssh runs ProxyCommand via $SHELL -c without ~/bin on PATH)
+  case $0 in
+    /*) printf '%s\n' "$0";;
+    */*) printf '%s/%s\n' "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)" "$(basename -- "$0")";;
+    *) command -v -- "$0" || printf '%s\n' "$0";;
+  esac
+}
+
+cmd_mount() {
+  need_name "${1-}"
+  name=$1; shift
+  command -v git >/dev/null 2>&1 || die "git not found — tailnet mount reads its spec from git config"
+  tn=$(mount_cfg "$name" tailnet)
+  [ -n "$tn" ] || die "no mount '$name' configured — add [tailnet-mount \"$name\"] (tailnet, host, path) to a machine-local gitconfig (overlay; see docs/private-overlays.md)"
+  host=$(mount_cfg "$name" host) && [ -n "$host" ] || die "mount '$name': tailnet-mount.$name.host is not set"
+  rpath=$(mount_cfg "$name" path) && [ -n "$rpath" ] || die "mount '$name': tailnet-mount.$name.path is not set"
+  user=$(mount_cfg "$name" user)
+  command -v rclone >/dev/null 2>&1 || die "rclone not found — brew install rclone (apt: rclone + fuse3)"
+  need_installed "$tn"
+  s=$(sock_path "$tn")
+  [ -S "$s" ] || die "daemon for '$tn' is not running (socket $s missing) — tailnet status $tn"
+  mp=$(mount_point "$name")
+  if is_mounted "$mp"; then
+    printf 'tailnet: %s already mounted on %s\n' "$name" "$mp"
+    return 0
+  fi
+  mkdir -p "$mp" || die "cannot create mountpoint $mp"
+  case $mp in
+    "$TAILNET_STATE/mnt/"*) chmod 700 "$TAILNET_STATE/mnt";;
+  esac
+  dest=$host
+  [ -n "$user" ] && dest=$user@$host
+  sshcmd="ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o \"ProxyCommand=$(self_path) nc $tn %h %p\" $dest"
+  log=$TAILNET_STATE/mnt/$name.log
+  sub=mount
+  [ "$(os)" = Darwin ] && sub=nfsmount
+  extra=$(mount_cfg "$name" rclone-args)
+  # $extra is deliberately unquoted: rclone-args is a space-separated list.
+  rclone "$sub" ":sftp:$rpath" "$mp" \
+    --daemon --log-file "$log" --log-level INFO \
+    --sftp-ssh "$sshcmd" \
+    --vfs-cache-mode writes --vfs-cache-max-size 1G --dir-cache-time 30s \
+    $extra "$@" || die "rclone $sub failed — see $log"
+  is_mounted "$mp" || die "mount '$name' did not come up — see $log"
+  printf 'tailnet: %s mounted — sftp://%s%s via %s on %s (log: %s)\n' "$name" "$dest" "$rpath" "$tn" "$mp" "$log"
+}
+
+cmd_umount() {
+  # Needs only the mountpoint, so a mount whose config was removed still
+  # tears down. Detaching the kernel mount makes the rclone daemon exit.
+  need_name "${1-}"
+  name=$1
+  mp=$(mount_point "$name")
+  if ! is_mounted "$mp"; then
+    printf 'tailnet: %s is not mounted\n' "$name"
+    return 0
+  fi
+  case $(os) in
+    Darwin)
+      umount "$mp" || die "umount $mp failed (busy? lsof +D $mp; force: umount -f $mp)"
+      ;;
+    *)
+      if command -v fusermount3 >/dev/null 2>&1; then fusermount3 -u "$mp"
+      elif command -v fusermount >/dev/null 2>&1; then fusermount -u "$mp"
+      else umount "$mp"
+      fi || die "unmount of $mp failed (busy? lsof +D $mp)"
+      ;;
+  esac
+  printf 'tailnet: %s unmounted from %s\n' "$name" "$mp"
+}
+
+cmd_mounts() {
+  found=0
+  for n in $(mount_names); do
+    found=1
+    tn=$(mount_cfg "$n" tailnet)
+    host=$(mount_cfg "$n" host)
+    user=$(mount_cfg "$n" user)
+    dest=$host
+    [ -n "$user" ] && dest=$user@$host
+    mp=$(mount_point "$n")
+    if is_mounted "$mp"; then st=mounted; else st="not mounted"; fi
+    printf '%s: sftp://%s%s via %s on %s — %s\n' "$n" "$dest" "$(mount_cfg "$n" path)" "$tn" "$mp" "$st"
+  done
+  [ "$found" = 1 ] || printf 'tailnet: no mounts configured (tailnet-mount.<name>.* in machine-local git config — see docs/private-overlays.md)\n'
+}
+
 # --- dispatch ---------------------------------------------------------------
 
 [ $# -ge 1 ] || usage
@@ -508,6 +634,9 @@ case $cmd in
   peer)       need_installed "${1-}"; [ $# -eq 2 ] || usage; peer_in "$1" "$2";;
   route)      cmd_route "$@";;
   nc)         cmd_nc "$@";;
+  mount)      cmd_mount "$@";;
+  umount)     cmd_umount "$@";;
+  mounts)     cmd_mounts;;
   -h|--help|help) usage;;
   *)          die "unknown command '$cmd' (tailnet help)";;
 esac

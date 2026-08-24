@@ -26,6 +26,9 @@ xclip
 whois
 jc
 gallery-dl
+rclone
+fuse3
+# rclone + fuse3: tailnet mount — on Linux it FUSE-mounts (rclone mount needs fusermount3); macOS uses rclone nfsmount instead
 # lazygit and k9s are not in Ubuntu's repos — install manually if wanted
 # actionlint, cloudflared, and countdown are not in Ubuntu's repos either — install manually if wanted
 # tailscale is not in Ubuntu's repos either (needs pkgs.tailscale.com's apt source) — install manually; bin/tailnet's userspace daemons need its tailscaled
