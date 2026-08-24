@@ -182,7 +182,7 @@ cask 'huggingchat' # Chat client for models on Hugging Face
 cask 'imageoptim'
 cask 'inkscape'
 cask 'istat-menus'
-cask 'iterm2'
+cask 'iterm2' # Terminal emulator with tabs, splits, and an AppleScript/Python scripting API
 cask 'jdiskreport' # Disk usage visualizer
 cask 'kaleidoscope'
 cask 'keyboardcleantool' # Blocks all keyboard/Touch Bar input while cleaning

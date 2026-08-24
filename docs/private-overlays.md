@@ -184,6 +184,61 @@ owners go in the personal overlay, work orgs in the work overlay.
 	default   = ~/.claude-<name>     # optional: used when no pin matches the cwd
 ```
 
+### Claude Code sessions to reopen after a restart (macOS)
+
+`~/bin/claude-session` opens one iTerm2 window per Claude Code profile with a
+tab per project. Project paths are private, so the whole list lives here:
+
+```gitconfig
+[claude-session "<name>"]          # <name>: letters, digits, - and _
+	dir      = ~/code/<project>      # required; the tab's working directory
+	window   = <label>               # optional; see below
+	profile  = <claude profile>      # optional; forces `claude-as <profile>`
+	args     = --continue            # optional; appended to the claude call
+	title    = <tab title>           # optional (default: <name>); iTerm2
+	                                 # relabels tabs itself, so it is a hint
+	disabled = true                  # optional; keep the entry, skip it
+[claude-session]
+	delay    = 3                     # optional; seconds to settle after login
+```
+
+A worked example — two work projects, one personal, one side project that
+lives under a personal GitHub owner but wants a named profile of its own:
+
+```gitconfig
+[claude-session "atlas"]
+	dir = ~/code/atlas               # origin belongs to the work org
+[claude-session "beacon"]
+	dir = ~/code/beacon              # same org -> same window as atlas
+	args = --continue
+[claude-session "dotfiles"]
+	dir = ~/code/dotfiles            # personal owner -> the other window
+[claude-session "notes"]
+	dir = ~/notes                    # not a repo: nothing to resolve
+	window = personal-stuff          # so say which window by hand
+	profile = <personal alias>       # and which profile to launch as
+```
+
+`window` is only needed for the last shape. Leave it out and the session joins
+the window of the profile its **directory** resolves to — the same
+`credential.https://github.com/<owner>.username` → `claude.profile.<account>`
+chain `claude()` walks — which is what keeps the two accounts in two windows
+with neither account named in the launcher. `profile` takes a name mapped in
+`claude.profile.*` (an alias is fine) and is what `claude-as` would take.
+
+Once per machine, after `dotfiles`:
+
+```sh
+claude-session install     # the launchd agent (Aqua session only)
+claude-session start       # once by hand: macOS asks about controlling iTerm2
+claude-session status      # agent, sessions, which tabs are open
+```
+
+Expect a second Automation prompt at the first login after that — the agent is
+a different client to macOS than your terminal. `claude-session plan` shows
+the whole decision table without touching iTerm2, and `claude-session-doctor`
+(also run by `doctor`) reports it next to the agent's state.
+
 ### Wrangler (Cloudflare) profile per account — and per repo
 
 ```gitconfig
@@ -296,7 +351,9 @@ npx", not "pin <side-company> to its profile").
    `identity.<account>.email`; `claude.profile.<account>`;
    `wrangler.profile.<account>` (or a `wrangler.<owner>/<repo>.profile` pin
    for a one-off repo); `tailnet.profile.<account>` if that account has a
-   tailnet; Finicky rules. Personal overlay only:
+   tailnet; a `claude-session.<name>.dir` for each of that account's
+   projects you want reopened after a restart; Finicky rules.
+   Personal overlay only:
    `claude.profile.default` names the profile stray, unpinned directories
    get (unset, they get bare `claude` = the default config dir).
 3. `dotfiles` to apply; `doctor` in a repo of that owner to confirm every

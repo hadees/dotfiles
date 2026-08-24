@@ -468,6 +468,45 @@ function claude-doctor() {
 	print -r -- "creds:   $cred";
 }
 
+# Diagnose what `claude-session` would put on screen at the next login: is the
+# launcher installed, is the agent loaded, what does the machine-local config
+# ask for, and which of those tabs are open right now. The session table comes
+# from the script's own `status` — one decision, reported once — and the
+# `window:` line answers the question the table cannot: which window *this*
+# repo would land in, resolved by the same claude_profile_dir the launcher
+# asks and claude() obeys. Report-only: it opens nothing.
+function claude-session-doctor() {
+	emulate -L zsh;
+	local dir label ver plist;
+	print -r -- "wrapper: <none — claude-session is a script, not a shell wrapper>";
+	print -r -- "defined: $(defined_trace claude_profile_dir gh_account_for_cwd git_origin_slug)";
+	if (( $+commands[claude-session] )); then
+		print -r -- "script:  ${commands[claude-session]}";
+	else
+		print -r -- "script:  NOT FOUND — ~/bin/claude-session is not on PATH (chezmoi apply; macOS only)";
+	fi;
+	if [[ -d /Applications/iTerm.app ]]; then
+		# Read off the bundle, never by running it — same rule as the other
+		# doctors' binary: lines.
+		ver="$(command defaults read /Applications/iTerm.app/Contents/Info CFBundleShortVersionString 2>/dev/null)";
+		print -r -- "iterm:   /Applications/iTerm.app${ver:+ ($ver)}";
+	elif [[ $(uname -s) == Darwin ]]; then
+		print -r -- "iterm:   NOT INSTALLED — brew install --cask iterm2";
+	else
+		print -r -- "iterm:   n/a — iTerm2 is macOS-only, the launcher does nothing here";
+	fi;
+	if (( $+commands[claude-session] )); then
+		command claude-session status 2>&1 | sed 's/^/  /';
+	fi;
+	print -r -- "cwd:     $PWD";
+	if dir="$(claude_profile_dir)"; then
+		label=${${dir:t}#.};
+		print -r -- "window:  $label (from claude_profile_dir — a session here with no claude-session.<name>.window key joins that window)";
+	else
+		print -r -- "window:  <unresolved — a session here would get a window of its own>";
+	fi;
+}
+
 # The Hermes harness (NousResearch/hermes-agent) keeps per-agent state in
 # profiles (`hermes profile create <name>` — each its own HERMES_HOME with its
 # own config, approval rules, memory, and .env keys). A repo that must only
@@ -1701,16 +1740,16 @@ function shell_trace() {
 	print -r -- "zsh $ZSH_VERSION$ia${CLAUDECODE:+, under Claude Code}, options: ${list:-none}${list:+ (the tailnet wrappers reset these with emulate -L zsh)}";
 }
 
-# All six per-repo routing diagnoses for the cwd in one go — git identity,
-# gh account, Claude Code profile, wrangler profile, hermes profile, tailnet
-# routing — headed by the calling shell's version and pattern options
-# (shell_trace; this function must not emulate, see there). First thing to
-# run when a repo "behaves weird" on a machine.
+# All seven routing diagnoses in one go — git identity, gh account, Claude
+# Code profile, the Claude Code session launcher, wrangler profile, hermes
+# profile, tailnet routing — headed by the calling shell's version and pattern
+# options (shell_trace; this function must not emulate, see there). First
+# thing to run when a repo "behaves weird" on a machine.
 function doctor() {
 	local d;
 	print -r -- "shell:   $(shell_trace)";
 	print -r -- "";
-	for d in git gh claude wrangler hermes tailnet; do
+	for d in git gh claude claude-session wrangler hermes tailnet; do
 		print -r -- "== $d-doctor";
 		"$d-doctor";
 		print -r -- "";

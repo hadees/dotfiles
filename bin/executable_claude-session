@@ -1,0 +1,547 @@
+#!/bin/sh
+# claude-session — put the day's Claude Code sessions back on screen after a
+# restart: one iTerm2 window per account, one tab per project, each tab sitting
+# in the project directory with `claude` already running in it.
+#
+# Which projects those are is machine-local, identity-bearing config — the same
+# stance as every other router here (gh, claude, wrangler, tailnet, Finicky):
+# the machinery is public, the names live in git config supplied by a private
+# overlay. Nothing in this file names a project, an account, or a window.
+#
+#   [claude-session "<name>"]          # <name>: letters, digits, - and _
+#       dir      = ~/code/<project>    # required; the tab's working directory
+#       window   = <label>             # optional; which window it shares
+#       profile  = <claude profile>    # optional; forces `claude-as <profile>`
+#       args     = --continue          # optional; appended to the claude call
+#       title    = <tab title>         # optional; defaults to <name>. It is
+#                                      # set on the tab, but iTerm2's own
+#                                      # title updates (shell integration, the
+#                                      # working directory) overwrite it, so
+#                                      # treat it as a hint; the tag below is
+#                                      # what identifies a tab, never the title.
+#       disabled = true                # optional; keep the entry, skip it
+#   [claude-session]
+#       delay    = 3                   # optional; seconds `at-login` settles
+#
+# Grouping: a session with no `window` key lands in the window of the Claude
+# Code profile its *directory* resolves to — asked of claude_profile_dir in
+# ~/.functions, the very helper claude() uses — so personal projects share one
+# window and work projects another with nothing about accounts written down
+# either here or in the overlay. A directory nothing can resolve (no origin,
+# no pin, no ~/.functions) gets a window of its own: an extra window is a
+# smaller mistake than two accounts sharing one.
+#
+# Three decisions worth knowing, all of them load-bearing:
+#
+#   * The tab runs the login shell and is *typed at* (iTerm2's `write text`),
+#     rather than being handed a command to exec (`create tab … command "…"`).
+#     A command started that way is not run by an interactive shell, so
+#     ~/.functions is never sourced, `claude` is the bare binary, and the
+#     account routing silently disappears — the tab would come up as whichever
+#     account owns ~/.claude. Typing `cd … && claude` into a real login shell
+#     is what makes the wrapper (and therefore CLAUDE_CONFIG_DIR) apply.
+#   * The trigger is a per-user launchd agent limited to the Aqua session
+#     (see write_plist). A LaunchAgent with RunAtLoad fires as the GUI login
+#     session comes up and may open windows in it; LimitLoadToSessionType=Aqua
+#     keeps it from ever running in an ssh or LoginWindow context, where
+#     opening windows is meaningless and TCC prompts go unanswered. `at-login`
+#     still waits for the Dock and for iTerm2 to answer before it types
+#     anything: RunAtLoad is early, and early is not the same as ready.
+#   * iTerm2 Window Arrangements were the obvious alternative and are the
+#     wrong tool here: an arrangement restores a shell in a directory, not a
+#     running `claude`; it lives in com.googlecode.iterm2.plist, which this
+#     repo deploys *publicly*, so real project paths would leak on the next
+#     capture; and it is edited by clicking, not by an overlay on a fresh
+#     machine.
+#
+# Re-running is safe. Each session tab is tagged with an iTerm2 user variable
+# (user.claudeSession), and `start` skips a session whose tag is already on
+# screen, adding only what is missing — to that window group's existing window
+# when it can find one.
+#
+# First run needs one human "OK": macOS asks whether the launcher may control
+# iTerm2 (Automation, per client binary). Approve it once; run
+# `claude-session start` by hand after installing to get the prompt while you
+# are looking at the screen.
+#
+# Usage: claude-session <command> [args]
+#   list                     configured session names, one per line
+#   plan [name...]           the decision table, tab-separated:
+#                            window, name, state (ok|no-dir|disabled), title,
+#                            directory, command
+#   script [name...]         the AppleScript `start` would run — a dry run
+#   start [name...]          open the windows and tabs (idempotent)
+#   at-login                 what the launch agent runs: wait for the GUI
+#                            session, launch iTerm2, then start
+#   install                  write and load the per-user launch agent
+#   uninstall                unload and remove it
+#   status                   agent, configured sessions, what is open now
+#   logs [tail args]         the launch agent's log
+#   dir                      the state directory
+set -u
+
+CLAUDE_SESSION_STATE=${CLAUDE_SESSION_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/claude-session}
+LABEL=local.claude-session
+MARK=user.claudeSession        # iTerm2 session variable: the session name
+MARK_WINDOW=user.claudeSessionWindow
+
+die() { printf 'claude-session: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'claude-session: %s\n' "$*" >&2; }
+usage() { sed -n '/^# Usage:/,/^set -u/{ /^set -u/d; s/^# \{0,1\}//p; }' "$0" >&2; exit 2; }
+
+os() { uname -s 2>/dev/null; }
+uid() { id -u; }
+need_macos() {
+  [ "$(os)" = Darwin ] || die "$1 needs macOS — iTerm2 runs nowhere else (list/plan/script work anywhere)"
+}
+log_path() { printf '%s\n' "$CLAUDE_SESSION_STATE/launch.log"; }
+plist_path() { printf '%s\n' "$HOME/Library/LaunchAgents/$LABEL.plist"; }
+
+# This script's own absolute path — what the launch agent must exec. $0 is
+# whatever PATH lookup or the user typed; the agent gets neither.
+self_path() {
+  s=$0
+  case $s in
+    /*) ;;
+    *) s=$(cd -- "$(dirname -- "$s")" 2>/dev/null && pwd)/$(basename -- "$s");;
+  esac
+  printf '%s\n' "$s"
+}
+
+valid_name() {
+  case ${1-} in
+    ''|*[!A-Za-z0-9_-]*|-*) return 1;;
+  esac
+  return 0
+}
+
+# --- configuration ----------------------------------------------------------
+
+sval() { # name key -> value
+  git config --get "claude-session.$1.$2" 2>/dev/null
+}
+
+# Session names, in the order the config file lists them (that is the order
+# the tabs open in). Keys with no subsection — claude-session.delay — need two
+# dots to match and so are skipped; a name may not contain a dot, which is
+# what keeps the two apart.
+names() {
+  git config --get-regexp '^claude-session\.' 2>/dev/null |
+    sed -n 's/^claude-session\.\([^. ][^. ]*\)\.[^. ]* .*$/\1/p' |
+    awk '!seen[$0]++'
+}
+
+expand_home() {
+  case ${1-} in
+    '~') printf '%s\n' "$HOME";;
+    '~/'*) printf '%s\n' "$HOME/${1#\~/}";;
+    *) printf '%s\n' "${1-}";;
+  esac
+}
+
+is_true() {
+  case $(printf '%s' "${1-}" | tr 'A-Z' 'a-z') in
+    1|true|yes|on) return 0;;
+  esac
+  return 1
+}
+
+shquote() { # -> '…' safe for the shell we type into
+  printf "'%s'" "$(printf '%s' "${1-}" | sed "s/'/'\\\\''/g")"
+}
+
+# The Claude Code profile a directory resolves to, as a window label. Asked of
+# the shell's own claude_profile_dir (in ~/.functions) rather than reimplemented
+# here: whatever routing claude() grows, the grouping follows it. `zsh -f`
+# skips the rc files and sources ~/.functions alone; a blank CLAUDE_PROFILE
+# keeps an inherited override (this may run from inside a Claude Code session)
+# from deciding every window.
+profile_window() { # dir -> label, or nothing
+  command -v zsh >/dev/null 2>&1 || return 1
+  [ -r "$HOME/.functions" ] || return 1
+  [ -d "${1-}" ] || return 1
+  d=$(CLAUDE_PROFILE= zsh -fc '
+    emulate -L zsh
+    source "$HOME/.functions" >/dev/null 2>&1 || exit 1
+    cd -- "$1" 2>/dev/null || exit 1
+    claude_profile_dir
+  ' claude-session "$1" 2>/dev/null) || return 1
+  [ -n "$d" ] || return 1
+  d=${d##*/}
+  printf '%s\n' "${d#.}"
+}
+
+window_of() { # name dir
+  w=$(sval "$1" window)
+  [ -n "$w" ] && { printf '%s\n' "$w"; return 0; }
+  w=$(profile_window "$2") && [ -n "$w" ] && { printf '%s\n' "$w"; return 0; }
+  printf '%s\n' "$1"
+}
+
+command_of() { # name dir -> the line typed into the tab
+  p=$(sval "$1" profile)
+  a=$(sval "$1" args)
+  c=claude
+  [ -n "$p" ] && c="claude-as $p"
+  [ -n "$a" ] && c="$c $a"
+  printf 'cd -- %s && %s\n' "$(shquote "$2")" "$c"
+}
+
+in_args() { # needle args…
+  n=$1
+  shift
+  for a in "$@"; do
+    [ "$a" = "$n" ] && return 0
+  done
+  return 1
+}
+
+# window, name, state, title, dir, command — one tab per line, tab-separated.
+# Everything downstream (script, start, status, the doctor) reads this, so the
+# decision is made exactly once.
+cmd_plan() {
+  # A name asked for that no config defines is a typo, not an empty plan.
+  for a in "$@"; do
+    names | grep -qx "$a" || die "no session '$a' in git config (claude-session.$a.dir)"
+  done
+  for n in $(names); do
+    if ! valid_name "$n"; then
+      warn "ignoring claude-session.$n.* — a session name may only hold letters, digits, - and _"
+      continue
+    fi
+    [ $# -eq 0 ] || in_args "$n" "$@" || continue
+    dir=$(expand_home "$(sval "$n" dir)")
+    title=$(sval "$n" title)
+    [ -n "$title" ] || title=$n
+    win=$(window_of "$n" "$dir")
+    if is_true "$(sval "$n" disabled)"; then
+      state=disabled
+    elif [ -z "$dir" ]; then
+      state=no-dir
+    elif [ ! -d "$dir" ]; then
+      state=no-dir
+    else
+      state=ok
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$win" "$n" "$state" "$title" "$dir" "$(command_of "$n" "$dir")"
+  done
+}
+
+# --- AppleScript ------------------------------------------------------------
+
+as_string() { # escape for an AppleScript string literal
+  printf '%s' "${1-}" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# The plan as AppleScript, from `plan` rows on stdin. The generated part is the
+# data only; the logic below is fixed. It walks the sessions iTerm2 already has
+# open first, so a tab tagged for a session is left alone and a window that
+# already holds a group is reused instead of a second one being opened.
+#
+# Every window this touches is addressed by *id* (the reuse path is
+# `first window whose id is …`), and nothing here ever closes anything. Both
+# rules matter: `repeat with w in windows` hands out references by index, so a
+# reference kept across a close points at a different window afterwards —
+# closing a list of collected window references shuts the wrong windows, ones
+# that were never ours. Learned the expensive way while testing this.
+gen_script() {
+  printf 'set thePlan to {}\n'
+  while IFS='	' read -r win name state title dir cmd; do
+    [ "$state" = ok ] || continue
+    printf 'set end of thePlan to {"%s", "%s", "%s", "%s"}\n' \
+      "$(as_string "$win")" "$(as_string "$name")" "$(as_string "$title")" "$(as_string "$cmd")"
+  done
+  cat <<APPLESCRIPT
+tell application "iTerm2"
+	activate
+	set openMarks to {}
+	set groupNames to {}
+	set groupWindows to {}
+	repeat with w in windows
+		repeat with t in tabs of w
+			repeat with s in sessions of t
+				set m to ""
+				set g to ""
+				tell s
+					-- An unset iTerm2 user variable answers "missing value",
+					-- and coercing that to text yields the literal string
+					-- rather than an error, so every untagged session would
+					-- read as a tag. Test the value, not the coercion.
+					try
+						set v to (variable named "$MARK")
+						if v is not missing value then set m to (v as text)
+					end try
+					try
+						set v to (variable named "$MARK_WINDOW")
+						if v is not missing value then set g to (v as text)
+					end try
+				end tell
+				if m is not "" then
+					set end of openMarks to m
+					if g is not "" and g is not in groupNames then
+						set end of groupNames to g
+						set end of groupWindows to (id of w)
+					end if
+				end if
+			end repeat
+		end repeat
+	end repeat
+	repeat with p in thePlan
+		set g to item 1 of p
+		set n to item 2 of p
+		set ttl to item 3 of p
+		set c to item 4 of p
+		if n is not in openMarks then
+			set widx to 0
+			repeat with i from 1 to count of groupNames
+				if item i of groupNames is g then set widx to i
+			end repeat
+			if widx is 0 then
+				set theWindow to (create window with default profile)
+				set theTab to current tab of theWindow
+				set end of groupNames to g
+				set end of groupWindows to (id of theWindow)
+			else
+				set theWindow to (first window whose id is (item widx of groupWindows))
+				tell theWindow
+					set theTab to (create tab with default profile)
+				end tell
+			end if
+			tell current session of theTab
+				set variable named "$MARK" to n
+				set variable named "$MARK_WINDOW" to g
+				write text c
+			end tell
+			try
+				set title of theTab to ttl
+			end try
+			set end of openMarks to n
+		end if
+	end repeat
+end tell
+APPLESCRIPT
+}
+
+# The session names iTerm2 currently has tagged, one per line.
+open_marks_script() {
+  cat <<APPLESCRIPT
+set out to ""
+tell application "iTerm2"
+	repeat with w in windows
+		repeat with t in tabs of w
+			repeat with s in sessions of t
+				tell s
+					try
+						set v to (variable named "$MARK")
+						if v is not missing value and (v as text) is not "" then
+							set out to out & (v as text) & linefeed
+						end if
+					end try
+				end tell
+			end repeat
+		end repeat
+	end repeat
+end tell
+return out
+APPLESCRIPT
+}
+
+# Is a process by that accounting name running? `ps` rather than pgrep: pgrep
+# reports nothing for processes in the caller's own session under some
+# sandboxes (Claude Code's Bash tool is one — it cannot see the very iTerm2 it
+# is running inside), and a false "not running" here would launch a second
+# copy or, worse, make `status` lie.
+proc_running() {
+  ps -Ao ucomm= 2>/dev/null |
+    awk -v n="$1" '{ sub(/[ \t]+$/, "", $0); if ($0 == n) f = 1 } END { exit !f }'
+}
+iterm_running() { proc_running iTerm2; }
+
+ensure_iterm() {
+  iterm_running && return 0
+  [ -d /Applications/iTerm.app ] || warn "/Applications/iTerm.app not found (brew install --cask iterm2)"
+  open -b com.googlecode.iterm2 >/dev/null 2>&1 ||
+    open -a iTerm >/dev/null 2>&1 ||
+    die "cannot launch iTerm2 (brew install --cask iterm2)"
+  i=0
+  while [ "$i" -lt 30 ] && ! iterm_running; do
+    sleep 1
+    i=$((i + 1))
+  done
+  iterm_running || die "iTerm2 did not come up"
+  # A window server that has just launched the app is not yet ready to be
+  # scripted; the retry in run_script covers the rest.
+  sleep 1
+}
+
+run_script() { # applescript on stdin; retried — early in a login session
+  s=$(cat)
+  i=0
+  while : ; do
+    if out=$(printf '%s\n' "$s" | osascript - 2>&1); then
+      [ -n "$out" ] && printf '%s\n' "$out"
+      return 0
+    fi
+    i=$((i + 1))
+    [ "$i" -ge 5 ] && break
+    sleep 2
+  done
+  printf '%s\n' "$out" >&2
+  return 1
+}
+
+# --- commands ---------------------------------------------------------------
+
+cmd_script() {
+  cmd_plan "$@" | gen_script
+}
+
+cmd_start() {
+  need_macos start
+  rows=$(cmd_plan "$@") || exit 1
+  if [ -z "$rows" ]; then
+    printf 'claude-session: nothing configured (see claude-session help for the git config keys)\n'
+    return 0
+  fi
+  printf '%s\n' "$rows" | while IFS='	' read -r win name state title dir cmd; do
+    case $state in
+      no-dir) warn "skipping '$name': ${dir:-no claude-session.$name.dir} is not a directory";;
+    esac
+  done
+  ok=$(printf '%s\n' "$rows" | awk -F'\t' '$3 == "ok"')
+  [ -n "$ok" ] || { printf 'claude-session: no session is openable right now\n'; return 0; }
+  ensure_iterm
+  printf '%s\n' "$ok" | gen_script | run_script >/dev/null ||
+    die "osascript could not drive iTerm2 — if macOS asked for Automation permission and was denied, grant it in System Settings > Privacy & Security > Automation"
+  printf '%s\n' "$ok" | awk -F'\t' '{ print $2 " -> window " $1 }' |
+    sed 's/^/claude-session: /'
+}
+
+cmd_at_login() {
+  need_macos at-login
+  # A machine without the overlay has nothing configured; the agent may be
+  # loaded there all the same. Say nothing and stop.
+  [ -n "$(names)" ] || exit 0
+  # RunAtLoad fires while the login session is still assembling. The Dock is
+  # the usual "the Aqua session is up" marker; wait for it, then settle.
+  i=0
+  while [ "$i" -lt 60 ] && ! proc_running Dock; do
+    sleep 1
+    i=$((i + 1))
+  done
+  delay=$(git config --get claude-session.delay 2>/dev/null)
+  case $delay in
+    ''|*[!0-9]*) delay=3;;
+  esac
+  [ "$delay" -gt 0 ] && sleep "$delay"
+  printf '%s claude-session: at-login start\n' "$(date '+%Y-%m-%dT%H:%M:%S')"
+  cmd_start
+}
+
+write_plist() { # program-path
+  {
+    printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+      '<plist version="1.0">' '<dict>' \
+      '	<key>Label</key>' "	<string>$LABEL</string>" \
+      '	<key>ProgramArguments</key>' '	<array>' \
+      "		<string>$1</string>" \
+      '		<string>at-login</string>' \
+      '	</array>' \
+      '	<key>RunAtLoad</key>' '	<true/>' \
+      '	<key>KeepAlive</key>' '	<false/>' \
+      '	<key>EnvironmentVariables</key>' '	<dict>' \
+      '		<key>PATH</key>' \
+      '		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>' \
+      '	</dict>' \
+      '	<key>StandardOutPath</key>' "	<string>$(log_path)</string>" \
+      '	<key>StandardErrorPath</key>' "	<string>$(log_path)</string>"
+    # Aqua only, and deliberately not Background: this job opens windows in a
+    # GUI login session. Loaded anywhere else it could only fail — and would
+    # raise an Automation prompt with nobody there to answer it.
+    printf '%s\n' \
+      '	<key>LimitLoadToSessionType</key>' '	<array>' \
+      '		<string>Aqua</string>' '	</array>' \
+      '</dict>' '</plist>'
+  } > "$(plist_path)"
+}
+
+cmd_install() {
+  need_macos install
+  self=$(self_path)
+  [ -x "$self" ] || die "cannot find this script to run at login (tried $self)"
+  mkdir -p "$CLAUDE_SESSION_STATE" || die "cannot create $CLAUDE_SESSION_STATE"
+  mkdir -p "$HOME/Library/LaunchAgents" || die "cannot create ~/Library/LaunchAgents"
+  write_plist "$self"
+  launchctl bootout "gui/$(uid)/$LABEL" >/dev/null 2>&1
+  launchctl bootstrap "gui/$(uid)" "$(plist_path)" ||
+    die "launchctl bootstrap failed (see $(plist_path))"
+  printf 'claude-session: installed — %s runs at every GUI login (Aqua only)\n' "$LABEL"
+  if [ -z "$(names)" ]; then
+    printf 'claude-session: nothing configured yet; the agent will exit quietly until claude-session.<name>.dir exists\n'
+  fi
+  printf 'claude-session: next: claude-session start   (once, by hand — macOS asks whether it may control iTerm2)\n'
+}
+
+cmd_uninstall() {
+  need_macos uninstall
+  launchctl bootout "gui/$(uid)/$LABEL" >/dev/null 2>&1
+  rm -f "$(plist_path)"
+  printf 'claude-session: uninstalled (open windows are left alone)\n'
+}
+
+agent_state() {
+  [ -f "$(plist_path)" ] || { printf 'not installed\n'; return; }
+  [ "$(os)" = Darwin ] || { printf 'installed, macOS only\n'; return; }
+  out=$(launchctl print "gui/$(uid)/$LABEL" 2>/dev/null) || { printf 'plist present, NOT loaded (claude-session install)\n'; return; }
+  st=$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*state = \([a-z]*\).*/\1/p' | head -n 1)
+  printf 'loaded%s\n' "${st:+ ($st)}"
+}
+
+cmd_status() {
+  printf 'agent:    %s\n' "$(agent_state)"
+  printf 'plist:    %s\n' "$(plist_path)"
+  printf 'log:      %s\n' "$(log_path)"
+  rows=$(cmd_plan) || exit 1
+  if [ -z "$rows" ]; then
+    printf 'sessions: <none configured — claude-session.<name>.dir in machine-local git config>\n'
+    return 0
+  fi
+  marks=
+  if [ "$(os)" = Darwin ] && iterm_running; then
+    marks=$(open_marks_script | osascript - 2>/dev/null)
+  fi
+  printf 'sessions:\n'
+  printf '%s\n' "$rows" | while IFS='	' read -r win name state title dir cmd; do
+    open=
+    if [ "$state" = ok ]; then
+      if printf '%s\n' "$marks" | grep -qx "$name"; then open=' [open]'; else open=' [closed]'; fi
+    fi
+    printf '  %-16s %-16s %-9s %s%s\n' "$win" "$name" "$state" "$dir" "$open"
+  done
+  if [ "$(os)" = Darwin ] && ! iterm_running; then
+    printf 'iterm2:   not running (start opens it)\n'
+  fi
+}
+
+# --- dispatch ---------------------------------------------------------------
+
+[ $# -ge 1 ] || usage
+cmd=$1
+shift
+case $cmd in
+  list)      names;;
+  plan)      cmd_plan "$@";;
+  script)    cmd_script "$@";;
+  start)     cmd_start "$@";;
+  at-login)  cmd_at_login;;
+  install)   cmd_install;;
+  uninstall) cmd_uninstall;;
+  status)    cmd_status;;
+  logs)      [ -f "$(log_path)" ] || die "no log yet at $(log_path) — the agent has not run (claude-session install)"
+             [ $# -gt 0 ] || set -- -n 50
+             tail "$@" "$(log_path)";;
+  dir)       printf '%s\n' "$CLAUDE_SESSION_STATE";;
+  -h|--help|help) usage;;
+  *)         die "unknown command '$cmd' (claude-session help)";;
+esac

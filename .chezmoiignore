@@ -28,6 +28,8 @@ com.googlecode.iterm2.plist
 # Finicky (URL router) is a macOS app
 .finicky.ts
 .config/finicky
+# The Claude Code session launcher drives iTerm2, which is macOS-only
+bin/claude-session
 {{ end -}}
 
 {{ if eq .machineClass "ephemeral" -}}
