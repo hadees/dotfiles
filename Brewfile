@@ -183,6 +183,7 @@ cask 'imageoptim'
 cask 'inkscape'
 cask 'istat-menus'
 cask 'iterm2'
+cask 'itermai' # Generative AI features for iTerm2
 cask 'jdiskreport' # Disk usage visualizer
 cask 'kaleidoscope'
 cask 'keyboardcleantool' # Blocks all keyboard/Touch Bar input while cleaning
