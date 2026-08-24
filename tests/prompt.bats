@@ -80,3 +80,43 @@ run_prompt_git() {
   [ "$status" -eq 0 ]
   [[ "$output" == *'on=[] branch=[] github=[@] pr=[pr ]'* ]]
 }
+
+# --- terminal title -----------------------------------------------------------
+
+# precmd sets the terminal title to the working directory. `workspace` opens its
+# tabs with WORKSPACE_GROUP exported, and the group is prefixed here rather than
+# by the launcher: precmd runs on every prompt and would overwrite anything the
+# launcher wrote, and iTerm2's own Custom Tab Title renders once at session
+# creation, before the session carries the group at all.
+# Calls the real precmd out of the prompt file — not a copy of its escape —
+# so a change to the title logic cannot pass here by being reimplemented.
+title_of() { # cwd [group]
+  zsh -fc "
+    source ${PROMPT_FILE@Q} >/dev/null 2>&1 || true
+    cd ${1@Q}
+    ${2+export WORKSPACE_GROUP=${2@Q}}
+    precmd
+  " | tr -d '\001-\010\013\014\016-\037'
+}
+
+@test "title: an ordinary shell titles the tab with the directory alone" {
+  mkdir -p "$BATS_TEST_TMPDIR/plain"
+  run title_of "$BATS_TEST_TMPDIR/plain"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"0;"*"/plain"* ]]
+  [[ "$output" != *"["*"]"* ]]
+}
+
+@test "title: a workspace tab is prefixed with its group" {
+  mkdir -p "$BATS_TEST_TMPDIR/proj"
+  run title_of "$BATS_TEST_TMPDIR/proj" personal
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[personal] "*"/proj"* ]]
+}
+
+@test "title: an empty group adds no empty brackets" {
+  mkdir -p "$BATS_TEST_TMPDIR/proj"
+  run title_of "$BATS_TEST_TMPDIR/proj" ""
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"[]"* ]]
+}

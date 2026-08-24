@@ -1,0 +1,666 @@
+#!/bin/sh
+# workspace — put a set of terminal tabs back on screen: one iTerm2 window per
+# group, one tab per entry, each tab sitting in its directory with its command
+# already running.
+#
+# What an entry is, is machine-local and identity-bearing (real project paths,
+# real group names), so it lives in git config supplied by a private overlay —
+# the same stance as every other router here (gh, claude, wrangler, tailnet,
+# Finicky). Nothing in this file names a project, a group, or an account.
+#
+#   [workspace "<name>"]               # <name>: letters, digits, - and _
+#       dir      = ~/code/<project>    # required; the tab's working directory
+#       command  = <command line>      # optional; run after cd, in the login
+#                                      # shell, so shell functions and aliases
+#                                      # apply. Omit for a plain shell.
+#       window   = <group>             # optional; which window it shares.
+#                                      # Defaults to <name> — its own window.
+#       title    = <tab title>         # optional; defaults to <name>. iTerm2's
+#                                      # own title updates overwrite it, so
+#                                      # treat it as a hint; the tag below is
+#                                      # what identifies a tab, never the title.
+#       disabled = true                # optional; keep the entry, skip it
+#
+# The command is *typed into* the tab (iTerm2's `write text`) rather than handed
+# to it as a command to exec. `create tab … command "…"` does not run an
+# interactive login shell, so ~/.functions is never sourced and any wrapper the
+# command depends on silently disappears — the tab would run the bare binary.
+# For a wrapper that picks an account by the directory it is in, that is not a
+# cosmetic difference: it is the difference between resuming the right account's
+# state and silently starting somebody else's.
+#
+# Re-running is safe. Each tab is tagged with an iTerm2 user variable
+# (user.workspaceSession) and `start` skips an entry whose tag is already on
+# screen, adding only what is missing — to that group's existing window when it
+# can find one.
+#
+# Tabs are also *created with* a dedicated iTerm2 profile ("Workspace", a
+# dynamic profile inheriting Default that `install` writes). The tag says which
+# entry a tab is; the profile says the tab is ours at all, and it is applied by
+# the same command that creates the session rather than a step afterwards. So a
+# window you opened yourself is never adopted, and a tab left behind by a run
+# that died between creating and tagging is reported instead of quietly
+# duplicated. Without the profile installed everything still works — creation
+# falls back to the default profile and the tag alone carries the day.
+#
+# The trigger is iTerm2's own AutoLaunch: `workspace install` compiles a
+# one-line AppleScript to ~/Library/Application Support/iTerm2/Scripts/
+# AutoLaunch.scpt, which iTerm2 runs itself at every launch. That matters for
+# more than convenience. A launchd agent driving osascript is its own TCC
+# responsible process and needs its own Automation grant, which can prompt at
+# login with nobody there to answer it; a script iTerm2 runs is iTerm2
+# automating itself, which macOS allows implicitly and never records. Measured,
+# not assumed: with the calling terminal's Automation grant revoked, an
+# AutoLaunch-spawned shell still created a window (rc=0) and no grant appeared.
+#
+# Usage: workspace <command> [args]
+#   list                     configured entry names, one per line
+#   groups                   window groups, with entry and open counts
+#   plan [name|group...]     the decision table, tab-separated:
+#                            window, name, state (ok|no-dir|disabled), title,
+#                            directory, command
+#   script [name|group...]   the AppleScript `start` would run — a dry run
+#   start [name|group...]    open the windows and tabs (idempotent)
+#   alfred [query]           Script Filter JSON for the Alfred workflow
+#   alfred-install [dir]     build the Alfred workflow and hand it to Alfred
+#   install                  write the iTerm2 AutoLaunch script and profile
+#   uninstall                remove them
+#   status                   trigger, configured entries, what is open now
+#   logs [tail args]         the AutoLaunch log
+#   dir                      the state directory
+set -u
+
+WORKSPACE_STATE=${WORKSPACE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/workspace}
+MARK=user.workspaceSession          # iTerm2 session variable: the entry name
+MARK_WINDOW=user.workspaceWindow    # …and its group
+# Every tab this opens is created *with* this profile, so ownership is set by
+# the same command that creates the session rather than a step after it. The
+# marks above still carry identity — a profile name is one string and
+# idempotency needs both the entry and its group — but a session carrying the
+# profile and no mark is a run that died in between, which is now detectable
+# instead of silently duplicated.
+PROFILE=${WORKSPACE_PROFILE:-Workspace}
+ITERM_SCRIPTS=${ITERM_SCRIPTS:-$HOME/Library/Application Support/iTerm2/Scripts}
+ITERM_PROFILES=${ITERM_PROFILES:-$HOME/Library/Application Support/iTerm2/DynamicProfiles}
+
+die() { printf 'workspace: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'workspace: %s\n' "$*" >&2; }
+usage() { sed -n '/^# Usage:/,/^set -u/{ /^set -u/d; s/^# \{0,1\}//p; }' "$0" >&2; exit 2; }
+
+os() { uname -s 2>/dev/null; }
+need_macos() {
+  [ "$(os)" = Darwin ] || die "$1 needs macOS — iTerm2 runs nowhere else (list/groups/plan/script/alfred work anywhere)"
+}
+log_path() { printf '%s\n' "$WORKSPACE_STATE/autolaunch.log"; }
+scpt_path() { printf '%s\n' "$ITERM_SCRIPTS/AutoLaunch.scpt"; }
+profile_path() { printf '%s\n' "$ITERM_PROFILES/workspace.json"; }
+
+# This script's own absolute path — what AutoLaunch must call. $0 is whatever
+# PATH lookup or the user typed; iTerm2's script runner gets neither, and its
+# PATH does not include ~/bin.
+self_path() {
+  s=$0
+  case $s in
+    /*) ;;
+    *) s=$(cd -- "$(dirname -- "$s")" 2>/dev/null && pwd)/$(basename -- "$s");;
+  esac
+  printf '%s\n' "$s"
+}
+
+valid_name() {
+  case ${1-} in
+    ''|*[!A-Za-z0-9_-]*|-*) return 1;;
+  esac
+  return 0
+}
+
+# --- configuration ----------------------------------------------------------
+
+sval() { # name key -> value
+  git config --get "workspace.$1.$2" 2>/dev/null
+}
+
+# Entry names in the order the config file lists them (that is the order the
+# tabs open in). A key with no subsection has only one dot and cannot match, so
+# `workspace.<key>` stays out of the list; a name may not contain a dot, which
+# is what keeps the two apart.
+#
+# The capture is deliberately permissive — it takes anything, spaces included —
+# and lets valid_name reject it downstream. Excluding bad characters *here*
+# instead silently drops the entry: git accepts `[workspace "bad name"]`
+# happily, and config that does nothing while saying nothing is the worst of
+# both. Everything configured is either used or complained about.
+names() {
+  git config --get-regexp '^workspace\.' 2>/dev/null |
+    sed -n 's/^workspace\.\(.*\)\.[^.[:space:]][^.[:space:]]* .*$/\1/p' |
+    awk '!seen[$0]++'
+}
+
+expand_home() {
+  case ${1-} in
+    '~') printf '%s\n' "$HOME";;
+    '~/'*) printf '%s\n' "$HOME/${1#\~/}";;
+    *) printf '%s\n' "${1-}";;
+  esac
+}
+
+is_true() {
+  case $(printf '%s' "${1-}" | tr 'A-Z' 'a-z') in
+    1|true|yes|on) return 0;;
+  esac
+  return 1
+}
+
+shquote() { printf "'%s'" "$(printf '%s' "${1-}" | sed "s/'/'\\\\''/g")"; }
+
+# A group is just a label. No derivation, no shelling out to another shell to
+# ask what a directory "belongs to": an entry says which window it wants, or it
+# gets one of its own. Deriving it was clever and wrong — it grouped by whatever
+# the directory's remote resolved to, which is not the axis anybody sorts
+# projects by.
+window_of() { # name
+  w=$(sval "$1" window)
+  [ -n "$w" ] && { printf '%s\n' "$w"; return 0; }
+  printf '%s\n' "$1"
+}
+
+# The tab title cannot carry the group from this side. The prompt sets the
+# title on every precmd, so anything AppleScript writes is gone at the first
+# prompt; and iTerm2's own "Custom Tab Title" renders once when the session is
+# created — before this script can tag it — and does not re-evaluate when the
+# variable appears (measured: the variable read back correctly while the title
+# still rendered empty). Export the group instead and let the prompt prefix it,
+# which is re-evaluated every prompt and survives cd.
+command_of() { # name group dir -> the line typed into the tab
+  c=$(sval "$1" command)
+  set -- "$1" "$2" "$3" "$(shquote "$3")" "$(shquote "$2")"
+  if [ -n "$c" ]; then
+    printf 'export WORKSPACE_GROUP=%s; cd -- %s && %s\n' "$5" "$4" "$c"
+  else
+    printf 'export WORKSPACE_GROUP=%s; cd -- %s\n' "$5" "$4"
+  fi
+}
+
+# window, name, state, title, dir, command — one tab per line, tab-separated.
+# Everything downstream (script, start, status, alfred, the doctor) reads this,
+# so the decision is made exactly once.
+all_rows() {
+  # Read line-by-line rather than word-splitting $(names): a name containing a
+  # space must reach valid_name whole, or it splits into two bogus names and
+  # the warning names neither of them.
+  names | while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    if ! valid_name "$n"; then
+      warn "ignoring workspace.$n.* — a name may only hold letters, digits, - and _"
+      continue
+    fi
+    dir=$(expand_home "$(sval "$n" dir)")
+    title=$(sval "$n" title)
+    [ -n "$title" ] || title=$n
+    win=$(window_of "$n")
+    if is_true "$(sval "$n" disabled)"; then
+      state=disabled
+    elif [ -z "$dir" ] || [ ! -d "$dir" ]; then
+      state=no-dir
+    else
+      state=ok
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$win" "$n" "$state" "$title" "$dir" "$(command_of "$n" "$win" "$dir")"
+  done
+}
+
+# Rows matching the selectors, which name either an entry or a whole group.
+cmd_plan() {
+  rows=$(all_rows)
+  [ $# -eq 0 ] && { [ -n "$rows" ] && printf '%s\n' "$rows"; return 0; }
+  out=""
+  for a in "$@"; do
+    hit=$(printf '%s\n' "$rows" | awk -F'\t' -v s="$a" 'NF && ($1 == s || $2 == s)')
+    [ -n "$hit" ] || die "no entry or group '$a' in git config (workspace.$a.dir)"
+    out="$out$hit
+"
+  done
+  printf '%s' "$out" | awk 'NF && !seen[$0]++'
+}
+
+groups_of() { # rows on stdin -> unique group names, config order
+  awk -F'\t' 'NF { print $1 }' | awk '!seen[$0]++'
+}
+
+# --- AppleScript ------------------------------------------------------------
+
+as_string() { printf '%s' "${1-}" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+# Every window this touches is addressed by *id* (the reuse path is
+# `first window whose id is …`), and nothing here ever closes anything. Both
+# rules matter: `repeat with w in windows` hands out references by index, so a
+# reference kept across a close points at a different window afterwards.
+gen_script() {
+  printf 'set thePlan to {}\n'
+  while IFS='	' read -r win name state title dir cmd; do
+    [ "$state" = ok ] || continue
+    printf 'set end of thePlan to {"%s", "%s", "%s", "%s"}\n' \
+      "$(as_string "$win")" "$(as_string "$name")" "$(as_string "$title")" "$(as_string "$cmd")"
+  done
+  cat <<APPLESCRIPT
+tell application "iTerm2"
+	activate
+	set openMarks to {}
+	set groupNames to {}
+	set groupWindows to {}
+	set orphans to 0
+	repeat with w in windows
+		repeat with t in tabs of w
+			repeat with s in sessions of t
+				set m to ""
+				set g to ""
+				set pn to ""
+				tell s
+					-- An unset iTerm2 user variable answers "missing value",
+					-- and coercing that to text yields the literal string
+					-- rather than an error, so every untagged session would
+					-- read as a tag. Test the value, not the coercion.
+					try
+						set v to (variable named "$MARK")
+						if v is not missing value then set m to (v as text)
+					end try
+					try
+						set v to (variable named "$MARK_WINDOW")
+						if v is not missing value then set g to (v as text)
+					end try
+					try
+						set pn to (profile name)
+					end try
+				end tell
+				if m is not "" then
+					set end of openMarks to m
+					if g is not "" and g is not in groupNames then
+						set end of groupNames to g
+						set end of groupWindows to (id of w)
+					end if
+				else if pn is "$PROFILE" then
+					-- Carries the profile but no mark: a run that was cut off
+					-- between creating the tab and tagging it.
+					set orphans to orphans + 1
+				end if
+			end repeat
+		end repeat
+	end repeat
+	set opened to {}
+	repeat with p in thePlan
+		set g to item 1 of p
+		set n to item 2 of p
+		set ttl to item 3 of p
+		set c to item 4 of p
+		if n is not in openMarks then
+			set widx to 0
+			repeat with i from 1 to count of groupNames
+				if item i of groupNames is g then set widx to i
+			end repeat
+			if widx is 0 then
+				try
+					set theWindow to (create window with profile "$PROFILE")
+				on error
+					-- "workspace install" was never run, or the profile was
+					-- removed. Opening the tabs matters more than tagging them.
+					set theWindow to (create window with default profile)
+				end try
+				set theTab to current tab of theWindow
+				set end of groupNames to g
+				set end of groupWindows to (id of theWindow)
+			else
+				set theWindow to (first window whose id is (item widx of groupWindows))
+				tell theWindow
+					try
+						set theTab to (create tab with profile "$PROFILE")
+					on error
+						set theTab to (create tab with default profile)
+					end try
+				end tell
+			end if
+			tell current session of theTab
+				set variable named "$MARK" to n
+				set variable named "$MARK_WINDOW" to g
+				write text c
+			end tell
+			try
+				set title of theTab to ttl
+			end try
+			set end of openMarks to n
+			set end of opened to n
+		end if
+	end repeat
+	set AppleScript's text item delimiters to linefeed
+	return ("orphans=" & orphans) & linefeed & (opened as text)
+end tell
+APPLESCRIPT
+}
+
+# The entry names iTerm2 currently has tagged, one per line.
+open_marks_script() {
+  cat <<APPLESCRIPT
+set out to ""
+tell application "iTerm2"
+	repeat with w in windows
+		repeat with t in tabs of w
+			repeat with s in sessions of t
+				tell s
+					try
+						set v to (variable named "$MARK")
+						if v is not missing value and (v as text) is not "" then
+							set out to out & (v as text) & linefeed
+						end if
+					end try
+				end tell
+			end repeat
+		end repeat
+	end repeat
+end tell
+return out
+APPLESCRIPT
+}
+
+# `ps` rather than pgrep: pgrep reports nothing for processes in the caller's
+# own session under some sandboxes (Claude Code's Bash tool is one — it cannot
+# see the very iTerm2 it is running inside), and a false "not running" here
+# would launch a second copy or make `status` lie.
+proc_running() {
+  ps -Ao ucomm= 2>/dev/null |
+    awk -v n="$1" '{ sub(/[ \t]+$/, "", $0); if ($0 == n) f = 1 } END { exit !f }'
+}
+iterm_running() { proc_running iTerm2; }
+
+ensure_iterm() {
+  iterm_running && return 0
+  [ -d /Applications/iTerm.app ] || warn "/Applications/iTerm.app not found (brew install --cask iterm2)"
+  open -b com.googlecode.iterm2 >/dev/null 2>&1 ||
+    open -a iTerm >/dev/null 2>&1 ||
+    die "cannot launch iTerm2 (brew install --cask iterm2)"
+  i=0
+  while [ "$i" -lt 30 ] && ! iterm_running; do
+    sleep 1
+    i=$((i + 1))
+  done
+  iterm_running || die "iTerm2 did not come up"
+  sleep 1
+}
+
+run_script() { # applescript on stdin
+  s=$(cat)
+  i=0
+  while : ; do
+    if out=$(printf '%s\n' "$s" | osascript - 2>&1); then
+      [ -n "$out" ] && printf '%s\n' "$out"
+      return 0
+    fi
+    i=$((i + 1))
+    [ "$i" -ge 3 ] && break
+    sleep 1
+  done
+  printf '%s\n' "$out" >&2
+  return 1
+}
+
+open_marks() {
+  if [ "$(os)" = Darwin ] && iterm_running; then
+    open_marks_script | osascript - 2>/dev/null
+  fi
+}
+
+# --- commands ---------------------------------------------------------------
+
+cmd_script() { cmd_plan "$@" | gen_script; }
+
+cmd_groups() {
+  rows=$(all_rows)
+  [ -n "$rows" ] || return 0
+  marks=$(open_marks)
+  printf '%s\n' "$rows" | groups_of | while read -r g; do
+    [ -n "$g" ] || continue
+    total=$(printf '%s\n' "$rows" | awk -F'\t' -v g="$g" '$1 == g && $3 == "ok"' | wc -l | tr -d ' ')
+    open=0
+    for n in $(printf '%s\n' "$rows" | awk -F'\t' -v g="$g" '$1 == g && $3 == "ok" { print $2 }'); do
+      printf '%s\n' "$marks" | grep -qx "$n" && open=$((open + 1))
+    done
+    printf '%s\t%s\t%s\n' "$g" "$total" "$open"
+  done
+}
+
+# Alfred Script Filter JSON. Names are restricted to [A-Za-z0-9_-] by
+# valid_name, so no JSON string escaping is needed for them; titles come from
+# config and do get escaped. skipknowledge keeps config order (Alfred would
+# otherwise reorder by its own learning) while still remembering selections.
+json_escape() {
+  printf '%s' "${1-}" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g'
+}
+
+cmd_alfred() {
+  q=${1-}
+  printf '{"skipknowledge":true,"items":['
+  first=1
+  cmd_groups | while IFS='	' read -r g total open; do
+    case $g in
+      *"$q"*) ;;
+      *) continue;;
+    esac
+    [ "$first" -eq 1 ] || printf ','
+    first=0
+    if [ "$open" -eq "$total" ] && [ "$total" -gt 0 ]; then
+      sub="all $total open"
+    elif [ "$open" -gt 0 ]; then
+      sub="$open of $total open — opens $((total - open)) more"
+    else
+      sub="$total tab$( [ "$total" = 1 ] || printf s ) — none open yet"
+    fi
+    printf '{"uid":"%s","title":"%s","subtitle":"%s","arg":"%s","match":"%s","autocomplete":"%s","valid":true}' \
+      "$(json_escape "$g")" "$(json_escape "$g")" "$(json_escape "$sub")" \
+      "$(json_escape "$g")" "$(json_escape "$g")" "$(json_escape "$g")"
+  done
+  printf ']}\n'
+}
+
+cmd_start() {
+  need_macos start
+  rows=$(cmd_plan "$@") || exit 1
+  if [ -z "$rows" ]; then
+    printf 'workspace: nothing configured (see workspace help for the git config keys)\n'
+    return 0
+  fi
+  printf '%s\n' "$rows" | while IFS='	' read -r win name state title dir cmd; do
+    case $state in
+      no-dir) warn "skipping '$name': ${dir:-no workspace.$name.dir} is not a directory";;
+    esac
+  done
+  ok=$(printf '%s\n' "$rows" | awk -F'\t' '$3 == "ok"')
+  [ -n "$ok" ] || { printf 'workspace: nothing openable right now\n'; return 0; }
+  ensure_iterm
+  # The AppleScript returns the entries it actually opened, one per line, so
+  # the summary reports what happened rather than what was planned — a re-run
+  # that skips everything says so instead of claiming credit.
+  out=$(printf '%s\n' "$ok" | gen_script | run_script) ||
+    die "osascript could not drive iTerm2 — if macOS asked for Automation permission and was denied, grant it in System Settings > Privacy & Security > Automation"
+  # First line is the orphan count, the rest are the entries actually opened.
+  orphans=$(printf '%s\n' "$out" | sed -n '1s/^orphans=//p')
+  opened=$(printf '%s\n' "$out" | sed '1d')
+  case ${orphans:-0} in
+    0|"") ;;
+    *) warn "$orphans tab(s) carry the $PROFILE profile but no tag — left over from a run that was interrupted; close them or they will not be reused";;
+  esac
+  if [ -z "$(printf '%s' "$opened" | tr -d '[:space:]')" ]; then
+    printf 'workspace: everything already open\n'
+    return 0
+  fi
+  printf '%s\n' "$opened" | while read -r n; do
+    [ -n "$n" ] || continue
+    g=$(printf '%s\n' "$ok" | awk -F'\t' -v n="$n" '$2 == n { print $1; exit }')
+    printf 'workspace: opened %s -> window %s\n' "$n" "$g"
+  done
+}
+
+# A *dynamic* profile: a plain JSON file iTerm2 reloads on write, with no
+# restart and no click through its preferences. It inherits rather than copies
+# — "Dynamic Profile Parent Name" makes it Default plus a tag, so
+# it cannot drift from Default the way a hand-duplicated profile would. The
+# Guid is fixed so reinstalling updates this profile instead of adding another.
+# It deliberately overrides nothing visible: the profile is a marker the script
+# reads, not decoration. iTerm2 offers "Badge Text" (an interpolated string, so
+# "\\(user.workspaceWindow)" would print the group on every tab), "Tab Color",
+# and "Badge Max Height" to shrink it — add one here if a visual cue is wanted.
+profile_source() {
+  printf '{\n  "Profiles": [\n    {\n'
+  printf '      "Name": "%s",\n' "$(as_string "$PROFILE")"
+  printf '      "Guid": "workspace-launcher-profile",\n'
+  printf '      "Dynamic Profile Parent Name": "Default",\n'
+  printf '      "Tags": ["workspace"]\n'
+  printf '    }\n  ]\n}\n'
+}
+
+autolaunch_source() { # -> the AppleScript AutoLaunch runs
+  self=$(self_path)
+  # Detached on purpose. iTerm2 runs AutoLaunch.scpt on its own AppleScript
+  # runner; a synchronous `do shell script` that turns around and sends Apple
+  # events back to iTerm2 can sit behind the very runner it is waiting on.
+  # Backgrounding returns immediately and the work happens beside it.
+  cat <<AS
+-- Generated by \`workspace install\`. iTerm2 runs this at launch.
+do shell script "nohup $(as_string "$self") start >> $(as_string "$(log_path)") 2>&1 &"
+AS
+}
+
+cmd_install() {
+  need_macos install
+  self=$(self_path)
+  [ -x "$self" ] || die "cannot find this script to run at launch (tried $self)"
+  command -v osacompile >/dev/null 2>&1 || die "osacompile not found (Xcode command line tools)"
+  mkdir -p "$WORKSPACE_STATE" || die "cannot create $WORKSPACE_STATE"
+  mkdir -p "$ITERM_SCRIPTS" || die "cannot create $ITERM_SCRIPTS"
+  target=$(scpt_path)
+  # Never clobber somebody else's AutoLaunch script. Ours is recognisable by
+  # the command it embeds; a compiled .scpt keeps its string literals.
+  if [ -e "$target" ] && ! grep -q "workspace" "$target" 2>/dev/null; then
+    die "$target already exists and was not written by workspace — add this line to it by hand instead:
+    do shell script \"nohup $self start >> $(log_path) 2>&1 &\""
+  fi
+  src=$WORKSPACE_STATE/autolaunch.applescript
+  autolaunch_source > "$src" || die "cannot write $src"
+  osacompile -o "$target" "$src" || die "osacompile failed on $src"
+  mkdir -p "$ITERM_PROFILES" || die "cannot create $ITERM_PROFILES"
+  prof=$(profile_path)
+  profile_source > "$prof" || die "cannot write $prof"
+  printf 'workspace: installed — iTerm2 runs %s at every launch\n' "$target"
+  printf 'workspace: profile "%s" written to %s (iTerm2 reloads it immediately)\n' "$PROFILE" "$prof"
+  printf 'workspace: no Automation permission is needed; iTerm2 is automating itself\n'
+  # iTerm2 opens one window of its own at launch, which workspace did not
+  # create and will not reuse. Saying so beats silently rewriting a preference
+  # that lives in a tracked file.
+  if [ "$(defaults read com.googlecode.iterm2 OpenNoWindowsAtStartup 2>/dev/null)" != 1 ]; then
+    printf 'workspace: iTerm2 also opens one window of its own at launch. For only the windows workspace starts:\n'
+    printf '    defaults write com.googlecode.iterm2 OpenNoWindowsAtStartup -bool true\n'
+  fi
+  [ -n "$(names)" ] ||
+    printf 'workspace: nothing configured yet; it will do nothing until workspace.<name>.dir exists\n'
+}
+
+cmd_uninstall() {
+  need_macos uninstall
+  target=$(scpt_path)
+  if [ -e "$target" ] && ! grep -q "workspace" "$target" 2>/dev/null; then
+    die "$target was not written by workspace — leaving it alone"
+  fi
+  rm -f "$target"
+  rm -f "$(profile_path)"
+  printf 'workspace: uninstalled (open windows are left alone)\n'
+}
+
+trigger_state() {
+  target=$(scpt_path)
+  [ -e "$target" ] || { printf 'not installed\n'; return; }
+  grep -q "workspace" "$target" 2>/dev/null &&
+    printf 'AutoLaunch.scpt installed\n' ||
+    printf 'AutoLaunch.scpt present but NOT ours\n'
+}
+
+cmd_status() {
+  printf 'trigger:  %s\n' "$(trigger_state)"
+  printf 'script:   %s\n' "$(scpt_path)"
+  if [ -e "$(profile_path)" ]; then
+    printf 'profile:  %s (%s)\n' "$PROFILE" "$(profile_path)"
+  else
+    printf 'profile:  %s not installed — tabs open with the default profile and are tagged only\n' "$PROFILE"
+  fi
+  printf 'log:      %s\n' "$(log_path)"
+  rows=$(all_rows)
+  if [ -z "$rows" ]; then
+    printf 'entries:  <none configured — workspace.<name>.dir in machine-local git config>\n'
+    return 0
+  fi
+  marks=$(open_marks)
+  printf 'entries:\n'
+  printf '%s\n' "$rows" | while IFS='	' read -r win name state title dir cmd; do
+    open=
+    if [ "$state" = ok ]; then
+      if printf '%s\n' "$marks" | grep -qx "$name"; then open=' [open]'; else open=' [closed]'; fi
+    fi
+    printf '  %-16s %-16s %-9s %s%s\n' "$win" "$name" "$state" "$dir" "$open"
+  done
+  if [ "$(os)" = Darwin ] && ! iterm_running; then
+    printf 'iterm2:   not running (start opens it)\n'
+  fi
+}
+
+# --- Alfred ------------------------------------------------------------------
+
+# The workflow source lives in the dotfiles repo, not in a deployed location:
+# Alfred rewrites info.plist whenever the workflow is edited in its GUI, so a
+# chezmoi-managed copy would show permanent drift. Ask chezmoi where the source
+# is, or take a path.
+workflow_source() {
+  [ -n "${1-}" ] && { printf '%s\n' "$1"; return 0; }
+  command -v chezmoi >/dev/null 2>&1 || return 1
+  src=$(chezmoi source-path 2>/dev/null) || return 1
+  [ -n "$src" ] || return 1
+  printf '%s\n' "$src/alfred/workspace"
+}
+
+cmd_alfred_install() {
+  need_macos alfred-install
+  dir=$(workflow_source "${1-}") ||
+    die "cannot locate the workflow source (chezmoi not installed?) — pass the path: workspace alfred-install <dir>"
+  [ -f "$dir/info.plist" ] || die "no info.plist in $dir"
+  [ -d /Applications/Alfred*.app ] 2>/dev/null || command -v osascript >/dev/null 2>&1 ||
+    warn "Alfred does not appear to be installed"
+  tmp=$(mktemp -d) || die "cannot create a temp directory"
+  out=$tmp/Workspace.alfredworkflow
+  # An .alfredworkflow is a zip of the workflow directory's *contents*, and
+  # `open` hands it to Alfred, which shows its own import sheet. Dropping the
+  # directory into Alfred's preferences by hand is not a supported path and
+  # Alfred will not notice it until it rescans.
+  ( cd "$dir" && zip -q -r "$out" . -x '.*' ) || die "could not build $out"
+  open "$out" || die "could not hand $out to Alfred"
+  printf 'workspace: handed %s to Alfred — confirm the import in its window\n' "$(basename "$out")"
+  printf 'workspace: then the keyword is "ws"\n'
+}
+
+# --- dispatch ---------------------------------------------------------------
+
+[ $# -ge 1 ] || usage
+cmd=$1
+shift
+case $cmd in
+  list)      names;;
+  groups)    cmd_groups;;
+  plan)      cmd_plan "$@";;
+  script)    cmd_script "$@";;
+  start)     cmd_start "$@";;
+  alfred)    cmd_alfred "$@";;
+  alfred-install) cmd_alfred_install "$@";;
+  install)   cmd_install;;
+  uninstall) cmd_uninstall;;
+  status)    cmd_status;;
+  logs)      [ -f "$(log_path)" ] || die "no log yet at $(log_path)"
+             [ $# -gt 0 ] || set -- -n 50
+             tail "$@" "$(log_path)";;
+  dir)       printf '%s\n' "$WORKSPACE_STATE";;
+  -h|--help|help) usage;;
+  *)         die "unknown command '$cmd' (workspace help)";;
+esac

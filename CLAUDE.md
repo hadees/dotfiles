@@ -248,6 +248,137 @@ different account.
 live in the macOS Keychain and cannot be copied between profiles — verified,
 copying `.claude.json` does not carry a session.
 
+### Workspace launcher (iTerm2 tabs, on demand or at launch)
+
+`bin/workspace` puts a set of terminal tabs back on screen: **one iTerm2 window
+per group**, one tab per entry, each tab sitting in its directory with its
+command already running. What those entries are is identity-bearing (real
+paths, real group names), so — like every other router here — the machinery is
+public and the list is machine-local git config from an overlay:
+
+```gitconfig
+[workspace "<name>"]               # <name>: letters, digits, - and _
+	dir      = ~/code/<project>      # required
+	command  = <command line>        # optional: run after cd; omit for a shell
+	window   = <group>               # optional: which window it shares
+	                                 # (default: <name> — a window of its own)
+	title    = <tab title>           # optional (default: <name>); a hint —
+	                                 # iTerm2 relabels tabs itself
+	disabled = true                  # optional: keep the entry, skip it
+```
+
+A group is **just a label**. An earlier version derived it from the Claude Code
+profile the directory resolved to, which was clever and wrong: it grouped by
+whichever account owned the repo's remote, and that is not the axis anyone
+sorts projects by — two side projects under one personal account still want
+separate windows. Saying `window` outright is shorter, general, and expresses
+the grouping people actually use. Tabs open in config order.
+
+Two decisions carry the design:
+
+- The tab runs the **login shell and is typed at** (iTerm2's `write text`),
+  not handed a command to exec. `create tab … command "…"` does not run an
+  interactive shell, so `.functions` is never sourced and any wrapper the
+  command relies on silently disappears — it would run the bare binary. For
+  `claude`, whose wrapper picks `CLAUDE_CONFIG_DIR` from the directory, that
+  is not cosmetic: session history is partitioned per config dir, so the
+  wrong one resumes nothing and starts fresh instead of failing.
+- The trigger is **iTerm2's own AutoLaunch**. `workspace install` compiles a
+  one-line AppleScript to `~/Library/Application Support/iTerm2/Scripts/
+  AutoLaunch.scpt`; iTerm2 runs it at every launch. This replaced a per-user
+  launchd agent, and the reason is TCC: a LaunchAgent driving `osascript` is
+  its own responsible process needing its own Automation grant, which can
+  prompt at login with nobody there to answer it, and which macOS can drop
+  when a signing identity changes. A script iTerm2 runs is iTerm2 automating
+  itself — implicitly allowed and never recorded. **Measured, not assumed:**
+  with the calling terminal's Automation grant revoked, an AutoLaunch-spawned
+  shell still created a window (`rc=0`) and no grant row appeared. It also
+  deletes the Dock-wait, the settle delay, and the retry loop, all of which
+  existed only because `RunAtLoad` fires before the GUI is ready — AutoLaunch
+  fires *because* iTerm2 started. Install refuses to clobber an
+  `AutoLaunch.scpt` it did not write, and prints the line to add by hand.
+  The call is backgrounded: iTerm2 runs AutoLaunch on its own AppleScript
+  runner, and a synchronous `do shell script` that sends events back to iTerm2
+  can sit behind the very runner it waits on.
+
+An iTerm2 **Window Arrangement** remains the wrong tool: it restores a shell in
+a directory, not a running command; it lives in `com.googlecode.iterm2.plist`,
+which this repo deploys, so real project paths would leak on the next capture;
+and it is edited by clicking, not provisioned by an overlay.
+
+Re-running is safe: each tab is tagged with an iTerm2 user variable
+(`user.workspaceSession`), and `start` skips an entry already on screen, adding
+what is missing to that group's existing window. Reading the tag needs care —
+an unset iTerm2 variable answers `missing value`, and coercing *that* to text
+yields the string "missing value", which would make every untagged session
+look tagged. The AppleScript **returns what it actually opened**, so a re-run
+that opens nothing says so instead of reporting the whole plan as if it had.
+
+Tabs are additionally **created with** a dedicated profile — `Workspace`, a
+dynamic profile `install` writes to `~/Library/Application Support/iTerm2/
+DynamicProfiles/workspace.json`. Two marks, two jobs: the tag says *which*
+entry a tab is (idempotency needs the entry and its group, and a profile name
+is one string), the profile says the tab is **ours at all**. The profile is the
+better answer to "ours" because it is applied by the same command that creates
+the session, where the tag is a step afterwards — so there is no instant when a
+tab exists untagged, and a tab carrying the profile with no tag is a run that
+died in between, now reported rather than silently duplicated beside. It
+*inherits* rather than copies (`Dynamic Profile Parent Name: Default`), so it
+cannot drift from Default the way a hand-duplicated profile would, and it
+overrides nothing visible — it is a marker the script reads, not decoration.
+
+The visible cue is the **tab title**, and it has to come from the prompt. The
+launcher cannot set it: `precmd` in `.zsh_prompt` rewrites the title on every
+prompt, so anything AppleScript writes is gone by the first one. iTerm2's own
+`Custom Tab Title` cannot do it either — measured: it renders **once, at
+session creation**, before the session has been tagged, and does not
+re-evaluate when the variable appears (the variable read back correctly while
+the title still rendered empty). So `start` exports `WORKSPACE_GROUP` into each
+tab and `precmd` prefixes the directory with `[<group>] `. It re-renders every
+prompt, survives `cd`, and is simply absent in an ordinary shell. Everything
+degrades: with no
+profile installed, creation falls back to the default profile and the tag alone
+carries idempotency, which is why `create … with profile` sits in a `try`.
+
+Two things were measured rather than assumed here, and one killed a better
+story. iTerm2 **restores nothing** across a quit on this setup (a marked window
+and a plain one both gone; one fresh window on relaunch), so "user variables do
+not survive restoration but profiles do" — the strongest-sounding argument for
+the profile — is simply not true and is not the reason. What the test *did*
+turn up is that iTerm2 opens **one window of its own** at every launch, which
+workspace neither created nor reuses; `OpenNoWindowsAtStartup` suppresses it,
+and `install`/`workspace-doctor` print that line rather than writing a
+preference into a tracked file behind you.
+
+Commands mirror `tailnet`'s shape: `list`, `groups`, `plan` (the decision
+table, tab-separated), `script` (the AppleScript `start` would run — a dry
+run), `start [name|group…]`, `alfred`, `install`, `uninstall`, `status`,
+`logs`, `dir`. A selector names either one entry or a whole group.
+`list`/`groups`/`plan`/`script`/`alfred` are pure text and work anywhere; the
+acting commands refuse off macOS, and `.chezmoiignore` does not deploy the
+script there. Nothing configured is ever silently ignored — a name git accepts
+but this does not (`[workspace "bad name"]`) is warned about rather than
+dropped during parsing. `workspace-doctor` reports the script, iTerm2, the
+trigger, and the configured entries with which are open; `doctor` includes it.
+Once per machine: `workspace install`. Tests: `tests/workspace.bats` (stub
+osascript/open/ps/uname/osacompile; fixture names only).
+
+**Alfred front-end.** `alfred/workspace/` is an Alfred 5 workflow — keyword
+`ws` — whose Script Filter runs `workspace alfred` (Script Filter JSON, one
+item per group with its open/total count) and whose action runs `workspace
+start <group>`. `workspace alfred-install` zips it and hands it to Alfred,
+which shows its own import sheet; dropping the folder into Alfred's
+preferences by hand is not a supported path. Three things shape it: Alfred
+runs scripts with `/bin/zsh --no-rcs` and a fixed PATH that **excludes
+`~/bin`**, so both scripts call `$HOME/bin/workspace` by absolute path; the
+filter sets `alfredfiltersresults` so the script runs once and Alfred narrows
+as you type, rather than re-running per keystroke; and it passes the selection
+as **argv**, not `{query}`, so there is no query escaping to get wrong. The
+workflow holds no logic and therefore no identity — the group names come from
+the overlay at run time. It is **not** a chezmoi target: Alfred rewrites
+`info.plist` whenever the workflow is edited in its GUI, which would show as
+permanent drift, so the repo keeps the source and `alfred-install` copies it.
+
 ### Wrangler (Cloudflare) auth profiles
 
 Wrangler (≥ 4.106) keeps one OAuth login per **auth profile**: named ones
@@ -306,8 +437,8 @@ wrapper. Consequences:
   executable will run, a version-manager shim followed to the install it
   selects for the cwd (or "not installed under the selected node"), and the
   version read off the install without executing it (npm `package.json`,
-  cask/native path segment). `doctor` runs all six (git, gh, claude,
-  wrangler, hermes, tailnet). Every doctor also opens with a `defined:` line — are
+  cask/native path segment). `doctor` runs all seven (git, gh, claude,
+  wrangler, hermes, tailnet, workspace). Every doctor also opens with a `defined:` line — are
   the helpers its wrapper (and the doctor itself) call actually defined in
   this shell — printed before any line that depends on one, because a
   missing helper makes a doctor misreport confidently (`account: <no pin

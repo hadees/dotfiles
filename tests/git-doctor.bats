@@ -89,14 +89,14 @@ doctor_in() {
   [[ "$output" == *"signer:  /bin/sh"* ]]
 }
 
-@test "doctor: runs all six doctors in order" {
+@test "doctor: runs all seven doctors in order" {
   make_repo 'git@github-personal:octo-personal/some-repo.git'
   # Stubs so gh-/wrangler-doctor have something harmless to talk to.
   mkdir -p "$BATS_TEST_TMPDIR/bin"
   printf '#!/bin/sh\nexit 0\n' > "$BATS_TEST_TMPDIR/bin/gh"; chmod +x "$BATS_TEST_TMPDIR/bin/gh"
   run zsh -c "PATH='$BATS_TEST_TMPDIR/bin':\$PATH; source '$DOTFUNCTIONS'; cd '$REPO'; doctor"
   [ "$status" -eq 0 ]
-  [[ "$output" == "shell:   zsh "*"== git-doctor"*"== gh-doctor"*"== claude-doctor"*"== wrangler-doctor"*"== hermes-doctor"*"== tailnet-doctor"* ]]
+  [[ "$output" == "shell:   zsh "*"== git-doctor"*"== gh-doctor"*"== claude-doctor"*"== wrangler-doctor"*"== hermes-doctor"*"== tailnet-doctor"*"== workspace-doctor"* ]]
   [[ "$output" == *"author:  Octo Person <octo@example.com>"* ]]
 }
 
@@ -125,9 +125,9 @@ doctor_in() {
       done
       print -r -- ${(ok)seen}
     }
-    typeset -A wrapped=(claude claude wrangler wrangler gh gh hermes hermes tailnet "ssh scp sftp curl tailnet-as" git "")
+    typeset -A wrapped=(claude claude workspace "" wrangler wrangler gh gh hermes hermes tailnet "ssh scp sftp curl tailnet-as" git "")
     local d h n=0 bad=0
-    for d in claude wrangler gh hermes tailnet git; do
+    for d in claude workspace wrangler gh hermes tailnet git; do
       for h in $(callees ${=wrapped[$d]} $d-doctor); do
         n=$((n+1))
         [[ "$( (unfunction $h; $d-doctor) 2>/dev/null )" == *"defined: MISSING"*" $h "* ]] \
