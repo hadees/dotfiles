@@ -437,8 +437,8 @@ wrapper. Consequences:
   executable will run, a version-manager shim followed to the install it
   selects for the cwd (or "not installed under the selected node"), and the
   version read off the install without executing it (npm `package.json`,
-  cask/native path segment). `doctor` runs all seven (git, gh, claude,
-  wrangler, hermes, tailnet, workspace). Every doctor also opens with a `defined:` line — are
+  cask/native path segment). `doctor` runs them all (git, gh, claude,
+  wrangler, hermes, tailnet, workspace, iterm2). Every doctor also opens with a `defined:` line — are
   the helpers its wrapper (and the doctor itself) call actually defined in
   this shell — printed before any line that depends on one, because a
   missing helper makes a doctor misreport confidently (`account: <no pin
