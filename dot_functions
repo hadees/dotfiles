@@ -1874,6 +1874,165 @@ function iterm2-doctor() {
 	fi;
 }
 
+# Where the 1Password skill's version stamp lives. The skill is part of the
+# dotfiles SOURCE (`.claude/` is dot-prefixed, so chezmoi never deploys it)
+# while this function ships to ~/.functions, so the stamp has to be located
+# rather than assumed. ONEPASSWORD_SKILL_STAMP wins — that is how a test or a
+# worktree points at its own copy — then the source dir a mac pins, then
+# chezmoi's own answer, which is the portable one and the only one that costs
+# a process, so it goes last. Prints nothing and returns 1 when no stamp is
+# reachable, which is simply the normal state on a box with no clone of the
+# source; onepassword-doctor treats that as "unknown", never as a problem.
+function onepassword_stamp_file() {
+	emulate -L zsh;
+	local rel=.claude/skills/onepassword/VERSIONS c src;
+	local -a cands;
+	[[ -n $ONEPASSWORD_SKILL_STAMP ]] && cands+=("$ONEPASSWORD_SKILL_STAMP");
+	cands+=("$HOME/code/dotfiles/$rel");
+	for c in "${cands[@]}"; do
+		[[ -r $c ]] && { print -r -- "$c"; return 0; };
+	done;
+	if (( $+commands[chezmoi] )); then
+		src="$(command chezmoi source-path 2>/dev/null)";
+		[[ -n $src && -r $src/$rel ]] && { print -r -- "$src/$rel"; return 0; };
+	fi;
+	return 1;
+}
+
+# The 1Password desktop app's version, read out of its Info.plist — the app is
+# never launched to be asked, the same rule the other doctors' `binary:` lines
+# follow. Prints nothing where there is no app bundle (a Linux box, or a mac
+# carrying only the CLI).
+function onepassword_app_version() {
+	emulate -L zsh;
+	local plist=/Applications/1Password.app/Contents/Info.plist;
+	[[ -r $plist ]] || return 1;
+	command plutil -extract CFBundleShortVersionString raw -o - "$plist" 2>/dev/null;
+}
+
+# The op CLI's version without running op: bin_trace reads it off the resolved
+# install path (Homebrew's cask parks it at .../Caskroom/1password-cli/<ver>/op),
+# and a build whose path carries no version segment simply leaves this empty
+# rather than executing the binary to find out.
+function onepassword_cli_version() {
+	emulate -L zsh;
+	local bin out;
+	bin="$(whence -p op)" || return 1;
+	out="$(bin_trace "$bin")";
+	[[ $out == *\(*\) ]] || return 1;
+	print -r -- "${${out##*\(}%\)}";
+}
+
+# 1Password reaches this machine over three connections that fail
+# independently, and the standing confusion is treating them as one:
+#
+#   1. the `op` CLI -> the desktop app, via ~/.config/op/op-daemon.sock,
+#      gated by `op signin` and a session that lapses on its own;
+#   2. ssh and git-over-ssh -> the SSH agent socket named by ~/.ssh/config's
+#      IdentityAgent (on macOS inside the app's group container; on Linux
+#      ~/.1password/agent.sock);
+#   3. op-ssh-sign, the commit signer -> its own connection to the app.
+#
+# (3) is the one that catches people out. Verified on this machine:
+# op-ssh-sign signs with SSH_AUTH_SOCK unset, at the launchd default, and
+# pointed at a path that does not exist — it never reads the variable. So
+# `ssh-add -l` listing keys is NOT evidence that a commit will sign, and a
+# signed-out `op` is evidence about neither. That is exactly the shape of the
+# "1Password: failed to fill whole buffer" signing failure: a short read on
+# that third connection while every other indicator still looks healthy.
+# `ssh-add` compounds it by never reading ssh_config at all — it speaks only
+# to $SSH_AUTH_SOCK — which is why the `agent:` and `ssh-add:` lines below are
+# reported separately instead of as one verdict.
+#
+# Read-only like every other doctor here: it starts nothing, signs nothing,
+# unlocks nothing, and prints variable and file names but never a value.
+# .claude/skills/onepassword/ in the dotfiles source holds the long form.
+function onepassword-doctor() {
+	emulate -L zsh;
+	local bin app cli stamp sop sapp idagent keys routed;
+	print -r -- "defined: $(defined_trace onepassword_stamp_file onepassword_app_version onepassword_cli_version bin_trace)";
+	print -r -- "binary:  $(bin="$(whence -p op)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH — install the 1password-cli cask')";
+	app="$(onepassword_app_version)";
+	if [[ -n $app ]]; then
+		print -r -- "app:     /Applications/1Password.app ($app)";
+	elif [[ "$(command uname 2>/dev/null)" == Darwin ]]; then
+		print -r -- "app:     NOT INSTALLED — no /Applications/1Password.app; the CLI integration, the agent, and op-ssh-sign all need it";
+	else
+		print -r -- "app:     n/a — no macOS app bundle on this platform";
+	fi;
+	# Connection 1. `op whoami` is the cheapest read there is and never
+	# prompts; it just reports that the session lapsed (exit 1).
+	if (( $+commands[op] )); then
+		if command op whoami >/dev/null 2>&1; then
+			print -r -- "cli:     signed in";
+		else
+			print -r -- "cli:     NOT signed in — run: op signin (needs 1Password > Settings > Developer > 'Integrate with 1Password CLI')";
+		fi;
+	else
+		print -r -- "cli:     no op on PATH";
+	fi;
+	# Connection 2, in two parts that are genuinely different questions.
+	# What ssh will use comes from ssh's own config parsing, never a guess.
+	if (( $+commands[ssh] )); then
+		idagent="$(command ssh -G github.com 2>/dev/null | command sed -n 's/^identityagent //p' | command head -n1)";
+	fi;
+	if [[ -z $idagent ]]; then
+		print -r -- "agent:   no IdentityAgent in ssh_config for github.com — ssh falls back to \$SSH_AUTH_SOCK";
+	elif [[ -S $idagent ]]; then
+		print -r -- "agent:   ${idagent/#$HOME/\~} (socket present)";
+	else
+		print -r -- "agent:   ${idagent/#$HOME/\~} — MISSING; start 1Password and turn on Settings > Developer > 'Use the SSH agent'";
+	fi;
+	# What `ssh-add` will use is $SSH_AUTH_SOCK and nothing else. Under
+	# Claude Code's Bash tool that is the launchd agent, so "no identities"
+	# here is routine and says nothing about ssh, git, or signing.
+	print -r -- "env:     SSH_AUTH_SOCK=${SSH_AUTH_SOCK:-<unset>}";
+	if (( $+commands[ssh-add] )); then
+		keys="$(command ssh-add -l 2>&1)";
+		if (( $? == 0 )); then
+			print -r -- "ssh-add: $(print -r -- "$keys" | command grep -c .) key(s) offered by \$SSH_AUTH_SOCK (not necessarily the 1Password agent)";
+		else
+			print -r -- "ssh-add: none from \$SSH_AUTH_SOCK — expected unless it points at the agent above; ssh-add never reads ssh_config";
+		fi;
+	fi;
+	# Connection 3. Existence only: running it would ask 1Password to sign.
+	if [[ -x /Applications/1Password.app/Contents/MacOS/op-ssh-sign ]]; then
+		print -r -- "signer:  /Applications/1Password.app/Contents/MacOS/op-ssh-sign (present — git-doctor says whether git is pointed at it)";
+	elif [[ "$(command uname 2>/dev/null)" == Darwin ]]; then
+		print -r -- "signer:  op-ssh-sign NOT FOUND in the app bundle — SSH signing cannot work here";
+	else
+		print -r -- "signer:  n/a — op-ssh-sign is macOS/Windows only; on a remote box set user.signingkey to the literal public key";
+	fi;
+	# ~/.extra is sourced by every shell, so a token there that one of the
+	# per-repo wrappers routes overrides that routing everywhere (CLAUDE.md).
+	# Names only — this must never print a value.
+	if [[ -r $HOME/.extra ]]; then
+		routed="$(command grep -oE '\b(GH_TOKEN|GITHUB_TOKEN|CLOUDFLARE_API_TOKEN|ANTHROPIC_API_KEY|CLAUDE_CONFIG_DIR)\b' "$HOME/.extra" 2>/dev/null | command sort -u | command paste -sd, - | command sed 's/,/, /g')";
+		if [[ -n $routed ]]; then
+			print -r -- "extra:   ~/.extra mentions ROUTED $routed — every shell sources it, so that outranks the per-repo wrappers; move it to the project's own op run --env-file";
+		else
+			print -r -- "extra:   ~/.extra present, no routed token names in it";
+		fi;
+	else
+		print -r -- "extra:   ~/.extra absent (no personal overlay here)";
+	fi;
+	# Does the skill still describe the software that is installed? The
+	# notes are worth what their currency is worth, so say when they drift.
+	stamp="$(onepassword_stamp_file)";
+	if [[ -z $stamp ]]; then
+		print -r -- "skill:   no version stamp reachable — .claude/skills/onepassword/VERSIONS is not in the dotfiles source (no clone here, or a checkout predating the skill)";
+		return 0;
+	fi;
+	sop="$(command awk '$1 == "op" {print $2; exit}' "$stamp" 2>/dev/null)";
+	sapp="$(command awk '$1 == "app" {print $2; exit}' "$stamp" 2>/dev/null)";
+	cli="$(onepassword_cli_version)"; : ${cli:=unknown}; : ${app:=unknown};
+	if [[ $cli == "$sop" && $app == "$sapp" ]]; then
+		print -r -- "skill:   written against op $sop / app $sapp — matches what is installed";
+	else
+		print -r -- "skill:   written against op $sop / app $sapp — installed is op $cli / app $app; refresh it (${stamp:h})";
+	fi;
+}
+
 # For doctor: the calling shell's version and the non-default options that
 # change how patterns, globs, and words behave — the context a pasted
 # transcript otherwise lacks. Reads the CALLER's options: `setopt` lists
@@ -1900,19 +2059,22 @@ function shell_trace() {
 	print -r -- "zsh $ZSH_VERSION$ia${CLAUDECODE:+, under Claude Code}, options: ${list:-none}${list:+ (the tailnet wrappers reset these with emulate -L zsh)}";
 }
 
-# Every routing diagnosis for the cwd in one go — git identity, gh account,
-# Claude Code profile, the terminal-tab launcher, wrangler profile, hermes
-# profile, tailnet routing — plus iterm2, which is not per-repo but is the
-# terminal all of the above run inside, and whose version drifting past what
-# the skill documents is exactly the kind of silent change this command
-# exists to surface. Headed by the calling shell's version and pattern
+# Every routing and credential diagnosis for the cwd in one go — git
+# identity, gh account, Claude Code profile, the terminal-tab launcher,
+# wrangler profile, hermes profile, tailnet routing — plus the two that are
+# not per-repo but underpin everything that is: 1Password, which git signing
+# and ~/.extra rest on, so a machine-wide failure there surfaces as a
+# per-repo one; and iterm2, the terminal all of the above run inside, whose
+# version drifting past what the skill documents is exactly the kind of
+# silent change this command exists to surface. Headed by the calling
+# shell's version and pattern
 # options (shell_trace; this function must not emulate, see there). First
 # thing to run when a repo "behaves weird" on a machine.
 function doctor() {
 	local d;
 	print -r -- "shell:   $(shell_trace)";
 	print -r -- "";
-	for d in git gh claude wrangler hermes tailnet workspace iterm2; do
+	for d in git gh claude wrangler hermes tailnet workspace onepassword iterm2; do
 		print -r -- "== $d-doctor";
 		"$d-doctor";
 		print -r -- "";
