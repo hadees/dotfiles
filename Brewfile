@@ -159,6 +159,7 @@ cask 'deluge'
 cask 'displaylink' # DisplayLink USB graphics driver
 cask 'docker-desktop' # Docker Desktop
 cask 'dropbox'
+cask 'espanso' # Cross-platform text expander written in Rust
 cask 'fantastical'
 cask 'ferdium' # All-in-one messaging app (Slack, Discord, WhatsApp, etc.)
 cask 'fission' # Fast, lossless audio editor
