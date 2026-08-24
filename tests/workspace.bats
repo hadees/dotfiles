@@ -263,7 +263,7 @@ ws() { run sh "$WS" "$@"; }
   entry gone dir "$PROJ/nowhere"
   entry off dir "$PROJ/two"; entry off disabled true
   ws script
-  [[ "$output" == *'set end of thePlan to {"a", "a", "a", "cd -- '"'"$PROJ/one"'"' && run-a"}'* ]]
+  [[ "$output" == *'set end of thePlan to {"a", "a", "a", "export WORKSPACE_GROUP='"'"'a'"'"'; cd -- '"'"$PROJ/one"'"' && run-a"}'* ]]
   [[ "$output" != *gone* ]]
   [[ "$output" != *'"off"'* ]]
 }
@@ -578,4 +578,29 @@ ws() { run sh "$WS" "$@"; }
   [[ "$output" != *"command not found"* ]]
   [[ "$output" != *'`'* ]]
   [[ "$output" == *'"workspace install" was never run'* ]]
+}
+
+# --- the group reaches the prompt ---------------------------------------------
+
+@test "plan: every command exports its group so the prompt can prefix the title" {
+  entry a dir "$PROJ/one"
+  entry a window grp
+  entry b dir "$PROJ/two"
+  entry b command "run-b"
+  entry b window grp
+  ws plan
+  [ "$status" -eq 0 ]
+  # The launcher cannot set the tab title itself: precmd rewrites it at the
+  # first prompt, and iTerm2's Custom Tab Title renders once at session
+  # creation, before the session is tagged. Exporting is what survives.
+  [[ "${lines[0]}" == *"export WORKSPACE_GROUP='grp'; cd -- "* ]]
+  [[ "${lines[1]}" == *"export WORKSPACE_GROUP='grp'; cd -- "*"&& run-b"* ]]
+}
+
+@test "plan: a group name with a quote in it is still shell-safe" {
+  entry a dir "$PROJ/one"
+  entry a window "it's"
+  ws plan
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"export WORKSPACE_GROUP='it'\\''s';"* ]]
 }

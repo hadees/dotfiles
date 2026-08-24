@@ -164,12 +164,20 @@ window_of() { # name
   printf '%s\n' "$1"
 }
 
-command_of() { # name dir -> the line typed into the tab
+# The tab title cannot carry the group from this side. The prompt sets the
+# title on every precmd, so anything AppleScript writes is gone at the first
+# prompt; and iTerm2's own "Custom Tab Title" renders once when the session is
+# created — before this script can tag it — and does not re-evaluate when the
+# variable appears (measured: the variable read back correctly while the title
+# still rendered empty). Export the group instead and let the prompt prefix it,
+# which is re-evaluated every prompt and survives cd.
+command_of() { # name group dir -> the line typed into the tab
   c=$(sval "$1" command)
+  set -- "$1" "$2" "$3" "$(shquote "$3")" "$(shquote "$2")"
   if [ -n "$c" ]; then
-    printf 'cd -- %s && %s\n' "$(shquote "$2")" "$c"
+    printf 'export WORKSPACE_GROUP=%s; cd -- %s && %s\n' "$5" "$4" "$c"
   else
-    printf 'cd -- %s\n' "$(shquote "$2")"
+    printf 'export WORKSPACE_GROUP=%s; cd -- %s\n' "$5" "$4"
   fi
 }
 
@@ -197,7 +205,7 @@ all_rows() {
     else
       state=ok
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$win" "$n" "$state" "$title" "$dir" "$(command_of "$n" "$dir")"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$win" "$n" "$state" "$title" "$dir" "$(command_of "$n" "$win" "$dir")"
   done
 }
 
@@ -491,18 +499,19 @@ cmd_start() {
 
 # A *dynamic* profile: a plain JSON file iTerm2 reloads on write, with no
 # restart and no click through its preferences. It inherits rather than copies
-# — "Dynamic Profile Parent Name" makes it Default plus a badge and a tag, so
+# — "Dynamic Profile Parent Name" makes it Default plus a tag, so
 # it cannot drift from Default the way a hand-duplicated profile would. The
 # Guid is fixed so reinstalling updates this profile instead of adding another.
-# The badge is an iTerm2 interpolated string; it renders the group in the
-# corner of every tab workspace opened.
+# It deliberately overrides nothing visible: the profile is a marker the script
+# reads, not decoration. iTerm2 offers "Badge Text" (an interpolated string, so
+# "\\(user.workspaceWindow)" would print the group on every tab), "Tab Color",
+# and "Badge Max Height" to shrink it — add one here if a visual cue is wanted.
 profile_source() {
   printf '{\n  "Profiles": [\n    {\n'
   printf '      "Name": "%s",\n' "$(as_string "$PROFILE")"
   printf '      "Guid": "workspace-launcher-profile",\n'
   printf '      "Dynamic Profile Parent Name": "Default",\n'
-  printf '      "Tags": ["workspace"],\n'
-  printf '      "Badge Text": "\\\\(user.workspaceWindow)"\n'
+  printf '      "Tags": ["workspace"]\n'
   printf '    }\n  ]\n}\n'
 }
 

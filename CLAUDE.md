@@ -324,8 +324,19 @@ the session, where the tag is a step afterwards — so there is no instant when 
 tab exists untagged, and a tab carrying the profile with no tag is a run that
 died in between, now reported rather than silently duplicated beside. It
 *inherits* rather than copies (`Dynamic Profile Parent Name: Default`), so it
-cannot drift from Default the way a hand-duplicated profile would, and it adds
-only a tag and a badge interpolating the group. Everything degrades: with no
+cannot drift from Default the way a hand-duplicated profile would, and it
+overrides nothing visible — it is a marker the script reads, not decoration.
+
+The visible cue is the **tab title**, and it has to come from the prompt. The
+launcher cannot set it: `precmd` in `.zsh_prompt` rewrites the title on every
+prompt, so anything AppleScript writes is gone by the first one. iTerm2's own
+`Custom Tab Title` cannot do it either — measured: it renders **once, at
+session creation**, before the session has been tagged, and does not
+re-evaluate when the variable appears (the variable read back correctly while
+the title still rendered empty). So `start` exports `WORKSPACE_GROUP` into each
+tab and `precmd` prefixes the directory with `[<group>] `. It re-renders every
+prompt, survives `cd`, and is simply absent in an ordinary shell. Everything
+degrades: with no
 profile installed, creation falls back to the default profile and the tag alone
 carries idempotency, which is why `create … with profile` sits in a `try`.
 
