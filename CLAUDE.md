@@ -426,11 +426,32 @@ a disowned watcher greps, so prompts and progress meters survive) and fail
 open: no open-as, no pin, or no tempdir and the URL simply stays a printed
 line, the command untouched.
 
+Remote directories mount on demand with `tailnet mount <name>` (`umount`,
+`mounts`; the spec — tailnet, host, path, optional user/mountpoint/
+rclone-args — is overlay-supplied machine-local git config,
+`tailnet-mount.<name>.*`). rclone speaks sftp through the tailnet via an
+external `ssh -o ProxyCommand=… tailnet nc …` — so ssh config, known_hosts,
+and the 1Password agent all apply; with `--sftp-ssh` set rclone ignores its
+internal host/user config, the destination lives in the ssh command — and
+serves it to the kernel as **loopback NFS** on macOS (`rclone nfsmount`: no
+kext, no root; the kernel only talks to localhost, so a tailnet blip is an
+IO error + retry, never a wedged mount) or a FUSE mount on Linux
+(`fusermount3`, package `fuse3`). The default mountpoint is inside the
+chmod-700 state tree (`~/.local/state/tailnet/mnt/<name>`) on purpose; a
+fixed absolute path (a tool's hardcoded `/dir`) is a one-time
+`/etc/synthetic.conf` symlink, done by hand — see
+`docs/private-overlays.md`. Unlike the fail-open wrappers these commands
+fail loud with remediation: the mount is the point. `umount` needs only the
+mountpoint (a de-configured mount still tears down), and detaching the
+kernel mount is what makes the rclone daemon exit. `tailnet-doctor` adds
+`rclone:`/`mounts:` lines only when a `tailnet-mount.*` key exists, so
+machines without the overlay stay noise-free.
+
 Once per machine: `tailnet install <name> && tailnet up <name>` per tailnet
 (browser login as that account; approve the device in its admin console),
 overlays supply the mappings. Tests: `tests/tailnet.bats` (stub
-tailscale/launchctl/ssh/curl; state in a short `/tmp` dir because a unix
-socket path is capped at ~104 bytes on macOS).
+tailscale/launchctl/ssh/curl/rclone/mount; state in a short `/tmp` dir
+because a unix socket path is capped at ~104 bytes on macOS).
 
 ### Link routing (Finicky → Chrome profiles)
 

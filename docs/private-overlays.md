@@ -107,6 +107,7 @@ repo (Keychain / the tool's own config dir):
 | Claude Code | `claude auth login` under each profile dir (`claude-as <name> auth login`) | macOS Keychain, keyed on the config dir — cannot be copied between profiles |
 | wrangler | `wrangler auth create <profile>` (browser OAuth as that Cloudflare account) | `~/Library/Preferences/.wrangler/config/<profile>.toml` (macOS) / `~/.config/.wrangler/config/` |
 | tailnet | `tailnet install <name> && tailnet up <name>` (browser login as that Tailscale account) | `~/.local/state/tailnet/<name>/` — the daemon's node key and its proxy port |
+| tailnet mount | nothing of its own — ssh keys stay in 1Password's agent; optional one-time `/etc/synthetic.conf` entry for a fixed absolute path | overlay supplies `tailnet-mount.<name>.*`; rclone comes from the package lists |
 | git signing | nothing — 1Password's SSH agent holds the key | 1Password |
 | `~/.extra` secrets | `op signin` once; chezmoi reads them at apply | 1Password; the file is regenerated (0600) |
 
@@ -221,6 +222,41 @@ not overlay content. The mapping is only a *preference* — the wrappers still
 try every installed tailnet for a host — so an unmapped account merely loses
 the tie-break when two tailnets share a node name.
 
+### Tailnet mounts — a remote directory as a local path
+
+```gitconfig
+[tailnet-mount "<name>"]
+	tailnet     = <tailnet-name>       # a tailnet installed with `tailnet install`
+	host        = <node-hostname>      # the serving node (short MagicDNS name)
+	path        = /remote/dir          # absolute path on that node
+	user        = <ssh-user>           # optional; omitted -> ssh config decides
+	mountpoint  = /some/where          # optional; default ~/.local/state/tailnet/mnt/<name>
+	rclone-args = --vfs-cache-max-size 5G   # optional, space-separated, appended
+```
+
+`tailnet mount <name>` mounts that directory on demand (`umount` / `mounts`
+are its siblings): rclone speaks sftp to the node through the tailnet — an
+external `ssh -o ProxyCommand=tailnet nc …`, so the machine's ssh config,
+known_hosts, and 1Password SSH agent all apply and no credential of its own
+exists — and serves the result to the kernel as loopback NFS on macOS (no
+kext, no root) or a FUSE mount on Linux. The default mountpoint sits inside
+the chmod-700 state tree deliberately: the mount is not exposed outside the
+tailnet dirs.
+
+For a tool that hardcodes an absolute path (say `/data`), keep the default
+mountpoint and add a one-time synthetic symlink — the only sudo in this
+whole scheme, and it is run by hand, never by the repo:
+
+```
+printf 'data\tUsers/<user>/.local/state/tailnet/mnt/<name>\n' | sudo tee -a /etc/synthetic.conf
+```
+
+Caveats: the separator must be a literal TAB; the target is relative to `/`
+(no leading slash); the entry name may not contain `/`. It takes effect at
+the next boot (`sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t`
+sometimes works without one, varying by macOS release). The symlink dangles
+harmlessly while nothing is mounted.
+
 ### Link routing (Finicky) — `~/.config/finicky/personal.ts` / `work.ts`
 
 Per-account/per-company rules and Chrome profile display names — the personal
@@ -296,7 +332,8 @@ npx", not "pin <side-company> to its profile").
    `identity.<account>.email`; `claude.profile.<account>`;
    `wrangler.profile.<account>` (or a `wrangler.<owner>/<repo>.profile` pin
    for a one-off repo); `tailnet.profile.<account>` if that account has a
-   tailnet; Finicky rules. Personal overlay only:
+   tailnet; `tailnet-mount.<name>.*` if that tailnet serves a directory
+   worth mounting; Finicky rules. Personal overlay only:
    `claude.profile.default` names the profile stray, unpinned directories
    get (unset, they get bare `claude` = the default config dir).
 3. `dotfiles` to apply; `doctor` in a repo of that owner to confirm every

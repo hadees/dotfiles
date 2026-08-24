@@ -92,6 +92,7 @@ brew 'pyenv' # Simple Python version management
 brew 'qemu' # Generic machine emulator and virtualizer
 brew 'rbenv' # Ruby version manager
 brew 'readline' # Library for command-line editing
+brew 'rclone' # Rsync for cloud storage — sync, serve, and mount remote filesystems
 brew 'redis' # Persistent key-value database, with built-in net interface
 brew 'rename' # Perl-powered file rename script with many helpful built-ins
 brew 'ruby-build' # Install various Ruby versions and implementations
