@@ -22,11 +22,17 @@ setup() {
   git config --file "$GIT_CONFIG_GLOBAL" safe.directory '*'
   [ -n "$(git -C "$REPO" ls-files)" ]
 
-  # 1Password secret references. The documented occurrences — CLAUDE.md's
-  # onepasswordRead example and the literal grep patterns in
-  # tests/chezmoi.bats' rendered-home leak guard — are asserted exactly
-  # (file + count) rather than allowlisted by pattern.
+  # 1Password secret references. Outside the onepassword skill the documented
+  # occurrences — CLAUDE.md's onepasswordRead example and the literal grep
+  # patterns in tests/chezmoi.bats' rendered-home leak guard — are asserted
+  # exactly (file + count) rather than allowlisted by pattern.
+  #
+  # The skill is documentation *about* the syntax, so it necessarily carries
+  # many references and an exact count there would be churn with no meaning.
+  # It is guarded on the property that actually matters instead: every
+  # reference in it must name a placeholder vault, never a real one.
   OP_PAT='op:''//'
+  OP_SKILL='.claude/skills/onepassword/'
 
   # Token/key material: GitHub PATs, AWS access key ids, Slack bot tokens,
   # PEM private key blocks.
@@ -56,6 +62,27 @@ tree_grep() {
     [ -f "$dir/$f" ] || continue
     LC_ALL=C grep -InE "$pat" "$dir/$f" | sed "s|^|$f:|"
   done < <(git -C "$dir" ls-files -z)
+}
+
+# Secret-reference hits in repo $1 outside the onepassword skill directory.
+op_refs_outside_skill() {
+  tree_grep "$OP_PAT" "$1" | grep -vF "$OP_SKILL"
+}
+
+# Secret references in repo $1 whose vault segment is a literal name rather
+# than a placeholder. Placeholders are an angle-bracket token (<vault>), a
+# shell variable ($APP_ENV), an ellipsis, the reserved example vault "Private"
+# that CLAUDE.md's onepasswordRead example already uses, or nothing at all (a
+# scheme with no path, as quoted in a grep pattern, names no vault). Anything
+# else names a real vault and must not land in a public repo. The vault
+# segment is captured directly — matching only characters that can appear in
+# one, so the match stops at the trailing slash, quote, or brace of the
+# surrounding prose.
+op_real_vault_refs() {
+  tree_grep "$OP_PAT" "$1" \
+    | grep -oE "$OP_PAT"'[A-Za-z0-9_.$<>-]*' \
+    | sed -E "s|^$OP_PAT||" \
+    | grep -vE '^($|<|\$|\.\.\.$|Private$)' || true
 }
 
 # Email hits in repo $1, after dropping the files allowed to credit
@@ -108,11 +135,20 @@ make_tree() {
 # --- The current tree is clean ---------------------------------------------
 
 @test "op secret references: only the documented occurrences, exactly" {
-  run tree_grep "$OP_PAT" "$REPO"
+  run op_refs_outside_skill "$REPO"
   [ "${#lines[@]}" -eq 3 ]
   [[ "${lines[0]}" == CLAUDE.md:* ]]
   [[ "${lines[1]}" == tests/chezmoi.bats:* ]]
   [[ "${lines[2]}" == tests/chezmoi.bats:* ]]
+}
+
+@test "op secret references in the onepassword skill name no real vault" {
+  # The skill must contain at least one, or this guard is vacuous and the
+  # syntax documentation has gone missing.
+  run tree_grep "$OP_PAT" "$REPO"
+  [ -n "$(printf '%s\n' "${lines[@]}" | grep -F "$OP_SKILL")" ]
+  run op_real_vault_refs "$REPO"
+  [ -z "$output" ]
 }
 
 @test "no token or private-key material anywhere in the tree" {
