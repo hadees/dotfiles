@@ -566,3 +566,16 @@ ws() { run sh "$WS" "$@"; }
   [[ "$output" == *"profile:"*"Workspace"* ]]
   [[ "$output" != *"not installed"* ]]
 }
+
+@test "script: the generated AppleScript is emitted without running anything" {
+  entry a dir "$PROJ/one"
+  ws script
+  [ "$status" -eq 0 ]
+  # The AppleScript is built with an unquoted heredoc, so a backtick or a $(…)
+  # anywhere in it — a comment included — is command substitution: the shell
+  # runs it and drops the output into the script. A prose backtick around a
+  # command name did exactly that.
+  [[ "$output" != *"command not found"* ]]
+  [[ "$output" != *'`'* ]]
+  [[ "$output" == *'"workspace install" was never run'* ]]
+}

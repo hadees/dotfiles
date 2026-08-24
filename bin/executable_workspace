@@ -293,7 +293,7 @@ tell application "iTerm2"
 				try
 					set theWindow to (create window with profile "$PROFILE")
 				on error
-					-- `workspace install` was never run, or the profile was
+					-- "workspace install" was never run, or the profile was
 					-- removed. Opening the tabs matters more than tagging them.
 					set theWindow to (create window with default profile)
 				end try
