@@ -12,6 +12,7 @@ bootstrap.sh
 tests
 init
 theme
+alfred
 
 # Package-install scripts run only on their own OS
 {{ if ne .chezmoi.os "darwin" -}}
@@ -28,8 +29,8 @@ com.googlecode.iterm2.plist
 # Finicky (URL router) is a macOS app
 .finicky.ts
 .config/finicky
-# The Claude Code session launcher drives iTerm2, which is macOS-only
-bin/claude-session
+# The workspace launcher drives iTerm2, which is macOS-only
+bin/workspace
 {{ end -}}
 
 {{ if eq .machineClass "ephemeral" -}}

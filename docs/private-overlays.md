@@ -185,60 +185,72 @@ owners go in the personal overlay, work orgs in the work overlay.
 	default   = ~/.claude-<name>     # optional: used when no pin matches the cwd
 ```
 
-### Claude Code sessions to reopen after a restart (macOS)
+### Workspace: terminal tabs to reopen (macOS)
 
-`~/bin/claude-session` opens one iTerm2 window per Claude Code profile with a
-tab per project. Project paths are private, so the whole list lives here:
+`~/bin/workspace` opens one iTerm2 window per group with a tab per entry, each
+in its directory running its command. Paths and group names are private, so the
+whole list lives here:
 
 ```gitconfig
-[claude-session "<name>"]          # <name>: letters, digits, - and _
+[workspace "<name>"]               # <name>: letters, digits, - and _
 	dir      = ~/code/<project>      # required; the tab's working directory
-	window   = <label>               # optional; see below
-	profile  = <claude profile>      # optional; forces `claude-as <profile>`
-	args     = --continue            # optional; appended to the claude call
+	command  = <command line>        # optional; run after cd. Omit for a shell
+	window   = <group>               # optional; default: <name>, its own window
 	title    = <tab title>           # optional (default: <name>); iTerm2
 	                                 # relabels tabs itself, so it is a hint
 	disabled = true                  # optional; keep the entry, skip it
-[claude-session]
-	delay    = 3                     # optional; seconds to settle after login
 ```
 
-A worked example — two work projects, one personal, one side project that
-lives under a personal GitHub owner but wants a named profile of its own:
+A worked example — two projects sharing a window, one side project in its own,
+and one tab that is not running an agent at all:
 
 ```gitconfig
-[claude-session "atlas"]
-	dir = ~/code/atlas               # origin belongs to the work org
-[claude-session "beacon"]
-	dir = ~/code/beacon              # same org -> same window as atlas
-	args = --continue
-[claude-session "dotfiles"]
-	dir = ~/code/dotfiles            # personal owner -> the other window
-[claude-session "notes"]
-	dir = ~/notes                    # not a repo: nothing to resolve
-	window = personal-stuff          # so say which window by hand
-	profile = <personal alias>       # and which profile to launch as
+[workspace "atlas"]
+	dir = ~/code/atlas
+	command = claude
+	window = day-job
+[workspace "beacon"]
+	dir = ~/code/beacon
+	command = claude --continue
+	window = day-job                 # same window as atlas
+[workspace "sideline"]
+	dir = ~/code/sideline
+	command = claude
+	window = sideline-co             # a window of its own
+[workspace "logs"]
+	dir = /var/log
+	command = tail -f system.log
+	window = sideline-co             # shares sideline's window
+[workspace "notes"]
+	dir = ~/notes                    # no command: just a shell in a directory
 ```
 
-`window` is only needed for the last shape. Leave it out and the session joins
-the window of the profile its **directory** resolves to — the same
-`credential.https://github.com/<owner>.username` → `claude.profile.<account>`
-chain `claude()` walks — which is what keeps the two accounts in two windows
-with neither account named in the launcher. `profile` takes a name mapped in
-`claude.profile.*` (an alias is fine) and is what `claude-as` would take.
+`window` is the whole grouping story — there is no derivation and nothing is
+inferred from a repo's remote. Group by whatever you actually think in
+(employer, client, side project, "things I am debugging today"); entries with
+no `window` get a window to themselves. Because the command is typed into a
+**login shell**, `claude` there is the wrapper from `~/.functions`, so it still
+picks the right `CLAUDE_CONFIG_DIR` for that directory — which matters, since
+session history is partitioned per config dir and the wrong one silently
+resumes nothing.
 
 Once per machine, after `dotfiles`:
 
 ```sh
-claude-session install     # the launchd agent (Aqua session only)
-claude-session start       # once by hand: macOS asks about controlling iTerm2
-claude-session status      # agent, sessions, which tabs are open
+workspace install          # the iTerm2 AutoLaunch script
+workspace status           # trigger, entries, which tabs are open
+workspace start day-job    # or open one group by hand, any time
 ```
 
-Expect a second Automation prompt at the first login after that — the agent is
-a different client to macOS than your terminal. `claude-session plan` shows
-the whole decision table without touching iTerm2, and `claude-session-doctor`
-(also run by `doctor`) reports it next to the agent's state.
+No Automation prompt is involved: iTerm2 runs the AutoLaunch script itself, and
+an app automating itself needs no grant. `workspace plan` shows the whole
+decision table without touching iTerm2, and `workspace-doctor` (also run by
+`doctor`) reports it next to the trigger's state.
+
+For a launcher you can reach from the keyboard, `workspace alfred-install`
+hands the Alfred workflow in `alfred/workspace/` to Alfred; its keyword `ws`
+lists the groups with their open/total counts and opens the one you pick. The
+workflow contains no names — it calls `workspace`, which reads this config.
 
 ### Wrangler (Cloudflare) profile per account — and per repo
 
@@ -388,7 +400,7 @@ npx", not "pin <side-company> to its profile").
    `wrangler.profile.<account>` (or a `wrangler.<owner>/<repo>.profile` pin
    for a one-off repo); `tailnet.profile.<account>` if that account has a
    tailnet; `tailnet-mount.<name>.*` if that tailnet serves a directory
-   worth mounting; a `claude-session.<name>.dir` for each of that account's
+   worth mounting; a `workspace.<name>.dir` for each of that account's
    projects you want reopened after a restart; Finicky rules.
    Personal overlay only:
    `claude.profile.default` names the profile stray, unpinned directories

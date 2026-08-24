@@ -248,80 +248,100 @@ different account.
 live in the macOS Keychain and cannot be copied between profiles — verified,
 copying `.claude.json` does not carry a session.
 
-### Claude Code session launcher (iTerm2, after a restart)
+### Workspace launcher (iTerm2 tabs, on demand or at launch)
 
-`bin/claude-session` puts the day's sessions back on screen after a reboot:
-**one iTerm2 window per Claude Code profile**, one tab per project, each tab
-sitting in the project with `claude` already running. Which projects those are
-is identity-bearing, so — like every other router here — the machinery is
+`bin/workspace` puts a set of terminal tabs back on screen: **one iTerm2 window
+per group**, one tab per entry, each tab sitting in its directory with its
+command already running. What those entries are is identity-bearing (real
+paths, real group names), so — like every other router here — the machinery is
 public and the list is machine-local git config from an overlay:
 
 ```gitconfig
-[claude-session "<name>"]          # <name>: letters, digits, - and _
+[workspace "<name>"]               # <name>: letters, digits, - and _
 	dir      = ~/code/<project>      # required
-	window   = <label>               # optional: which window it shares
-	profile  = <claude profile>      # optional: forces `claude-as <profile>`
-	args     = --continue            # optional: appended to the claude call
+	command  = <command line>        # optional: run after cd; omit for a shell
+	window   = <group>               # optional: which window it shares
+	                                 # (default: <name> — a window of its own)
 	title    = <tab title>           # optional (default: <name>); a hint —
 	                                 # iTerm2 relabels tabs itself
 	disabled = true                  # optional: keep the entry, skip it
-[claude-session]
-	delay    = 3                     # optional: seconds `at-login` settles
 ```
 
-A session with no `window` key lands in the window of the profile its
-*directory* resolves to, asked of `claude_profile_dir` in `.functions` — the
-very helper `claude()` obeys — so personal projects share one window and work
-projects another **without either repo stating an account**. A directory
-nothing resolves (no origin, no pin, no `~/.functions`) gets a window of its
-own: an extra window beats two accounts in one. Tabs open in config order.
+A group is **just a label**. An earlier version derived it from the Claude Code
+profile the directory resolved to, which was clever and wrong: it grouped by
+whichever account owned the repo's remote, and that is not the axis anyone
+sorts projects by — two side projects under one personal account still want
+separate windows. Saying `window` outright is shorter, general, and expresses
+the grouping people actually use. Tabs open in config order.
 
-Three decisions carry the design:
+Two decisions carry the design:
 
 - The tab runs the **login shell and is typed at** (iTerm2's `write text`),
   not handed a command to exec. `create tab … command "…"` does not run an
-  interactive shell, so `.functions` is never sourced, `claude` is the bare
-  binary, and the account routing silently disappears — every tab would come
-  up as whoever owns `~/.claude`. Typing `cd <dir> && claude` is what makes
-  the wrapper (and `CLAUDE_CONFIG_DIR`) apply. `profile` is the escape hatch
-  for a directory whose origin resolves to nothing.
-- The trigger is a **per-user launchd agent** (`local.claude-session`,
-  `RunAtLoad`) with `LimitLoadToSessionType = Aqua` **and nothing else** — the
-  job opens windows in a GUI login session, and in an ssh or LoginWindow
-  context it could only fail (with a TCC prompt nobody is there to answer).
-  `RunAtLoad` fires while the session is still assembling, so `at-login` waits
-  for the Dock, settles for `claude-session.delay`, launches iTerm2, and
-  retries the AppleScript — early is not the same as ready. macOS asks once
-  per client binary whether it may control iTerm2; run `claude-session start`
-  by hand after installing so that prompt arrives while you are looking at it,
-  and expect a second one at the first login (the agent is a different
-  client). Denied, it shows up as `-1743` and the launcher says where to
-  grant it.
-- An iTerm2 **Window Arrangement** was the obvious alternative and is the
-  wrong tool: it restores a shell in a directory, not a running `claude`; it
-  lives in `com.googlecode.iterm2.plist`, which this repo deploys *publicly*,
-  so real project paths would leak on the next capture; and it is edited by
-  clicking, not by an overlay on a fresh machine. (For pure layout with no
-  `claude` in it, the arrangement is still less work — nothing here stops you
-  using both.)
+  interactive shell, so `.functions` is never sourced and any wrapper the
+  command relies on silently disappears — it would run the bare binary. For
+  `claude`, whose wrapper picks `CLAUDE_CONFIG_DIR` from the directory, that
+  is not cosmetic: session history is partitioned per config dir, so the
+  wrong one resumes nothing and starts fresh instead of failing.
+- The trigger is **iTerm2's own AutoLaunch**. `workspace install` compiles a
+  one-line AppleScript to `~/Library/Application Support/iTerm2/Scripts/
+  AutoLaunch.scpt`; iTerm2 runs it at every launch. This replaced a per-user
+  launchd agent, and the reason is TCC: a LaunchAgent driving `osascript` is
+  its own responsible process needing its own Automation grant, which can
+  prompt at login with nobody there to answer it, and which macOS can drop
+  when a signing identity changes. A script iTerm2 runs is iTerm2 automating
+  itself — implicitly allowed and never recorded. **Measured, not assumed:**
+  with the calling terminal's Automation grant revoked, an AutoLaunch-spawned
+  shell still created a window (`rc=0`) and no grant row appeared. It also
+  deletes the Dock-wait, the settle delay, and the retry loop, all of which
+  existed only because `RunAtLoad` fires before the GUI is ready — AutoLaunch
+  fires *because* iTerm2 started. Install refuses to clobber an
+  `AutoLaunch.scpt` it did not write, and prints the line to add by hand.
+  The call is backgrounded: iTerm2 runs AutoLaunch on its own AppleScript
+  runner, and a synchronous `do shell script` that sends events back to iTerm2
+  can sit behind the very runner it waits on.
+
+An iTerm2 **Window Arrangement** remains the wrong tool: it restores a shell in
+a directory, not a running command; it lives in `com.googlecode.iterm2.plist`,
+which this repo deploys, so real project paths would leak on the next capture;
+and it is edited by clicking, not provisioned by an overlay.
 
 Re-running is safe: each tab is tagged with an iTerm2 user variable
-(`user.claudeSession`), and `start` skips a session already on screen, adding
+(`user.workspaceSession`), and `start` skips an entry already on screen, adding
 what is missing to that group's existing window. Reading the tag needs care —
 an unset iTerm2 variable answers `missing value`, and coercing *that* to text
 yields the string "missing value", which would make every untagged session
-look tagged.
+look tagged. The AppleScript **returns what it actually opened**, so a re-run
+that opens nothing says so instead of reporting the whole plan as if it had.
 
-Commands mirror `tailnet`'s shape: `list`, `plan` (the decision table,
-tab-separated), `script` (the AppleScript `start` would run — a dry run),
-`start [name…]`, `at-login`, `install`, `uninstall`, `status`, `logs`, `dir`.
-`list`/`plan`/`script` are pure text and work anywhere; the acting commands
-refuse off macOS, and `.chezmoiignore` does not deploy the script there.
-`claude-session-doctor` reports the launcher, the agent, the configured
-sessions with which are open, and which window *this* repo would join;
-`doctor` includes it. Once per machine: `claude-session install &&
-claude-session start`. Tests: `tests/claude-session.bats` (stub
-osascript/open/launchctl/ps; fixture project and window names only).
+Commands mirror `tailnet`'s shape: `list`, `groups`, `plan` (the decision
+table, tab-separated), `script` (the AppleScript `start` would run — a dry
+run), `start [name|group…]`, `alfred`, `install`, `uninstall`, `status`,
+`logs`, `dir`. A selector names either one entry or a whole group.
+`list`/`groups`/`plan`/`script`/`alfred` are pure text and work anywhere; the
+acting commands refuse off macOS, and `.chezmoiignore` does not deploy the
+script there. Nothing configured is ever silently ignored — a name git accepts
+but this does not (`[workspace "bad name"]`) is warned about rather than
+dropped during parsing. `workspace-doctor` reports the script, iTerm2, the
+trigger, and the configured entries with which are open; `doctor` includes it.
+Once per machine: `workspace install`. Tests: `tests/workspace.bats` (stub
+osascript/open/ps/uname/osacompile; fixture names only).
+
+**Alfred front-end.** `alfred/workspace/` is an Alfred 5 workflow — keyword
+`ws` — whose Script Filter runs `workspace alfred` (Script Filter JSON, one
+item per group with its open/total count) and whose action runs `workspace
+start <group>`. `workspace alfred-install` zips it and hands it to Alfred,
+which shows its own import sheet; dropping the folder into Alfred's
+preferences by hand is not a supported path. Three things shape it: Alfred
+runs scripts with `/bin/zsh --no-rcs` and a fixed PATH that **excludes
+`~/bin`**, so both scripts call `$HOME/bin/workspace` by absolute path; the
+filter sets `alfredfiltersresults` so the script runs once and Alfred narrows
+as you type, rather than re-running per keystroke; and it passes the selection
+as **argv**, not `{query}`, so there is no query escaping to get wrong. The
+workflow holds no logic and therefore no identity — the group names come from
+the overlay at run time. It is **not** a chezmoi target: Alfred rewrites
+`info.plist` whenever the workflow is edited in its GUI, which would show as
+permanent drift, so the repo keeps the source and `alfred-install` copies it.
 
 ### Wrangler (Cloudflare) auth profiles
 
@@ -382,7 +402,7 @@ wrapper. Consequences:
   selects for the cwd (or "not installed under the selected node"), and the
   version read off the install without executing it (npm `package.json`,
   cask/native path segment). `doctor` runs all seven (git, gh, claude,
-  claude-session, wrangler, hermes, tailnet). Every doctor also opens with a `defined:` line — are
+  wrangler, hermes, tailnet, workspace). Every doctor also opens with a `defined:` line — are
   the helpers its wrapper (and the doctor itself) call actually defined in
   this shell — printed before any line that depends on one, because a
   missing helper makes a doctor misreport confidently (`account: <no pin
