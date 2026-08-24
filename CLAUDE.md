@@ -306,6 +306,17 @@ a directory, not a running command; it lives in `com.googlecode.iterm2.plist`,
 which this repo deploys, so real project paths would leak on the next capture;
 and it is edited by clicking, not provisioned by an overlay.
 
+When `start` has to launch iTerm2 itself, it scrubs `CLAUDE_CODE_*` from the
+environment first. `open` hands the caller's environment to the app it starts
+and the app keeps it for its whole run, so launching iTerm2 from inside a
+Claude Code session would stamp `CLAUDE_CODE_CHILD_SESSION=1` and that
+session's id onto **every tab it ever opens** — and `claude` in a session
+marked as a child silently stops saving transcripts. The tabs exist to run
+claude, so this is data loss, not cosmetics. Observed for real: a relaunch of
+iTerm2 from inside a Claude Code session left the running app carrying another
+session's id, and the next `claude` started there warned that transcript
+saving was off.
+
 Re-running is safe: each tab is tagged with an iTerm2 user variable
 (`user.workspaceSession`), and `start` skips an entry already on screen, adding
 what is missing to that group's existing window. Reading the tag needs care —

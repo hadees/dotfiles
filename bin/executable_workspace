@@ -370,11 +370,29 @@ proc_running() {
 }
 iterm_running() { proc_running iTerm2; }
 
+# `open` hands the caller's environment to an app it starts, and an app keeps
+# that environment for its whole run — so every shell iTerm2 spawns inherits
+# it. Launching iTerm2 from inside a Claude Code session therefore stamps
+# CLAUDE_CODE_CHILD_SESSION=1 (and that session's id) onto every tab, and
+# `claude` in a child session silently stops saving transcripts. Since the
+# tabs exist to run claude, that is a data-loss bug, not a cosmetic one.
+# Scrub the whole CLAUDE_CODE_* family rather than the two names known today.
+iterm_launch_env() {
+  args=""
+  for v in $(env | sed -n 's/^\(CLAUDE_CODE_[A-Za-z0-9_]*\)=.*/\1/p'); do
+    args="$args -u $v"
+  done
+  printf '%s' "$args"
+}
+
 ensure_iterm() {
   iterm_running && return 0
   [ -d /Applications/iTerm.app ] || warn "/Applications/iTerm.app not found (brew install --cask iterm2)"
-  open -b com.googlecode.iterm2 >/dev/null 2>&1 ||
-    open -a iTerm >/dev/null 2>&1 ||
+  # Unquoted on purpose: the words are `-u NAME` pairs built from environment
+  # variable names, which cannot contain whitespace.
+  scrub=$(iterm_launch_env)
+  env $scrub open -b com.googlecode.iterm2 >/dev/null 2>&1 ||
+    env $scrub open -a iTerm >/dev/null 2>&1 ||
     die "cannot launch iTerm2 (brew install --cask iterm2)"
   i=0
   while [ "$i" -lt 30 ] && ! iterm_running; do

@@ -50,9 +50,13 @@ esac
 exit 0
 STUB
   export PROCS_FILE="$BATS_TEST_TMPDIR/procs"
+  export OPEN_ENV="$BATS_TEST_TMPDIR/open-env"
   cat > "$BIN/open" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$*" >> "$OPEN_LOG"
+# Record the environment the app would inherit — `open` hands its own
+# environment to the app it launches, and the app keeps it for its whole run.
+env > "$OPEN_ENV"
 # launching it makes it visible to the next ps, as the real thing would
 printf 'iTerm2\n' > "$PROCS_FILE"
 exit 0
@@ -603,4 +607,29 @@ ws() { run sh "$WS" "$@"; }
   ws plan
   [ "$status" -eq 0 ]
   [[ "$output" == *"export WORKSPACE_GROUP='it'\\''s';"* ]]
+}
+
+# --- launching iTerm2 must not hand it this session's environment -----------
+
+@test "start: launching iTerm2 strips Claude Code's session markers" {
+  entry a dir "$PROJ/one"
+  # `open` gives the app its own environment, and the app keeps it for its
+  # whole run, so every tab would inherit these. `claude` in a session marked
+  # as a child silently stops saving transcripts — and these tabs exist to
+  # run claude.
+  FAKE_PROCS="" CLAUDE_CODE_CHILD_SESSION=1 CLAUDE_CODE_SESSION_ID=deadbeef \
+    CLAUDE_CODE_ENTRYPOINT=cli FAKE_OPENED="a" ws start
+  [ "$status" -eq 0 ]
+  [ -f "$OPEN_ENV" ]
+  run grep -c '^CLAUDE_CODE_' "$OPEN_ENV"
+  [ "$output" = 0 ]
+}
+
+@test "start: scrubbing the markers leaves the rest of the environment alone" {
+  entry a dir "$PROJ/one"
+  FAKE_PROCS="" CLAUDE_CODE_CHILD_SESSION=1 WORKSPACE_CANARY=keepme \
+    FAKE_OPENED="a" ws start
+  [ "$status" -eq 0 ]
+  grep -q '^WORKSPACE_CANARY=keepme$' "$OPEN_ENV"
+  grep -q '^PATH=' "$OPEN_ENV"
 }
