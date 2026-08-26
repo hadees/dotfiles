@@ -16,6 +16,9 @@ setup() {
   export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig"
   export GIT_CONFIG_SYSTEM=/dev/null
   export GIT_CONFIG_NOSYSTEM=1
+  # A test run from inside a workspace tab inherits its group, which would
+  # prefix every "ordinary shell" title under test.
+  unset WORKSPACE_GROUP
   export XDG_CONFIG_HOME="$HOME/.config"
   export XDG_DATA_HOME="$HOME/.local/share"
   git config --global user.name octo

@@ -140,6 +140,28 @@ missing signer. Each machine opts in via untracked files:
   private keys live in 1Password and never touch disk. The `.pub` files are
   just selectors.
 
+**Which key authenticates a `git@github.com:` remote** is the same question
+for ssh that the credential helper answers for https, and it has the same
+answer: `bin/git-ssh-pinned`, installed as `core.sshCommand` by the
+overlays. With several GitHub keys in one agent, ssh offers them in the
+agent's order and GitHub takes the first that authenticates — so a plain
+`git@github.com:` URL lands on whichever account owns *that* key, and every
+other account's private repos are "Repository not found". The old fix was a
+per-account `Host github-<account>` alias in every remote URL. The helper
+reads the owner out of the remote command git hands it (`git-upload-pack
+'<owner>/<repo>.git'`), resolves it through the credential pins to an
+account, and runs `ssh -o IdentitiesOnly=yes -i <identity.<account>.sshkey>`
+— a `.pub` selector; the private half stays in 1Password. It touches nothing
+else: an alias host, an unpinned owner, an account with no key declared, a
+non-GitHub host, or git's `-G` variant probe all pass through untouched, and
+`GIT_SSH_COMMAND=ssh` outranks it for one command. `identity.<owner>/<repo>
+.sshkey` pins one repo (a deploy key, a side project) above its owner's
+account, mirroring the gate's per-repo email pin. `git-doctor`'s `ssh:` line
+traces the same lookup for the cwd. Tests: `tests/git-ssh-pinned.bats`
+(stub ssh, sandboxed git config; the last test drives it through real git).
+The WSL class keeps its `core.sshCommand = ssh.exe` — that ssh reads the
+Windows-side config, where these key paths mean nothing.
+
 On a machine without 1Password (e.g. a remote Linux box), nothing needs
 disabling — signing is simply never enabled there. To sign on a remote you
 keep around, forward your local 1Password SSH agent over the connection and
@@ -258,9 +280,10 @@ purely a function of which overlays a machine carries.
 - Nothing in the public source may depend on any overlay existing. Templates,
   tests, and scripts must all work without them (`ephemeral` boxes never get
   them).
-- The `gh()` wrapper and `bin/git-credential-gh-user` deliberately contain no
-  account or org names: both read the `credential.<url>.username` pins from
-  git config at runtime, which the overlays provide. **Adding a work org is a
+- The `gh()` wrapper, `bin/git-credential-gh-user`, and `bin/git-ssh-pinned`
+  deliberately contain no account or org names: all read the
+  `credential.<url>.username` pins from git config at runtime, which the
+  overlays provide. **Adding a work org is a
   one-line change in the work overlay and needs no edit here.**
 - Don't "helpfully" reintroduce a name, email, org, or private repo name into
   this repo's files, tests, or commit messages. The personal overlay's

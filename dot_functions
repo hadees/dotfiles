@@ -1686,8 +1686,49 @@ function git-doctor() {
 		print -r -- "signing: off";
 	fi;
 	# SSH: an scp-style origin's host part is often an alias picking the key;
-	# show what ssh resolves it to (no connection made).
-	if [[ -n $origin && $origin != *://* && $origin == *:* ]]; then
+	# show what ssh resolves it to (no connection made). A plain github.com
+	# host has no alias to pick one, so ~/bin/git-ssh-pinned (core.sshCommand,
+	# set by the overlays) picks it from the pins — trace the same lookup it
+	# makes: owner -> account -> identity.<account>.sshkey, per-repo slug
+	# pin first. Its absence when configured is reported first: git would
+	# fail every ssh remote, not just this one.
+	local sshcmd sshbin sshhost sshkey sshvia;
+	sshcmd="$(command git config --get core.sshCommand 2>/dev/null)";
+	if [[ -n $sshcmd ]]; then
+		sshbin=${sshcmd%% *};
+		sshbin=${sshbin/#\$HOME/$HOME}; sshbin=${sshbin/#\$\{HOME\}/$HOME}; sshbin=${sshbin/#\~/$HOME};
+		if [[ $sshbin == */* && ! -x $sshbin ]]; then
+			print -r -- "ssh:     core.sshCommand=$sshcmd — NOT FOUND (every ssh remote fails; \`dotfiles\` deploys it, or unset the key)";
+		fi;
+	fi;
+	sshhost="";
+	if [[ -n $origin && $origin == ssh://* ]]; then
+		sshhost=${origin#ssh://}; sshhost=${sshhost%%/*}; sshhost=${sshhost#*@}; sshhost=${sshhost%%:*};
+	elif [[ -n $origin && $origin != *://* && $origin == *:* ]]; then
+		sshhost=${origin%%:*}; sshhost=${sshhost#*@};
+	fi;
+	if [[ ${(L)sshhost} == (github.com|ssh.github.com) && $sshcmd == *git-ssh-pinned* ]]; then
+		sshvia="git@$sshhost via git-ssh-pinned ->";
+		if [[ -z $acct ]]; then
+			print -r -- "ssh:     $sshvia owner unpinned; the agent picks the key";
+		else
+			local sshslug;
+			sshslug="$(git_origin_slug)";
+			sshkey=""; key="";
+			[[ -n $sshslug ]] && sshkey="$(command git config --type=path --get "identity.$sshslug.sshkey" 2>/dev/null)";
+			[[ -n $sshkey ]] && key="identity.$sshslug.sshkey (per-repo pin)";
+			[[ -n $sshkey ]] || { sshkey="$(command git config --type=path --get "identity.$acct.sshkey" 2>/dev/null)"; key="identity.$acct.sshkey"; };
+			if [[ -z $sshkey ]]; then
+				print -r -- "ssh:     $sshvia no identity.$acct.sshkey declared for '$acct'; the agent picks the key (declare it in the overlay)";
+			elif [[ ! -e $sshkey ]]; then
+				sshkey=${sshkey/#$HOME/\~};
+				print -r -- "ssh:     $sshvia key $sshkey ($key) — WARNING: file does not exist; ssh will offer nothing";
+			else
+				sshkey=${sshkey/#$HOME/\~};
+				print -r -- "ssh:     $sshvia key $sshkey ($key), IdentitiesOnly";
+			fi;
+		fi;
+	elif [[ -n $origin && $origin != *://* && $origin == *:* ]]; then
 		alias=${origin%%:*}; alias=${alias#*@};
 		if command -v ssh >/dev/null 2>&1; then
 			local sshcfg;
@@ -1712,7 +1753,7 @@ function git-doctor() {
 	elif [[ -z $acct ]]; then
 		print -r -- "gate:    on, no opinion here (owner unpinned)";
 	else
-		local slug key;
+		local slug;
 		slug="$(git_origin_slug)";
 		key="identity.$acct.email";
 		expected="";
