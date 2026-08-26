@@ -86,9 +86,10 @@ op_real_vault_refs() {
 }
 
 # Email hits in repo $1, after dropping the files allowed to credit
-# upstream authors, scp-style git URLs and github.com SSH-host mentions
-# (git@host is a protocol user, not an address — same exclusion the
-# rendered-home guard in tests/chezmoi.bats uses), and addresses at the
+# upstream authors, any git@<host> ssh destination — scp-style URLs and the
+# bare host git hands its ssh command (git@host is a protocol user, not an
+# address; same exclusion the rendered-home guard in tests/chezmoi.bats
+# uses), and addresses at the
 # RFC 2606 reserved example domains used by test fixtures.
 email_hits() {
   local dir=$1 f
@@ -98,7 +99,7 @@ email_hits() {
       LICENSE-MIT.txt|README.md|dot_vim/syntax/json.vim) continue ;;
     esac
     LC_ALL=C sed -E \
-        -e 's/git@[A-Za-z0-9.-]+://g' \
+        -e 's/git@[A-Za-z0-9.-]+//g' \
         -e 's/git@(gist\.)?github\.com//g' \
         -e 's/[A-Za-z0-9._%+-]+@example\.(com|net|org)//g' \
         "$dir/$f" \
