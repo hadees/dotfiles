@@ -1712,7 +1712,7 @@ function git-doctor() {
 	elif [[ -z $acct ]]; then
 		print -r -- "gate:    on, no opinion here (owner unpinned)";
 	else
-		local slug key;
+		local slug;
 		slug="$(git_origin_slug)";
 		key="identity.$acct.email";
 		expected="";

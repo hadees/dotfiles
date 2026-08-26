@@ -76,6 +76,9 @@ doctor_in() {
   doctor_in "$REPO"
   [ "$status" -eq 0 ]
   [[ "$output" == *"signing: on (format ssh), key ~/.ssh/id_missing.pub"* ]]
+  # Re-declaring an already-local `key` in the gate block made zsh print
+  # its value as a stray line whenever signing was on.
+  [[ "$output" != *"key='"* ]]
   [[ "$output" == *"WARNING: signing key file ~/.ssh/id_missing.pub does not exist"* ]]
   [[ "$output" == *"signer:  /nonexistent/op-ssh-sign — NOT FOUND"* ]]
   # https origin: says which account the credential helper will use.
