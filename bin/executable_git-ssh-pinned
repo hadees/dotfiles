@@ -1,0 +1,67 @@
+#!/bin/sh
+# git core.sshCommand: authenticate a plain github.com ssh remote as the
+# account its owner is pinned to (credential.https://github.com/<owner>
+# .username — the same pins gh(), claude(), wrangler(), the pre-commit
+# identity gate, and git-credential-gh-user route on), using the key that
+# account declares as identity.<account>.sshkey (a public-key file; the
+# private half stays in the agent). This is git-credential-gh-user for ssh:
+# with several keys in one agent, ssh offers them in the agent's order and
+# GitHub accepts the first that authenticates — so a `git@github.com:` URL
+# lands on whichever account owns that key, and a private repo of any other
+# account is "Repository not found". Until now the fix was a per-account
+# host alias in every remote URL; this makes the plain URL do the same.
+#
+# A repo that authenticates as something other than its owner's account (a
+# deploy key, a side project under a personal account) pins by slug:
+# identity.<owner>/<repo>.sshkey (lowercase) outranks the account's key —
+# the same shape as the gate's identity.<owner>/<repo>.email.
+#
+# Passes the arguments to ssh untouched when: the host is not github.com
+# (an ssh-config alias already chose the key — this never overrides one),
+# the owner is unpinned, no key is declared for it, or there is no remote
+# command to read the owner from (git's `-G` variant probe). Bypass one
+# command with GIT_SSH_COMMAND=ssh, which outranks core.sshCommand.
+#
+# git calls this as: [-p port] [-4] [-6] [-o option] [user@]host command,
+# where command is `git-upload-pack '<owner>/<repo>.git'` (or receive-pack,
+# upload-archive, git-lfs-authenticate); an ssh:// remote gives '/<owner>/
+# <repo>.git' with a leading slash. Only the last two arguments are read;
+# everything is handed on in place, so the inserted options precede them.
+plain() { exec ssh "$@"; }
+
+[ $# -ge 2 ] || plain "$@"
+for a; do host=$cmd; cmd=$a; done   # host = second-to-last, cmd = last
+case $cmd in
+	git-*' '*) ;;
+	*) plain "$@" ;;
+esac
+
+host=${host#*@}
+host=$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')
+case $host in
+	github.com|ssh.github.com) ;;
+	*) plain "$@" ;;
+esac
+
+path=${cmd#* }
+path=${path%% *}
+path=${path#\'}; path=${path%\'}
+path=${path#/}
+path=${path%/}; path=${path%.git}
+slug=$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')
+case $slug in
+	*/*) ;;
+	*) plain "$@" ;;
+esac
+owner=${slug%%/*}
+case $owner in
+	''|*[!a-z0-9-]*) plain "$@" ;;
+esac
+
+acct=$(git config --get "credential.https://github.com/$owner.username" 2>/dev/null)
+[ -n "$acct" ] || plain "$@"
+key=$(git config --type=path --get "identity.$slug.sshkey" 2>/dev/null)
+[ -n "$key" ] || key=$(git config --type=path --get "identity.$acct.sshkey" 2>/dev/null)
+[ -n "$key" ] || plain "$@"
+
+exec ssh -o IdentitiesOnly=yes -i "$key" "$@"

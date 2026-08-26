@@ -139,19 +139,38 @@ author *and* committer email are among the account's declared emails:
 
 ```gitconfig
 [identity "<account>"]
-	email = <address the account commits as>   # repeatable
+	email  = <address the account commits as>   # repeatable
+	sshkey = ~/.ssh/<that account's key>.pub     # what git-ssh-pinned hands ssh
 ```
 
 Declare one block per pinned account in the overlay that owns it (personal
-commits: the GitHub noreply address only). A repo that commits as an
-identity other than its owner's — a side company hosted under the personal
-account — is pinned by slug, which outranks the account's emails (the same
-shape as wrangler's per-repo pin):
+commits: the GitHub noreply address only). `sshkey` is the public half of
+the key GitHub knows for that account (the private half stays in the
+agent): `~/bin/git-ssh-pinned` — installed as git's ssh by the block below —
+runs `ssh -o IdentitiesOnly=yes -i <sshkey>` for any plain `git@github.com:`
+remote whose owner is pinned to the account, so the key no longer has to be
+chosen by a host alias in the URL. A repo that commits as an identity other
+than its owner's — a side company hosted under the personal account — is
+pinned by slug, which outranks the account's emails and key (the same shape
+as wrangler's per-repo pin); `sshkey` here is also how a deploy key is used:
 
 ```gitconfig
 [identity "<owner>/<repo>"]
-	email = <that project's own address>
+	email  = <that project's own address>
+	sshkey = ~/.ssh/<that project's own key>.pub   # optional
 ```
+
+```gitconfig
+[core]
+	sshCommand = $HOME/bin/git-ssh-pinned   # macOS/Linux; WSL keeps ssh.exe
+[ssh]
+	variant = ssh                          # skip git's -G probe of the helper
+```
+
+Both overlays may carry that `core`/`ssh` block, the way both carry the
+credential helper block: the values are identical, so whichever file git
+reads last changes nothing. An account with no `sshkey`, an unpinned owner,
+an alias host, or a non-GitHub host leaves ssh's arguments untouched.
 
 Unpinned owner, no origin, or no declared email → no opinion (a warning
 for the last case). Bypass one
@@ -172,8 +191,9 @@ without tracking it, see below.
 
 One block per GitHub owner (your account, each org, each side-company
 owner). These pins are the **single source of truth for owner → account**:
-`gh()`, `claude()`, `wrangler()`, and `bin/git-credential-gh-user` all read
-them at run time, which is how those public files name no accounts. Personal
+`gh()`, `claude()`, `wrangler()`, `bin/git-credential-gh-user` (https), and
+`bin/git-ssh-pinned` (ssh) all read them at run time, which is how those
+public files name no accounts. Personal
 owners go in the personal overlay, work orgs in the work overlay.
 
 ### Claude Code profile per account
@@ -396,7 +416,8 @@ npx", not "pin <side-company> to its profile").
 1. Overlay: add the identifiers to `tests/no-public-leak.bats` `DENY` (and
    the other overlays' cross-leak tests).
 2. Overlay gitconfig: `credential.https://github.com/<owner>.username` pin;
-   `identity.<account>.email`; `claude.profile.<account>`;
+   `identity.<account>.email` and `identity.<account>.sshkey`;
+   `claude.profile.<account>`;
    `wrangler.profile.<account>` (or a `wrangler.<owner>/<repo>.profile` pin
    for a one-off repo); `tailnet.profile.<account>` if that account has a
    tailnet; `tailnet-mount.<name>.*` if that tailnet serves a directory
