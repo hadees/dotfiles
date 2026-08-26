@@ -92,6 +92,60 @@ doctor_in() {
   [[ "$output" == *"signer:  /bin/sh"* ]]
 }
 
+@test "git-doctor: a plain github.com origin traces the key git-ssh-pinned will use" {
+  make_repo 'git@github.com:octo-personal/some-repo.git'
+  # Without core.sshCommand there is nothing to trace: the host resolves as
+  # any other alias would.
+  doctor_in "$REPO"
+  [[ "$output" == *"ssh:     github.com -> github.com"* ]]
+  [[ "$output" != *"git-ssh-pinned"* ]]
+
+  # The overlays' line, verbatim; the helper deployed where it points.
+  git config --file "$GIT_CONFIG_GLOBAL" core.sshCommand '$HOME/bin/git-ssh-pinned'
+  mkdir -p "$HOME/bin"
+  cp "$BATS_TEST_DIRNAME/../bin/executable_git-ssh-pinned" "$HOME/bin/git-ssh-pinned"; chmod +x "$HOME/bin/git-ssh-pinned"
+  doctor_in "$REPO"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ssh:     git@github.com via git-ssh-pinned -> no identity.personal-acct.sshkey declared for 'personal-acct'; the agent picks the key"* ]]
+
+  git config --file "$GIT_CONFIG_GLOBAL" identity.personal-acct.sshkey '~/.ssh/id_personal.pub'
+  doctor_in "$REPO"
+  [[ "$output" == *"ssh:     git@github.com via git-ssh-pinned -> key ~/.ssh/id_personal.pub (identity.personal-acct.sshkey) — WARNING: file does not exist"* ]]
+
+  mkdir -p "$HOME/.ssh" && : > "$HOME/.ssh/id_personal.pub"
+  doctor_in "$REPO"
+  [[ "$output" == *"ssh:     git@github.com via git-ssh-pinned -> key ~/.ssh/id_personal.pub (identity.personal-acct.sshkey), IdentitiesOnly"* ]]
+  [[ "$output" != *"WARNING"* ]]
+
+  # A per-repo pin outranks the account's key and says so.
+  : > "$HOME/.ssh/id_side.pub"
+  git config --file "$GIT_CONFIG_GLOBAL" identity.octo-personal/some-repo.sshkey '~/.ssh/id_side.pub'
+  doctor_in "$REPO"
+  [[ "$output" == *"-> key ~/.ssh/id_side.pub (identity.octo-personal/some-repo.sshkey (per-repo pin)), IdentitiesOnly"* ]]
+
+  # ssh:// form of the same remote traces the same way.
+  git -C "$REPO" remote set-url origin 'ssh://git@github.com/octo-personal/some-repo.git'
+  doctor_in "$REPO"
+  [[ "$output" == *"ssh:     git@github.com via git-ssh-pinned -> key ~/.ssh/id_side.pub"* ]]
+
+  # Unpinned owner: the helper passes through, and the doctor says so.
+  make_repo 'git@github.com:someone-else/some-repo.git'
+  doctor_in "$REPO"
+  [[ "$output" == *"ssh:     git@github.com via git-ssh-pinned -> owner unpinned; the agent picks the key"* ]]
+
+  # An alias host is left to ssh config, helper or not.
+  make_repo 'git@github-personal:octo-personal/some-repo.git'
+  doctor_in "$REPO"
+  [[ "$output" == *"ssh:     github-personal -> github-personal"* ]]
+  [[ "$output" != *"via git-ssh-pinned"* ]]
+
+  # core.sshCommand pointing at nothing is the loudest line: every ssh
+  # remote fails, whatever its shape.
+  rm "$HOME/bin/git-ssh-pinned"
+  doctor_in "$REPO"
+  [[ "$output" == *"ssh:     core.sshCommand=\$HOME/bin/git-ssh-pinned — NOT FOUND"* ]]
+}
+
 @test "doctor: runs every doctor in order" {
   make_repo 'git@github-personal:octo-personal/some-repo.git'
   # Stubs so gh-/wrangler-doctor have something harmless to talk to.
