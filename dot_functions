@@ -214,6 +214,10 @@ function dotfiles() {
 	# entry file is touched. Cheap and idempotent; skipped where Finicky
 	# isn't deployed.
 	[[ -f ~/.finicky.ts ]] && command touch ~/.finicky.ts;
+	# ~/.config/git/allowed_signers is concatenated from per-overlay
+	# fragments (git has no include for it), so it can only be composed once
+	# every overlay above has deployed its own. Same reason as the touch.
+	(( $+commands[git-allowed-signers] )) && git-allowed-signers;
 	return 0;
 }
 
