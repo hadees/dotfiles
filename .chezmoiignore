@@ -22,6 +22,14 @@ alfred
 .chezmoiscripts/linux/**
 {{ end -}}
 
+{{ if eq .machineClass "wsl" -}}
+# WSL talks to the Windows-side OpenSSH (1Password's ssh.exe forwarding), and
+# that reads %USERPROFILE%\.ssh\config. A POSIX-side config here would be
+# read by a client this class never uses, and its key paths mean nothing to
+# the one it does.
+.ssh/config
+{{ end -}}
+
 {{ if ne .chezmoi.os "darwin" -}}
 # macOS GUI configuration has no business on Linux/WSL
 com.googlecode.iterm2.plist

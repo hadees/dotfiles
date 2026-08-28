@@ -1,0 +1,31 @@
+{{- /* ~/.ssh/config — the SKELETON only. It carries no host, no key, and no
+     account: every one of those is identity-bearing and lives in a private
+     overlay's fragment under ~/.ssh/config.d/, which this file includes.
+
+     A machine therefore gets exactly the fragments its overlays supply. A
+     work-only box has no personal aliases, a personal-only box has no work
+     ones, and an ephemeral box has neither — with no conditionals here,
+     because a glob that matches nothing is not an error (verified: `ssh -G`
+     exits 0 with the skeleton alone).
+
+     ORDERING IS SEMANTIC, and backwards from git. ssh_config says "for each
+     parameter, the FIRST obtained value will be used", so an earlier
+     fragment wins, whereas ~/.gitconfig's later include wins. The fragments
+     are numbered to make that explicit: 10-personal before 20-work, so
+     personal takes precedence on any host both of them describe. The Include
+     sits above `Host *` for the same reason — a catch-all read first would
+     shadow every fragment. tests/ssh-config.bats pins both facts. */ -}}
+Include ~/.ssh/config.d/*.conf
+{{ if eq .machineClass "mac" }}
+# The agent every key in this setup actually lives in. Not a secret and not
+# an identity — a fixed path inside 1Password's group container, and the one
+# thing here that is the same on every mac.
+#
+# macOS only, and that matters more than it looks: IdentityAgent OVERRIDES
+# $SSH_AUTH_SOCK. Pointing it at this path on a Linux box — where 1Password
+# does not run — would make ssh ignore a forwarded agent and fail with no
+# usable key, which is precisely how git reaches GitHub from the shared
+# workstations.
+Host *
+	IdentityAgent "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+{{- end }}

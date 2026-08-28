@@ -226,6 +226,15 @@
 	clean = git-lfs clean -- %f
 	smudge = git-lfs smudge -- %f
 
+# Where git looks to VERIFY ssh signatures. The path is machinery and lives
+# here; the signers themselves are identities and come from overlay fragments
+# that ~/bin/git-allowed-signers composes into this file. Naming it globally
+# (rather than per-identity in an overlay) means a repo matching no includeIf
+# still verifies instead of erroring out.
+[gpg "ssh"]
+
+	allowedSignersFile = ~/.config/git/allowed_signers
+
 # Machine-local overrides: signing key, user identity, work-specific config.
 # Not tracked in the repo — set user.name, user.email, user.signingkey per machine.
 [include]
