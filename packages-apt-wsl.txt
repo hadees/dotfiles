@@ -1,0 +1,24 @@
+# WSL-only additions, installed on top of packages-apt.txt when the machine
+# class is `wsl`. Consumed by
+# .chezmoiscripts/linux/run_onchange_install-packages.sh.
+#
+# Keep this to packages that only make sense inside WSL. Anything a plain
+# Ubuntu box would also want belongs in packages-apt.txt.
+
+# wslu provides wslview, which hands a URL to the Windows browser — the WSL
+# analogue of macOS `open`. It is what gives xdg-open something to do here,
+# and so what makes the `open` alias and bin/open-as work rather than fail
+# silently. Link routing on this class is Windows' job (whatever the default
+# browser is there), not Finicky's.
+wslu
+
+# Deliberately NOT here, and why:
+# - tailscale: Tailscale's own WSL2 guidance is to run it Windows-side; a
+#   tailscaled inside the distro fights the host over MTU and TUN. bin/tailnet
+#   is therefore unused on this class, and so is the rclone tailnet mount.
+# - docker.io: conflicts with Docker Desktop's WSL integration.
+# - aircrack-ng, scrcpy, usbutils: no wifi hardware to put in monitor mode,
+#   and USB needs usbipd plumbing from the Windows side.
+# - win32yank: not packaged in Ubuntu. For the Windows clipboard use clip.exe
+#   to copy and powershell.exe Get-Clipboard to paste; xclip/xsel need a
+#   display, which WSLg supplies to a `wsl` session but not to an sshd one.

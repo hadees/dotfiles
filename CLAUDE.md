@@ -102,6 +102,7 @@ VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 - **`.macos`** — macOS `defaults write` settings; reads `$COMPUTER_NAME` env var for machine-specific naming
 - **`Brewfile`** — Homebrew formulae, casks, and Mac App Store apps (macOS only; `.chezmoiscripts/darwin/` runs `brew bundle` when it changes)
 - **`packages-apt.txt`** — Debian/Ubuntu/WSL package list (`.chezmoiscripts/linux/` installs it when it changes; skips gracefully without apt or sudo)
+- **`packages-apt-wsl.txt`** — WSL-only additions, installed on top of the shared list when the machine class is `wsl`
 - **`bin/`** — personal scripts added to `$PATH`
 - **Claude Code statusline** — lives in a private skills marketplace repo (skill `claude-statusline`), not here. Install once per machine with `/claude-statusline`; the plugin's session-start hook keeps the installed copies in `~/.claude` current after that. `~/.claude/settings.json` comes from the work overlay, so on a machine without that overlay there is no statusLine command to be dead.
 - **`init/`** — one-time setup scripts
@@ -224,7 +225,12 @@ op/ssh/ssh-add, sandboxed HOME; no vault or network touched).
 ### Package lists
 
 CLI tools are declared per-OS — `Brewfile` (macOS), `packages-apt.txt`
-(Debian/Ubuntu/WSL). **When adding or removing a tool, update every list
+(Debian/Ubuntu/WSL), plus `packages-apt-wsl.txt` for what only makes sense
+inside WSL (today: `wslu`, whose `wslview` gives `xdg-open` a Windows browser
+to hand URLs to). The `wsl` class installs the shared list and then the WSL
+one; every other Linux class installs only the shared one, and only the
+lists it actually installs are hashed into the script, so editing the WSL
+list does not re-run installs on a plain Linux box. **When adding or removing a tool, update every list
 where it's available**, using each distro's native package name (e.g.
 Ubuntu's `bat` package installs the binary as `batcat`; the shell config's
 `command -v` guards tolerate the difference). If a tool exists on one
@@ -244,6 +250,27 @@ therefore installs nothing, silently, while `chezmoi status` stays clean. To
 re-trigger: `chezmoi state delete-bucket --bucket=entryState` (re-applying
 files is idempotent), or edit the list, which changes the hash. First hit on
 a WSL box whose package install had skipped for want of sudo.
+
+**`gh` is the one entry whose version matters.** The `gh()` wrapper and
+`bin/git-credential-gh-user` resolve every account through it, so a box
+without `gh` cannot route at all — and Ubuntu's build trails upstream badly
+(24.04 ships 2.45.0). Add GitHub's own apt repo once per machine and the
+`gh` line in `packages-apt.txt` then installs the current release from it
+instead, upgrading with ordinary `apt upgrade`:
+
+```sh
+sudo mkdir -p -m 755 /etc/apt/keyrings
+out=$(mktemp) && wget -nv -O"$out" https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+  && sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg < "$out" > /dev/null \
+  && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+  | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+sudo apt update && sudo apt install gh
+```
+
+Do **not** use the snap — the GitHub CLI project actively discourages it
+(sandbox breakage). Homebrew-on-Linux would also work and is deliberately
+not used here.
 
 ### Machine-local customization
 

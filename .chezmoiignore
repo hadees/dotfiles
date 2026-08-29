@@ -8,6 +8,7 @@ docs
 LICENSE-MIT.txt
 Brewfile
 packages-apt.txt
+packages-apt-wsl.txt
 bootstrap.sh
 tests
 init
