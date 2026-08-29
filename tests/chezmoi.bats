@@ -67,8 +67,9 @@ teardown() {
   [ ! -e "$TMPHOME/.extra" ]
   [ ! -e "$TMPHOME/.gitconfig.local" ]
   [ ! -e "$TMPHOME/.claude" ]
-  [ ! -e "$TMPHOME/CLAUDE.md" ]
   # Repo-level files never deploy
+  [ ! -e "$TMPHOME/CLAUDE.md" ]
+  [ ! -e "$TMPHOME/com.googlecode.iterm2.plist" ]
   [ ! -e "$TMPHOME/README.md" ]
   [ ! -e "$TMPHOME/docs" ]
   [ ! -e "$TMPHOME/Brewfile" ]
@@ -95,15 +96,18 @@ teardown() {
   # these off the OS, not the machine class, so gate on uname for Linux CI.
   if [ "$(uname -s)" = "Darwin" ]; then
     [ -f "$TMPHOME/.mackup.cfg" ]
-    [ -f "$TMPHOME/com.googlecode.iterm2.plist" ]
     [ -f "$TMPHOME/.finicky.ts" ]
     [ -f "$TMPHOME/.config/finicky/lib.ts" ]
   else
     [ ! -e "$TMPHOME/.mackup.cfg" ]
-    [ ! -e "$TMPHOME/com.googlecode.iterm2.plist" ]
     [ ! -e "$TMPHOME/.finicky.ts" ]
     [ ! -e "$TMPHOME/.config/finicky" ]
   fi
+  # Repo-level, on every OS: iTerm2 reads the clone (PrefsCustomFolder), so a
+  # copy in $HOME is read by nothing, and CLAUDE.md is guidance for this repo
+  # rather than for $HOME.
+  [ ! -e "$TMPHOME/com.googlecode.iterm2.plist" ]
+  [ ! -e "$TMPHOME/CLAUDE.md" ]
   assert_no_secret_leaks
 }
 
