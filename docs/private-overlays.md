@@ -207,7 +207,7 @@ owners go in the personal overlay, work orgs in the work overlay.
 
 ### Workspace: terminal tabs to reopen (macOS)
 
-`~/bin/workspace` opens one iTerm2 window per group with a tab per entry, each
+`~/bin/worktabs` opens one iTerm2 window per group with a tab per entry, each
 in its directory running its command. Paths and group names are private, so the
 whole list lives here:
 
@@ -257,22 +257,22 @@ resumes nothing.
 Once per machine, after `dotfiles`:
 
 ```sh
-workspace install          # the iTerm2 dynamic profile
-workspace status           # profile, entries, which tabs are open
-workspace start day-job    # open one group, any time
+worktabs install          # the iTerm2 dynamic profile
+worktabs status           # profile, entries, which tabs are open
+worktabs start day-job    # open one group, any time
 ```
 
 Nothing opens at iTerm2 launch: a set is opened when you ask for it, with
-`workspace start` or the Alfred workflow. (An older version installed an
-AutoLaunch script that reopened everything at every launch; `workspace
-install` removes one it finds.) `workspace plan` shows the whole decision
-table without touching iTerm2, and `workspace-doctor` (also run by `doctor`)
+`worktabs start` or the Alfred workflow. (An older version installed an
+AutoLaunch script that reopened everything at every launch; `worktabs
+install` removes one it finds.) `worktabs plan` shows the whole decision
+table without touching iTerm2, and `worktabs-doctor` (also run by `doctor`)
 reports it next to the profile's state.
 
-For a launcher you can reach from the keyboard, `workspace alfred-install`
-hands the Alfred workflow in `alfred/workspace/` to Alfred; its keyword `ws`
+For a launcher you can reach from the keyboard, `worktabs alfred-install`
+hands the Alfred workflow in `alfred/worktabs/` to Alfred; its keyword `ws`
 lists the groups with their open/total counts and opens the one you pick. The
-workflow contains no names — it calls `workspace`, which reads this config.
+workflow contains no names — it calls `worktabs`, which reads this config.
 
 ### Wrangler (Cloudflare) profile per account — and per repo
 

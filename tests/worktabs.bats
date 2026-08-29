@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 
-# bin/workspace puts a set of terminal tabs back on screen: one iTerm2 window
+# bin/worktabs puts a set of terminal tabs back on screen: one iTerm2 window
 # per group, one tab per entry, each tab typing `cd <dir> && <command>` into a
 # login shell so any wrapper in ~/.functions still applies. These tests drive
 # the real script under a sandboxed HOME with stub osascript/open/ps/uname/
@@ -15,12 +15,12 @@ setup() {
   export GIT_CONFIG_SYSTEM=/dev/null
   export GIT_CONFIG_NOSYSTEM=1
   unset XDG_STATE_HOME
-  export WORKSPACE_STATE="$BATS_TEST_TMPDIR/state"
+  export WORKTABS_STATE="$BATS_TEST_TMPDIR/state"
   export ITERM_SCRIPTS="$BATS_TEST_TMPDIR/Scripts"
   export ITERM_PROFILES="$BATS_TEST_TMPDIR/DynamicProfiles"
   git config --file "$GIT_CONFIG_GLOBAL" init.defaultBranch main
 
-  WS="$BATS_TEST_DIRNAME/../bin/executable_workspace"
+  WS="$BATS_TEST_DIRNAME/../bin/executable_worktabs"
   BIN="$BATS_TEST_TMPDIR/bin"
   mkdir -p "$BIN"
   export OSA_LOG="$BATS_TEST_TMPDIR/osascript.log"
@@ -267,7 +267,7 @@ ws() { run sh "$WS" "$@"; }
   entry gone dir "$PROJ/nowhere"
   entry off dir "$PROJ/two"; entry off disabled true
   ws script
-  [[ "$output" == *'set end of thePlan to {"a", "a", "a", "export WORKSPACE_GROUP='"'"'a'"'"'; cd -- '"'"$PROJ/one"'"' && run-a"}'* ]]
+  [[ "$output" == *'set end of thePlan to {"a", "a", "a", "export WORKTABS_GROUP='"'"'a'"'"'; cd -- '"'"$PROJ/one"'"' && run-a"}'* ]]
   [[ "$output" != *gone* ]]
   [[ "$output" != *'"off"'* ]]
 }
@@ -423,7 +423,7 @@ ws() { run sh "$WS" "$@"; }
   printf 'display dialog "someone else"\n' > "$ITERM_SCRIPTS/AutoLaunch.scpt"
   ws install
   [ "$status" -eq 0 ]
-  [[ "$output" == *"not written by workspace"* ]]
+  [[ "$output" == *"not written by worktabs"* ]]
   [[ "$(cat "$ITERM_SCRIPTS/AutoLaunch.scpt")" == *"someone else"* ]]
 }
 
@@ -484,7 +484,7 @@ ws() { run sh "$WS" "$@"; }
 @test "an unknown command and no command at all both explain themselves" {
   ws
   [ "$status" -eq 2 ]
-  [[ "$output" == *"Usage: workspace"* ]]
+  [[ "$output" == *"Usage: worktabs"* ]]
   ws bogus
   [ "$status" -ne 0 ]
   [[ "$output" == *"unknown command 'bogus'"* ]]
@@ -492,7 +492,7 @@ ws() { run sh "$WS" "$@"; }
 
 # --- the dedicated iTerm2 profile ---------------------------------------------
 
-@test "script: tabs are created with the workspace profile, falling back if absent" {
+@test "script: tabs are created with the worktabs profile, falling back if absent" {
   entry a dir "$PROJ/one"
   ws script
   [ "$status" -eq 0 ]
@@ -505,9 +505,9 @@ ws() { run sh "$WS" "$@"; }
   [[ "$output" == *"create tab with default profile"* ]]
 }
 
-@test "script: WORKSPACE_PROFILE renames the profile everywhere it is used" {
+@test "script: WORKTABS_PROFILE renames the profile everywhere it is used" {
   entry a dir "$PROJ/one"
-  WORKSPACE_PROFILE=Scratch ws script
+  WORKTABS_PROFILE=Scratch ws script
   [ "$status" -eq 0 ]
   [[ "$output" == *'create window with profile "Scratch"'* ]]
   [[ "$output" == *'is "Scratch" then'* ]]
@@ -593,7 +593,7 @@ ws() { run sh "$WS" "$@"; }
   # command name did exactly that.
   [[ "$output" != *"command not found"* ]]
   [[ "$output" != *'`'* ]]
-  [[ "$output" == *'"workspace install" was never run'* ]]
+  [[ "$output" == *'"worktabs install" was never run'* ]]
 }
 
 # --- the group reaches the prompt ---------------------------------------------
@@ -609,8 +609,8 @@ ws() { run sh "$WS" "$@"; }
   # The launcher cannot set the tab title itself: precmd rewrites it at the
   # first prompt, and iTerm2's Custom Tab Title renders once at session
   # creation, before the session is tagged. Exporting is what survives.
-  [[ "${lines[0]}" == *"export WORKSPACE_GROUP='grp'; cd -- "* ]]
-  [[ "${lines[1]}" == *"export WORKSPACE_GROUP='grp'; cd -- "*"&& run-b"* ]]
+  [[ "${lines[0]}" == *"export WORKTABS_GROUP='grp'; cd -- "* ]]
+  [[ "${lines[1]}" == *"export WORKTABS_GROUP='grp'; cd -- "*"&& run-b"* ]]
 }
 
 @test "plan: a group name with a quote in it is still shell-safe" {
@@ -618,7 +618,7 @@ ws() { run sh "$WS" "$@"; }
   entry a window "it's"
   ws plan
   [ "$status" -eq 0 ]
-  [[ "$output" == *"export WORKSPACE_GROUP='it'\\''s';"* ]]
+  [[ "$output" == *"export WORKTABS_GROUP='it'\\''s';"* ]]
 }
 
 # --- launching iTerm2 must not hand it this session's environment -----------

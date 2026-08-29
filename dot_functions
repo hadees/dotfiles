@@ -472,20 +472,20 @@ function claude-doctor() {
 	print -r -- "creds:   $cred";
 }
 
-# Diagnose what `workspace` would put on screen: is the script deployed, is the
+# Diagnose what `worktabs` would put on screen: is the script deployed, is the
 # AutoLaunch trigger installed, what does the machine-local config ask for, and
 # which of those tabs are open right now. The entry table comes from the
 # script's own `status` — one decision, reported once. Report-only: it opens
 # nothing, and it never asks iTerm2 for anything the script would not.
-function workspace-doctor() {
+function worktabs-doctor() {
 	emulate -L zsh;
 	local ver scpt prof;
-	print -r -- "wrapper: <none — workspace is a script, not a shell wrapper>";
+	print -r -- "wrapper: <none — worktabs is a script, not a shell wrapper>";
 	print -r -- "defined: <none — this doctor calls no helpers>";
-	if (( $+commands[workspace] )); then
-		print -r -- "script:  ${commands[workspace]}";
+	if (( $+commands[worktabs] )); then
+		print -r -- "script:  ${commands[worktabs]}";
 	else
-		print -r -- "script:  NOT FOUND — ~/bin/workspace is not on PATH (chezmoi apply; macOS only)";
+		print -r -- "script:  NOT FOUND — ~/bin/worktabs is not on PATH (chezmoi apply; macOS only)";
 	fi;
 	if [[ -d /Applications/iTerm.app ]]; then
 		# Read off the bundle, never by running it — same rule as the other
@@ -497,32 +497,32 @@ function workspace-doctor() {
 	else
 		print -r -- "iterm:   n/a — iTerm2 is macOS-only, the launcher does nothing here";
 	fi;
-	# Nothing runs at iTerm2 launch any more; sets open only via `workspace
+	# Nothing runs at iTerm2 launch any more; sets open only via `worktabs
 	# start`. A leftover AutoLaunch.scpt from an older version still would,
-	# so it is reported until `workspace install` clears it.
+	# so it is reported until `worktabs install` clears it.
 	scpt="$HOME/Library/Application Support/iTerm2/Scripts/AutoLaunch.scpt";
 	if [[ -e $scpt ]] && command grep -q workspace $scpt 2>/dev/null; then
-		print -r -- "trigger: STALE — $scpt still opens a set at every iTerm2 launch; clear it with: workspace install";
+		print -r -- "trigger: STALE — $scpt still opens a set at every iTerm2 launch; clear it with: worktabs install";
 	else
-		print -r -- "trigger: none — sets open only when you ask (workspace start)";
+		print -r -- "trigger: none — sets open only when you ask (worktabs start)";
 	fi;
 	prof="$HOME/Library/Application Support/iTerm2/DynamicProfiles/workspace.json";
 	if [[ -e $prof ]]; then
-		print -r -- "profile: installed — every tab workspace opens carries it, so its own windows are distinguishable from yours";
+		print -r -- "profile: installed — every tab worktabs opens carries it, so its own windows are distinguishable from yours";
 	else
-		print -r -- "profile: not installed — tabs open with the default profile and are told apart by their tag alone (workspace install)";
+		print -r -- "profile: not installed — tabs open with the default profile and are told apart by their tag alone (worktabs install)";
 	fi;
-	# iTerm2 opens a window of its own at launch that workspace neither created
+	# iTerm2 opens a window of its own at launch that worktabs neither created
 	# nor reuses. Report it; changing a preference is the user's call.
 	if [[ $(uname -s) == Darwin ]]; then
 		if [[ "$(command defaults read com.googlecode.iterm2 OpenNoWindowsAtStartup 2>/dev/null)" == 1 ]]; then
-			print -r -- "startup: iTerm2 opens no window of its own — only the ones workspace starts";
+			print -r -- "startup: iTerm2 opens no window of its own — only the ones worktabs starts";
 		else
 			print -r -- "startup: iTerm2 also opens one window of its own at launch — defaults write com.googlecode.iterm2 OpenNoWindowsAtStartup -bool true";
 		fi;
 	fi;
-	if (( $+commands[workspace] )); then
-		command workspace status 2>&1 | sed 's/^/  /';
+	if (( $+commands[worktabs] )); then
+		command worktabs status 2>&1 | sed 's/^/  /';
 	fi;
 	print -r -- "cwd:     $PWD";
 }
@@ -2118,7 +2118,7 @@ function doctor() {
 	local d;
 	print -r -- "shell:   $(shell_trace)";
 	print -r -- "";
-	for d in git gh claude wrangler hermes tailnet workspace onepassword iterm2; do
+	for d in git gh claude wrangler hermes tailnet worktabs onepassword iterm2; do
 		print -r -- "== $d-doctor";
 		"$d-doctor";
 		print -r -- "";

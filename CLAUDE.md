@@ -411,13 +411,21 @@ different account.
 live in the macOS Keychain and cannot be copied between profiles — verified,
 copying `.claude.json` does not carry a session.
 
-### Workspace launcher (iTerm2 tabs, on demand or at launch)
+### Worktabs launcher (iTerm2 tabs, on demand)
 
-`bin/workspace` puts a set of terminal tabs back on screen: **one iTerm2 window
+`bin/worktabs` puts a set of terminal tabs back on screen: **one iTerm2 window
 per group**, one tab per entry, each tab sitting in its directory with its
 command already running. What those entries are is identity-bearing (real
 paths, real group names), so — like every other router here — the machinery is
 public and the list is machine-local git config from an overlay:
+
+The command is `worktabs`; the **git config namespace stays `workspace.*`**.
+Renaming it would need this repo and the private overlay applied in lockstep
+on every machine before the launcher worked again, and the namespace was never
+the problem — the collision was on `PATH`. The iTerm2 session marks and the
+`Workspace` dynamic profile keep their old spelling for the same class of
+reason: they are stamped on tabs that are already open, and renaming them
+would make `start` stop recognising every running tab and duplicate the lot.
 
 ```gitconfig
 [workspace "<name>"]               # <name>: letters, digits, - and _
@@ -446,7 +454,7 @@ Two decisions carry the design:
   `claude`, whose wrapper picks `CLAUDE_CONFIG_DIR` from the directory, that
   is not cosmetic: session history is partitioned per config dir, so the
   wrong one resumes nothing and starts fresh instead of failing.
-- **Nothing runs at launch.** Sets open when you ask — `workspace start`, or
+- **Nothing runs at launch.** Sets open when you ask — `worktabs start`, or
   the Alfred workflow. An earlier version compiled a one-line AppleScript to
   `~/Library/Application Support/iTerm2/Scripts/AutoLaunch.scpt` so that every
   iTerm2 start reopened the whole set; that is removed. Opening every
@@ -455,7 +463,7 @@ Two decisions carry the design:
   deliberately. `install` now writes only the dynamic profile, **and deletes
   an `AutoLaunch.scpt` a previous version left**, so upgrading a machine stops
   the old behaviour instead of leaving it running with nothing in the repo to
-  explain it; `status` and `workspace-doctor` report a stale one they will not
+  explain it; `status` and `worktabs-doctor` report a stale one they will not
   touch, and neither ever removes a script somebody else wrote.
   Two findings from that route are worth not relearning. A script iTerm2 runs
   is **iTerm2 automating itself** — implicitly allowed, never recorded in TCC
@@ -511,7 +519,7 @@ prompt, so anything AppleScript writes is gone by the first one. iTerm2's own
 `Custom Tab Title` cannot do it either — measured: it renders **once, at
 session creation**, before the session has been tagged, and does not
 re-evaluate when the variable appears (the variable read back correctly while
-the title still rendered empty). So `start` exports `WORKSPACE_GROUP` into each
+the title still rendered empty). So `start` exports `WORKTABS_GROUP` into each
 tab and `precmd` prefixes the directory with `[<group>] `. It re-renders every
 prompt, survives `cd`, and is simply absent in an ordinary shell. Everything
 degrades: with no
@@ -524,8 +532,8 @@ and a plain one both gone; one fresh window on relaunch), so "user variables do
 not survive restoration but profiles do" — the strongest-sounding argument for
 the profile — is simply not true and is not the reason. What the test *did*
 turn up is that iTerm2 opens **one window of its own** at every launch, which
-workspace neither created nor reuses; `OpenNoWindowsAtStartup` suppresses it,
-and `install`/`workspace-doctor` print that line rather than writing a
+worktabs neither created nor reuses; `OpenNoWindowsAtStartup` suppresses it,
+and `install`/`worktabs-doctor` print that line rather than writing a
 preference into a tracked file behind you.
 
 Commands mirror `tailnet`'s shape: `list`, `groups`, `plan` (the decision
@@ -536,21 +544,21 @@ run), `start [name|group…]`, `alfred`, `install`, `uninstall`, `status`,
 acting commands refuse off macOS, and `.chezmoiignore` does not deploy the
 script there. Nothing configured is ever silently ignored — a name git accepts
 but this does not (`[workspace "bad name"]`) is warned about rather than
-dropped during parsing. `workspace-doctor` reports the script, iTerm2, the
+dropped during parsing. `worktabs-doctor` reports the script, iTerm2, the
 profile, whether a stale launch trigger survives, and the configured entries
 with which are open; `doctor` includes it. Once per machine:
-`workspace install` — which is also what clears the old trigger. Tests:
-`tests/workspace.bats` (stub osascript/open/ps/uname/osacompile; fixture names
+`worktabs install` — which is also what clears the old trigger. Tests:
+`tests/worktabs.bats` (stub osascript/open/ps/uname/osacompile; fixture names
 only).
 
-**Alfred front-end.** `alfred/workspace/` is an Alfred 5 workflow — keyword
-`ws` — whose Script Filter runs `workspace alfred` (Script Filter JSON, one
-item per group with its open/total count) and whose action runs `workspace
-start <group>`. `workspace alfred-install` zips it and hands it to Alfred,
+**Alfred front-end.** `alfred/worktabs/` is an Alfred 5 workflow — keyword
+`ws` — whose Script Filter runs `worktabs alfred` (Script Filter JSON, one
+item per group with its open/total count) and whose action runs `worktabs
+start <group>`. `worktabs alfred-install` zips it and hands it to Alfred,
 which shows its own import sheet; dropping the folder into Alfred's
 preferences by hand is not a supported path. Three things shape it: Alfred
 runs scripts with `/bin/zsh --no-rcs` and a fixed PATH that **excludes
-`~/bin`**, so both scripts call `$HOME/bin/workspace` by absolute path; the
+`~/bin`**, so both scripts call `$HOME/bin/worktabs` by absolute path; the
 filter sets `alfredfiltersresults` so the script runs once and Alfred narrows
 as you type, rather than re-running per keystroke; and it passes the selection
 as **argv**, not `{query}`, so there is no query escaping to get wrong. The
@@ -618,7 +626,7 @@ wrapper. Consequences:
   selects for the cwd (or "not installed under the selected node"), and the
   version read off the install without executing it (npm `package.json`,
   cask/native path segment). `doctor` runs them all (git, gh, claude,
-  wrangler, hermes, tailnet, workspace, onepassword, iterm2 — the last two
+  wrangler, hermes, tailnet, worktabs, onepassword, iterm2 — the last two
   are not per-repo, but 1Password is what signing and `~/.extra` rest on and
   iTerm2 is the terminal the rest run inside, so their failures arrive
   disguised as per-repo ones). Every doctor also opens with a `defined:` line — are

@@ -18,7 +18,7 @@ setup() {
   export GIT_CONFIG_NOSYSTEM=1
   # A test run from inside a workspace tab inherits its group, which would
   # prefix every "ordinary shell" title under test.
-  unset WORKSPACE_GROUP
+  unset WORKTABS_GROUP
   export XDG_CONFIG_HOME="$HOME/.config"
   export XDG_DATA_HOME="$HOME/.local/share"
   git config --global user.name octo
@@ -86,8 +86,8 @@ run_prompt_git() {
 
 # --- terminal title -----------------------------------------------------------
 
-# precmd sets the terminal title to the working directory. `workspace` opens its
-# tabs with WORKSPACE_GROUP exported, and the group is prefixed here rather than
+# precmd sets the terminal title to the working directory. `worktabs` opens its
+# tabs with WORKTABS_GROUP exported, and the group is prefixed here rather than
 # by the launcher: precmd runs on every prompt and would overwrite anything the
 # launcher wrote, and iTerm2's own Custom Tab Title renders once at session
 # creation, before the session carries the group at all.
@@ -97,7 +97,7 @@ title_of() { # cwd [group]
   zsh -fc "
     source ${PROMPT_FILE@Q} >/dev/null 2>&1 || true
     cd ${1@Q}
-    ${2+export WORKSPACE_GROUP=${2@Q}}
+    ${2+export WORKTABS_GROUP=${2@Q}}
     precmd
   " | tr -d '\001-\010\013\014\016-\037'
 }

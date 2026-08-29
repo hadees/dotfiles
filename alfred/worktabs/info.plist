@@ -29,7 +29,7 @@
 	<key>disabled</key>
 	<false/>
 	<key>name</key>
-	<string>Workspace</string>
+	<string>Worktabs</string>
 	<key>objects</key>
 	<array>
 		<dict>
@@ -60,7 +60,7 @@
 				<key>runningsubtext</key>
 				<string>Reading groups…</string>
 				<key>script</key>
-				<string>"$HOME/bin/workspace" alfred
+				<string>"$HOME/bin/worktabs" alfred
 </string>
 				<key>scriptargtype</key>
 				<integer>1</integer>
@@ -69,7 +69,7 @@
 				<key>subtext</key>
 				<string>Which group of tabs to open</string>
 				<key>title</key>
-				<string>Open a workspace group</string>
+				<string>Open a worktabs group</string>
 				<key>type</key>
 				<integer>0</integer>
 				<key>withspace</key>
@@ -90,7 +90,7 @@
 				<key>escaping</key>
 				<integer>100</integer>
 				<key>script</key>
-				<string>"$HOME/bin/workspace" start "$1"
+				<string>"$HOME/bin/worktabs" start "$1"
 </string>
 				<key>scriptargtype</key>
 				<integer>1</integer>
@@ -111,10 +111,10 @@
 	<string>Lists the window groups defined in machine-local git config
 (workspace.&lt;name&gt;.window) and opens one.
 
-All logic lives in ~/bin/workspace — this workflow is two calls into
+All logic lives in ~/bin/worktabs — this workflow is two calls into
 it, so there is nothing here to keep in sync. Alfred runs scripts with
 /bin/zsh --no-rcs and a fixed PATH that excludes ~/bin, which is why
-both scripts use an absolute $HOME/bin/workspace.
+both scripts use an absolute $HOME/bin/worktabs.
 
   ws        list the groups, hit return to open one
 </string>
