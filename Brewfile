@@ -95,6 +95,7 @@ brew 'readline' # Library for command-line editing
 brew 'rclone' # Rsync for cloud storage — sync, serve, and mount remote filesystems
 brew 'redis' # Persistent key-value database, with built-in net interface
 brew 'rename' # Perl-powered file rename script with many helpful built-ins
+brew 'ripgrep' # Fast recursive search respecting .gitignore (rg)
 brew 'ruby-build' # Install various Ruby versions and implementations
 brew 'scrcpy' # Display and control Android devices over USB or TCP/IP
 brew 'screen' # a full-screen window manager that multiplexes a physical terminal between several processes, typically interactive shells.
