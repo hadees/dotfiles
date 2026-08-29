@@ -108,16 +108,24 @@ if (( $+commands[zoxide] )); then
 	eval "$(zoxide init zsh)"
 fi
 
-# zsh plugins (installed via Homebrew).
+# zsh plugins. Homebrew keeps them under its own prefix; Debian/Ubuntu ships
+# them in /usr/share with the same layout below that, so one search list
+# covers both and a Linux box gets them from apt. First hit wins.
 # zsh-syntax-highlighting must be sourced last.
-if (( $+commands[brew] )); then
-	_brew_prefix="$(brew --prefix 2>/dev/null)"
-	[[ -f "${_brew_prefix}/share/zsh-autosuggestions/zsh-autosuggestions.zsh" ]] &&
-		source "${_brew_prefix}/share/zsh-autosuggestions/zsh-autosuggestions.zsh"
-	[[ -f "${_brew_prefix}/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" ]] &&
-		source "${_brew_prefix}/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
-	unset _brew_prefix
-fi
+_zsh_plugin_dirs=()
+(( $+commands[brew] )) && _zsh_plugin_dirs+="$(brew --prefix 2>/dev/null)/share"
+_zsh_plugin_dirs+=/usr/share
+for _zsh_plugin_dir in $_zsh_plugin_dirs; do
+	[[ -f "${_zsh_plugin_dir}/zsh-autosuggestions/zsh-autosuggestions.zsh" ]] || continue
+	source "${_zsh_plugin_dir}/zsh-autosuggestions/zsh-autosuggestions.zsh"
+	break
+done
+for _zsh_plugin_dir in $_zsh_plugin_dirs; do
+	[[ -f "${_zsh_plugin_dir}/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" ]] || continue
+	source "${_zsh_plugin_dir}/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
+	break
+done
+unset _zsh_plugin_dir _zsh_plugin_dirs
 
 # Commit signing uses SSH-format signatures via 1Password's op-ssh-sign
 # (gpg.format=ssh + gpg.ssh.program in ~/.gitconfig.local) — no gpg-agent needed.

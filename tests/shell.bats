@@ -80,3 +80,42 @@ setup() {
   [[ "$output" == "$fake/bin:$fake/sbin:"* ]]
   [[ "$output" == *":/usr/bin:/bin"* ]]
 }
+
+@test "zshrc finds zsh plugins under Homebrew or /usr/share, Homebrew first" {
+  cd "$BATS_TEST_DIRNAME/.."
+  # The block is extracted and its system dir swapped for a fixture, so this
+  # is hermetic on machines that do and do not carry the apt packages.
+  awk '/^# zsh plugins\./,/^unset _zsh_plugin_dir _zsh_plugin_dirs$/' dot_zshrc \
+    > "$BATS_TEST_TMPDIR/block.zsh"
+  [ -s "$BATS_TEST_TMPDIR/block.zsh" ]
+
+  sys="$BATS_TEST_TMPDIR/usr-share"
+  brewp="$BATS_TEST_TMPDIR/brewprefix"
+  mkdir -p "$sys/zsh-autosuggestions" "$sys/zsh-syntax-highlighting" \
+           "$brewp/share/zsh-autosuggestions" "$brewp/share/zsh-syntax-highlighting" \
+           "$BATS_TEST_TMPDIR/stub" "$BATS_TEST_TMPDIR/empty"
+  echo 'AS=sys' > "$sys/zsh-autosuggestions/zsh-autosuggestions.zsh"
+  echo 'SH=sys' > "$sys/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
+  echo 'AS=brew' > "$brewp/share/zsh-autosuggestions/zsh-autosuggestions.zsh"
+  echo 'SH=brew' > "$brewp/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
+  sed "s|/usr/share|$sys|" "$BATS_TEST_TMPDIR/block.zsh" > "$BATS_TEST_TMPDIR/run.zsh"
+
+  printf '#!/bin/sh\necho %s\n' "$brewp" > "$BATS_TEST_TMPDIR/stub/brew"
+  chmod +x "$BATS_TEST_TMPDIR/stub/brew"
+
+  # Homebrew present and carrying the plugins: its copies win.
+  run env PATH="$BATS_TEST_TMPDIR/stub:$PATH" \
+    zsh -c "source '$BATS_TEST_TMPDIR/run.zsh'; echo \$AS \$SH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "brew brew" ]
+
+  # No Homebrew at all — a plain Linux box: the distro copies are found.
+  # Before this fell back, apt could install the plugins and .zshrc would
+  # silently never source them. zsh is invoked by absolute path because env
+  # resolves the command against the PATH it is setting, which is empty here.
+  zsh_bin="$(command -v zsh)"
+  run env PATH="$BATS_TEST_TMPDIR/empty" \
+    "$zsh_bin" -c "source '$BATS_TEST_TMPDIR/run.zsh'; echo \$AS \$SH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "sys sys" ]
+}
