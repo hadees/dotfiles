@@ -4,7 +4,9 @@
 # name (e.g. the bat package here installs the binary as batcat; the
 # shell config's command -v guards tolerate either).
 # Consumed by .chezmoiscripts/linux/run_onchange_install-packages.sh.
+# The `wsl` machine class additionally installs packages-apt-wsl.txt.
 
+# --- Shell and core CLI ---
 zsh
 git
 curl
@@ -22,13 +24,65 @@ direnv
 git-delta
 git-filter-repo
 git-lfs
-xclip
 whois
 jc
 gallery-dl
 rclone
 fuse3
-# rclone + fuse3: tailnet mount — on Linux it FUSE-mounts (rclone mount needs fusermount3); macOS uses rclone nfsmount instead
+
+# --- What the dotfiles themselves reach for ---
+# gh: the gh() wrapper and bin/git-credential-gh-user route accounts through
+# it, so a box without gh cannot resolve an account at all. Ubuntu's build
+# trails upstream badly; add GitHub's own apt repo and this same entry
+# installs the current release instead — see the Package lists section of
+# CLAUDE.md for the one-time source setup.
+gh
+# bats: runs this repo's own suite (bats tests) on the machine itself
+bats
+# xdg-open, which .aliases uses to provide `open` off macOS
+xdg-utils
+# clipboard — .aliases and .functions guard on both names
+xclip
+xsel
+lsof
+# fc-list, which bin/has-glyphs uses on Linux
+fontconfig
+
+# --- zsh plugins ---
+# .zshrc sources these from /usr/share on Linux and from the Homebrew prefix
+# on macOS. There is no zsh-completions package in Ubuntu, so that fpath
+# entry stays Homebrew-only.
+zsh-autosuggestions
+zsh-syntax-highlighting
+
+# --- Build toolchain (asdf/rbenv/pyenv compile against it) ---
+build-essential
+autoconf
+automake
+pkg-config
+
+# --- Everyday CLI parity with the Brewfile ---
+ack
+moreutils
+pv
+socat
+screen
+rename
+pigz
+p7zip-full
+sqlite3
+poppler-utils
+imagemagick
+ffmpeg
+lynx
+
+# rclone + fuse3: tailnet mount — on Linux it FUSE-mounts (rclone mount needs
+#   fusermount3); macOS uses rclone nfsmount instead. Not applicable to the
+#   wsl class, which runs no tailscaled of its own.
+# yt-dlp is deliberately absent: Ubuntu 24.04 ships 2024.04.09 against the
+#   Brewfile's current build, and a stale yt-dlp breaks on every site change.
+#   Install it with uv/pipx, where it can track upstream.
+# awscli is not in Ubuntu 24.04 at all — use AWS's own v2 installer.
 # lazygit and k9s are not in Ubuntu's repos — install manually if wanted
 # actionlint, cloudflared, and countdown are not in Ubuntu's repos either — install manually if wanted
 # tailscale is not in Ubuntu's repos either (needs pkgs.tailscale.com's apt source) — install manually; bin/tailnet's userspace daemons need its tailscaled
