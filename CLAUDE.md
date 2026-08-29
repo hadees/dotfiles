@@ -446,23 +446,27 @@ Two decisions carry the design:
   `claude`, whose wrapper picks `CLAUDE_CONFIG_DIR` from the directory, that
   is not cosmetic: session history is partitioned per config dir, so the
   wrong one resumes nothing and starts fresh instead of failing.
-- The trigger is **iTerm2's own AutoLaunch**. `workspace install` compiles a
-  one-line AppleScript to `~/Library/Application Support/iTerm2/Scripts/
-  AutoLaunch.scpt`; iTerm2 runs it at every launch. This replaced a per-user
-  launchd agent, and the reason is TCC: a LaunchAgent driving `osascript` is
-  its own responsible process needing its own Automation grant, which can
-  prompt at login with nobody there to answer it, and which macOS can drop
-  when a signing identity changes. A script iTerm2 runs is iTerm2 automating
-  itself — implicitly allowed and never recorded. **Measured, not assumed:**
-  with the calling terminal's Automation grant revoked, an AutoLaunch-spawned
-  shell still created a window (`rc=0`) and no grant row appeared. It also
-  deletes the Dock-wait, the settle delay, and the retry loop, all of which
-  existed only because `RunAtLoad` fires before the GUI is ready — AutoLaunch
-  fires *because* iTerm2 started. Install refuses to clobber an
-  `AutoLaunch.scpt` it did not write, and prints the line to add by hand.
-  The call is backgrounded: iTerm2 runs AutoLaunch on its own AppleScript
-  runner, and a synchronous `do shell script` that sends events back to iTerm2
-  can sit behind the very runner it waits on.
+- **Nothing runs at launch.** Sets open when you ask — `workspace start`, or
+  the Alfred workflow. An earlier version compiled a one-line AppleScript to
+  `~/Library/Application Support/iTerm2/Scripts/AutoLaunch.scpt` so that every
+  iTerm2 start reopened the whole set; that is removed. Opening every
+  project's tabs on every launch is the wrong default, because iTerm2 gets
+  started for all sorts of unrelated reasons and the set is a thing you want
+  deliberately. `install` now writes only the dynamic profile, **and deletes
+  an `AutoLaunch.scpt` a previous version left**, so upgrading a machine stops
+  the old behaviour instead of leaving it running with nothing in the repo to
+  explain it; `status` and `workspace-doctor` report a stale one they will not
+  touch, and neither ever removes a script somebody else wrote.
+  Two findings from that route are worth not relearning. A script iTerm2 runs
+  is **iTerm2 automating itself** — implicitly allowed, never recorded in TCC
+  — where a LaunchAgent driving `osascript` is its own responsible process
+  needing its own Automation grant, which can prompt at login with nobody
+  there to answer it. Measured, not assumed: with the calling terminal's grant
+  revoked, an AutoLaunch-spawned shell still created a window (`rc=0`) and no
+  grant row appeared. And any such call had to be backgrounded, because
+  iTerm2 runs AutoLaunch on its own AppleScript runner and a synchronous `do
+  shell script` that sends events back to iTerm2 can sit behind the very
+  runner it waits on.
 
 An iTerm2 **Window Arrangement** remains the wrong tool: it restores a shell in
 a directory, not a running command; it lives in `com.googlecode.iterm2.plist`,
@@ -527,15 +531,17 @@ preference into a tracked file behind you.
 Commands mirror `tailnet`'s shape: `list`, `groups`, `plan` (the decision
 table, tab-separated), `script` (the AppleScript `start` would run — a dry
 run), `start [name|group…]`, `alfred`, `install`, `uninstall`, `status`,
-`logs`, `dir`. A selector names either one entry or a whole group.
+`dir`. A selector names either one entry or a whole group.
 `list`/`groups`/`plan`/`script`/`alfred` are pure text and work anywhere; the
 acting commands refuse off macOS, and `.chezmoiignore` does not deploy the
 script there. Nothing configured is ever silently ignored — a name git accepts
 but this does not (`[workspace "bad name"]`) is warned about rather than
 dropped during parsing. `workspace-doctor` reports the script, iTerm2, the
-trigger, and the configured entries with which are open; `doctor` includes it.
-Once per machine: `workspace install`. Tests: `tests/workspace.bats` (stub
-osascript/open/ps/uname/osacompile; fixture names only).
+profile, whether a stale launch trigger survives, and the configured entries
+with which are open; `doctor` includes it. Once per machine:
+`workspace install` — which is also what clears the old trigger. Tests:
+`tests/workspace.bats` (stub osascript/open/ps/uname/osacompile; fixture names
+only).
 
 **Alfred front-end.** `alfred/workspace/` is an Alfred 5 workflow — keyword
 `ws` — whose Script Filter runs `workspace alfred` (Script Filter JSON, one

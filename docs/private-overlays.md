@@ -257,15 +257,17 @@ resumes nothing.
 Once per machine, after `dotfiles`:
 
 ```sh
-workspace install          # the iTerm2 AutoLaunch script
-workspace status           # trigger, entries, which tabs are open
-workspace start day-job    # or open one group by hand, any time
+workspace install          # the iTerm2 dynamic profile
+workspace status           # profile, entries, which tabs are open
+workspace start day-job    # open one group, any time
 ```
 
-No Automation prompt is involved: iTerm2 runs the AutoLaunch script itself, and
-an app automating itself needs no grant. `workspace plan` shows the whole
-decision table without touching iTerm2, and `workspace-doctor` (also run by
-`doctor`) reports it next to the trigger's state.
+Nothing opens at iTerm2 launch: a set is opened when you ask for it, with
+`workspace start` or the Alfred workflow. (An older version installed an
+AutoLaunch script that reopened everything at every launch; `workspace
+install` removes one it finds.) `workspace plan` shows the whole decision
+table without touching iTerm2, and `workspace-doctor` (also run by `doctor`)
+reports it next to the profile's state.
 
 For a launcher you can reach from the keyboard, `workspace alfred-install`
 hands the Alfred workflow in `alfred/workspace/` to Alfred; its keyword `ws`

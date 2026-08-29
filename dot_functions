@@ -497,15 +497,14 @@ function workspace-doctor() {
 	else
 		print -r -- "iterm:   n/a — iTerm2 is macOS-only, the launcher does nothing here";
 	fi;
+	# Nothing runs at iTerm2 launch any more; sets open only via `workspace
+	# start`. A leftover AutoLaunch.scpt from an older version still would,
+	# so it is reported until `workspace install` clears it.
 	scpt="$HOME/Library/Application Support/iTerm2/Scripts/AutoLaunch.scpt";
-	if [[ -e $scpt ]]; then
-		if command grep -q workspace $scpt 2>/dev/null; then
-			print -r -- "trigger: AutoLaunch.scpt installed — iTerm2 runs it at launch, so no Automation grant is involved";
-		else
-			print -r -- "trigger: AutoLaunch.scpt exists but is NOT ours — install would refuse rather than clobber it";
-		fi;
+	if [[ -e $scpt ]] && command grep -q workspace $scpt 2>/dev/null; then
+		print -r -- "trigger: STALE — $scpt still opens a set at every iTerm2 launch; clear it with: workspace install";
 	else
-		print -r -- "trigger: not installed — workspace install";
+		print -r -- "trigger: none — sets open only when you ask (workspace start)";
 	fi;
 	prof="$HOME/Library/Application Support/iTerm2/DynamicProfiles/workspace.json";
 	if [[ -e $prof ]]; then

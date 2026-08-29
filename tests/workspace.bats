@@ -396,55 +396,67 @@ ws() { run sh "$WS" "$@"; }
 
 # --- the AutoLaunch trigger -------------------------------------------------
 
-@test "install: writes an AutoLaunch script that calls this script by absolute path" {
+@test "install: writes the profile and starts nothing at launch" {
   entry a dir "$PROJ/one"
   ws install
   [ "$status" -eq 0 ]
-  [ -f "$ITERM_SCRIPTS/AutoLaunch.scpt" ]
-  # It must not depend on PATH: Alfred and iTerm2 both run scripts without ~/bin.
-  [[ "$(cat "$ITERM_SCRIPTS/AutoLaunch.scpt")" == *"$WS"*"start"* ]]
-  # Detached, or it can sit behind the very script runner it is waiting on.
-  [[ "$(cat "$ITERM_SCRIPTS/AutoLaunch.scpt")" == *nohup*"&\""* ]]
+  [ -f "$ITERM_PROFILES/workspace.json" ]
+  # The whole point of the change: no launch trigger is created.
+  [ ! -e "$ITERM_SCRIPTS/AutoLaunch.scpt" ]
+  [[ "$output" == *"nothing runs at launch"* ]]
 }
 
-@test "install: says no Automation grant is needed" {
+@test "install: clears an AutoLaunch script a previous version installed" {
+  # Upgrading a machine must stop the old behaviour, or every iTerm2 launch
+  # keeps reopening the set with nothing in the repo to explain why.
+  mkdir -p "$ITERM_SCRIPTS"
+  printf 'do shell script "nohup /somewhere/workspace start &"\n' \
+    > "$ITERM_SCRIPTS/AutoLaunch.scpt"
   ws install
-  [[ "$output" == *"no Automation permission is needed"* ]]
+  [ "$status" -eq 0 ]
+  [ ! -e "$ITERM_SCRIPTS/AutoLaunch.scpt" ]
+  [[ "$output" == *"removed the launch trigger"* ]]
 }
 
-@test "install: refuses to clobber an AutoLaunch script it did not write" {
+@test "install: leaves an AutoLaunch script it did not write alone" {
   mkdir -p "$ITERM_SCRIPTS"
   printf 'display dialog "someone else"\n' > "$ITERM_SCRIPTS/AutoLaunch.scpt"
   ws install
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 0 ]
   [[ "$output" == *"not written by workspace"* ]]
-  [[ "$output" == *"do shell script"* ]]   # tells you the line to add by hand
   [[ "$(cat "$ITERM_SCRIPTS/AutoLaunch.scpt")" == *"someone else"* ]]
 }
 
 @test "uninstall: removes ours and refuses to remove somebody else's" {
   ws install
-  [ -f "$ITERM_SCRIPTS/AutoLaunch.scpt" ]
+  [ -f "$ITERM_PROFILES/workspace.json" ]
+  mkdir -p "$ITERM_SCRIPTS"
+  printf 'do shell script "nohup /somewhere/workspace start &"\n' \
+    > "$ITERM_SCRIPTS/AutoLaunch.scpt"
   ws uninstall
+  [ ! -f "$ITERM_PROFILES/workspace.json" ]
   [ ! -f "$ITERM_SCRIPTS/AutoLaunch.scpt" ]
 
-  mkdir -p "$ITERM_SCRIPTS"
   printf 'display dialog "someone else"\n' > "$ITERM_SCRIPTS/AutoLaunch.scpt"
   ws uninstall
   [ "$status" -ne 0 ]
   [ -f "$ITERM_SCRIPTS/AutoLaunch.scpt" ]
 }
 
-@test "status: reports the trigger, and each entry as open or closed" {
+@test "status: reports no trigger, a stale one, and each entry open or closed" {
   entry a dir "$PROJ/one"; entry a window grp
   entry b dir "$PROJ/two"; entry b window grp
   ws status
-  [[ "$output" == *"trigger:  not installed"* ]]
-  ws install
+  [[ "$output" == *"trigger:  none"* ]]
   FAKE_MARKS="a" ws status
-  [[ "$output" == *"trigger:  AutoLaunch.scpt installed"* ]]
   [[ "$output" == *"a"*"[open]"* ]]
   [[ "$output" == *"b"*"[closed]"* ]]
+  # A leftover from an older version is called out, since it still fires.
+  mkdir -p "$ITERM_SCRIPTS"
+  printf 'do shell script "nohup /somewhere/workspace start &"\n' \
+    > "$ITERM_SCRIPTS/AutoLaunch.scpt"
+  ws status
+  [[ "$output" == *"trigger:  STALE"* ]]
 }
 
 @test "status: nothing configured is stated, not an empty table" {
