@@ -14,6 +14,23 @@
   ! echo "$pkgs" | grep -qE '[[:space:]]'
 }
 
+@test "packages-apt-wsl.txt is non-empty with no duplicates" {
+  cd "$BATS_TEST_DIRNAME/.."
+  pkgs=$(grep -vE '^[[:space:]]*(#|$)' packages-apt-wsl.txt)
+  [ -n "$pkgs" ]
+  [ -z "$(echo "$pkgs" | sort | uniq -d)" ]
+  ! echo "$pkgs" | grep -qE '[[:space:]]'
+}
+
+@test "the wsl list adds to the shared list rather than repeating it" {
+  cd "$BATS_TEST_DIRNAME/.."
+  # Both lists are installed on the wsl class, in order. A name in both would
+  # be installed twice and, worse, could drift apart between the two files.
+  base=$(grep -vE '^[[:space:]]*(#|$)' packages-apt.txt | sort)
+  wsl=$(grep -vE '^[[:space:]]*(#|$)' packages-apt-wsl.txt | sort)
+  [ -z "$(comm -12 <(echo "$base") <(echo "$wsl"))" ]
+}
+
 @test "Brewfile has no duplicate entries" {
   cd "$BATS_TEST_DIRNAME/.."
   entries=$(grep -E '^(tap|brew|cask|mas|vscode) ' Brewfile | sed -E 's/[[:space:]]*#.*$//; s/,.*$//')

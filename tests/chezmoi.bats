@@ -73,6 +73,7 @@ teardown() {
   [ ! -e "$TMPHOME/docs" ]
   [ ! -e "$TMPHOME/Brewfile" ]
   [ ! -e "$TMPHOME/packages-apt.txt" ]
+  [ ! -e "$TMPHOME/packages-apt-wsl.txt" ]
   [ ! -e "$TMPHOME/tests" ]
   [ ! -e "$TMPHOME/.macos" ]
   # Nothing rendered may look like a secret

@@ -1,18 +1,34 @@
 #!/bin/sh
-# Installs the Linux CLI toolset whenever packages-apt.txt changes.
+# Installs the Linux CLI toolset whenever a package list changes.
 # Homebrew is deliberately macOS-only in this setup; Linux/WSL use the
 # distro's native package manager with native package names.
 # packages-apt.txt hash: {{ include "packages-apt.txt" | sha256sum }}
+{{- if eq .machineClass "wsl" }}
+# packages-apt-wsl.txt hash: {{ include "packages-apt-wsl.txt" | sha256sum }}
+{{- end }}
+#
+# NOTE: this script exits 0 when it decides to skip, and chezmoi records that
+# as a completed run keyed on the hashes above. Gaining sudo afterwards does
+# NOT make a later `chezmoi apply` retry it — see CLAUDE.md, "Package lists".
 set -e
 
+# The lists to install, in order. The wsl class gets its own on top of the
+# shared one; positional parameters keep paths safe if sourceDir has spaces.
+set -- {{ joinPath .chezmoi.sourceDir "packages-apt.txt" | quote }}
+{{- if eq .machineClass "wsl" }}
+set -- "$@" {{ joinPath .chezmoi.sourceDir "packages-apt-wsl.txt" | quote }}
+{{- end }}
+
 if ! command -v apt-get > /dev/null 2>&1; then
-	echo "No apt-get on this system — install packages-apt.txt equivalents manually.";
+	echo "No apt-get on this system — install the packages-apt*.txt equivalents manually.";
 	exit 0;
 fi
 
 if [ "$(id -u)" -ne 0 ] && ! sudo -n true 2> /dev/null; then
 	echo "No root and no passwordless sudo — skipping package install.";
-	echo "Run manually: xargs -a packages-apt.txt sudo apt-get install -y";
+	for list in "$@"; do
+		echo "Run manually: xargs -a $list sudo apt-get install -y";
+	done
 	exit 0;
 fi
 
@@ -20,7 +36,9 @@ SUDO="";
 [ "$(id -u)" -ne 0 ] && SUDO="sudo";
 
 $SUDO apt-get update -qq;
-# Per-package so one missing name (distro drift) doesn't abort the rest.
-grep -vE '^[[:space:]]*(#|$)' {{ joinPath .chezmoi.sourceDir "packages-apt.txt" | quote }} | while read -r pkg; do
-	$SUDO apt-get install -y -qq "$pkg" || echo "skipped (unavailable): $pkg";
+for list in "$@"; do
+	# Per-package so one missing name (distro drift) doesn't abort the rest.
+	grep -vE '^[[:space:]]*(#|$)' "$list" | while read -r pkg; do
+		$SUDO apt-get install -y -qq "$pkg" || echo "skipped (unavailable): $pkg";
+	done
 done
