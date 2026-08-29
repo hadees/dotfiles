@@ -233,6 +233,18 @@ on Linux. The install scripts re-run automatically on `chezmoi apply`
 whenever their list's hash changes; the `ephemeral` machine class never
 runs them.
 
+**A skipped run is recorded as a successful one.** chezmoi keys a
+`run_onchange_` script on its content hash and stores that hash in the
+`entryState` bucket — *not* `scriptState`, and `chezmoi apply --force` does
+not re-run it either. Both install scripts deliberately exit 0 when they
+decline to do anything (no `apt-get`; no root and no passwordless sudo), so
+that skip is written down as done and no later `chezmoi apply` will retry it,
+however much the machine has changed underneath. Granting sudo afterwards
+therefore installs nothing, silently, while `chezmoi status` stays clean. To
+re-trigger: `chezmoi state delete-bucket --bucket=entryState` (re-applying
+files is idempotent), or edit the list, which changes the hash. First hit on
+a WSL box whose package install had skipped for want of sudo.
+
 ### Machine-local customization
 
 Add `~/.extra` (from the private overlay, or hand-written) for per-machine overrides. Add `~/.path` for per-machine PATH entries. The `.macos` script skips the computer name block if `$COMPUTER_NAME` is unset.
