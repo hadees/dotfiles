@@ -187,35 +187,35 @@ row_for() {
 }
 
 @test "--long: adds the commit identity and the gate's verdict on it" {
-  gc identity.work-account.email dev@example.invalid
-  make_repo good octo-work-org/good user.email dev@example.invalid
-  make_repo bad octo-work-org/bad user.email someone-else@example.invalid
+  gc identity.work-account.email dev@example.com
+  make_repo good octo-work-org/good user.email dev@example.com
+  make_repo bad octo-work-org/bad user.email someone-else@example.com
   routes --long
   [ "$status" -eq 0 ]
   [[ "$output" == *"IDENTITY"*"GATE"* ]]
-  [[ "$(row_for good)" == *" dev@example.invalid ok " ]]
-  [[ "$(row_for bad)" == *" someone-else@example.invalid REFUSE " ]]
+  [[ "$(row_for good)" == *" dev@example.com ok " ]]
+  [[ "$(row_for bad)" == *" someone-else@example.com REFUSE " ]]
 }
 
 @test "--long: an unpinned owner gets no verdict rather than a passing one" {
-  gc identity.work-account.email dev@example.invalid
+  gc identity.work-account.email dev@example.com
   # A second, pinned repo keeps the GATE column in the table: a column every
   # row leaves empty is dropped, and "-" for one repo is the point here.
-  make_repo pinned octo-work-org/pinned user.email dev@example.invalid
-  make_repo unpinned other-owner/unpinned user.email dev@example.invalid
+  make_repo pinned octo-work-org/pinned user.email dev@example.com
+  make_repo unpinned other-owner/unpinned user.email dev@example.com
   routes --long
   [ "$status" -eq 0 ]
-  [[ "$(row_for pinned)" == *" dev@example.invalid ok " ]]
-  [[ "$(row_for unpinned)" == *" dev@example.invalid - " ]]
+  [[ "$(row_for pinned)" == *" dev@example.com ok " ]]
+  [[ "$(row_for unpinned)" == *" dev@example.com - " ]]
 }
 
 @test "--long: the per-repo email pin outranks the account's, via identity_expected" {
-  gc identity.work-account.email dev@example.invalid
-  gc identity.octo-work-org/side.email side@example.invalid
-  make_repo side octo-work-org/side user.email side@example.invalid
+  gc identity.work-account.email dev@example.com
+  gc identity.octo-work-org/side.email side@example.com
+  make_repo side octo-work-org/side user.email side@example.com
   routes --long
   [ "$status" -eq 0 ]
-  [[ "$(row_for side)" == *" side@example.invalid ok " ]]
+  [[ "$(row_for side)" == *" side@example.com ok " ]]
 }
 
 @test "--tsv: keeps every column whether or not it is empty, with no header or footer" {
