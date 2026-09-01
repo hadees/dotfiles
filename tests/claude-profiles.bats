@@ -410,3 +410,88 @@ make_overlay_cfg() {
   [ "$status" -eq 0 ]
   [ "$output" = "CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/literal-profile" ]
 }
+
+# --- Per-repo pin: claude.<owner>/<repo>.profile ----------------------------
+#
+# The owner's account is the default, not the only answer. A pin moves one
+# repo to another login — the same shape and precedence as
+# wrangler.<owner>/<repo>.profile — without touching the account mapping every
+# other repo of that owner relies on.
+
+@test "pin: a per-repo pin outranks the owner's account mapping" {
+  repo=$(make_repo 'git@github.com:octo-work-org/moved-repo.git')
+  git config --file "$GIT_CONFIG_GLOBAL" 'claude.octo-work-org/moved-repo.profile' personal-account
+  claude_in "$repo"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=$HOME/.claude-personal" ]
+}
+
+@test "pin: a sibling repo of the same owner is untouched by the pin" {
+  git config --file "$GIT_CONFIG_GLOBAL" 'claude.octo-work-org/moved-repo.profile' personal-account
+  repo=$(make_repo 'git@github.com:octo-work-org/other-repo.git')
+  claude_in "$repo"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=UNSET" ]
+}
+
+@test "pin: the origin owner is matched case-insensitively, like the account pins" {
+  repo=$(make_repo 'git@github.com:Octo-Work-Org/Moved-Repo.git')
+  git config --file "$GIT_CONFIG_GLOBAL" 'claude.octo-work-org/moved-repo.profile' personal-account
+  claude_in "$repo"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=$HOME/.claude-personal" ]
+}
+
+@test "pin: a literal directory works, as it does for CLAUDE_PROFILE" {
+  mkdir -p "$BATS_TEST_TMPDIR/pinned-dir"
+  repo=$(make_repo 'git@github.com:octo-work-org/moved-repo.git')
+  git config --file "$GIT_CONFIG_GLOBAL" 'claude.octo-work-org/moved-repo.profile' \
+    "$BATS_TEST_TMPDIR/pinned-dir"
+  claude_in "$repo"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/pinned-dir" ]
+}
+
+@test "pin: an unmapped name warns on stderr and falls back to the owner's account" {
+  # Quietly resolving a typo would land the session in another account's
+  # history, and history is partitioned per config dir — it would resume
+  # nothing rather than fail.
+  repo=$(make_repo 'git@github.com:octo-personal/typo-repo.git')
+  git config --file "$GIT_CONFIG_GLOBAL" 'claude.octo-personal/typo-repo.profile' persnoal-account
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude 2>'$BATS_TEST_TMPDIR/stderr'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=$HOME/.claude-personal" ]
+  grep -q "claude.octo-personal/typo-repo.profile='persnoal-account'" "$BATS_TEST_TMPDIR/stderr"
+}
+
+@test "pin: works for a repo whose owner has no credential pin at all" {
+  repo=$(make_repo 'git@github.com:some-other-owner/adopted.git')
+  git config --file "$GIT_CONFIG_GLOBAL" 'claude.some-other-owner/adopted.profile' personal-account
+  claude_in "$repo"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=$HOME/.claude-personal" ]
+}
+
+@test "pin: CLAUDE_PROFILE still outranks it — the per-invocation override wins" {
+  repo=$(make_repo 'git@github.com:octo-work-org/moved-repo.git')
+  git config --file "$GIT_CONFIG_GLOBAL" 'claude.octo-work-org/moved-repo.profile' personal-account
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; CLAUDE_PROFILE=work-account claude"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=UNSET" ]
+}
+
+@test "claude-doctor: names the pin and that it outranks the mapping" {
+  repo=$(make_repo 'git@github.com:octo-work-org/moved-repo.git')
+  git config --file "$GIT_CONFIG_GLOBAL" 'claude.octo-work-org/moved-repo.profile' personal-account
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pin:     claude.octo-work-org/moved-repo.profile = personal-account (outranks the account mapping)"* ]]
+  [[ "$output" == *"launch:  $HOME/.claude-personal"* ]]
+}
+
+@test "claude-doctor: an unpinned repo says the owner's account decides" {
+  repo=$(make_repo 'git@github.com:octo-work-org/other-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pin:     <none — the owner's account decides>"* ]]
+}

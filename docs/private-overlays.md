@@ -462,7 +462,8 @@ npx", not "pin <side-company> to its profile").
    the other overlays' cross-leak tests).
 2. Overlay gitconfig: `credential.https://github.com/<owner>.username` pin;
    `identity.<account>.email` and `identity.<account>.sshkey`;
-   `claude.profile.<account>`;
+   `claude.profile.<account>` (plus a `claude.<owner>/<repo>.profile` pin for
+   any single repo that should run under a different login than its owner's);
    `wrangler.profile.<account>` (or a `wrangler.<owner>/<repo>.profile` pin
    for a one-off repo); `tailnet.profile.<account>` if that account has a
    tailnet; `tailnet-mount.<name>.*` if that tailnet serves a directory
