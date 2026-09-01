@@ -43,8 +43,11 @@ teardown() { rm -rf "$TMP"; }
 @test "output is 0644 and marked generated" {
   echo 'alice@example.com ssh-ed25519 AAAAfake1' > "$GIT_ALLOWED_SIGNERS_DIR/10-one"
   run sh "$BIN"
-  [ "$(stat -f '%Lp' "$GIT_ALLOWED_SIGNERS_FILE" 2> /dev/null \
-       || stat -c '%a' "$GIT_ALLOWED_SIGNERS_FILE")" = "644" ]
+  # GNU first: `stat -f` is --file-system there and prints a filesystem block
+  # to stdout before failing, so the BSD-first order captured both outputs.
+  # See the same note in tests/ssh-config.bats.
+  [ "$(stat -c '%a' "$GIT_ALLOWED_SIGNERS_FILE" 2> /dev/null \
+       || stat -f '%Lp' "$GIT_ALLOWED_SIGNERS_FILE")" = "644" ]
   head -1 "$GIT_ALLOWED_SIGNERS_FILE" | grep -q 'GENERATED'
 }
 

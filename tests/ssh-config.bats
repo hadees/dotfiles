@@ -66,7 +66,13 @@ apply_class() {
 
 @test "modes are ssh-safe: 0700 dir, 0600 file" {
   apply_class mac
-  m() { stat -f '%Lp' "$1" 2> /dev/null || stat -c '%a' "$1"; }
+  # GNU first, BSD second, and the order is load-bearing: on GNU `stat -f` is
+  # --file-system, which prints a whole filesystem block to STDOUT and only
+  # then fails on the format operand — so `bsd || gnu` captures both outputs
+  # and the comparison sees "Blocks: Total: ...\n700". The failing form has to
+  # be the one that prints nothing, and `stat -c` on BSD exits 1 with empty
+  # stdout (usage goes to stderr).
+  m() { stat -c '%a' "$1" 2> /dev/null || stat -f '%Lp' "$1"; }
   [ "$(m "$TMPHOME/.ssh")" = "700" ]
   [ "$(m "$TMPHOME/.ssh/config")" = "600" ]
 }
