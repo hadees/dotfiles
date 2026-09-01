@@ -86,7 +86,11 @@ jobs:
       - name: Install dependencies
         # No explicit curl: the image ships curl-minimal, which conflicts
         # with the full package but already provides the curl binary.
-        run: dnf install -y git zsh rsync
+        # diffutils is NOT in this image (neither diff nor cmp), unlike the
+        # ubuntu and WSL runners — tests that compare two files died with
+        # status 127 rather than a failed comparison, which reads as a broken
+        # assertion instead of a missing package.
+        run: dnf install -y git zsh rsync diffutils
       - uses: actions/checkout@v3
       - name: Install Bats and chezmoi
         run: |
