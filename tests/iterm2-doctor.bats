@@ -273,7 +273,13 @@ EOF
   [ "$status" -eq 1 ]
   [[ "$output" == *"No longer true of the installed iTerm2:"* ]]
   [[ "$output" == *'sdef: <command name="removed"'* ]]
-  [[ "$output" == *"binstr: RemovedKey"* ]]
+  # binstr is the one class verify.sh cannot check without `strings`, where it
+  # records a skip rather than a failure. Runners ship binutils so this still
+  # asserts in CI, but a slim container does not, and asserting unconditionally
+  # there reports a missing package as a broken verifier.
+  if command -v strings > /dev/null 2>&1; then
+    [[ "$output" == *"binstr: RemovedKey"* ]]
+  fi
   [[ "$output" == *"util: it2removed"* ]]
   [[ "$output" == *"tipcount: it2tip lists 2 features, recorded as 4"* ]]
   [[ "$output" == *"info: SUFeedURLForFinal is 'https://example.invalid/moved'"* ]]

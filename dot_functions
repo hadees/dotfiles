@@ -15,9 +15,14 @@ function targz() {
 	local tmpFile="${@%/}.tar";
 	tar -cvf "${tmpFile}" --exclude=".DS_Store" "${@}" || return 1;
 
+	# GNU `stat` first, then macOS — the order and the `||` both matter. Run
+	# unconditionally (as this did) and GNU's `-f`, which means --file-system
+	# there, prints a whole filesystem block to stdout before failing on the
+	# format operand, so size became that text with the byte count stuck on
+	# the end and the size comparison below was meaningless on Linux.
 	size=$(
-		stat -f"%z" "${tmpFile}" 2> /dev/null; # macOS `stat`
-		stat -c"%s" "${tmpFile}" 2> /dev/null;  # GNU `stat`
+		stat -c"%s" "${tmpFile}" 2> /dev/null \
+			|| stat -f"%z" "${tmpFile}" 2> /dev/null;
 	);
 
 	local cmd="";
@@ -37,8 +42,8 @@ function targz() {
 	[ -f "${tmpFile}" ] && rm "${tmpFile}";
 
 	zippedSize=$(
-		stat -f"%z" "${tmpFile}.gz" 2> /dev/null; # macOS `stat`
-		stat -c"%s" "${tmpFile}.gz" 2> /dev/null; # GNU `stat`
+		stat -c"%s" "${tmpFile}.gz" 2> /dev/null \
+			|| stat -f"%z" "${tmpFile}.gz" 2> /dev/null;
 	);
 
 	echo "${tmpFile}.gz ($((zippedSize / 1000)) kB) created successfully.";
