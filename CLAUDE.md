@@ -387,13 +387,17 @@ Two profiles are deployed:
 | Directory | Profile | Source |
 | --- | --- | --- |
 | `~/.claude` | work (the default config dir; keeps the existing login, plugins, and session history) | `dot_claude/` here + the work overlay's `settings.json` and `CLAUDE.work.md` |
-| `~/.claude-hadees` | personal | `private_dot_claude-hadees/` here |
+| `~/.claude-hadees` | personal | `private_dot_claude-hadees/` here + the personal overlay's `settings.json` |
 | `~/.claude-shared` | memory imported by both | `dot_claude-shared/` here |
 
-Each profile's `CLAUDE.md` is a thin file that imports the shared memory plus
+Overlays may add further profiles (mapping, pins, and config dir all their
+own); this repo neither knows nor cares which. Each profile's `CLAUDE.md` is
+a thin file that imports the shared memory plus
 its own machine-local (and, for work, work-specific) notes. Settings are
-**not** shared: only the work profile's `settings.json` references the private
-plugin marketplace.
+**not** shared: neither profile's `settings.json` lives in this repo — the
+work one names the private plugin marketplace, and the personal one carries
+a `permissions.deny` block whose paths are work-bearing, so each comes from
+its own overlay.
 
 The `claude()` function in `.functions` picks the profile by resolving the
 cwd's origin remote to a GitHub account — via the same
