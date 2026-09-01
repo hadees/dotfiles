@@ -471,8 +471,12 @@ npx", not "pin <side-company> to its profile").
    Personal overlay only:
    `claude.profile.default` names the profile stray, unpinned directories
    get (unset, they get bare `claude` = the default config dir).
+   Any overlay may add `routes.root` (repeatable) if this machine keeps
+   projects somewhere other than `~/code`; it is only the list of directories
+   `routes` scans, so the paths — not the accounts — are what make it private.
 3. `dotfiles` to apply; `doctor` in a repo of that owner to confirm every
-   wrapper resolves it.
+   wrapper resolves it, then `routes` to see the new account's projects take
+   their column values and nothing else move.
 4. Once per machine: `gh auth login`, `claude auth login` in its profile,
    `wrangler auth create <profile>`.
 5. Nothing in the public repo changes.

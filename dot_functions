@@ -1643,9 +1643,35 @@ function gh-doctor() {
 # resolves, and which account https pushes would authenticate as. A wrong
 # author email is the leak the private overlay's tests police after the
 # fact; this shows it before the commit. Read-only, no network.
+# The emails the pre-commit identity gate (~/.git-hooks/pre-commit) will
+# accept in the cwd's repo, and which config key supplied them: the per-repo
+# pin `identity.<owner>/<repo>.email` when present (a side project committing
+# under its own identity), else `identity.<account>.email` for the account the
+# origin's owner is pinned to. Prints two lines — the key, then the emails
+# comma-separated — and returns 1 when nothing is declared (an unpinned owner,
+# or a public-only clone with no overlay). Two lines rather than one delimited
+# field so nothing here depends on a literal tab surviving an edit.
+#
+# Extracted so git-doctor's `gate:` verdict and the GATE column of `routes`
+# apply one precedence rule instead of two copies that drift.
+function identity_expected() {
+	emulate -L zsh;
+	local acct slug key expected;
+	acct="$(gh_account_for_cwd)" || return 1;
+	slug="$(git_origin_slug)" || slug='';
+	key="identity.$acct.email";
+	expected='';
+	[[ -n $slug ]] && expected="$(command git config --get-all "identity.$slug.email" 2>/dev/null | command paste -sd, - | command sed 's/,/, /g')";
+	[[ -n $expected ]] && key="identity.$slug.email (per-repo pin)";
+	[[ -n $expected ]] || expected="$(command git config --get-all "identity.$acct.email" 2>/dev/null | command paste -sd, - | command sed 's/,/, /g')";
+	[[ -n $expected ]] || return 1;
+	print -r -- "$key";
+	print -r -- "$expected";
+}
+
 function git-doctor() {
 	local origin acct name email src sign fmt key prog agent alias hostname idfile;
-	print -r -- "defined: $(defined_trace gh_account_for_cwd git_origin_slug)";
+	print -r -- "defined: $(defined_trace gh_account_for_cwd git_origin_slug identity_expected)";
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
 	print -r -- "origin:  ${origin:-<none — not a git repo or no origin>}";
@@ -1756,13 +1782,10 @@ function git-doctor() {
 	elif [[ -z $acct ]]; then
 		print -r -- "gate:    on, no opinion here (owner unpinned)";
 	else
-		local slug;
-		slug="$(git_origin_slug)";
-		key="identity.$acct.email";
-		expected="";
-		[[ -n $slug ]] && expected="$(command git config --get-all "identity.$slug.email" 2>/dev/null | command paste -sd, - | command sed 's/,/, /g')";
-		[[ -n $expected ]] && key="identity.$slug.email (per-repo pin)";
-		[[ -n $expected ]] || expected="$(command git config --get-all "identity.$acct.email" 2>/dev/null | command paste -sd, - | command sed 's/,/, /g')";
+		local -a ident;
+		ident=(${(f)"$(identity_expected)"});
+		key=${ident[1]};
+		expected=${ident[2]};
 		if [[ -z $expected ]]; then
 			print -r -- "gate:    on, cannot verify — no identity.$acct.email declared for '$acct' (declare it in the overlay)";
 		elif [[ -n $email && ", ${(L)expected}, " == *", ${(L)email}, "* ]]; then
@@ -2103,6 +2126,287 @@ function shell_trace() {
 	print -r -- "zsh $ZSH_VERSION$ia${CLAUDECODE:+, under Claude Code}, options: ${list:-none}${list:+ (the tailnet wrappers reset these with emulate -L zsh)}";
 }
 
+# Directories at or below $1, at most $2 levels down, that are git repos —
+# one per line. The walk stops at the first repo on each branch, so a
+# worktree or vendored checkout *inside* a project is never reported beside
+# it, and a flat ~/code/<repo> and a nested ~/code/<owner>/<repo> both work
+# with one depth. Dot-directories are skipped by the glob, which is what
+# keeps .git itself and every cache directory out of the walk.
+function routes_scan() {
+	emulate -L zsh;
+	local root=$1 depth=$2 d;
+	[[ -d $root ]] || return 0;
+	if [[ -e $root/.git ]]; then
+		print -r -- "$root";
+		return 0;
+	fi;
+	(( depth > 0 )) || return 0;
+	for d in $root/*(-/N); do
+		[[ ${d:t} == node_modules ]] && continue;
+		routes_scan "$d" $(( depth - 1 ));
+	done;
+}
+
+# One repo's routing, one field per line, run with the cwd inside it. Every
+# field comes from the resolver the wrapper itself calls — gh_account_for_cwd,
+# claude_profile_dir, wrangler_profile, tailnet_for_cwd, identity_expected —
+# so a row can never claim something the wrapper would not do. Empty prints as
+# "-" rather than an empty line: `$( )` eats trailing newlines, and a blank
+# last field would silently shorten the row.
+#
+# Two suffixes carry what a fleet-wide view is uniquely good at showing:
+#   *  the value came from a per-repo pin, outranking the account mapping
+#   !  it is configured but not usable on THIS machine — a Claude profile
+#      directory, wrangler profile, tailnet, or hermes profile that was
+#      mapped but never created here. That is the failure the per-repo
+#      doctors only find one repo at a time.
+function routes_probe() {
+	emulate -L zsh;
+	local acct slug raw v email;
+	local -a ident;
+	acct="$(gh_account_for_cwd)" || acct='';
+	slug="$(git_origin_slug)" || slug='';
+	print -r -- "${acct:--}";
+
+	raw="$(claude_profile_dir 2>/dev/null)" || raw='';
+	# A trailing slash in the mapping (`claude.profile.x = ~/.claude/`) would
+	# make :t empty and blank the cell, so strip it before taking the tail.
+	v=${${raw%/}:t};
+	[[ -n $raw && ! -d $raw ]] && v="$v!";
+	print -r -- "${v:--}";
+
+	raw="$(wrangler_profile 2>/dev/null)" || raw='';
+	v=$raw;
+	if [[ -n $raw ]]; then
+		[[ -n $slug && -n "$(command git config --get "wrangler.$slug.profile" 2>/dev/null)" ]] && v="$v*";
+		wrangler_profile_exists "$raw" || v="$v!";
+	fi;
+	print -r -- "${v:--}";
+
+	raw="$(tailnet_for_cwd 2>/dev/null)" || raw='';
+	v=$raw;
+	if [[ -n $raw ]]; then
+		[[ -n $slug && -n "$(command git config --get "tailnet.$slug.profile" 2>/dev/null)" ]] && v="$v*";
+		tailnet_installed "$raw" || v="$v!";
+	fi;
+	print -r -- "${v:--}";
+
+	# hermes pins are per-repo by construction, so there is no mapping to
+	# outrank and no `*` to print.
+	raw="$(command git config --get hermes.profile 2>/dev/null)";
+	v=$raw;
+	[[ -n $raw ]] && { [[ -r "$(hermes_cfg_path "$raw")" ]] || v="$v!"; };
+	print -r -- "${v:--}";
+
+	email="$(command git config --get user.email 2>/dev/null)";
+	print -r -- "${email:--}";
+
+	# The gate's verdict on that identity. "-" is "no opinion" — an unpinned
+	# owner, or an account with no identity.<account>.email declared — not a
+	# pass; the gate itself being off machine-wide is reported once, in the
+	# footer, rather than repeated down the column.
+	ident=(${(f)"$(identity_expected 2>/dev/null)"});
+	if (( ${#ident} < 2 )) || [[ -z $ident[2] ]]; then
+		v='-';
+	elif [[ -n $email && ", ${(L)ident[2]}, " == *", ${(L)email}, "* ]]; then
+		v=ok;
+	else
+		v=REFUSE;
+	fi;
+	print -r -- "$v";
+}
+
+# Which project routes to which account, across every wrapper, in one table.
+#
+# The doctors answer "as whom, right here"; this answers it for every project
+# on the machine at once — the question you actually have when a repo turns
+# out to be pinned somewhere you did not expect, or when a profile something
+# relies on was never created on this box. Each row is resolved by the
+# wrappers' own resolvers (see routes_probe), in a subshell cd'd into the
+# repo, with CLAUDE_PROFILE/WRANGLER_PROFILE/TAILNET unset there: those
+# override one invocation, so a TAILNET left set in this shell would
+# otherwise stamp itself down the column and describe none of the repos. When
+# one is set, the footer says so.
+#
+# Projects come from the roots given as arguments, else the machine-local
+# `routes.root` git config (repeatable, overlay-supplied — real project paths
+# are identity-bearing and do not belong in this repo), else ~/code.
+#
+# Rows sort by account and then by name, so the answer to "which projects use
+# which" is read off in blocks; unpinned repos come last. A column no project
+# uses is dropped and named in the footer, so a machine with no wrangler or
+# hermes pins anywhere gets a narrow table instead of a field of dashes —
+# the same stance as tailnet-doctor's mount lines.
+#
+#   routes             the table
+#   routes -l          adds the commit identity and the gate's verdict on it
+#   routes --tsv       every column, unpadded, tab-separated, no header and
+#                      no footer, for awk/grep. The schema is fixed
+#                      (project, account, claude, wrangler, tailnet, hermes,
+#                      tabs, identity, gate) whether or not a column is empty,
+#                      so a script can index fields; `plan` in worktabs is the
+#                      same idea.
+#   routes ~/work      scan somewhere else
+function routes() {
+	emulate -L zsh;
+	local long=0 tsv=0 a root repo rel key;
+	local -a roots cfg repos rows fields;
+	while (( $# )); do
+		case $1 in
+			(-l|--long) long=1;;
+			(--tsv) tsv=1;;
+			(-h|--help)
+				print -r -- "usage: routes [-l|--long] [--tsv] [root...]";
+				print -r -- "  Which account, profile and tailnet every project routes to.";
+				print -r -- "  Roots default to \`git config --get-all routes.root\`, else ~/code.";
+				return 0;;
+			(--) shift; roots+=("$@"); break;;
+			(-*) print -ru2 -- "routes: unknown option '$1' (try --help)"; return 1;;
+			(*) roots+=("$1");;
+		esac;
+		shift;
+	done;
+	if (( ! ${#roots} )); then
+		cfg=(${(f)"$(command git config --get-all routes.root 2>/dev/null)"});
+		for a in $cfg; do
+			[[ -n $a ]] && roots+=("${a/#\~/$HOME}");
+		done;
+		(( ${#roots} )) || roots=($HOME/code);
+	fi;
+
+	# The tab launcher's own view of which projects it opens, parsed by the
+	# launcher rather than re-derived here: `worktabs plan` already decides
+	# group, directory and usability, and this reads its columns. Absent
+	# off macOS (.chezmoiignore does not deploy it there), which simply
+	# leaves the column empty and therefore dropped.
+	local -A tabs;
+	local w n st ti di rest;
+	if (( $+commands[worktabs] )); then
+		while IFS=$'\t' read -r w n st ti di rest; do
+			[[ -n $di && -n $w ]] || continue;
+			[[ $st == ok ]] || w="$w!";
+			tabs[${di:A}]=$w;
+		done < <(command worktabs plan 2>/dev/null);
+	fi;
+
+	local -A seen;
+	for root in $roots; do
+		if [[ ! -d $root ]]; then
+			print -ru2 -- "routes: no such directory: $root";
+			continue;
+		fi;
+		root=${root:A};
+		repos=(${(f)"$(routes_scan "$root" 2)"});
+		for repo in $repos; do
+			[[ -n $repo && -z ${seen[$repo]-} ]] || continue;
+			seen[$repo]=1;
+			# Name the project by its path under the root it was found in, so
+			# a nested layout reads owner/repo and stays unambiguous.
+			rel=${repo#$root/};
+			[[ $rel == "$repo" ]] && rel=${repo:t};
+			fields=(${(f)"$(cd -q -- "$repo" 2>/dev/null && { unset CLAUDE_PROFILE WRANGLER_PROFILE TAILNET; routes_probe; })"});
+			(( ${#fields} == 7 )) || continue;
+			# Sort key: a rank digit, then the account. The digit is what
+			# orders pinned above unpinned — a punctuation character would
+			# not, because ${(o)} collates by locale and ~ sorts *before*
+			# letters in en_US, which put the unpinned rows on top.
+			[[ $fields[1] == - ]] && key=2 || key="1$fields[1]";
+			rows+=( "$key"$'\t'"$rel"$'\t'"${(pj:\t:)fields[1,5]}"$'\t'"${tabs[$repo]:--}"$'\t'"${fields[6]}"$'\t'"${fields[7]}" );
+		done;
+	done;
+
+	if (( ! ${#rows} )); then
+		print -ru2 -- "routes: no git repos found under ${(j:, :)${roots/#$HOME/~}}";
+		return 1;
+	fi;
+	rows=(${(o)rows});
+
+	# Column layout. Everything below indexes the row AFTER the sort key is
+	# dropped: 1 project, 2 account, 3 claude, 4 wrangler, 5 tailnet,
+	# 6 hermes, 7 tabs, 8 identity, 9 gate.
+	local -a hdr cols;
+	hdr=(PROJECT ACCOUNT CLAUDE WRANGLER TAILNET HERMES TABS IDENTITY GATE);
+	if (( tsv )); then
+		for a in $rows; do
+			fields=("${(@ps:\t:)a}");
+			print -r -- "${(pj:\t:)fields[2,10]}";
+		done;
+		return 0;
+	fi;
+	cols=(1 2 3 4 5 6 7);
+	(( long )) && cols+=(8 9);
+
+	# Drop a column no project uses — but never the two that identify the
+	# row. What was dropped is named below rather than silently omitted.
+	local -a keep dropped;
+	local c empty;
+	for c in $cols; do
+		if (( c <= 2 )); then keep+=($c); continue; fi;
+		empty=1;
+		for a in $rows; do
+			fields=("${(@ps:\t:)a}");
+			[[ ${fields[c+1]} == - ]] || { empty=0; break; };
+		done;
+		(( empty )) && dropped+=(${(L)hdr[c]}) || keep+=($c);
+	done;
+
+	local -A width;
+	for c in $keep; do width[$c]=${#hdr[c]}; done;
+	for a in $rows; do
+		fields=("${(@ps:\t:)a}");
+		for c in $keep; do
+			(( ${#fields[c+1]} > width[$c] )) && width[$c]=${#fields[c+1]};
+		done;
+	done;
+
+	# The last column is written unpadded: padding it would put trailing
+	# whitespace on every line, which shows up the moment output is pasted
+	# or diffed.
+	local line;
+	local -i last=$keep[-1];
+	line='';
+	for c in $keep; do
+		(( c == last )) && line+="${hdr[c]}" || line+="${(r:$width[$c]:)hdr[c]}  ";
+	done;
+	print -r -- "$line";
+	local marks=0;
+	for a in $rows; do
+		fields=("${(@ps:\t:)a}");
+		line='';
+		for c in $keep; do
+			[[ ${fields[c+1]} == *[*!]* ]] && marks=1;
+			(( c == last )) && line+="${fields[c+1]}" || line+="${(r:$width[$c]:)fields[c+1]}  ";
+		done;
+		print -r -- "$line";
+	done;
+
+	# Footers, each printed only when it has something to say.
+	print -r -- "";
+	local -A tally;
+	local acct;
+	for a in $rows; do
+		fields=("${(@ps:\t:)a}");
+		acct=${fields[3]};
+		[[ $acct == - ]] && acct=unpinned;
+		(( tally[$acct]++ ));
+	done;
+	line='';
+	for acct in ${(ok)tally}; do line+="$acct ${tally[$acct]}, "; done;
+	print -r -- "${#rows} projects under ${(j:, :)${roots/#$HOME/~}} — ${line%, }";
+	(( marks )) && print -r -- "* per-repo pin, outranking the account mapping   ! mapped but not created on this machine";
+	(( ${#dropped} )) && print -r -- "nothing configured anywhere, columns dropped: ${(j:, :)dropped}";
+	(( long )) || print -r -- "-l adds the commit identity and the gate's verdict on it";
+	local -a overrides;
+	[[ -n $CLAUDE_PROFILE ]] && overrides+=("CLAUDE_PROFILE=$CLAUDE_PROFILE");
+	[[ -n $WRANGLER_PROFILE ]] && overrides+=("WRANGLER_PROFILE=$WRANGLER_PROFILE");
+	[[ -n $TAILNET ]] && overrides+=("TAILNET=$TAILNET");
+	(( ${#overrides} )) && print -r -- "note: ${(j:, :)overrides} set in this shell — it overrides the column above for commands you run now, and is ignored here";
+	if (( long )) && [[ -z "$(command git config --get core.hooksPath 2>/dev/null)" ]]; then
+		print -r -- "note: core.hooksPath is unset — the identity gate is off machine-wide, so GATE is advisory";
+	fi;
+	return 0;
+}
+
 # Every routing and credential diagnosis for the cwd in one go — git
 # identity, gh account, Claude Code profile, the terminal-tab launcher,
 # wrangler profile, hermes profile, tailnet routing — plus the two that are
@@ -2114,6 +2418,10 @@ function shell_trace() {
 # shell's version and pattern
 # options (shell_trace; this function must not emulate, see there). First
 # thing to run when a repo "behaves weird" on a machine.
+#
+# Per-cwd by design: `routes` is the same question asked of every project at
+# once, and stays out of here because this is what you run standing inside
+# the one repo that is misbehaving.
 function doctor() {
 	local d;
 	print -r -- "shell:   $(shell_trace)";

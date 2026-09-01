@@ -42,7 +42,7 @@ doctor_in() {
   make_repo 'git@github-personal:octo-personal/some-repo.git'
   doctor_in "$REPO"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"defined: ok (2 helpers)"* ]]
+  [[ "$output" == *"defined: ok (3 helpers)"* ]]
   [[ "$output" == *"origin:  git@github-personal:octo-personal/some-repo.git"* ]]
   [[ "$output" == *"account: personal-acct"* ]]
   [[ "$output" == *"author:  Octo Person <octo@example.com>"* ]]
