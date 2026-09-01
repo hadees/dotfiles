@@ -184,10 +184,10 @@ PROMPT+=$'\n'"%(?.%F{$c_grey}.%F{$c_red})\$ %f%b"
 PROMPT2="%F{$c_yellow}→ %f"
 
 # The terminal title is the working directory, prefixed with the workspace
-# group when this shell belongs to one. `workspace` exports WORKSPACE_GROUP
+# group when this shell belongs to one. `worktabs` exports WORKTABS_GROUP
 # into the tabs it opens; the prefix has to be applied here rather than by the
 # launcher, because this runs on every prompt and would overwrite anything the
 # launcher set. Unset in an ordinary shell, so the prefix simply vanishes.
 precmd() {
-	print -Pn "\e]0;${WORKSPACE_GROUP:+[$WORKSPACE_GROUP] }%~\a"
+	print -Pn "\e]0;${WORKTABS_GROUP:+[$WORKTABS_GROUP] }%~\a"
 }

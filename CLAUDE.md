@@ -411,13 +411,21 @@ different account.
 live in the macOS Keychain and cannot be copied between profiles — verified,
 copying `.claude.json` does not carry a session.
 
-### Workspace launcher (iTerm2 tabs, on demand or at launch)
+### Worktabs launcher (iTerm2 tabs, on demand)
 
-`bin/workspace` puts a set of terminal tabs back on screen: **one iTerm2 window
+`bin/worktabs` puts a set of terminal tabs back on screen: **one iTerm2 window
 per group**, one tab per entry, each tab sitting in its directory with its
 command already running. What those entries are is identity-bearing (real
 paths, real group names), so — like every other router here — the machinery is
 public and the list is machine-local git config from an overlay:
+
+The command is `worktabs`; the **git config namespace stays `workspace.*`**.
+Renaming it would need this repo and the private overlay applied in lockstep
+on every machine before the launcher worked again, and the namespace was never
+the problem — the collision was on `PATH`. The iTerm2 session marks and the
+`Workspace` dynamic profile keep their old spelling for the same class of
+reason: they are stamped on tabs that are already open, and renaming them
+would make `start` stop recognising every running tab and duplicate the lot.
 
 ```gitconfig
 [workspace "<name>"]               # <name>: letters, digits, - and _
@@ -446,23 +454,27 @@ Two decisions carry the design:
   `claude`, whose wrapper picks `CLAUDE_CONFIG_DIR` from the directory, that
   is not cosmetic: session history is partitioned per config dir, so the
   wrong one resumes nothing and starts fresh instead of failing.
-- The trigger is **iTerm2's own AutoLaunch**. `workspace install` compiles a
-  one-line AppleScript to `~/Library/Application Support/iTerm2/Scripts/
-  AutoLaunch.scpt`; iTerm2 runs it at every launch. This replaced a per-user
-  launchd agent, and the reason is TCC: a LaunchAgent driving `osascript` is
-  its own responsible process needing its own Automation grant, which can
-  prompt at login with nobody there to answer it, and which macOS can drop
-  when a signing identity changes. A script iTerm2 runs is iTerm2 automating
-  itself — implicitly allowed and never recorded. **Measured, not assumed:**
-  with the calling terminal's Automation grant revoked, an AutoLaunch-spawned
-  shell still created a window (`rc=0`) and no grant row appeared. It also
-  deletes the Dock-wait, the settle delay, and the retry loop, all of which
-  existed only because `RunAtLoad` fires before the GUI is ready — AutoLaunch
-  fires *because* iTerm2 started. Install refuses to clobber an
-  `AutoLaunch.scpt` it did not write, and prints the line to add by hand.
-  The call is backgrounded: iTerm2 runs AutoLaunch on its own AppleScript
-  runner, and a synchronous `do shell script` that sends events back to iTerm2
-  can sit behind the very runner it waits on.
+- **Nothing runs at launch.** Sets open when you ask — `worktabs start`, or
+  the Alfred workflow. An earlier version compiled a one-line AppleScript to
+  `~/Library/Application Support/iTerm2/Scripts/AutoLaunch.scpt` so that every
+  iTerm2 start reopened the whole set; that is removed. Opening every
+  project's tabs on every launch is the wrong default, because iTerm2 gets
+  started for all sorts of unrelated reasons and the set is a thing you want
+  deliberately. `install` now writes only the dynamic profile, **and deletes
+  an `AutoLaunch.scpt` a previous version left**, so upgrading a machine stops
+  the old behaviour instead of leaving it running with nothing in the repo to
+  explain it; `status` and `worktabs-doctor` report a stale one they will not
+  touch, and neither ever removes a script somebody else wrote.
+  Two findings from that route are worth not relearning. A script iTerm2 runs
+  is **iTerm2 automating itself** — implicitly allowed, never recorded in TCC
+  — where a LaunchAgent driving `osascript` is its own responsible process
+  needing its own Automation grant, which can prompt at login with nobody
+  there to answer it. Measured, not assumed: with the calling terminal's grant
+  revoked, an AutoLaunch-spawned shell still created a window (`rc=0`) and no
+  grant row appeared. And any such call had to be backgrounded, because
+  iTerm2 runs AutoLaunch on its own AppleScript runner and a synchronous `do
+  shell script` that sends events back to iTerm2 can sit behind the very
+  runner it waits on.
 
 An iTerm2 **Window Arrangement** remains the wrong tool: it restores a shell in
 a directory, not a running command; it lives in `com.googlecode.iterm2.plist`,
@@ -507,7 +519,7 @@ prompt, so anything AppleScript writes is gone by the first one. iTerm2's own
 `Custom Tab Title` cannot do it either — measured: it renders **once, at
 session creation**, before the session has been tagged, and does not
 re-evaluate when the variable appears (the variable read back correctly while
-the title still rendered empty). So `start` exports `WORKSPACE_GROUP` into each
+the title still rendered empty). So `start` exports `WORKTABS_GROUP` into each
 tab and `precmd` prefixes the directory with `[<group>] `. It re-renders every
 prompt, survives `cd`, and is simply absent in an ordinary shell. Everything
 degrades: with no
@@ -520,31 +532,33 @@ and a plain one both gone; one fresh window on relaunch), so "user variables do
 not survive restoration but profiles do" — the strongest-sounding argument for
 the profile — is simply not true and is not the reason. What the test *did*
 turn up is that iTerm2 opens **one window of its own** at every launch, which
-workspace neither created nor reuses; `OpenNoWindowsAtStartup` suppresses it,
-and `install`/`workspace-doctor` print that line rather than writing a
+worktabs neither created nor reuses; `OpenNoWindowsAtStartup` suppresses it,
+and `install`/`worktabs-doctor` print that line rather than writing a
 preference into a tracked file behind you.
 
 Commands mirror `tailnet`'s shape: `list`, `groups`, `plan` (the decision
 table, tab-separated), `script` (the AppleScript `start` would run — a dry
 run), `start [name|group…]`, `alfred`, `install`, `uninstall`, `status`,
-`logs`, `dir`. A selector names either one entry or a whole group.
+`dir`. A selector names either one entry or a whole group.
 `list`/`groups`/`plan`/`script`/`alfred` are pure text and work anywhere; the
 acting commands refuse off macOS, and `.chezmoiignore` does not deploy the
 script there. Nothing configured is ever silently ignored — a name git accepts
 but this does not (`[workspace "bad name"]`) is warned about rather than
-dropped during parsing. `workspace-doctor` reports the script, iTerm2, the
-trigger, and the configured entries with which are open; `doctor` includes it.
-Once per machine: `workspace install`. Tests: `tests/workspace.bats` (stub
-osascript/open/ps/uname/osacompile; fixture names only).
+dropped during parsing. `worktabs-doctor` reports the script, iTerm2, the
+profile, whether a stale launch trigger survives, and the configured entries
+with which are open; `doctor` includes it. Once per machine:
+`worktabs install` — which is also what clears the old trigger. Tests:
+`tests/worktabs.bats` (stub osascript/open/ps/uname/osacompile; fixture names
+only).
 
-**Alfred front-end.** `alfred/workspace/` is an Alfred 5 workflow — keyword
-`ws` — whose Script Filter runs `workspace alfred` (Script Filter JSON, one
-item per group with its open/total count) and whose action runs `workspace
-start <group>`. `workspace alfred-install` zips it and hands it to Alfred,
+**Alfred front-end.** `alfred/worktabs/` is an Alfred 5 workflow — keyword
+`ws` — whose Script Filter runs `worktabs alfred` (Script Filter JSON, one
+item per group with its open/total count) and whose action runs `worktabs
+start <group>`. `worktabs alfred-install` zips it and hands it to Alfred,
 which shows its own import sheet; dropping the folder into Alfred's
 preferences by hand is not a supported path. Three things shape it: Alfred
 runs scripts with `/bin/zsh --no-rcs` and a fixed PATH that **excludes
-`~/bin`**, so both scripts call `$HOME/bin/workspace` by absolute path; the
+`~/bin`**, so both scripts call `$HOME/bin/worktabs` by absolute path; the
 filter sets `alfredfiltersresults` so the script runs once and Alfred narrows
 as you type, rather than re-running per keystroke; and it passes the selection
 as **argv**, not `{query}`, so there is no query escaping to get wrong. The
@@ -612,7 +626,7 @@ wrapper. Consequences:
   selects for the cwd (or "not installed under the selected node"), and the
   version read off the install without executing it (npm `package.json`,
   cask/native path segment). `doctor` runs them all (git, gh, claude,
-  wrangler, hermes, tailnet, workspace, onepassword, iterm2 — the last two
+  wrangler, hermes, tailnet, worktabs, onepassword, iterm2 — the last two
   are not per-repo, but 1Password is what signing and `~/.extra` rest on and
   iTerm2 is the terminal the rest run inside, so their failures arrive
   disguised as per-repo ones). Every doctor also opens with a `defined:` line — are
@@ -760,6 +774,68 @@ Once per machine: `tailnet install <name> && tailnet up <name>` per tailnet
 overlays supply the mappings. Tests: `tests/tailnet.bats` (stub
 tailscale/launchctl/ssh/curl/rclone/mount; state in a short `/tmp` dir
 because a unix socket path is capped at ~104 bytes on macOS).
+
+### Which project routes where (`routes`)
+
+The doctors answer "as whom, right *here*". `routes` answers it for every
+project at once: **one row per repo, one column per wrapper** — account,
+Claude profile, wrangler profile, tailnet, hermes profile, worktabs group,
+and with `-l` the commit identity and the gate's verdict on it.
+
+```
+PROJECT           ACCOUNT   CLAUDE            WRANGLER    TAILNET      HERMES
+some-project      acct-a    .claude           acct-a-cf   net-a        -
+side-project      acct-a    .claude           other-cf*   net-a        -
+another           acct-b    .claude-other     acct-b-cf   net-b!       some-agent
+
+12 projects under ~/code — acct-a 7, acct-b 4, unpinned 1
+* per-repo pin, outranking the account mapping   ! mapped but not created on this machine
+```
+
+Every cell is produced by calling the wrapper's **own** resolver
+(`gh_account_for_cwd`, `claude_profile_dir`, `wrangler_profile`,
+`tailnet_for_cwd`, `identity_expected`) in a subshell cd'd into the repo, so
+a row cannot claim something the wrapper would not do — the same anti-drift
+rule the doctors follow, applied across the fleet. The `tabs` column is not
+re-derived either: it reads `worktabs plan`, which already decides group,
+directory and usability.
+
+Decisions worth keeping:
+
+- **The project list is machine-local, like every other list here.** Roots
+  come from arguments, else `routes.root` in git config (repeatable,
+  overlay-supplied), else `~/code`. Real project paths are identity-bearing
+  and never land in this repo. The walk is two deep and **stops at the first
+  repo**, so a flat `~/code/<repo>` and a nested `~/code/<owner>/<repo>` both
+  work while a worktree or vendored checkout inside a project is never
+  listed beside it.
+- **The override variables are unset in the probe.** `CLAUDE_PROFILE`,
+  `WRANGLER_PROFILE` and `TAILNET` override one invocation; leaving one set
+  would stamp itself down a whole column and describe none of the repos. When
+  one is set the footer says so rather than silently ignoring it.
+- **Two suffixes carry what only a fleet view can show.** `*` is a per-repo
+  pin outranking the account mapping; `!` is *mapped but never created on
+  this machine* — a Claude profile directory, wrangler profile, tailnet or
+  hermes profile that a repo routes to and that does not exist here. That is
+  the failure the per-repo doctors can only find one repo at a time, and the
+  one that greets you as "wrong account" months later.
+- **A column no project uses is dropped** and named in the footer, so a
+  machine with no hermes or wrangler pins gets a narrow table instead of a
+  field of dashes — the same stance as `tailnet-doctor`'s mount lines.
+  `--tsv` is the exception: it keeps all nine fields in a fixed order
+  whatever is empty, so a script can index them (`worktabs plan` is the same
+  idea).
+- **Rows sort by account, unpinned last, and the rank is a digit** — not a
+  punctuation character. `${(o)}` collates by locale, and `~` sorts *before*
+  letters in en_US, which put every unpinned repo on top of the first draft.
+- The gate verdict shares `identity_expected` with `git-doctor` rather than
+  re-deriving the per-repo-pin-beats-account precedence, so the two cannot
+  disagree about which email a repo is allowed to commit under.
+
+`routes` is deliberately **not** in the `doctor` aggregator: `doctor` is the
+per-cwd diagnosis you run inside one repo, this is the survey across all of
+them. Tests: `tests/routes.bats` (sandboxed HOME, fixture repos and pins,
+stub worktabs; no real account names, no installation touched).
 
 ### Link routing (Finicky → Chrome profiles)
 

@@ -230,6 +230,7 @@ cask 'readdle-spark' # Spark email client (the 'spark-app' cask is an unrelated 
 cask 'spotify'
 cask 'steam'
 cask 'suspicious-package'
+cask 'sweet-home3d' # Interior design and floor plan application
 cask 'the-unarchiver'
 cask 'tinymediamanager'
 cask 'tower'
