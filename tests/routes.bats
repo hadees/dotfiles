@@ -132,6 +132,15 @@ row_for() {
   [[ "$output" == *"* per-repo pin, outranking the account mapping"* ]]
 }
 
+@test "marker *: a per-repo Claude pin shows in the CLAUDE column too" {
+  make_repo moved-repo octo-work-org/moved-repo
+  gc 'claude.octo-work-org/moved-repo.profile' personal-account
+  routes
+  [ "$status" -eq 0 ]
+  # Routed to the personal profile despite the work owner, and marked as a pin.
+  [[ "$(row_for moved-repo)" == *" .claude-personal* "* ]]
+}
+
 @test "marker !: mapped on this machine but never created" {
   rm "$HOME/.wrangler/config/work-cf.toml"
   rm "$HOME/.local/state/tailnet/work-net/port"

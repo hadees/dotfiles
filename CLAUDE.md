@@ -407,6 +407,27 @@ explicitly with `claude-as <name> [args...]` — a strict passthrough that
 errors out (listing the mapped names) rather than ever falling back to a
 different account.
 
+**The owner is the default, not the verdict.** A repo that should run under a
+different login than its owner's account maps to gets a per-repo pin,
+`claude.<owner>/<repo>.profile` (origin slug, lowercase), which outranks the
+account mapping and leaves every sibling repo of that owner alone — the same
+shape and precedence as `wrangler.<owner>/<repo>.profile` and
+`identity.<owner>/<repo>.email`. The value is an account or alias from
+`claude.profile.*`, or a literal directory: whatever `CLAUDE_PROFILE` accepts,
+since a pin is that same choice made once per repo instead of once per
+invocation. It is machine-local git config, so *which* repos are moved stays in
+the overlays and no repo names appear here. Precedence end to end:
+`CLAUDE_PROFILE` → `claude.<owner>/<repo>.profile` → `claude.profile.<account>`
+→ `claude.profile.default` → bare `claude`.
+
+A pin naming something unmapped **warns on every invocation** and then uses the
+owner's account, rather than resolving quietly. That is deliberate and not
+cosmetic: sessions are partitioned per config dir, so a typo'd pin would land
+in another account's history and resume *nothing* instead of failing.
+`claude-doctor` prints a `pin:` line above `mapping:` for the same reason —
+a repo resolving somewhere its origin does not explain should say why — and
+`routes` marks the pinned cell with `*` like the other routers.
+
 **Each profile must be logged in once** with `claude auth login`; credentials
 live in the macOS Keychain and cannot be copied between profiles — verified,
 copying `.claude.json` does not carry a session.
