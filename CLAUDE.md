@@ -97,7 +97,7 @@ VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 ### Key files
 
 - **`.chezmoi.toml.tmpl`** — config template; prompts once for the machine class and pins `sourceDir` to the clone on macs
-- **`.chezmoiignore`** — target paths chezmoi must not manage (repo-level files everywhere; macOS GUI config off-mac; identity/secrets on `ephemeral`)
+- **`.chezmoiignore`** — target paths chezmoi must not manage (repo-level files everywhere, `CLAUDE.md` and `com.googlecode.iterm2.plist` among them; macOS GUI config off-mac; identity/secrets on `ephemeral`)
 - **`bootstrap.sh`** — deprecated wrapper around `chezmoi init --source . --apply`
 - **`.macos`** — macOS `defaults write` settings; reads `$COMPUTER_NAME` env var for machine-specific naming
 - **`Brewfile`** — Homebrew formulae, casks, and Mac App Store apps (macOS only; `.chezmoiscripts/darwin/` runs `brew bundle` when it changes)
@@ -900,9 +900,17 @@ Three consequences shape the code here:
   named after a host or a client.
 
 Two facts from that research matter to this repo directly. `PrefsCustomFolder`
-points at this clone, so `com.googlecode.iterm2.plist` is tracked here — safe
-only because the AI provider key goes to the **Keychain**, not the plist (the
-binary says so, and `verify.sh` checks that sentence is still there), and
+points at this clone, so `com.googlecode.iterm2.plist` is tracked here — and,
+because the clone is where iTerm2 both reads and writes it, the plist is a
+**repo-level file in `.chezmoiignore`, never deployed to `$HOME`**. A copy
+there would be read by nothing: iTerm2 looks in the custom folder or in its
+Preferences domain, and neither is `$HOME`. Worse, iTerm2 writes into that
+folder — chezmoi's own source — so every prefs change would ask chezmoi to
+re-deploy ~99KB that nothing opens. It is also why a modified
+`com.googlecode.iterm2.plist` in `git status` is normal: that is iTerm2
+saving, not you. Tracking it at all is safe only because the AI provider key
+goes to the **Keychain**, not the plist (the binary says so, and
+`verify.sh` checks that sentence is still there), and
 because keys prefixed `NoSync*` are excluded from the custom folder (verified:
 26 in the live domain, 0 in the tracked copy). And none of
 `LoadPrefsFromCustomFolder`, `PrefsCustomFolder`, `NoSync*` or

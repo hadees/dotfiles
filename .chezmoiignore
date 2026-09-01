@@ -14,6 +14,16 @@ tests
 init
 theme
 alfred
+# Guidance for working on THIS repo. Deployed to $HOME it was read by every
+# session in every project under it — Claude Code walks cwd upwards — and
+# appeared twice in a session in this clone. Cross-machine guidance belongs
+# in .claude-shared/CLAUDE.md, which both profiles import.
+CLAUDE.md
+# iTerm2 reads its prefs from the clone (PrefsCustomFolder), never from
+# $HOME, so a copy here is read by nothing. Worse, iTerm2 writes to that
+# folder — chezmoi's own source — so every prefs change asked chezmoi to
+# re-deploy ~99KB into $HOME that nothing would open.
+com.googlecode.iterm2.plist
 
 # Package-install scripts run only on their own OS
 {{ if ne .chezmoi.os "darwin" -}}
@@ -33,7 +43,6 @@ alfred
 
 {{ if ne .chezmoi.os "darwin" -}}
 # macOS GUI configuration has no business on Linux/WSL
-com.googlecode.iterm2.plist
 .mackup.cfg
 # Finicky (URL router) is a macOS app
 .finicky.ts
@@ -49,6 +58,5 @@ bin/workspace
 .claude
 .claude-shared
 .claude-hadees
-CLAUDE.md
 .chezmoiscripts/**
 {{ end -}}
