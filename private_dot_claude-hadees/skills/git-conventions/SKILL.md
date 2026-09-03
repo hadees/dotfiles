@@ -5,8 +5,10 @@ description: Personal git workflow conventions for branching, committing, pushin
 
 # Personal Git Conventions
 
-These apply to every change in a personal repo. They are deliberately not the
-work conventions — no Conventional Commits prefixes, no emoji anchors.
+These apply to every change in a personal repo. The commit-subject dialect
+below is deliberately the same one the work conventions use — one habit is
+easier to keep than two — but the branching rules here are looser, and the
+flavor table carries no work-domain entries.
 
 ## Branch + PR for non-trivial changes
 
@@ -30,13 +32,85 @@ work conventions — no Conventional Commits prefixes, no emoji anchors.
 - PR bodies tell the story: what changed, why, what was verified. A test plan
   section with checkboxes when there is one.
 
-## Commit subjects: plain imperative, no prefixes
+## Commit subjects: Conventional Commits + emoji
 
-- One clear sentence in the imperative: "Split Claude Code into per-account
-  profiles", "Add claude-doctor and drop underscore-prefixed helper names".
-- No `feat:`/`fix:` prefixes, no emoji — that is the work dialect.
-- Semicolons are fine when one commit legitimately carries two related
-  changes, but prefer splitting (see below).
+Subjects follow [Conventional Commits](https://www.conventionalcommits.org/)
+so the history stays machine-parseable (semantic-release, changesets,
+release-please and commitlint all read it). Each subject leads with the
+type-anchor emoji for its type:
+
+```
+<type-emoji> <type>: <subject>                                # minimal
+<type-emoji> <type>: <flavor-emoji> <subject>                 # with flavor
+<type-emoji> <type>: <flavor-emoji> <flavor-emoji> <subject>  # two flavors (the max)
+<type-emoji> <type>!: <subject>                               # breaking change
+```
+
+The subject itself stays one clear imperative sentence. Semicolons are fine
+when a commit legitimately carries two related changes, but prefer splitting
+(see below).
+
+### Type anchors (required, one per type)
+
+| Anchor | Type        | When to use                                          |
+| ------ | ----------- | ---------------------------------------------------- |
+| ✨     | `feat:`     | New feature or capability                            |
+| 🐛     | `fix:`      | Bug fix                                              |
+| ♻️     | `refactor:` | Behavior-preserving rework                           |
+| 📝     | `docs:`     | Docs-only changes                                    |
+| ✅     | `test:`     | Tests added or updated                               |
+| 🧰     | `chore:`    | Tooling, deps, repo housekeeping                     |
+| ⚡     | `perf:`     | Performance improvement                              |
+| 🎨     | `style:`    | Formatting with no behavior change                   |
+| 👷     | `ci:`       | CI/CD changes                                        |
+| 📦     | `build:`    | Build system / packaging                             |
+| ⏪     | `revert:`   | Reverts a prior commit                               |
+
+For a breaking change append `!` to the type (`✨ feat!: drop the bash 3.2
+fallback`) or add a `BREAKING CHANGE:` footer; the spec recognizes both.
+
+### Flavor gitmojis (optional)
+
+After the colon, add a flavor emoji when it says something the type alone
+doesn't — urgency, subject area, side effect. Skip it when the type already
+carries the message. A second flavor (two is the cap) is for the commit where
+one emoji can't say both what kind of work it was and what it touched; then
+the first is the marker (⚗️ experiment or study) and the second the area.
+
+**The full table lives in `references/flavors.md`. Read it when picking a
+flavor; don't guess from memory.**
+
+```
+✨ feat: 🚩 put the new prompt behind a flag
+🐛 fix: 🚑️ undo the regression that broke every shell
+🧰 chore: ⬆️ bump the pinned bats version
+📝 docs: 💡 explain why op-ssh-sign ignores SSH_AUTH_SOCK
+✨ feat!: drop the bash 3.2 fallback
+```
+
+**Reserved as type anchors:** ✨ 🐛 ♻️ 📝 ✅ ⚡ 🎨 👷 📦 ⏪ 🧰 never appear as
+flavors — they describe the *kind* of change, which the type already
+captures. Reaching for one usually means the concept you want has its own
+flavor: 🎨 as "figure" is 🖼️, ✅ as "validation" is 🦺. If none fits and the
+anchor genuinely describes a second kind of change, the commit is doing two
+things — split it.
+
+### Validate the subject before committing
+
+`scripts/check-subject.sh` (relative to this skill) checks a drafted subject
+deterministically: anchor/type pairing, flavor membership, reserved-anchor
+misuse, non-empty text. Run it on every subject you draft:
+
+```bash
+printf '%s\n' '✨ feat: 🚩 put the new prompt behind a flag' | <skill-dir>/scripts/check-subject.sh -
+```
+
+Exit 0 means valid; otherwise it prints exactly what is wrong. It also takes
+a commit-message file as its argument, so it installs as a per-repo hook:
+
+```bash
+cp <skill-dir>/scripts/check-subject.sh .git/hooks/commit-msg
+```
 
 ## Commit bodies explain the why
 
