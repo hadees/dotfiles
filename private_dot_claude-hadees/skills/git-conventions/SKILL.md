@@ -15,7 +15,18 @@ work conventions — no Conventional Commits prefixes, no emoji anchors.
 - Trivial one-file tweaks may commit directly to `main` when the repo's
   history shows that pattern; anything with more than one moving part gets a
   branch and PR, even when self-merged — the PR is the record of the work.
-- Merge with a merge commit and clean up: `gh pr merge <N> --merge --delete-branch`.
+- **Never squash-merge.** Merge with a merge commit and clean up:
+  `gh pr merge <N> --merge --delete-branch`. A repo whose history is
+  deliberately linear may rebase instead (`--rebase --delete-branch`); match
+  what the repo already does (`git log --oneline --merges -n 10`).
+- Squash-merge earned its place hiding human WIP noise — "fix typo", "oops",
+  "actually fix typo". Agent-written branches don't have that noise: the
+  commits are already atomic and each message already explains its why. So
+  squashing now destroys information instead of tidying it, and it silently
+  undoes the atomic-commit rule below.
+- GitHub creates every repo with squash enabled and has no account-wide
+  switch, so it is a per-repo flip:
+  `gh api -X PATCH repos/<owner>/<name> -F allow_squash_merge=false`.
 - PR bodies tell the story: what changed, why, what was verified. A test plan
   section with checkboxes when there is one.
 
