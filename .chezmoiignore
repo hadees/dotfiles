@@ -49,6 +49,8 @@ com.googlecode.iterm2.plist
 .config/finicky
 # The worktabs launcher drives iTerm2, which is macOS-only
 bin/worktabs
+# So does attend, which paints iTerm2 tabs from Claude Code hooks
+bin/attend
 {{ end -}}
 
 {{ if eq .machineClass "ephemeral" -}}

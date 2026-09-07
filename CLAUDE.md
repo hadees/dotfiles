@@ -592,6 +592,116 @@ the overlay at run time. It is **not** a chezmoi target: Alfred rewrites
 `info.plist` whenever the workflow is edited in its GUI, which would show as
 permanent drift, so the repo keeps the source and `alfred-install` copies it.
 
+### Attend (which Claude Code session needs you next)
+
+`worktabs` puts the tabs on screen; **`bin/attend`** answers which of them
+wants something. With a dozen `claude` sessions running, every iTerm2 tab
+title starts with the same glyph, so the tab bar says "twelve Claudes" and
+nothing about which one is blocked on a permission prompt, which finished a
+turn twenty minutes ago and is sitting on a result, and which is still
+working. The need is **triage** — "what do I do next" — not an inventory of
+what exists, which is why the tab bar itself becomes the queue rather than
+some list in a thirteenth tab.
+
+Claude Code hooks fire at exactly the transitions that matter, and each one
+paints its **own** tab:
+
+| Hook | State | Colour |
+| --- | --- | --- |
+| `Notification` (matched to `permission_prompt\|idle_prompt\|elicitation_dialog`) | waiting | red (base08) |
+| `Stop` | idle | amber (base09) |
+| `UserPromptSubmit` | busy | cleared |
+| `PostToolUse` | busy | cleared |
+| `SessionEnd` | — | cleared |
+
+**`PostToolUse` is what stops red from lying.** Approving a permission fires
+no event of its own — the tool simply runs — so without it a tab stays red
+for the whole tool run that follows, which for a build or a test suite is
+minutes of the queue pointing at a session that is busy working. A tool
+having just run is the clearest evidence a session is not blocked.
+`SubagentStop` is deliberately *not* mapped: a subagent finishing is not the
+session finishing, and treating it as idle would paint "sitting on a result"
+over a session that is still working.
+
+**The `Notification` matcher is load-bearing, not tidiness.** That event also
+fires for `auth_success`, which is not a session asking for anything; painting
+a tab red for it would teach you to ignore red. Matching in `settings.json`
+rather than parsing the payload also keeps the hook down to one `ps` and one
+`printf` — a hook runs on every turn of every session, so its cost is the
+budget that matters.
+
+**A colour dims once you have actually looked at the tab**, keeping its hue.
+That is the whole reason this is more than an escape sequence: a tab you
+glanced at and walked away from is not new any more, but it is not dealt with
+either. Red means "since you last looked"; dim red means "you know about this
+one". Keeping the hue matters because after a glance you still want to know
+whether that session wants an answer or merely has one waiting.
+
+Three facts were measured and are expensive to relearn:
+
+- **A hook does not inherit the tab's controlling terminal.** Claude Code
+  starts hook commands detached — `ps -o tty= -p $$` answers `??` — so the
+  obvious `printf … > /dev/tty` from a hook reaches nothing. The `claude`
+  process does have the tty and is the hook's parent, so `attend` walks *up*
+  the parent chain to the first process with one. It costs 2ms, where the
+  otherwise-obvious `lsof -a -p <pid> -d 0` costs ~50ms per session.
+- **The walk must report the process it stopped at, not the hook's parent.**
+  Keying tab state on `$PPID` looks right and is wrong the moment anything
+  splices a shell in between: the state file is keyed by pid and reaped when
+  that pid dies, so it would key a tab on a shell that exits a millisecond
+  later and take the colour with it. Found by testing, not by reading.
+- **Reading which tab has focus needs no Automation grant — but only if you
+  talk to nothing but iTerm2.** iTerm2 automating itself is implicitly
+  allowed and a shell inside iTerm2 is iTerm2's responsibility, so
+  `osascript` asking iTerm2 to name its current session neither prompts nor
+  records a TCC row. That is what makes a plain polling watcher acceptable
+  here where a launchd agent doing the same thing would not be — the same TCC
+  asymmetry `worktabs` records from the other direction. The trap is that the
+  obvious way to ask *which app is in front* is `tell application "System
+  Events"`, and **System Events is a separate automation target with its own
+  per-client grant**: that version prompts on a machine that has never
+  granted it and fails forever once denied — invisibly, since the watcher's
+  output goes to `/dev/null`, leaving a healthy-looking watcher whose tabs
+  never dim. iTerm2 answers `frontmost` itself (Standard Suite; absent from
+  the sdef but real — cross-checked against System Events over repeated
+  samples), and asking one app both questions is 40ms against 140ms.
+
+Painting is event-driven, but **"you looked at it" is not an event any hook
+can see**, so `attend watch` polls for it — and is bounded rather than
+resident. The hook that paints the first unseen tab starts it; it exits as
+soon as every alerting tab has been seen. So it runs exactly while something
+is asking for your attention, and never at login. (Its stdin is redirected
+from `/dev/null` on purpose: a hook's stdin is the pipe Claude Code writes
+the event JSON to, and a long-lived grandchild that inherits it holds that
+pipe open for as long as it runs.) An iTerm2 Python API daemon with a
+`FocusMonitor` would be event-driven all the way down and is the upgrade path
+if the poll ever becomes a nuisance; it costs a resident process and the API
+surface, which a two-second poll that stops on its own does not.
+
+Everything else follows the house pattern. The profile directories come from
+the `claude.profile.*` mapping the overlays already supply for `claude()`,
+plus `~/.claude`, so **no profile, account or project name appears here** and
+a machine reads whatever it happens to have. The session registry it sweeps
+from (`<profile>/sessions/<pid>.json` — `status` observed as `busy`, `idle`,
+`waiting`, `shell`) is **observed behaviour, not a documented interface**: it
+is undocumented, per-profile (so `claude agents`, which reads only its own,
+under-reports), and every read re-checks liveness with `kill -0`. Same class
+of dependency as the statusline's running-task spinner, and worth re-checking
+when Claude Code updates.
+
+Commands: `list` (the triage view — waiting, then idle, then shell, then
+busy; oldest first within a band, since the one that has waited longest is
+the one you have most forgotten), `hook <event>`, `watch [--once]`, `sweep`
+(paint from the registry — needed once after wiring the hooks, because
+sessions already running will not fire a transition until their next one),
+`clear`, `status`, `install` (prints the settings.json block; the overlays
+own those files, so it never edits them), `dir`. `attend-doctor` joins the
+`doctor` aggregator, and its `script:` line warns when something other than
+`~/bin/attend` owns the name on PATH — the failure mode `workspace` taught,
+where the hooks keep working by absolute path while every typed command
+reaches a stranger's binary. Tests: `tests/attend.bats` (stub
+osascript/ps/uname, sandboxed HOME, fixture profile names only).
+
 ### Wrangler (Cloudflare) auth profiles
 
 Wrangler (≥ 4.106) keeps one OAuth login per **auth profile**: named ones
@@ -651,7 +761,7 @@ wrapper. Consequences:
   selects for the cwd (or "not installed under the selected node"), and the
   version read off the install without executing it (npm `package.json`,
   cask/native path segment). `doctor` runs them all (git, gh, claude,
-  wrangler, hermes, tailnet, worktabs, onepassword, iterm2 — the last two
+  wrangler, hermes, tailnet, worktabs, attend, onepassword, iterm2 — the last two
   are not per-repo, but 1Password is what signing and `~/.extra` rest on and
   iTerm2 is the terminal the rest run inside, so their failures arrive
   disguised as per-repo ones). Every doctor also opens with a `defined:` line — are

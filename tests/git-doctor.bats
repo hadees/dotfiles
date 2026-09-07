@@ -182,9 +182,9 @@ doctor_in() {
       done
       print -r -- ${(ok)seen}
     }
-    typeset -A wrapped=(claude claude worktabs "" wrangler wrangler gh gh hermes hermes tailnet "ssh scp sftp curl tailnet-as" git "" onepassword "" iterm2 "")
+    typeset -A wrapped=(claude claude worktabs "" attend "" wrangler wrangler gh gh hermes hermes tailnet "ssh scp sftp curl tailnet-as" git "" onepassword "" iterm2 "")
     local d h n=0 bad=0
-    for d in claude worktabs wrangler gh hermes tailnet git onepassword iterm2; do
+    for d in claude worktabs attend wrangler gh hermes tailnet git onepassword iterm2; do
       for h in $(callees ${=wrapped[$d]} $d-doctor); do
         n=$((n+1))
         [[ "$( (unfunction $h; $d-doctor) 2>/dev/null )" == *"defined: MISSING"*" $h "* ]] \

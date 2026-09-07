@@ -1,0 +1,669 @@
+#!/bin/sh
+# attend — which Claude Code session needs you next, shown in the tab bar.
+#
+# With a dozen `claude` sessions open, every iTerm2 tab title starts with the
+# same glyph and the tab bar says "twelve Claudes" and nothing about which one
+# is blocked on a permission prompt, which finished a turn twenty minutes ago
+# and is sitting on a result, and which is still working. The need is triage —
+# "what do I do next" — not an inventory of what exists.
+#
+# So the tab bar becomes the queue. A hook fires at each transition that
+# matters and paints that session's own tab:
+#
+#     Notification      -> waiting  (red)     blocked on you
+#     Stop              -> idle     (amber)   finished, sitting on a result
+#     UserPromptSubmit  -> busy     (clear)   you are back at work here
+#     PostToolUse       -> busy     (clear)   it is working again
+#     SessionEnd        -> clear
+#
+# and a colour dims once you have actually looked at the tab. That last part
+# is the whole reason this is more than an escape sequence: a tab you glanced
+# at and walked away from is not new any more, but it is not dealt with
+# either, so it keeps its hue and loses its shout. Red means "since you last
+# looked"; dim red means "you know about this one".
+#
+# Nothing here names a profile, an account or a project. The profile
+# directories come from the `claude.profile.*` mapping the overlays already
+# supply for the claude() wrapper, plus ~/.claude, so a public clone reads
+# whatever that machine happens to have.
+#
+# Two measurements shape the implementation and are expensive to relearn:
+#
+#   - A hook does NOT inherit the tab's controlling terminal. Claude Code
+#     starts hook commands detached (`ps -o tty= -p $$` answers `??`), so
+#     writing to /dev/tty from a hook reaches nothing. The claude process
+#     itself does have the tty, and it is the hook's parent, so the tty is
+#     found by walking up the parent chain — 2ms with ps, where the obvious
+#     `lsof -a -p <pid> -d 0` costs ~50ms per session.
+#   - Reading which tab has focus needs no Automation grant, *provided you
+#     only ever talk to iTerm2*. iTerm2 automating itself is implicitly
+#     allowed and a shell inside iTerm2 is iTerm2's responsibility, so asking
+#     iTerm2 to name its current session neither prompts nor records a TCC
+#     row. Asking System Events which app is frontmost — the obvious way to
+#     write the same check — is a different automation target with its own
+#     grant, and would prompt or fail on a machine that had never granted it.
+#     See `focused_tty`. This is what makes a plain polling watcher acceptable
+#     here where a launchd agent doing the same thing would not be.
+#
+# Painting is event-driven, but "you looked at it" is not an event any hook
+# can see, so `watch` polls for it. It is bounded rather than resident: it is
+# started by the hook that paints the first unseen tab and exits as soon as
+# every alerting tab has been seen, so it runs exactly while something is
+# asking for your attention and never at login.
+#
+# Usage:
+#   attend [list]             one line per live session, most neglected first
+#   attend hook <event>       paint this session's tab; called from the hooks
+#                             wired in each profile's settings.json. <event> is
+#                             waiting | idle | busy | end, or a Claude Code
+#                             hook event name (Notification, Stop,
+#                             UserPromptSubmit, SessionEnd), so settings.json
+#                             can pass $CLAUDE_HOOK_EVENT verbatim.
+#   attend watch [--once]     mark alerting tabs seen once you look at them.
+#                             Started automatically by `hook`; run it in the
+#                             foreground to watch it work. --once does a single
+#                             pass and exits.
+#   attend sweep              paint every tab from the session registry, for
+#                             sessions that were already running when the
+#                             hooks were wired up
+#   attend clear              clear every tab colour and forget all state
+#   attend status             profile dirs, wiring, watcher, painted tabs
+#   attend dir                print the state directory
+set -u
+
+STATE=${ATTEND_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/attend}
+TABS="$STATE/tabs"
+LOCK="$STATE/watch.lock"
+
+die() { printf 'attend: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'attend: %s\n' "$*" >&2; }
+usage() { sed -n '/^# Usage:/,/^set -u/{ /^set -u/d; s/^# \{0,1\}//p; }' "$0" >&2; exit 2; }
+
+os() { uname -s 2>/dev/null; }
+need_macos() {
+  [ "$(os)" = Darwin ] || die "$1 needs macOS — iTerm2 runs nowhere else (list works anywhere)"
+}
+
+# How long the watcher waits between focus checks. Two seconds is the point
+# where the poll stops being noticeable but a glance still registers before
+# you tab away; `git config attend.interval <seconds>` to taste.
+interval() {
+  i=$(git config --get attend.interval 2>/dev/null) || i=''
+  case $i in ''|*[!0-9]*) i=2;; esac
+  [ "$i" -gt 0 ] 2>/dev/null || i=2
+  printf '%s\n' "$i"
+}
+
+# --- colours ----------------------------------------------------------------
+#
+# Base16 Eighties, the palette everything else on this machine uses: base08
+# red for "blocked on you", base09 orange for "finished, unread". The seen
+# variants are those two blended halfway into the terminal background
+# (#1a1a1a) — same hue, no shout. Keeping the hue is the point: after you
+# glance at a tab you still want to know whether it wants an answer or just
+# has one waiting.
+
+color_for() { # state seen -> "R G B" | "default"
+  case "$1:$2" in
+    waiting:0) printf '242 119 122\n' ;;   # base08 #f2777a
+    waiting:1) printf '134 72 74\n'   ;;   # dimmed
+    idle:0)    printf '249 145 87\n'  ;;   # base09 #f99157
+    idle:1)    printf '137 85 56\n'   ;;   # dimmed
+    *)         printf 'default\n'     ;;
+  esac
+}
+
+# iTerm2 takes a tab colour as three OSC 6 writes, one per channel, and clears
+# it with the `*;default` form. Written to the tab's tty device from any
+# process that can open it — no AppleScript, so no permission grant, and it
+# survives a full-screen TUI redrawing over the pane because tab colour is
+# tab-bar state rather than screen content.
+paint() { # tty "R G B" | tty default
+  tty=$1 rgb=$2
+  [ -c "$tty" ] && [ -w "$tty" ] || return 1
+  if [ "$rgb" = default ]; then
+    printf '\033]6;1;bg;*;default\a' >"$tty" 2>/dev/null
+  else
+    # shellcheck disable=SC2086
+    set -- $rgb
+    printf '\033]6;1;bg;red;brightness;%s\a\033]6;1;bg;green;brightness;%s\a\033]6;1;bg;blue;brightness;%s\a' \
+      "$1" "$2" "$3" >"$tty" 2>/dev/null
+  fi
+}
+
+# --- session registry -------------------------------------------------------
+#
+# Claude Code writes <profile>/sessions/<pid>.json for each live process:
+# sessionId, cwd, display name, status (busy | idle | waiting | shell),
+# statusUpdatedAt, and waitingFor when it is waiting. It is per profile dir,
+# so every mapped profile has to be read — `claude agents` enumerates only
+# the one it runs in, which is why it is not the answer here.
+#
+# This is observed behaviour, not a documented interface. Everything that
+# reads it re-checks liveness with kill -0 and tolerates fields being absent.
+
+# Every profile directory this machine maps, whether or not it has ever run a
+# session. This is what `status` must report the wiring for: a profile with a
+# settings.json but no sessions/ yet is exactly the one you are checking after
+# adding it, and filtering it out would make a missing hook block
+# indistinguishable from a correct one.
+mapped_dirs() {
+  { printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+    printf '%s\n' "$HOME/.claude"
+    git config --get-regexp '^claude\.profile\.' 2>/dev/null | cut -d' ' -f2-
+  } | while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        case $d in "~/"*) d="$HOME/${d#\~/}" ;; esac
+        [ -d "$d" ] && printf '%s\n' "$d"
+      done | awk '!seen[$0]++'
+}
+
+# The subset worth reading sessions from.
+profile_dirs() {
+  mapped_dirs | while IFS= read -r d; do
+    [ -d "$d/sessions" ] && printf '%s\n' "$d"
+  done
+}
+
+# One TSV row per live session: pid, status, since(ms), name, cwd, profile.
+registry() {
+  command -v python3 >/dev/null 2>&1 || { warn 'python3 not found — cannot read the session registry'; return 1; }
+  profile_dirs | while IFS= read -r d; do
+    python3 - "$d" <<'PY'
+import glob, json, os, sys
+d = sys.argv[1]
+for f in sorted(glob.glob(os.path.join(d, "sessions", "*.json"))):
+    try:
+        with open(f) as fh:
+            r = json.load(fh)
+        pid = int(r["pid"])
+        os.kill(pid, 0)                      # stale files outlive their process
+    except Exception:
+        continue
+    # No field may be empty, and none may contain a tab. The shell reads these
+    # rows with `IFS=<tab> read`, and a tab is IFS *whitespace*: runs of it
+    # collapse and leading/trailing ones are stripped, so a single empty field
+    # shifts every later column one to the left — a record with no `cwd` would
+    # put the profile name in the repo column and silently blank the profile.
+    def field(v):
+        s = str(v).replace("\t", " ").strip()
+        return s if s else "-"
+    print("\t".join(field(x) for x in (
+        pid,
+        r.get("status", "?"),
+        r.get("statusUpdatedAt") or r.get("updatedAt") or 0,
+        r.get("name", "?"),
+        r.get("cwd", ""),
+        os.path.basename(d),
+    )))
+PY
+  done
+}
+
+# --- tty discovery ----------------------------------------------------------
+#
+# Walk up the parent chain to the first process with a controlling terminal,
+# and report both it and its tty. From a hook that is usually one hop (the
+# claude process), but nothing promises a shell will not be spliced in
+# between, and the walk costs 2ms.
+#
+# Reporting the *owner* rather than only the tty is what makes the tab state
+# survive: the state file is keyed by pid and reaped when that pid dies, so
+# keying it on the hook's own parent would key a tab on a shell that exits
+# a millisecond later and take the colour with it.
+owner_of() { # pid -> "<pid owning the tty> /dev/ttysNNN"
+  p=${1:-0} n=0
+  while [ "$p" -gt 1 ] && [ "$n" -lt 8 ]; do
+    line=$(ps -o ppid=,tty= -p "$p" 2>/dev/null) || return 1
+    [ -n "$line" ] || return 1
+    # ps pads both columns, so ${line%% *} and ${line##* } are empty strings on
+    # real output; splitting on IFS is the only parse that survives it. It has
+    # to be `read` rather than `set -- $line`, because an unquoted split also
+    # globs: `??` — what ps prints for a process with no controlling terminal,
+    # which is every hook — is a pattern matching any two-character name in the
+    # cwd, so a project containing a `ui/` or a `go/` reported the tty as
+    # /dev/ui and painted nothing, silently and only in some repos.
+    pp='' t=''
+    read -r pp t <<EOF
+$line
+EOF
+    case ${pp:-} in ''|*[!0-9]*) return 1 ;; esac
+    case $t in
+      ''|'??'|'?') p=$pp; n=$((n + 1)) ;;
+      *) printf '%s /dev/%s\n' "$p" "$t"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# The tty alone, for callers that already know the owning pid.
+tty_of() { # pid -> /dev/ttysNNN
+  o=$(owner_of "${1:-0}") || return 1
+  printf '%s\n' "${o##* }"
+}
+
+# --- tab state --------------------------------------------------------------
+#
+# One file per painted tab, named for the pid, holding "state seen tty since".
+# The pid is the key because it is what the registry uses and what liveness is
+# checked against; a tab whose process is gone is cleared and forgotten.
+
+save() { # pid state seen tty
+  mkdir -p "$TABS" 2>/dev/null || return 1
+  printf '%s %s %s %s\n' "$2" "$3" "$4" "$(date +%s)" >"$TABS/$1" 2>/dev/null
+}
+
+# Deliberately distinct variable names: every caller is already inside a loop
+# over the registry, which has its own state and its own timestamp in
+# different units, and clobbering those was the first bug this file had.
+load() { # pid -> sets t_st t_seen t_tty t_since; returns 1 if unknown
+  [ -f "$TABS/$1" ] || return 1
+  read -r t_st t_seen t_tty t_since <"$TABS/$1" 2>/dev/null || return 1
+  [ -n "${t_st:-}" ] || return 1
+  return 0
+}
+
+forget() { rm -f "$TABS/$1" 2>/dev/null; }
+
+# Drop state for processes that are gone, clearing their tab on the way out.
+#
+# The watcher does this too, but it only runs while something is unseen, so a
+# session killed (or crashed) while its tab was already *seen* leaves its file
+# behind indefinitely. That is not merely untidy: pids get reused, and a
+# reused pid landing in the same state makes `sweep` treat a genuinely new
+# alert as one you have already acknowledged — "you know about this" for
+# something you have never seen. Every command that iterates the files calls
+# this first; it costs one kill -0 each.
+reap() {
+  [ -d "$TABS" ] || return 0
+  for f in "$TABS"/*; do
+    [ -f "$f" ] || continue
+    p=${f##*/}
+    case $p in ''|*[!0-9]*) rm -f "$f" 2>/dev/null; continue ;; esac
+    kill -0 "$p" 2>/dev/null && continue
+    read -r r_st r_seen r_tty r_since <"$f" 2>/dev/null
+    [ -n "${r_tty:-}" ] && paint "$r_tty" default
+    rm -f "$f" 2>/dev/null
+  done
+}
+
+unseen_count() {
+  n=0
+  for f in "$TABS"/*; do
+    [ -f "$f" ] || continue
+    read -r st seen tty since <"$f" 2>/dev/null || continue
+    [ "${seen:-1}" = 0 ] && n=$((n + 1))
+  done
+  printf '%s\n' "$n"
+}
+
+# --- focus ------------------------------------------------------------------
+#
+# The tty of the tab you are actually looking at, or empty when iTerm2 is not
+# the frontmost app — a tab in a background window is not "seen". Every branch
+# answers with a line, so a failure is empty rather than an error.
+#
+# **Everything here talks to iTerm2 and nothing else**, and that is the whole
+# reason this script needs no Automation grant. The obvious way to ask which
+# app is in front is `tell application "System Events" to get name of first
+# process whose frontmost is true` — and System Events is a *separate* TCC
+# target with its own per-client grant, so that version would prompt on a
+# machine that had never granted it (or, once denied, fail forever). It would
+# fail invisibly, too: osascript's stderr is discarded here and the watcher is
+# spawned with all output to /dev/null, so `focus` would just be permanently
+# empty, no tab would ever dim, and `status` would report a healthy watcher
+# with tabs stuck unseen and nothing pointing at the cause.
+#
+# iTerm2 answers `frontmost` itself (Standard Suite — it is not in the sdef,
+# but it is real: cross-checked against System Events over repeated samples,
+# and they agree). Asking iTerm2 both questions is also 40ms against 140ms,
+# because it is one app round-trip instead of two.
+focused_tty() {
+  osascript 2>/dev/null <<'AS'
+tell application "iTerm2"
+  if not frontmost then return ""
+  if (count of windows) is 0 then return ""
+  try
+    return tty of current session of current window
+  on error
+    return ""
+  end try
+end tell
+AS
+}
+
+# --- hook -------------------------------------------------------------------
+
+# Claude Code hook event names map onto the four states, so settings.json can
+# pass either. Anything unrecognised clears rather than guessing: a wrong
+# colour that never goes away is worse than no colour.
+#
+# `SubagentStop` is deliberately NOT mapped to idle. A subagent finishing is
+# not the session finishing — the parent is still working — so it would paint
+# "sitting on a result" over a session that wants nothing, with nothing to
+# correct it until the next prompt. It falls through to clear like any other
+# unrecognised event, which is the honest answer.
+#
+# `PostToolUse` is what stops red from lying. Approving a permission fires no
+# event of its own: the tool simply runs. Without this the tab stays red for
+# the whole tool run that follows — minutes, for a build or a test suite —
+# pointing the queue at a session that is busy working. A tool having just
+# run is the clearest possible evidence the session is not blocked.
+state_for() {
+  case $1 in
+    waiting|Notification|PermissionRequest)          printf 'waiting\n' ;;
+    idle|Stop)                                       printf 'idle\n' ;;
+    busy|UserPromptSubmit|SessionStart|PostToolUse)  printf 'busy\n' ;;
+    end|clear|SessionEnd)                            printf 'clear\n' ;;
+    *)                                               printf 'clear\n' ;;
+  esac
+}
+
+# A hook must never break the session it runs in, so this swallows everything
+# and always exits 0. It also never blocks: the watcher is spawned detached
+# with its output discarded, because a hook whose child holds the pipe open
+# keeps Claude Code waiting on it.
+cmd_hook() {
+  [ $# -ge 1 ] || exit 0
+  st=$(state_for "$1")
+  o=$(owner_of "${PPID:-0}" 2>/dev/null) || o=''
+  [ -n "$o" ] || exit 0
+  # shellcheck disable=SC2086
+  set -- $o
+  owner=$1 tty=$2
+
+  case $st in
+    busy|clear)
+      paint "$tty" default
+      forget "$owner"
+      ;;
+    *)
+      # Re-alerting a tab you had already seen makes it new again: the state
+      # changed, so it has something you have not looked at.
+      save "$owner" "$st" 0 "$tty"
+      paint "$tty" "$(color_for "$st" 0)"
+      ensure_watcher
+      ;;
+  esac
+  exit 0
+}
+
+watcher_running() {
+  [ -f "$LOCK/pid" ] || return 1
+  read -r wp <"$LOCK/pid" 2>/dev/null || return 1
+  case ${wp:-} in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$wp" 2>/dev/null
+}
+
+ensure_watcher() {
+  [ "$(os)" = Darwin ] || return 0
+  watcher_running && return 0
+  # setsid is not on macOS; a subshell that redirects everything and is
+  # orphaned by its parent exiting is enough. Redirecting stdin from
+  # /dev/null is the load-bearing part: a hook's stdin is the pipe Claude
+  # Code writes the event JSON to, and a long-lived grandchild that inherits
+  # it holds that pipe open for as long as it runs.
+  ( "$0" watch </dev/null >/dev/null 2>&1 & ) &
+  return 0
+}
+
+# --- watch ------------------------------------------------------------------
+
+cmd_watch() {
+  need_macos watch
+  once=0
+  [ "${1:-}" = --once ] && once=1
+
+  if [ "$once" = 0 ]; then
+    mkdir -p "$STATE" 2>/dev/null
+    if ! mkdir "$LOCK" 2>/dev/null; then
+      # A lock whose owner is gone is a crashed watcher, not a running one.
+      if watcher_running; then return 0; fi
+      rm -rf "$LOCK" 2>/dev/null
+      mkdir "$LOCK" 2>/dev/null || return 0
+    fi
+    printf '%s\n' "$$" >"$LOCK/pid" 2>/dev/null
+    trap 'rm -rf "$LOCK" 2>/dev/null' EXIT INT TERM
+  fi
+
+  iv=$(interval)
+  while :; do
+    watch_pass
+    [ "$once" = 1 ] && return 0
+    if [ "$(unseen_count)" = 0 ]; then
+      # Drop the lock *before* the last look. Between deciding to exit and
+      # actually dying, a hook in another session can paint a new unseen tab
+      # and find `watcher_running` still true, skip spawning, and leave that
+      # tab bright with nobody left to dim it. Releasing first inverts the
+      # race: a hook arriving in that window sees no lock and starts its own
+      # watcher, and if it arrives a moment earlier we catch it here and
+      # carry on. Both orderings end with a watcher; this one cannot end
+      # with none.
+      rm -rf "$LOCK" 2>/dev/null
+      trap - EXIT INT TERM
+      [ "$(unseen_count)" = 0 ] && return 0
+      # Something arrived. Take the lock back if it is still free, else let
+      # whoever took it do the work.
+      mkdir "$LOCK" 2>/dev/null || return 0
+      printf '%s\n' "$$" >"$LOCK/pid" 2>/dev/null
+      trap 'rm -rf "$LOCK" 2>/dev/null' EXIT INT TERM
+    fi
+    sleep "$iv"
+  done
+}
+
+watch_pass() {
+  [ -d "$TABS" ] || return 0
+  focus=$(focused_tty) || focus=''
+  for f in "$TABS"/*; do
+    [ -f "$f" ] || continue
+    pid=${f##*/}
+    case $pid in ''|*[!0-9]*) rm -f "$f" 2>/dev/null; continue ;; esac
+    read -r st seen tty since <"$f" 2>/dev/null || continue
+
+    # The session is gone: clear its tab in case it was reused, and forget it.
+    if ! kill -0 "$pid" 2>/dev/null; then
+      [ -n "${tty:-}" ] && paint "$tty" default
+      rm -f "$f" 2>/dev/null
+      continue
+    fi
+
+    [ "${seen:-1}" = 0 ] || continue
+    [ -n "${focus:-}" ] && [ "$focus" = "${tty:-}" ] || continue
+
+    # You are looking at it. Same hue, half the brightness.
+    printf '%s 1 %s %s\n' "$st" "$tty" "${since:-0}" >"$f" 2>/dev/null
+    paint "$tty" "$(color_for "$st" 1)"
+  done
+}
+
+# --- sweep / clear ----------------------------------------------------------
+
+# Paint from the registry rather than from an event. Needed once after wiring
+# the hooks up, because every session already running at that moment will not
+# fire a transition until its next one, and useful whenever the tab bar and
+# reality have drifted apart.
+cmd_sweep() {
+  need_macos sweep
+  reap
+  registry | while IFS="$(printf '\t')" read -r pid rst since name cwd prof; do
+    tty=$(tty_of "$pid" 2>/dev/null) || tty=''
+    [ -n "$tty" ] || continue
+    case $rst in
+      waiting|idle) ;;
+      *) paint "$tty" default; forget "$pid"; continue ;;
+    esac
+    # A repaint is not new information, so a tab already seen in the state it
+    # is still in stays dim. A tab that has *changed* state since you looked
+    # is new again, which is the same rule the hook applies.
+    if load "$pid" && [ "${t_st:-}" = "$rst" ] && [ "${t_seen:-0}" = 1 ]; then
+      s=1
+    else
+      s=0
+    fi
+    save "$pid" "$rst" "$s" "$tty"
+    paint "$tty" "$(color_for "$rst" "$s")"
+  done
+  ensure_watcher
+}
+
+cmd_clear() {
+  need_macos clear
+  if [ -d "$TABS" ]; then
+    for f in "$TABS"/*; do
+      [ -f "$f" ] || continue
+      read -r st seen tty since <"$f" 2>/dev/null || continue
+      [ -n "${tty:-}" ] && paint "$tty" default
+      rm -f "$f" 2>/dev/null
+    done
+  fi
+  # Anything the registry knows about but we never painted (another machine's
+  # leftovers, a killed watcher) gets cleared too.
+  registry 2>/dev/null | while IFS="$(printf '\t')" read -r pid rst since name cwd prof; do
+    tty=$(tty_of "$pid" 2>/dev/null) || continue
+    paint "$tty" default
+  done
+}
+
+# --- list -------------------------------------------------------------------
+
+# Most neglected first: blocked on you, then finished-and-unread, then the
+# ones that are working and want nothing. Within a band, oldest first — the
+# one that has been waiting longest is the one you have most forgotten.
+cmd_list() {
+  reap
+  rows=$(registry) || return 1
+  [ -n "$rows" ] || { printf 'no live Claude Code sessions\n'; return 0; }
+  now=$(date +%s)
+  printf '%s\n' "$rows" | while IFS="$(printf '\t')" read -r pid rst since name cwd prof; do
+    case $rst in
+      waiting) rank=0 ;;
+      idle)    rank=1 ;;
+      shell)   rank=2 ;;
+      *)       rank=3 ;;
+    esac
+    # '*' painted and not yet looked at, '.' painted and seen, ' ' unpainted.
+    mark=' '
+    if load "$pid"; then
+      if [ "${t_seen:-0}" = 1 ]; then mark='.'; else mark='*'; fi
+    fi
+    age=$(( now - (${since:-0} / 1000) ))
+    [ "$age" -lt 0 ] && age=0
+    if [ "$age" -ge 3600 ]; then a="$((age / 3600))h"
+    elif [ "$age" -ge 60 ]; then a="$((age / 60))m"
+    else a="${age}s"; fi
+    printf '%s\t%s\t%s%s\t%s\t%s\t%s\n' "$rank" "$since" "$mark" "$rst" "$a" "$name" "${cwd##*/}"
+  done | sort -t"$(printf '\t')" -k1,1n -k2,2n | cut -f3- |
+  while IFS="$(printf '\t')" read -r stm age name repo; do
+    printf '%-10s %5s  %-28s %s\n' "$stm" "$age" "$name" "$repo"
+  done
+}
+
+# --- status -----------------------------------------------------------------
+
+cmd_status() {
+  reap
+  printf 'script:    %s\n' "$0"
+  w=$(command -v attend 2>/dev/null) || w=''
+  if [ -n "$w" ] && [ "$w" != "$0" ]; then
+    printf 'PATH:      %s  (NOT this script — something else owns the name)\n' "$w"
+  else
+    printf 'PATH:      %s\n' "${w:-<not on PATH>}"
+  fi
+  printf 'state:     %s\n' "$STATE"
+  printf 'interval:  %ss\n' "$(interval)"
+
+  dirs=$(mapped_dirs | tr '\n' ' ')
+  printf 'profiles:  %s\n' "${dirs:-<none found>}"
+
+  # Which profiles actually call us, read from their settings.json. Every
+  # mapped profile, not just the ones with a sessions/ dir — see mapped_dirs.
+  mapped_dirs | while IFS= read -r d; do
+    if [ -f "$d/settings.json" ] && grep -q 'attend hook' "$d/settings.json" 2>/dev/null; then
+      printf 'hooks:     %s wired\n' "${d##*/}"
+    else
+      printf 'hooks:     %s NOT wired — `attend install` prints what to add\n' "${d##*/}"
+    fi
+  done
+
+  u=$(unseen_count)
+  if watcher_running; then
+    read -r wp <"$LOCK/pid" 2>/dev/null
+    printf 'watcher:   running (pid %s), %s tab(s) still unseen\n' "$wp" "$u"
+  elif [ "$u" -gt 0 ]; then
+    # The watcher is the only thing that can dim a tab, so unseen tabs with
+    # no watcher means those colours are stuck until the session's next
+    # transition. Nothing restarts it on its own — say so rather than
+    # reporting "not running" as if it were the resting state.
+    printf 'watcher:   NOT RUNNING but %s tab(s) are unseen — they will not dim; `attend watch &` or `attend sweep`\n' "$u"
+  else
+    printf 'watcher:   not running — nothing is waiting to be seen\n'
+  fi
+
+  if [ -d "$TABS" ]; then
+    for f in "$TABS"/*; do
+      [ -f "$f" ] || continue
+      read -r st seen tty since <"$f" 2>/dev/null || continue
+      [ "${seen:-0}" = 1 ] && s=seen || s=unseen
+      printf 'tab:       %-8s %-6s %s (pid %s)\n' "$st" "$s" "${tty#/dev/}" "${f##*/}"
+    done
+  fi
+}
+
+# --- install ----------------------------------------------------------------
+
+# The wiring itself is settings.json, which lives in the private overlays (it
+# is the file that names the plugin marketplace and the deny paths), so this
+# prints the block rather than editing anything.
+cmd_install() {
+  cat <<'JSON'
+Add to each profile's settings.json "hooks" (the overlays own these files):
+
+  "Notification": [
+    { "matcher": "permission_prompt|idle_prompt|elicitation_dialog",
+      "hooks": [{ "type": "command", "command": "~/bin/attend hook waiting" }] }
+  ],
+  "Stop": [
+    { "hooks": [{ "type": "command", "command": "~/bin/attend hook idle" }] }
+  ],
+  "UserPromptSubmit": [
+    { "hooks": [{ "type": "command", "command": "~/bin/attend hook busy" }] }
+  ],
+  "PostToolUse": [
+    { "hooks": [{ "type": "command", "command": "~/bin/attend hook busy" }] }
+  ],
+  "SessionEnd": [
+    { "hooks": [{ "type": "command", "command": "~/bin/attend hook end" }] }
+  ]
+
+The Notification matcher is not decoration. That event also fires for
+auth_success, which is not a session asking for anything, and painting a tab
+red for it would train you to ignore red. Matching in settings.json rather
+than reading the payload keeps the hook a single `ps` and a `printf`.
+
+PostToolUse is what stops red from lying. Approving a permission fires no
+event of its own — the tool just runs — so without it a tab stays red for
+the whole tool run that follows, which for a build or a test suite is
+minutes of the queue pointing at a session that is busy working.
+
+Then `attend sweep` once, to paint the sessions that were already running:
+they will not fire a transition until their next one.
+JSON
+}
+
+# --- dispatch ---------------------------------------------------------------
+
+cmd=${1:-list}
+[ $# -gt 0 ] && shift
+case $cmd in
+  list|ls)     cmd_list "$@" ;;
+  hook)        cmd_hook "$@" ;;
+  watch)       cmd_watch "$@" ;;
+  sweep)       cmd_sweep "$@" ;;
+  clear)       cmd_clear "$@" ;;
+  status)      cmd_status "$@" ;;
+  install)     cmd_install "$@" ;;
+  dir)         printf '%s\n' "$STATE" ;;
+  -h|--help|help) usage ;;
+  *)           die "unknown command '$cmd' (try: attend --help)" ;;
+esac

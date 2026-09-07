@@ -572,6 +572,36 @@ function worktabs-doctor() {
 	print -r -- "cwd:     $PWD";
 }
 
+# attend paints the iTerm2 tab bar from Claude Code hooks: red for a session
+# blocked on you, amber for one sitting on a finished turn, dimmed once you
+# have looked at the tab. Like worktabs it is a script rather than a shell
+# wrapper, so there is no routing to trace — what can silently be wrong is
+# the wiring (a profile whose settings.json never calls it), the name (a
+# generic word another package can take on PATH — this is exactly how the
+# old `workspace` collision hid for weeks), and the watcher, which is the
+# only part that is a process.
+function attend-doctor() {
+	emulate -L zsh;
+	local p unseen;
+	print -r -- "wrapper: <none — attend is a script, not a shell wrapper>";
+	print -r -- "defined: <none — this doctor calls no helpers>";
+	if (( $+commands[attend] )); then
+		print -r -- "script:  ${commands[attend]}";
+		# A different `attend` winning on PATH is the failure that reads as
+		# flaky rather than shadowed: the hooks call ~/bin/attend by absolute
+		# path and keep working while every command you type reaches someone
+		# else's binary.
+		if [[ ${commands[attend]} != "$HOME/bin/attend" ]]; then
+			print -r -- "         WARNING: that is not ~/bin/attend — another package owns the name on PATH";
+		fi;
+	else
+		print -r -- "script:  NOT FOUND — ~/bin/attend is not on PATH (chezmoi apply; macOS only)";
+		return 0;
+	fi;
+	command attend status 2>&1 | sed 's/^/  /';
+	print -r -- "cwd:     $PWD";
+}
+
 # The Hermes harness (NousResearch/hermes-agent) keeps per-agent state in
 # profiles (`hermes profile create <name>` — each its own HERMES_HOME with its
 # own config, approval rules, memory, and .env keys). A repo that must only
@@ -2474,7 +2504,7 @@ function doctor() {
 	local d;
 	print -r -- "shell:   $(shell_trace)";
 	print -r -- "";
-	for d in git gh claude wrangler hermes tailnet worktabs onepassword iterm2; do
+	for d in git gh claude wrangler hermes tailnet worktabs attend onepassword iterm2; do
 		print -r -- "== $d-doctor";
 		"$d-doctor";
 		print -r -- "";
