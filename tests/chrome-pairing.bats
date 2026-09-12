@@ -118,6 +118,22 @@ EOF
   [[ "$output" == *"neither an open-as alias"* ]]
 }
 
+@test "list: the pairing name lives under its own key, may sit in a newer file, and the extension's own JSON is not mistaken for it" {
+  EXT=fcoeoabgfenejglbffodgkkbkcdhcgfn
+  d="$CHROME_USER_DATA_DIR/Profile 2/Local Extension Settings/$EXT"
+  # Renamed later: the id stays in the old file, the new name lands in a
+  # newer log under the full key, after some of the extension's own state.
+  printf '{"currentModelName":"X","fallbackDisplayName":"Not A Pairing"}\001bridgeDisplayName\001"Work Chrome Renamed"\002' > "$d/000020.log"
+  touch -t 203001010000 "$d/000020.log"
+  run chrome-pairing list
+  [ "${lines[1]}" = "$(printf 'Work Profile\tProfile 2\t22222222-2222-4222-8222-222222222222\tWork Chrome Renamed')" ]
+  # A profile whose only "DisplayName" is the extension's JSON has no name.
+  d3="$CHROME_USER_DATA_DIR/Profile 3/Local Extension Settings/$EXT"
+  printf 'bridgeDeviceId\001\t\000\005@\330"33333333-3333-4333-8333-333333333333"\002{"fallbackDisplayName":"Haiku"}' > "$d3/000010.ldb"
+  run chrome-pairing list
+  [ "${lines[2]}" = "$(printf 'Side Project Profile\tProfile 3\t33333333-3333-4333-8333-333333333333\t')" ]
+}
+
 @test "for: the newest file holding the key wins, and its last occurrence" {
   # An older compacted file with a stale id, a newer log with the current one.
   EXT=fcoeoabgfenejglbffodgkkbkcdhcgfn
