@@ -569,10 +569,34 @@ browser_setup() {
   repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
   claude_in "$repo"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"claude: claude.~/.claude-personal.browser='personal chrome' is not a valid open-as alias"* ]]
+  [[ "$output" == *"claude: the browser pin for this session ('personal chrome') is not a valid open-as alias"* ]]
   [[ "$output" == *"CLAUDE_CONFIG_DIR=$HOME/.claude-personal BROWSER=UNSET OPEN_AS_ALIAS=UNSET" ]]
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
-  [[ "$output" == *"browser: INVALID pin claude.~/.claude-personal.browser"* ]]
+  [[ "$output" == *"browser: INVALID pin (claude.octo-personal/some-repo.browser or claude.~/.claude-personal.browser"* ]]
+}
+
+@test "browser: a per-repo pin outranks the profile's, and its siblings are untouched" {
+  browser_setup
+  git config --file "$GIT_CONFIG_GLOBAL" 'claude.octo-personal/side-project.browser' side
+  git config --file "$GIT_CONFIG_GLOBAL" browser.tag.side sd83hnq2x
+  repo=$(make_repo 'git@github.com:octo-personal/Side-Project.git')
+  claude_in "$repo"
+  [ "$output" = "CLAUDE_CONFIG_DIR=$HOME/.claude-personal BROWSER=$BATS_TEST_TMPDIR/bin/open-as OPEN_AS_ALIAS=side" ]
+  # The same owner's other repos keep the profile's browser.
+  repo=$(make_repo 'git@github.com:octo-personal/other.git')
+  claude_in "$repo"
+  [[ "$output" == *"OPEN_AS_ALIAS=personal" ]]
+  # It holds even when CLAUDE_PROFILE picks a different login: the window
+  # is the project's, whoever is at the keyboard.
+  repo=$(make_repo 'git@github.com:octo-personal/side-project.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; CLAUDE_PROFILE=work-account claude"
+  [ "$output" = "CLAUDE_CONFIG_DIR=UNSET BROWSER=$BATS_TEST_TMPDIR/bin/open-as OPEN_AS_ALIAS=side" ]
+  # And a repo whose profile has no browser pin at all can still have one.
+  git config --file "$GIT_CONFIG_GLOBAL" --unset 'claude.~/.claude-personal.browser'
+  claude_in "$repo"
+  [[ "$output" == *"OPEN_AS_ALIAS=side" ]]
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"browser: side (BROWSER=$BATS_TEST_TMPDIR/bin/open-as, tagged browser.tag.side for the link router) — per-repo pin claude.octo-personal/side-project.browser, outranking the profile's"* ]]
 }
 
 @test "browser: a nested launch of another profile re-derives the pair" {

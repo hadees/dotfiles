@@ -67,7 +67,12 @@ employer-specific — profile-specific memory belongs in that profile's own
   browsers (that profile's Chrome window is not open — say so, since
   opening it is the fix). `chrome-pairing list` shows every profile with its
   device id and pairing name if you need to explain a mismatch.
-- I still want a different profile sometimes: if I name one, `chrome-pairing
+- When the task concerns a specific site or account that has its own Chrome
+  profile — a repo that serves several sites is the usual case — the right
+  browser is the one that site's tabs open in, not the session default:
+  `chrome-pairing for https://<site>/` asks Finicky where that site goes and
+  prints that profile's id. Pick by the site the task is about, and say
+  which profile you picked. If I name a profile outright, `chrome-pairing
   for <profile name>` gives its id; use that instead.
 
 ## Web fetching
