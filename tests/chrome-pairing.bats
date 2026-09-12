@@ -104,6 +104,23 @@ EOF
   [ "$status" -eq 1 ]
 }
 
+@test "route/for: a URL or bare host asks Finicky where that SITE opens — host rules, then the default" {
+  run chrome-pairing route https://work.example/some/page
+  [ "$status" -eq 0 ]
+  [ "$output" = "Work Profile" ]
+  run chrome-pairing route app.work.example
+  [ "$output" = "Work Profile" ]
+  # A site no rule claims opens in the default browser/profile — which is
+  # an answer for a site, unlike for an alias.
+  run chrome-pairing route https://nothing.example/
+  [ "$output" = "Personal Profile" ]
+  run chrome-pairing for https://work.example/
+  [ "$output" = "22222222-2222-4222-8222-222222222222" ]
+  # Never confused with a profile name or an alias: no dot, no scheme.
+  run chrome-pairing for "Work Profile"
+  [ "$output" = "22222222-2222-4222-8222-222222222222" ]
+}
+
 @test "for: alias -> Finicky -> profile -> device id; a profile name works directly" {
   run chrome-pairing for personal
   [ "$status" -eq 0 ]

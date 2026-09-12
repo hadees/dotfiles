@@ -210,6 +210,13 @@ owners go in the personal overlay, work orgs in the work overlay.
 # above. Unpinned, Claude Code opens links in the system default browser.
 [claude "~/.claude-<name>"]
 	browser = <alias>
+
+# Optional, per repo: a project whose own logins live in a Chrome profile of
+# their own, whichever Claude profile runs it. Outranks the profile's pin.
+# (A repo serving several sites gets none — its sessions pick per task with
+# `chrome-pairing for https://<site>/`.)
+[claude "<owner>/<repo>"]
+	browser = <alias>
 ```
 
 ### Workspace: terminal tabs to reopen (macOS)
@@ -472,7 +479,8 @@ npx", not "pin <side-company> to its profile").
    `claude.profile.<account>` (plus a `claude.<owner>/<repo>.profile` pin for
    any single repo that should run under a different login than its owner's,
    and a `claude.<dir>.browser` alias so that profile's login page opens in
-   the browser profile signed into that account);
+   the browser profile signed into that account; `claude.<owner>/<repo>.browser`
+   for a repo whose pages live in a Chrome profile of their own);
    `wrangler.profile.<account>` (or a `wrangler.<owner>/<repo>.profile` pin
    for a one-off repo); `tailnet.profile.<account>` if that account has a
    tailnet; `tailnet-mount.<name>.*` if that tailnet serves a directory

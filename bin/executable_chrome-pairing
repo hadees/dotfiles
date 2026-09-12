@@ -5,14 +5,21 @@
 #   chrome-pairing list                 every Chrome profile: name, directory,
 #                                       the Claude extension's device id and
 #                                       the pairing's display name (TSV)
-#   chrome-pairing route <alias>        the Chrome profile Finicky sends an
-#                                       `open-as <alias>` link to
-#   chrome-pairing for <alias|profile>  that profile's device id
+#   chrome-pairing route <alias|url>    the Chrome profile Finicky sends an
+#                                       `open-as <alias>` link to — or, given
+#                                       a URL, that page (its host rules)
+#   chrome-pairing for <alias|url|profile>
+#                                       that profile's device id
 #   chrome-pairing session              `for $OPEN_AS_ALIAS` — the alias the
 #                                       claude() wrapper exported for this
 #                                       session, so the answer is the browser
 #                                       whose window this session's links
 #                                       already open in
+#
+# A URL answers "which profile is this SITE's": a repo that serves several
+# sites, each with its own logins in its own Chrome profile, picks per task —
+# `chrome-pairing for https://<site>/` — and gets whatever profile Finicky
+# would open that site in, so the extension lands where the tabs do.
 #
 # Why: the Claude in Chrome extension pairs once per Chrome profile, and a
 # Claude Code session that wants the browser sees only a list of connected
@@ -43,7 +50,7 @@
 set -u
 
 usage() {
-  printf 'usage: chrome-pairing list | route <alias> | for <alias|profile> | session\n' >&2
+  printf 'usage: chrome-pairing list | route <alias|url> | for <alias|url|profile> | session\n' >&2
   exit 2
 }
 
@@ -124,18 +131,29 @@ function pairing(dir) {
   return deviceId ? { deviceId, displayName } : null;
 }
 
-// What Finicky does with a link tagged for <alias>: the Chrome profile name,
-// or null when the alias has no token or no rule claims it (the router's
-// default would apply, which is not "that alias's profile").
-async function route(alias) {
-  let token = "";
-  try { token = execFileSync("git", ["config", "--get", `browser.tag.${alias}`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); }
-  catch { return null; }
-  if (!token) return null;
+// A URL (or bare hostname): the thing to route is the page itself.
+const isUrlish = (x) => /^[a-z][a-z0-9+.-]*:\/\//i.test(x) || /^[a-z0-9-]+(\.[a-z0-9-]+)+(\/|$)/i.test(x);
+const asUrl = (x) => new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(x) ? x : `https://${x}`);
+
+// What Finicky does with a link tagged for <alias>, or with <url>: the
+// Chrome profile name, or null when the alias has no token or no handler
+// claims the link (the router's default would apply, which is not "that
+// alias's profile"; for a URL the default IS an answer, since it is where
+// the site's tabs open).
+async function route(target) {
+  let url;
+  if (isUrlish(target)) {
+    url = asUrl(target);
+  } else {
+    let token = "";
+    try { token = execFileSync("git", ["config", "--get", `browser.tag.${target}`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); }
+    catch { return null; }
+    if (!token) return null;
+    url = new URL(`https://tag.invalid/#${token}`);
+  }
   const cfgPath = path.join(home, ".finicky.ts");
   if (!fs.existsSync(cfgPath)) fail(`no ${cfgPath} — Finicky is not configured here`);
   const config = (await import(pathToFileURL(cfgPath).href)).default;
-  const url = new URL(`https://tag.invalid/#${token}`);
   const opts = { opener: null };
   const isMatch = (m) =>
     Array.isArray(m) ? m.some(isMatch)
@@ -143,9 +161,8 @@ async function route(alias) {
     : m instanceof RegExp ? m.test(url.href)
     : m === url.href;
   const hit = (config.handlers ?? []).find((h) => isMatch(h.match));
-  if (!hit) return null;
-  const b = hit.browser;
-  return typeof b === "string" ? null : (b?.profile ?? null);
+  const b = hit ? hit.browser : (isUrlish(target) ? config.defaultBrowser : null);
+  return typeof b === "string" || !b ? null : (b.profile ?? null);
 }
 
 (async () => {
@@ -158,7 +175,9 @@ async function route(alias) {
   }
   if (cmd === "route") {
     const name = await route(arg);
-    if (!name) fail(`no Finicky rule routes open-as alias '${arg}' to a Chrome profile (browser.tag.${arg} pin + a tagged() rule in a fragment)`);
+    if (!name) fail(isUrlish(arg)
+      ? `Finicky sends ${arg} to a browser without a Chrome profile`
+      : `no Finicky rule routes open-as alias '${arg}' to a Chrome profile (browser.tag.${arg} pin + a tagged() rule in a fragment)`);
     process.stdout.write(name + "\n");
     return;
   }
@@ -168,7 +187,7 @@ async function route(alias) {
   const all = profiles();
   let name = await route(arg);
   if (!name) {
-    if (!all.some((p) => p.name === arg)) fail(`'${arg}' is neither an open-as alias Finicky routes nor a Chrome profile name`);
+    if (!all.some((p) => p.name === arg)) fail(`'${arg}' is neither an open-as alias or URL Finicky routes to a Chrome profile nor a Chrome profile name`);
     name = arg;
   }
   const p = all.find((x) => x.name === name);

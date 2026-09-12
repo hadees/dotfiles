@@ -484,7 +484,16 @@ so the answer is the pairing whose window this session's links open in.
 `list` is the whole table. A session then calls `select_browser` with that
 id — which does not broadcast a Connect prompt — instead of asking; the
 standing instruction for that lives in the shared Claude memory
-(`dot_claude-shared/CLAUDE.md`). Tests: `tests/chrome-pairing.bats` (fixture
+(`dot_claude-shared/CLAUDE.md`). Two refinements sit on top. A **per-repo
+pin**, `claude.<owner>/<repo>.browser`, outranks the profile's — a project
+whose own logins live in a Chrome profile of their own, whichever Claude
+profile runs it, and it holds even under `CLAUDE_PROFILE`: which login is at
+the keyboard changes, which window the project's pages live in does not.
+And `route`/`for` accept a **URL or bare host**, answering where Finicky
+would open that *site* (its host rules, then the default) — for a repo that
+serves several sites, each with its own logins in its own Chrome profile,
+the session picks per task (`chrome-pairing for https://<site>/`) and the
+extension lands where the tabs do. No pin fits such a repo, so it has none. Tests: `tests/chrome-pairing.bats` (fixture
 Local State, fixture LevelDB bytes, fixture Finicky fragments; no real
 Chrome touched).
 
