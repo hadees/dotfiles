@@ -203,6 +203,13 @@ owners go in the personal overlay, work orgs in the work overlay.
 	<account> = ~/.claude-<name>     # or ~/.claude for the default dir
 	<alias>   = ~/.claude-<name>     # friendly name for claude-as / CLAUDE_PROFILE
 	default   = ~/.claude-<name>     # optional: used when no pin matches the cwd
+
+# Which browser profile that login's links (the OAuth login page, session and
+# artifact links) open in: an open-as alias, i.e. a `browser.tag.<alias>` pin
+# the Finicky fragment decodes. Keyed by the config directory, spelled as
+# above. Unpinned, Claude Code opens links in the system default browser.
+[claude "~/.claude-<name>"]
+	browser = <alias>
 ```
 
 ### Workspace: terminal tabs to reopen (macOS)
@@ -463,7 +470,9 @@ npx", not "pin <side-company> to its profile").
 2. Overlay gitconfig: `credential.https://github.com/<owner>.username` pin;
    `identity.<account>.email` and `identity.<account>.sshkey`;
    `claude.profile.<account>` (plus a `claude.<owner>/<repo>.profile` pin for
-   any single repo that should run under a different login than its owner's);
+   any single repo that should run under a different login than its owner's,
+   and a `claude.<dir>.browser` alias so that profile's login page opens in
+   the browser profile signed into that account);
    `wrangler.profile.<account>` (or a `wrangler.<owner>/<repo>.profile` pin
    for a one-off repo); `tailnet.profile.<account>` if that account has a
    tailnet; `tailnet-mount.<name>.*` if that tailnet serves a directory

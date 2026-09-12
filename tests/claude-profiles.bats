@@ -18,7 +18,10 @@ setup() {
   export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig"
   export GIT_CONFIG_SYSTEM=/dev/null
   export GIT_CONFIG_NOSYSTEM=1
-  unset CLAUDE_PROFILE CLAUDE_CONFIG_DIR
+  # BROWSER/OPEN_AS_ALIAS: a pinned Claude session (where these tests are
+  # usually run from) exports both, and the wrapper's inherit/clear rules
+  # are exactly what is under test. SSH_CONNECTION gates the pair too.
+  unset CLAUDE_PROFILE CLAUDE_CONFIG_DIR BROWSER OPEN_AS_ALIAS SSH_CONNECTION
 
   # Fixture pins: one "work" org and one "personal" owner, mapped to two
   # accounts; work maps to the default dir, personal to a separate profile.
@@ -139,7 +142,7 @@ claude_in() {
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: claude: function"* ]]
-  [[ "$output" == *"defined: ok (4 helpers)"* ]]
+  [[ "$output" == *"defined: ok (6 helpers)"* ]]
   [[ "$output" == *"binary:  $BATS_TEST_TMPDIR/bin/claude"* ]]
   [[ "$output" == *"account: personal-account"* ]]
   [[ "$output" == *"launch:  $HOME/.claude-personal"* ]]
@@ -479,4 +482,149 @@ make_overlay_cfg() {
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
   [ "$status" -eq 0 ]
   [[ "$output" == *"pin:     <none — the owner's account decides>"* ]]
+}
+
+# --- browser: which profile's window a session's links open in ---------------
+# Claude Code runs `$BROWSER <url>` for every link it opens (the OAuth login,
+# session and artifact links) and `open` otherwise. The login URL is the same
+# for every account, so the wrapper sets BROWSER to open-as with the alias
+# pinned for the profile in `claude.<dir>.browser`; open-as tags the URL for
+# the link router. The stub claude reports what it inherited.
+
+browser_setup() {
+  printf '#!/bin/sh\necho "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR-UNSET} BROWSER=${BROWSER-UNSET} OPEN_AS_ALIAS=${OPEN_AS_ALIAS-UNSET}"\n' \
+    > "$BATS_TEST_TMPDIR/bin/claude"
+  cp "$BATS_TEST_DIRNAME/../bin/executable_open-as" "$BATS_TEST_TMPDIR/bin/open-as"
+  chmod +x "$BATS_TEST_TMPDIR/bin/open-as"
+  git config --file "$GIT_CONFIG_GLOBAL" 'claude.~/.claude-personal.browser' personal
+  git config --file "$GIT_CONFIG_GLOBAL" browser.tag.personal k3v9qwq2x
+  # Off-mac the pair is only set with a display and xdg-open; give CI both
+  # so the routing tests mean the same thing on every runner.
+  export DISPLAY=:0
+  printf '#!/bin/sh\nexit 0\n' > "$BATS_TEST_TMPDIR/bin/xdg-open"
+  chmod +x "$BATS_TEST_TMPDIR/bin/xdg-open"
+}
+
+@test "browser: a pinned profile launches with BROWSER=open-as and its alias" {
+  browser_setup
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  claude_in "$repo"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=$HOME/.claude-personal BROWSER=$BATS_TEST_TMPDIR/bin/open-as OPEN_AS_ALIAS=personal" ]
+}
+
+@test "browser: the pin may also be keyed by the expanded directory" {
+  browser_setup
+  git config --file "$GIT_CONFIG_GLOBAL" --unset 'claude.~/.claude-personal.browser'
+  git config --file "$GIT_CONFIG_GLOBAL" "claude.$HOME/.claude-personal.browser" personal
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  claude_in "$repo"
+  [[ "$output" == *"OPEN_AS_ALIAS=personal" ]]
+}
+
+@test "browser: an unpinned profile leaves BROWSER alone — unless it inherited open-as" {
+  browser_setup
+  repo=$(make_repo 'git@github.com:octo-work-org/some-repo.git')
+  claude_in "$repo"
+  [ "$output" = "CLAUDE_CONFIG_DIR=UNSET BROWSER=UNSET OPEN_AS_ALIAS=UNSET" ]
+  # Somebody's own BROWSER choice is not ours to override.
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; BROWSER=firefox claude"
+  [ "$output" = "CLAUDE_CONFIG_DIR=UNSET BROWSER=firefox OPEN_AS_ALIAS=UNSET" ]
+  # But a parent session's open-as tag must not leak into a profile with no
+  # pin of its own — it would route this profile's login to the parent's window.
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; BROWSER=/elsewhere/open-as OPEN_AS_ALIAS=personal claude"
+  [ "$output" = "CLAUDE_CONFIG_DIR=UNSET BROWSER=UNSET OPEN_AS_ALIAS=UNSET" ]
+  # The alias is ours even when the browser is not: a foreign BROWSER stays,
+  # the stray alias goes (open-as's one-argument form would read it).
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; BROWSER=firefox OPEN_AS_ALIAS=personal claude"
+  [ "$output" = "CLAUDE_CONFIG_DIR=UNSET BROWSER=firefox OPEN_AS_ALIAS=UNSET" ]
+}
+
+@test "browser: the bare-claude path clears an inherited pair and touches nothing else" {
+  browser_setup
+  repo=$(make_repo 'git@github.com:octo-unknown/some-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; CLAUDE_CONFIG_DIR=/kept BROWSER=$BATS_TEST_TMPDIR/bin/open-as OPEN_AS_ALIAS=personal claude"
+  [ "$output" = "CLAUDE_CONFIG_DIR=/kept BROWSER=UNSET OPEN_AS_ALIAS=UNSET" ]
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"browser: <bare claude — no profile resolved, so no pin is consulted; links open in the system default browser>"* ]]
+}
+
+@test "browser: over ssh, or with no display off-mac, the pair is not set — Claude Code prints its URLs" {
+  browser_setup
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; SSH_CONNECTION='1.2.3.4 1 5.6.7.8 22' claude"
+  [ "$output" = "CLAUDE_CONFIG_DIR=$HOME/.claude-personal BROWSER=UNSET OPEN_AS_ALIAS=UNSET" ]
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; SSH_CONNECTION='1.2.3.4 1 5.6.7.8 22' claude-doctor"
+  [[ "$output" == *"browser: personal — pinned, but no window can appear here (ssh or no display); Claude Code prints its URLs instead"* ]]
+  # Off-mac only: no display means no window. (On a mac `open` always has one.)
+  if [[ "$(uname -s)" != Darwin ]]; then
+    run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; unset DISPLAY WAYLAND_DISPLAY; claude"
+    [ "$output" = "CLAUDE_CONFIG_DIR=$HOME/.claude-personal BROWSER=UNSET OPEN_AS_ALIAS=UNSET" ]
+  fi
+}
+
+@test "browser: an alias open-as would reject is refused out loud, never exported" {
+  browser_setup
+  git config --file "$GIT_CONFIG_GLOBAL" 'claude.~/.claude-personal.browser' 'personal chrome'
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  claude_in "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"claude: claude.~/.claude-personal.browser='personal chrome' is not a valid open-as alias"* ]]
+  [[ "$output" == *"CLAUDE_CONFIG_DIR=$HOME/.claude-personal BROWSER=UNSET OPEN_AS_ALIAS=UNSET" ]]
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"browser: INVALID pin claude.~/.claude-personal.browser"* ]]
+}
+
+@test "browser: a nested launch of another profile re-derives the pair" {
+  browser_setup
+  git config --file "$GIT_CONFIG_GLOBAL" 'claude.~/.claude.browser' work
+  repo=$(make_repo 'git@github.com:octo-work-org/some-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; CLAUDE_CONFIG_DIR=$HOME/.claude-personal BROWSER=$BATS_TEST_TMPDIR/bin/open-as OPEN_AS_ALIAS=personal claude"
+  [ "$output" = "CLAUDE_CONFIG_DIR=UNSET BROWSER=$BATS_TEST_TMPDIR/bin/open-as OPEN_AS_ALIAS=work" ]
+}
+
+# A PATH with no open-as anywhere — the developer's real ~/bin is on the
+# outer PATH, so removing the stub alone proves nothing.
+NO_OPENAS_PATH="$BATS_TEST_TMPDIR/bin:/usr/bin:/bin"
+
+@test "browser: a pin with open-as missing from PATH launches untagged" {
+  browser_setup
+  rm "$BATS_TEST_TMPDIR/bin/open-as"
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  run zsh -c "PATH='$NO_OPENAS_PATH'; source '$DOTFUNCTIONS'; cd '$repo'; claude"
+  [ "$output" = "CLAUDE_CONFIG_DIR=$HOME/.claude-personal BROWSER=UNSET OPEN_AS_ALIAS=UNSET" ]
+}
+
+@test "browser: claude's exit status passes through the launch subshell" {
+  browser_setup
+  printf '#!/bin/sh\nexit 7\n' > "$BATS_TEST_TMPDIR/bin/claude"
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  claude_in "$repo"
+  [ "$status" -eq 7 ]
+}
+
+@test "claude-doctor: browser line names the alias, the opener and the router tag" {
+  browser_setup
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"defined: ok"* ]]
+  [[ "$output" == *"browser: personal (BROWSER=$BATS_TEST_TMPDIR/bin/open-as, tagged browser.tag.personal for the link router)"* ]]
+  # Pinned, but the router has no token for that alias.
+  git config --file "$GIT_CONFIG_GLOBAL" --unset browser.tag.personal
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"browser: personal — pinned, but no browser.tag.personal token"* ]]
+  # Pinned, but open-as is not deployed.
+  rm "$BATS_TEST_TMPDIR/bin/open-as"
+  run zsh -c "PATH='$NO_OPENAS_PATH'; source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"browser: personal — but open-as is NOT on PATH"* ]]
+}
+
+@test "claude-doctor: browser line says when no pin exists for the profile, and what BROWSER already says" {
+  browser_setup
+  repo=$(make_repo 'git@github.com:octo-work-org/some-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"env:     CLAUDE_PROFILE=<unset> CLAUDE_CONFIG_DIR=<unset> BROWSER=<unset> OPEN_AS_ALIAS=<unset>"* ]]
+  [[ "$output" == *"browser: <no claude.~/.claude.browser pin — links open in the system default browser>"* ]]
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; BROWSER=firefox claude-doctor"
+  [[ "$output" == *"browser: <no claude.~/.claude.browser pin — links open in BROWSER=firefox>"* ]]
 }

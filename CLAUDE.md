@@ -436,6 +436,37 @@ a repo resolving somewhere its origin does not explain should say why — and
 live in the macOS Keychain and cannot be copied between profiles — verified,
 copying `.claude.json` does not carry a session.
 
+**Which browser window a session's links open in** is the profile's business
+too. Claude Code runs `$BROWSER <url>` for every link it opens — the OAuth
+login, a session or artifact link — and `open` otherwise (read off the
+binary: the opener is `spawn(BROWSER ?? "open", [url])`, and a set `BROWSER`
+also stops it from merely printing the URL). The login URL is identical for
+every account, so no Finicky rule can route it; but the wrapper knows which
+profile it is launching, and the profile is the login. So `claude()` sets
+`BROWSER=~/bin/open-as OPEN_AS_ALIAS=<alias>` for the session when
+`claude.<dir>.browser` (machine-local, overlay-supplied — `[claude
+"~/.claude-<name>"] browser = <open-as alias>`) pins one, and `open-as` tags
+every URL with that alias's `browser.tag.*` token for the router — the same
+mechanism the tailnet tooling uses, with the alias carried in the environment
+because the `BROWSER` convention leaves no room for a second argument. Keyed
+by directory, not account name, because several names map to one directory
+and the login lives in the directory. The pair is **set or cleared per
+invocation, never inherited**: a nested launch of a profile with no pin would
+otherwise carry its parent's tag and route its login to the parent's window.
+`OPEN_AS_ALIAS` is ours outright and always cleared; `BROWSER` is cleared
+only when it is open-as, so somebody's own browser choice survives an
+unpinned launch (a pin outranks it — the profile is the more specific
+statement). Subprocesses of the session inherit the pair, so `gh auth login`
+from inside it routes the same way — intended; a URL that already carries a
+`#fragment` (`gh browse file:10`) keeps its anchor and goes untagged, since a
+second `#` would break both the anchor and the router's exact match. The
+pair is only set where a window can appear (`claude_browser_can_open`: not
+over ssh; off-mac only with a display and xdg-open), because a set `BROWSER`
+also suppresses Claude Code's printed-URL fallback — on a headless box that
+would make the login link appear nowhere. `claude-doctor`'s `browser:` line
+traces pin, token, opener and that gate, and its `env:` line shows the
+inherited pair.
+
 ### Worktabs launcher (iTerm2 tabs, on demand)
 
 `bin/worktabs` puts a set of terminal tabs back on screen: **one iTerm2 window
