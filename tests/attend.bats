@@ -557,7 +557,9 @@ esc() { printf '\033'; }
   at list
   [[ "${lines[0]}" == *"2h"*old-one* ]]
   [[ "${lines[1]}" == *"5m"*mid-one* ]]
-  [[ "${lines[2]}" == *"5s"*new-one* ]]
+  # Seconds keep counting between the stamp above and the listing, so a
+  # slow runner prints 6s or 12s here — assert the unit, not the number.
+  [[ "${lines[2]}" == *[0-9]"s "*new-one* ]]
 }
 
 @test "list: the mark says painted-and-unread, painted-and-seen, or unpainted" {
