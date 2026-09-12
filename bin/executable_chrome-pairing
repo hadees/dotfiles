@@ -105,17 +105,23 @@ function pairing(dir) {
     .map((f) => path.join(store, f))
     .filter((f) => { try { return fs.statSync(f).isFile(); } catch { return false; } })
     .sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs); // oldest first
-  // LevelDB prefix-compresses consecutive keys, so the adjacent displayName
-  // key can arrive with its leading byte shared away ("isplayName") — match
-  // both. When something else follows the id the name is simply blank.
-  const re = /bridgeDeviceId[\s\S]{0,16}?"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"(?:[\s\S]{0,24}?d?isplayName[\s\S]{0,16}?"([^"\x00-\x1f]{0,80})")?/g;
-  let found = null;
+  // Two independent keys: bridgeDeviceId (the pairing) and bridgeDisplayName
+  // (the name typed at Connect; written whenever it changes, so it may sit
+  // in a newer file than the id). LevelDB prefix-compresses consecutive
+  // keys, and when the two are adjacent the name's key arrives as bare
+  // "isplayName" (shared "bridgeD" dropped) — so accept that spelling too,
+  // but only when no letter precedes it, which keeps the extension's own
+  // JSON ("fallbackDisplayName": …) out. Newest file wins per key, last
+  // occurrence within it; a later file without a key does not unset it.
+  const idRe = /bridgeDeviceId[\s\S]{0,16}?"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"/g;
+  const nameRe = /(?:bridgeDisplayName|(?<![A-Za-z])isplayName)[\s\S]{0,16}?"([^"\x00-\x1f]{0,80})"/g;
+  let deviceId = null, displayName = "";
   for (const f of candidates) {
     const bytes = fs.readFileSync(f).toString("latin1");
-    for (const m of bytes.matchAll(re)) found = { deviceId: m[1], displayName: m[2] ?? "" };
-    // newest file with the key wins; later files without it do not unset it
+    for (const m of bytes.matchAll(idRe)) deviceId = m[1];
+    for (const m of bytes.matchAll(nameRe)) displayName = m[1];
   }
-  return found;
+  return deviceId ? { deviceId, displayName } : null;
 }
 
 // What Finicky does with a link tagged for <alias>: the Chrome profile name,
