@@ -467,6 +467,27 @@ would make the login link appear nowhere. `claude-doctor`'s `browser:` line
 traces pin, token, opener and that gate, and its `env:` line shows the
 inherited pair.
 
+**The same pin picks the browser a session automates.** The Claude in Chrome
+extension pairs once per Chrome profile, and a session that wants the
+browser sees only the connected pairings — device ids plus whatever name was
+typed at Connect. With several profiles deliberately paired to one account,
+the session would have to ask which one, every time. `bin/chrome-pairing`
+answers from disk: `route <alias>` evaluates Finicky's own config under Node
+(the way `tests/finicky.bats` does) against a link tagged with the alias's
+`browser.tag` token, so it reports what the router would actually do rather
+than a copy of its table; `for <alias|profile>` joins that with Chrome's
+`Local State` (name → directory) and the extension's LevelDB storage in
+that directory (`bridgeDeviceId`, plus the pairing's `displayName` —
+observed layout, not an interface: the newest file holding the key wins);
+`session` does it for `$OPEN_AS_ALIAS`, which the wrapper already exported,
+so the answer is the pairing whose window this session's links open in.
+`list` is the whole table. A session then calls `select_browser` with that
+id — which does not broadcast a Connect prompt — instead of asking; the
+standing instruction for that lives in the shared Claude memory
+(`dot_claude-shared/CLAUDE.md`). Tests: `tests/chrome-pairing.bats` (fixture
+Local State, fixture LevelDB bytes, fixture Finicky fragments; no real
+Chrome touched).
+
 ### Worktabs launcher (iTerm2 tabs, on demand)
 
 `bin/worktabs` puts a set of terminal tabs back on screen: **one iTerm2 window

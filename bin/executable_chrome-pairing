@@ -1,0 +1,174 @@
+#!/bin/sh
+# chrome-pairing — which Claude-in-Chrome pairing belongs to a browser
+# profile, answered from disk so a session can pick its browser itself.
+#
+#   chrome-pairing list                 every Chrome profile: name, directory,
+#                                       the Claude extension's device id and
+#                                       the pairing's display name (TSV)
+#   chrome-pairing route <alias>        the Chrome profile Finicky sends an
+#                                       `open-as <alias>` link to
+#   chrome-pairing for <alias|profile>  that profile's device id
+#   chrome-pairing session              `for $OPEN_AS_ALIAS` — the alias the
+#                                       claude() wrapper exported for this
+#                                       session, so the answer is the browser
+#                                       whose window this session's links
+#                                       already open in
+#
+# Why: the Claude in Chrome extension pairs once per Chrome profile, and a
+# Claude Code session that wants the browser sees only a list of connected
+# pairings — device ids, and whatever name was typed when each one connected.
+# With several profiles paired to one account (deliberate here) the session
+# has to ask which one, every time. But the answer is already decided: the
+# session's links go to one Chrome profile (claude.<dir>.browser → open-as
+# alias → Finicky), and the extension in that profile stores its pairing on
+# disk. Joining the two lets the session call select_browser with the id
+# outright — no Connect broadcast, no question.
+#
+# Sources, all read-only and local:
+#   - Finicky's own config (~/.finicky.ts + the overlay fragments), evaluated
+#     under Node exactly the way tests/finicky.bats does, against a URL
+#     tagged with the alias's browser.tag token — so `route` answers what the
+#     router would actually do, not a copy of its table;
+#   - Chrome's `Local State` for profile display name → directory;
+#   - the extension's storage in that directory (Local Extension Settings/
+#     <extension id>, LevelDB) for `bridgeDeviceId` and the pairing's
+#     `displayName`. Observed layout, not a documented interface: the value
+#     sits a few bytes after its key; the newest file holding the key wins,
+#     and the last occurrence in it.
+#
+# Environment: CHROME_USER_DATA_DIR overrides the Chrome directory (tests;
+# a non-default Chrome), CLAUDE_CHROME_EXTENSION_ID the extension id.
+# Prints nothing and exits 1 when the answer is not on disk (no such
+# profile, extension not installed or never paired); exits 2 on usage.
+set -u
+
+usage() {
+  printf 'usage: chrome-pairing list | route <alias> | for <alias|profile> | session\n' >&2
+  exit 2
+}
+
+[ $# -ge 1 ] || usage
+cmd=$1; shift
+case $cmd in
+  list) [ $# -eq 0 ] || usage;;
+  route|for) [ $# -eq 1 ] || usage;;
+  session)
+    [ $# -eq 0 ] || usage
+    [ -n "${OPEN_AS_ALIAS-}" ] || {
+      printf 'chrome-pairing: OPEN_AS_ALIAS is not set — not a session the claude() wrapper pinned to a browser profile\n' >&2
+      exit 1
+    }
+    cmd=for; set -- "$OPEN_AS_ALIAS";;
+  *) usage;;
+esac
+
+command -v node >/dev/null 2>&1 || {
+  printf 'chrome-pairing: node is required (it evaluates the Finicky config and reads Local State)\n' >&2
+  exit 1
+}
+
+CHROME_PAIRING_CMD=$cmd CHROME_PAIRING_ARG=${1-} exec node --experimental-strip-types --no-warnings - <<'JS'
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { execFileSync } = require("node:child_process");
+const { pathToFileURL } = require("node:url");
+
+const home = os.homedir();
+const cmd = process.env.CHROME_PAIRING_CMD;
+const arg = process.env.CHROME_PAIRING_ARG;
+const extId = process.env.CLAUDE_CHROME_EXTENSION_ID || "fcoeoabgfenejglbffodgkkbkcdhcgfn";
+const userData =
+  process.env.CHROME_USER_DATA_DIR ||
+  (process.platform === "darwin"
+    ? path.join(home, "Library/Application Support/Google/Chrome")
+    : path.join(process.env.XDG_CONFIG_HOME || path.join(home, ".config"), "google-chrome"));
+
+const fail = (msg) => { process.stderr.write(`chrome-pairing: ${msg}\n`); process.exit(1); };
+
+// Chrome profile display name -> directory, from Local State.
+function profiles() {
+  let ls;
+  try { ls = JSON.parse(fs.readFileSync(path.join(userData, "Local State"), "utf8")); }
+  catch { fail(`no readable Chrome Local State under ${userData}`); }
+  const cache = ls?.profile?.info_cache ?? {};
+  return Object.entries(cache).map(([dir, info]) => ({ dir, name: String(info?.name ?? dir) }));
+}
+
+// The extension's pairing in one profile directory: { deviceId, displayName },
+// or null when the extension is not installed there or never paired.
+function pairing(dir) {
+  const store = path.join(userData, dir, "Local Extension Settings", extId);
+  let files;
+  try { files = fs.readdirSync(store); } catch { return null; }
+  const candidates = files
+    .map((f) => path.join(store, f))
+    .filter((f) => { try { return fs.statSync(f).isFile(); } catch { return false; } })
+    .sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs); // oldest first
+  // LevelDB prefix-compresses consecutive keys, so the adjacent displayName
+  // key can arrive with its leading byte shared away ("isplayName") — match
+  // both. When something else follows the id the name is simply blank.
+  const re = /bridgeDeviceId[\s\S]{0,16}?"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"(?:[\s\S]{0,24}?d?isplayName[\s\S]{0,16}?"([^"\x00-\x1f]{0,80})")?/g;
+  let found = null;
+  for (const f of candidates) {
+    const bytes = fs.readFileSync(f).toString("latin1");
+    for (const m of bytes.matchAll(re)) found = { deviceId: m[1], displayName: m[2] ?? "" };
+    // newest file with the key wins; later files without it do not unset it
+  }
+  return found;
+}
+
+// What Finicky does with a link tagged for <alias>: the Chrome profile name,
+// or null when the alias has no token or no rule claims it (the router's
+// default would apply, which is not "that alias's profile").
+async function route(alias) {
+  let token = "";
+  try { token = execFileSync("git", ["config", "--get", `browser.tag.${alias}`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); }
+  catch { return null; }
+  if (!token) return null;
+  const cfgPath = path.join(home, ".finicky.ts");
+  if (!fs.existsSync(cfgPath)) fail(`no ${cfgPath} — Finicky is not configured here`);
+  const config = (await import(pathToFileURL(cfgPath).href)).default;
+  const url = new URL(`https://tag.invalid/#${token}`);
+  const opts = { opener: null };
+  const isMatch = (m) =>
+    Array.isArray(m) ? m.some(isMatch)
+    : typeof m === "function" ? !!m(url, opts)
+    : m instanceof RegExp ? m.test(url.href)
+    : m === url.href;
+  const hit = (config.handlers ?? []).find((h) => isMatch(h.match));
+  if (!hit) return null;
+  const b = hit.browser;
+  return typeof b === "string" ? null : (b?.profile ?? null);
+}
+
+(async () => {
+  if (cmd === "list") {
+    for (const p of profiles()) {
+      const pr = pairing(p.dir);
+      process.stdout.write([p.name, p.dir, pr?.deviceId ?? "-", pr?.displayName ?? "-"].join("\t") + "\n");
+    }
+    return;
+  }
+  if (cmd === "route") {
+    const name = await route(arg);
+    if (!name) fail(`no Finicky rule routes open-as alias '${arg}' to a Chrome profile (browser.tag.${arg} pin + a tagged() rule in a fragment)`);
+    process.stdout.write(name + "\n");
+    return;
+  }
+  // for <alias|profile>: an alias goes through Finicky first; a name that is
+  // a Chrome profile outright is taken as such (aliases and display names
+  // are different namespaces, so try the router first, then the name).
+  const all = profiles();
+  let name = await route(arg);
+  if (!name) {
+    if (!all.some((p) => p.name === arg)) fail(`'${arg}' is neither an open-as alias Finicky routes nor a Chrome profile name`);
+    name = arg;
+  }
+  const p = all.find((x) => x.name === name);
+  if (!p) fail(`Finicky routes '${arg}' to Chrome profile '${name}', which Local State does not list`);
+  const pr = pairing(p.dir);
+  if (!pr) fail(`Chrome profile '${name}' (${p.dir}) has no Claude in Chrome pairing on disk — install the extension there and connect it once`);
+  process.stdout.write(pr.deviceId + "\n");
+})().catch((e) => fail(e?.message ?? String(e)));
+JS

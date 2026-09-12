@@ -51,6 +51,25 @@ employer-specific — profile-specific memory belongs in that profile's own
   (subject to whatever the user is doing in it; stash-and-restore or a
   worktree is still the polite default when its tree is dirty).
 
+## Claude in Chrome: which browser to drive
+
+- Several Chrome profiles are deliberately paired to the same Anthropic
+  account, so `list_connected_browsers` will usually show more than one. Do
+  NOT resolve that by asking me or by broadcasting a Connect prompt
+  (`switch_browser`). The choice is already made: run `chrome-pairing
+  session` (in `~/bin`; it reads the alias the `claude()` wrapper exported
+  for this session and answers from Finicky's config and Chrome's own files
+  on disk) and call `select_browser` with the device id it prints. That is my
+  standing answer for this session's browser — I made it once via the
+  per-profile pins, not per session.
+- Ask only when `chrome-pairing session` prints nothing (unpinned session,
+  no pairing on disk) or the id it prints is not among the connected
+  browsers (that profile's Chrome window is not open — say so, since
+  opening it is the fix). `chrome-pairing list` shows every profile with its
+  device id and pairing name if you need to explain a mismatch.
+- I still want a different profile sometimes: if I name one, `chrome-pairing
+  for <profile name>` gives its id; use that instead.
+
 ## Web fetching
 
 - If WebFetch fails on a resource you need (blocked page, JS-rendered
