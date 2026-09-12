@@ -19,6 +19,9 @@ setup() {
   # bats inherits CLAUDECODE when run from a Claude Code session; the
   # doctor's shell: line reports it, so the default case must not see it.
   unset CLAUDECODE
+  # ...and a pinned Claude session exports BROWSER/OPEN_AS_ALIAS, which
+  # would turn open-as's one-argument usage error into a valid open.
+  unset BROWSER OPEN_AS_ALIAS
   unset ALL_PROXY all_proxy HTTPS_PROXY https_proxy HTTP_PROXY http_proxy NO_PROXY no_proxy
   DOTFUNCTIONS="$BATS_TEST_DIRNAME/../dot_functions"
   # The state dir holds unix sockets, and a socket path is limited to ~104
@@ -811,6 +814,35 @@ CLAUDE_CODE_OPTS="no_bare_glob_qual no_case_glob glob_star_short no_extended_glo
   [ "$status" -eq 2 ]
   # Neither error opened anything beyond the first (untagged) open.
   [ "$(wc -l < "$OPEN_LOG")" -eq 1 ]
+}
+
+@test "open-as: OPEN_AS_ALIAS supplies the alias so it can serve as \$BROWSER" {
+  # The BROWSER convention runs `$BROWSER <url>` — one argument, no alias —
+  # so a launcher that knows whose session it is sets the alias once.
+  OPEN_AS_ALIAS=work run open-as https://claude.example/oauth/authorize?state=1
+  [ "$status" -eq 0 ]
+  [ "$output" = "" ]
+  [ "$(cat "$OPEN_LOG")" = "https://claude.example/oauth/authorize?state=1#wk94fjq2x" ]
+  # An explicit alias argument outranks the variable.
+  : > "$OPEN_LOG"
+  OPEN_AS_ALIAS=work run open-as personal https://x.example/
+  [ "$(cat "$OPEN_LOG")" = "https://x.example/" ]
+  # One argument and no variable is a usage error, not an untagged open.
+  : > "$OPEN_LOG"
+  OPEN_AS_ALIAS= run open-as https://x.example/
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"OPEN_AS_ALIAS=<alias> open-as <url>"* ]]
+  [ ! -s "$OPEN_LOG" ]
+}
+
+@test "open-as: a URL that already has a #fragment keeps it and goes untagged" {
+  # `gh browse file:10` and docs #section links arrive through \$BROWSER with
+  # their own anchor; a second '#' would break both the anchor and the
+  # router's exact match, so the anchor wins.
+  OPEN_AS_ALIAS=work run open-as 'https://github.example/o/r/blob/main/README.md?plain=1#L10'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already has a #fragment; opening untagged"* ]]
+  [ "$(cat "$OPEN_LOG")" = "https://github.example/o/r/blob/main/README.md?plain=1#L10" ]
 }
 
 @test "ssh: a Tailscale SSH check-mode URL on stderr is auto-opened, tagged for the tailnet's profile" {

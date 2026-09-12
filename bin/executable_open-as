@@ -31,21 +31,43 @@
 # pin still opens the URL, untagged (the router's default handling applies) —
 # opening is the point, routing is an optimization — but says so on stderr.
 # With no GUI opener at all the URL is printed instead of opened.
+#
+# The alias may also come from the environment — `OPEN_AS_ALIAS=<alias>
+# open-as <url>` — so this script can stand in as a program's browser: the
+# BROWSER convention (Claude Code, gh, python's webbrowser, …) runs
+# `$BROWSER <url>` with no room for a second argument, and a launcher that
+# knows whose session it is starting sets the pair once
+# (`BROWSER=~/bin/open-as OPEN_AS_ALIAS=<alias>`) and every link that
+# program opens lands in the right profile. An explicit alias argument
+# outranks the variable.
 set -u
 
-[ $# -eq 2 ] || { printf 'usage: open-as <alias> <url>\n' >&2; exit 2; }
-alias=$1 url=$2
+case $# in
+  2) alias=$1 url=$2;;
+  1) alias=${OPEN_AS_ALIAS-} url=$1
+     [ -n "$alias" ] || { printf 'usage: open-as <alias> <url>   (or OPEN_AS_ALIAS=<alias> open-as <url>)\n' >&2; exit 2; };;
+  *) printf 'usage: open-as <alias> <url>   (or OPEN_AS_ALIAS=<alias> open-as <url>)\n' >&2; exit 2;;
+esac
 
 case $alias in
   ''|*[!A-Za-z0-9_-]*) printf 'open-as: invalid alias %s (letters, digits, - and _)\n' "$alias" >&2; exit 2;;
 esac
 
 token=$(git config --get "browser.tag.$alias" 2>/dev/null) || token=
-if [ -n "$token" ]; then
-  url="$url#$token"
-else
-  printf 'open-as: no browser.tag.%s pin in git config; opening untagged\n' "$alias" >&2
-fi
+case $url in
+  *\#*)
+    # The URL already has a fragment (a #L10 line anchor, a docs #section):
+    # a second '#' would break the anchor AND the router's exact match, so
+    # the anchor wins and the link goes untagged. The router's URL rules and
+    # default still apply; only the per-profile override is lost.
+    printf 'open-as: URL already has a #fragment; opening untagged to keep it\n' >&2;;
+  *)
+    if [ -n "$token" ]; then
+      url="$url#$token"
+    else
+      printf 'open-as: no browser.tag.%s pin in git config; opening untagged\n' "$alias" >&2
+    fi;;
+esac
 
 if command -v open >/dev/null 2>&1; then exec open "$url"
 elif command -v xdg-open >/dev/null 2>&1; then exec xdg-open "$url"
