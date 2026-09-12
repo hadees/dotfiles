@@ -400,16 +400,28 @@ function claude_browser_can_open() {
 	[[ -n $DISPLAY || -n $WAYLAND_DISPLAY ]] && whence -p xdg-open >/dev/null;
 }
 
-# The open-as alias whose browser profile a Claude profile's links belong in:
-# `claude.<dir>.browser` in machine-local git config, keyed by the config
-# directory as the overlay wrote it (`~/.claude-<name>`, or the expanded
-# path). Prints the alias; prints nothing and returns 1 when none is pinned.
-# Keyed by directory rather than by account name because several names map
-# to one directory (an account, its short alias, `default`) and the login —
-# the thing a browser profile has to match — lives in the directory.
+# The open-as alias whose browser profile this session's links belong in.
+# Two pins, both machine-local git config from the overlays, most specific
+# first:
+#   claude.<owner>/<repo>.browser   this repo's sessions (origin slug,
+#                                   lowercase) — a project whose own logins
+#                                   live in a Chrome profile of their own,
+#                                   whichever Claude profile runs it
+#   claude.<dir>.browser            the Claude profile's, keyed by the config
+#                                   directory as the overlay wrote it
+#                                   (`~/.claude-<name>`, or the expanded path)
+# Prints the alias; prints nothing and returns 1 when none is pinned. The
+# profile pin is keyed by directory rather than account name because several
+# names map to one directory (an account, its short alias, `default`) and the
+# login lives in the directory. The repo pin outranks it even under
+# CLAUDE_PROFILE: which login is at the keyboard changes, which window the
+# project's pages live in does not.
 function claude_browser_alias() {
-	local dir=$1 alias;
-	alias="$(command git config --get "claude.${dir/#$HOME/~}.browser" 2>/dev/null)" \
+	local dir=$1 alias slug;
+	slug="$(git_origin_slug)" || slug='';
+	[[ -n $slug ]] && alias="$(command git config --get "claude.$slug.browser" 2>/dev/null)";
+	[[ -n $alias ]] \
+		|| alias="$(command git config --get "claude.${dir/#$HOME/~}.browser" 2>/dev/null)" \
 		|| alias="$(command git config --get "claude.$dir.browser" 2>/dev/null)" \
 		|| return 1;
 	[[ -n $alias ]] || return 1;
@@ -418,7 +430,7 @@ function claude_browser_alias() {
 	# (A negated class, not `[...]##` — that needs extendedglob, which the
 	# Bash tool's zsh does not have.)
 	if [[ $alias == *[^A-Za-z0-9_-]* ]]; then
-		print -ru2 -- "claude: claude.${dir/#$HOME/~}.browser='$alias' is not a valid open-as alias (letters, digits, - and _); links open untagged";
+		print -ru2 -- "claude: the browser pin for this session ('$alias') is not a valid open-as alias (letters, digits, - and _); links open untagged";
 		return 1;
 	fi;
 	print -r -- "$alias";
@@ -588,17 +600,22 @@ function claude-doctor() {
 	if [[ -n $bare ]]; then
 		print -r -- "browser: <bare claude — no profile resolved, so no pin is consulted; links open in $fallback>";
 	elif balias="$(claude_browser_alias "$dir" 2>/dev/null)"; then
+		# Say which pin answered: a repo resolving somewhere its profile
+		# does not explain should say why (same stance as the pin: line).
+		local bsrc='';
+		[[ -n $slug && -n "$(command git config --get "claude.$slug.browser" 2>/dev/null)" ]] \
+			&& bsrc=" — per-repo pin claude.$slug.browser, outranking the profile's";
 		if ! opener="$(whence -p open-as)"; then
 			print -r -- "browser: $balias — but open-as is NOT on PATH; links open in $fallback (chezmoi apply)";
 		elif ! claude_browser_can_open; then
 			print -r -- "browser: $balias — pinned, but no window can appear here (ssh or no display); Claude Code prints its URLs instead";
 		elif btag="$(command git config --get "browser.tag.$balias" 2>/dev/null)" && [[ -n $btag ]]; then
-			print -r -- "browser: $balias (BROWSER=$opener, tagged browser.tag.$balias for the link router)";
+			print -r -- "browser: $balias (BROWSER=$opener, tagged browser.tag.$balias for the link router)$bsrc";
 		else
 			print -r -- "browser: $balias — pinned, but no browser.tag.$balias token: open-as opens untagged, the router's default applies";
 		fi;
-	elif [[ -n "$(command git config --get "claude.${dir/#$HOME/~}.browser" 2>/dev/null)$(command git config --get "claude.$dir.browser" 2>/dev/null)" ]]; then
-		print -r -- "browser: INVALID pin claude.${dir/#$HOME/~}.browser (letters, digits, - and _ only) — ignored; links open in $fallback";
+	elif [[ -n "$(command git config --get "claude.${dir/#$HOME/~}.browser" 2>/dev/null)$(command git config --get "claude.$dir.browser" 2>/dev/null)${slug:+$(command git config --get "claude.$slug.browser" 2>/dev/null)}" ]]; then
+		print -r -- "browser: INVALID pin (claude.${slug:+$slug.browser or claude.}${dir/#$HOME/~}.browser; letters, digits, - and _ only) — ignored; links open in $fallback";
 	else
 		print -r -- "browser: <no claude.${dir/#$HOME/~}.browser pin — links open in $fallback>";
 	fi;
