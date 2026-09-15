@@ -34,13 +34,27 @@ employer-specific — profile-specific memory belongs in that profile's own
   `GH_TOKEN=$(gh auth token --user <acct>) gh …`. Keep it for that; do not
   reach for it while the wrapper is fine.
 
+## Where worktrees go
+
+- Create every worktree inside the main checkout of the repo it belongs to,
+  in a hidden, git-ignored worktree directory:
+  `<repo>/.claude/worktrees/<name>`. Never as a sibling of the repo.
+- Before creating the first one, make sure git ignores that directory. If
+  nothing does yet, add `**/.claude/worktrees/` to the repo's
+  `.git/info/exclude` (machine-local, no commit needed).
+- The consequence for `~/code`: it holds one clone per repo and nothing else.
+  Do not create any directory or file directly in it (worktrees, scratch
+  clones, copies) unless I have told you to create or clone a new repo.
+  Throwaway files go in the session scratchpad.
+
 ## Working in other repos' checkouts
 
 - If a task takes you into a repo other than the one the session was
   started in, NEVER work on that repo's live checkout: check out your own
-  worktree of it (EnterWorktree, or `git worktree add`) and do the work
-  there. Another session, agent, or tool may be using that checkout right
-  now, and a branch switch or edit changes the tree under it mid-run
+  worktree of it (EnterWorktree, or `git worktree add` under
+  `<repo>/.claude/worktrees/`) and do the work there. Another session,
+  agent, or tool may be using that checkout right now, and a branch switch
+  or edit changes the tree under it mid-run
   (learned 2026-08-22: a branch switch in a shared checkout swapped the
   content under another session's live production deploy). Apply this even
   when the checkout looks idle — you cannot see other sessions' intent.
