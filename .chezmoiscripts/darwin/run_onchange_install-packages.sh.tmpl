@@ -8,4 +8,10 @@ if ! command -v brew > /dev/null 2>&1; then
 	exit 0;
 fi
 
-brew bundle --file={{ joinPath .chezmoi.sourceDir "Brewfile" | quote }}
+# --no-upgrade: install what is missing, never upgrade. A bare `brew bundle`
+# also upgrades, which re-downloads casks that update themselves (their
+# Caskroom record only looks stale) and fails outright on a mas app or .pkg
+# whose installer wants a password — and this script runs with no terminal to
+# answer one. A failure here is recorded as a completed run by chezmoi, so the
+# install would then never be retried. Upgrades belong to `update`.
+brew bundle --no-upgrade --file={{ joinPath .chezmoi.sourceDir "Brewfile" | quote }}

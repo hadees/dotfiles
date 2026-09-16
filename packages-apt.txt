@@ -76,6 +76,12 @@ imagemagick
 ffmpeg
 lynx
 
+# transmission-cli is deliberately macOS-only, not missing from Ubuntu: the
+#   package exists here and does carry transmission-remote (as well as
+#   create/edit/show — only transmission-daemon is split into its own
+#   package), but the Transmission instance it drives runs on the mac, so a
+#   Linux box would have nothing to talk to. Install it by hand if that
+#   ever stops being true.
 # rclone + fuse3: tailnet mount — on Linux it FUSE-mounts (rclone mount needs
 #   fusermount3); macOS uses rclone nfsmount instead. Not applicable to the
 #   wsl class, which runs no tailscaled of its own.
@@ -87,3 +93,5 @@ lynx
 # actionlint, cloudflared, and countdown are not in Ubuntu's repos either — install manually if wanted
 # tailscale is not in Ubuntu's repos either (needs pkgs.tailscale.com's apt source) — install manually; bin/tailnet's userspace daemons need its tailscaled
 # espanso is not in Ubuntu's repos — install the .deb from its GitHub releases
+# antigravity-cli (agy) is not in Ubuntu's repos — install with Google's script, which puts agy in ~/.local/bin:
+#   curl -fsSL https://antigravity.google/cli/install.sh | bash

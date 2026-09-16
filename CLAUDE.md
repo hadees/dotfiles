@@ -240,6 +240,23 @@ on Linux. The install scripts re-run automatically on `chezmoi apply`
 whenever their list's hash changes; the `ephemeral` machine class never
 runs them.
 
+**Two paths install from the `Brewfile`, and both pass `--no-upgrade`.** The
+`run_onchange_` script converges a machine when the list changes; `update()`
+installs whatever the list declares and the machine lacks, so editing the
+Brewfile is enough to get the tool. Neither upgrades, because `brew upgrade`
+in `update()` already does that and `brew bundle`'s own upgrade pass is worse
+at it: it re-downloads casks that update themselves (an `auto_updates` cask's
+Caskroom record only looks stale) and dies on a `mas` app or a `.pkg` whose
+installer wants a password — which the script, running with no terminal,
+cannot answer. That failure used to abort the whole apply partway. Neither
+path ever runs `brew bundle cleanup`: that uninstalls anything absent from the
+list, which is not what converging a machine should mean.
+
+**A half-installed cask is invisible to all of this.** A `.pkg` cask whose
+installer never ran still leaves a Caskroom entry, so `brew bundle` counts it
+as satisfied and never retries while the app is missing from `/Applications`.
+`brew reinstall --cask <name>` from a terminal is the only way out.
+
 **A skipped run is recorded as a successful one.** chezmoi keys a
 `run_onchange_` script on its content hash and stores that hash in the
 `entryState` bucket — *not* `scriptState`, and `chezmoi apply --force` does
