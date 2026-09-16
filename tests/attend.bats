@@ -476,6 +476,102 @@ esc() { printf '\033'; }
   [ -z "$(ls "$TABS")" ]
 }
 
+# --- iTerm2's own session status --------------------------------------------
+#
+# iTerm2 3.7 shows a Claude status per session, fed by the cc-status hook its
+# installer writes. That hook latches `waiting` at a permission prompt and has
+# nothing to clear it with — approving fires no hook, so its next signal is the
+# tool *finishing*. attend forwards the registry status, which was right all
+# along. A stub `it2` records what it was told; no real session is addressed.
+
+it2_stub() { # "tty=id" pairs the fake iTerm2 knows about
+  printf '%s\n' "$@" >"$BATS_TEST_TMPDIR/it2.map"
+  cat >"$BIN/it2" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >>"$IT2LOG"
+if [ "$1 $2" = "session list" ]; then
+  while IFS='=' read -r t id; do
+    [ -n "$t" ] || continue
+    # iTerm2 prints the tty with its slashes escaped; the parser must undo it.
+    esc=$(printf '%s' "$t" | sed 's|/|\\/|g')
+    printf '%s\tname\tname\t171x46\t%s\n' "$id" "$esc"
+  done <"$IT2MAP"
+fi
+exit 0
+STUB
+  chmod +x "$BIN/it2"
+  export ATTEND_IT2="$BIN/it2"
+  export IT2LOG="$BATS_TEST_TMPDIR/it2.log"
+  export IT2MAP="$BATS_TEST_TMPDIR/it2.map"
+  : >"$IT2LOG"
+}
+
+# `--` matters: every needle here starts with `--status`, which grep would
+# otherwise read as one of its own options and fail with status 2.
+it2_said() { grep -F -- "$1" "$IT2LOG" >/dev/null 2>&1; }
+
+@test "sync: a busy session is reported to iTerm2 as working" {
+  it2_stub "/dev/ttys900=SESSION-A"
+  session "$HOME/.claude" one "$$" busy 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  [ "$status" -eq 0 ]
+  it2_said "set-status --session SESSION-A --status working"
+}
+
+@test "sync: waiting and idle are reported with iTerm2's own words" {
+  it2_stub "/dev/ttys900=SESSION-A"
+  session "$HOME/.claude" one "$$" waiting 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  it2_said "--status waiting"
+  rm -f "$STATE/sync/$$"
+  session "$HOME/.claude" one "$$" idle 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  it2_said "--status idle"
+}
+
+@test "sync: a shell session reads as idle, not as whatever it was last" {
+  it2_stub "/dev/ttys900=SESSION-A"
+  session "$HOME/.claude" one "$$" shell 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  it2_said "--status idle"
+}
+
+@test "sync: the same status is not pushed twice" {
+  it2_stub "/dev/ttys900=SESSION-A"
+  session "$HOME/.claude" one "$$" busy 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  : >"$IT2LOG"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  run grep -c 'set-status' "$IT2LOG"
+  [ "$output" = 0 ]
+}
+
+@test "sync: a session iTerm2 does not know about is left alone" {
+  it2_stub "/dev/ttys999=SOMEONE-ELSE"
+  session "$HOME/.claude" one "$$" busy 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  [ "$status" -eq 0 ]
+  run grep -c 'set-status' "$IT2LOG"
+  [ "$output" = 0 ]
+}
+
+@test "sync: with no it2 present, sweep still works and reports nothing" {
+  export ATTEND_IT2="$BATS_TEST_TMPDIR/no-such-it2"
+  session "$HOME/.claude" one "$$" busy 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  [ "$status" -eq 0 ]
+  [ ! -d "$STATE/sync" ]
+}
+
+@test "sync: a record whose process is gone is reaped" {
+  it2_stub "/dev/ttys900=SESSION-A"
+  mkdir -p "$STATE/sync"
+  printf 'working\n' >"$STATE/sync/$(dead_pid)"
+  tab "$(dead_pid)" waiting 0 /dev/ttys900
+  at sweep
+  [ ! -f "$STATE/sync/$(dead_pid)" ]
+}
+
 # --- the session registry ---------------------------------------------------
 
 @test "mapped_dirs: the mapping, ~/.claude, ~ expansion, and dedupe" {
