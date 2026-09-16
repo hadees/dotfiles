@@ -375,9 +375,10 @@ private half stays in 1Password. See the Commit signing section.
   overlays provide. **Adding a work org is a
   one-line change in the work overlay and needs no edit here.**
 - Don't "helpfully" reintroduce a name, email, org, or private repo name into
-  this repo's files, tests, or commit messages. The personal overlay's
-  `tests/no-public-leak.bats` enforces this over the tree, commit messages,
-  and commit author/committer identities.
+  this repo's files, tests, or commit messages. The personal overlay's leak
+  guard enforces this on every push — the pushed tree, ref names, commit
+  messages, added lines, and author/committer identities — and its
+  `tests/no-public-leak.bats` audits the whole clone the same way.
 
 ### Claude Code profiles
 

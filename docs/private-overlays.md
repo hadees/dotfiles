@@ -179,8 +179,9 @@ for the cwd. Every hook name in `~/.git-hooks` chains to the repo's own
 `.git/hooks/<name>`, so repo-local hooks keep working; a repo that sets its
 own `core.hooksPath` (husky) is untouched. Each hook also runs any
 `hook.<name>.run` commands from git config first (repeatable, usually
-per-repo `.git/config`) — the way to attach a machine-local check to a repo
-without tracking it, see below.
+per-repo `.git/config`), each with the hook's own arguments and stdin — for
+pre-push, the list of refs being pushed — the way to attach a machine-local
+check to a repo without tracking it, see below.
 
 ### GitHub account per owner — the credential pins (load-bearing)
 
@@ -430,32 +431,51 @@ setup.
 ## Guarding against leaks
 
 The public repo can't test for the strings it must not contain — the test
-would leak them. So **each overlay ships the leak test** (`tests/no-public-leak.bats`),
-pointed at the public clone, with a `DENY` regex of every private identifier
-that overlay owns: real name, emails, GitHub accounts, orgs, side-company
-names and domains, private repo names, hostnames, Chrome profile names,
-wrangler profile names if they are telling. It checks the public **working
-tree**, **commit messages** (`git log --format='%s%n%b'`), **history**
-(`git log -S<string>` — anything ever added or removed), and **author /
-committer emails** (public commits use the GitHub noreply address). Run it
-before pushing anything public:
+would leak them. So **each overlay ships the leak guard**, pointed at the
+public clone, with a `DENY` regex of every private identifier that overlay
+owns: real name, emails, GitHub accounts, orgs, side-company names and
+domains, private repo names, hostnames, Chrome profile names, wrangler
+profile names if they are telling. Two entry points share it: a bats audit
+(`tests/no-public-leak.bats`) that sweeps the checkout, untracked files
+included, plus every ref, commit message, line ever added, and
+author/committer email (public commits use the GitHub noreply address) —
+run it before pushing anything public:
 
 ```sh
 bats ~/code/dotfiles-<name>/tests
 ```
 
+— and a **pre-push guard** that checks what is actually being pushed. That
+distinction is not academic: a pre-push hook that greps the working tree
+greps whichever checkout it runs in, and a push made from a worktree
+(`<repo>/.claude/worktrees/<name>`, where agents work) carries the branch's
+content past a main checkout sitting on some other ref. git hands pre-push
+`<local ref> <local sha> <remote ref> <remote sha>` per ref on stdin, and
+the guard keys everything off that: `git grep` over the tree at the local
+sha, the paths in it, both ref names, and the messages and added lines of
+`<local sha> --not --remotes=<remote>` (a pushed leak lives on in `git
+log -p` after the file is gone). A deleted-ref push (all-zero local sha)
+has nothing to check. The guard also proves its own pattern fires on a
+canary string per family, under each regex engine it uses, before it
+believes a zero-hit result — git's `-E` silently drops `\b` on macOS, so
+the tree is grepped with `-P` and a broken pattern exits non-zero rather
+than passing everything.
+
 **Run it before every public push, automatically:** the overlay ships a
-`run_onchange_` script that attaches the test to the public clone via the
+`run_onchange_` script that attaches the guard to the public clone via the
 global hooks' `hook.<name>.run` mechanism —
 
 ```sh
 git -C ~/code/dotfiles config --replace-all hook.pre-push.run \
-    "bats $HOME/code/dotfiles-<name>/tests/no-public-leak.bats"
+    "$HOME/code/dotfiles-<name>/hooks/leak-guard dotfiles \"\$@\""
 ```
 
-— so `~/.git-hooks/pre-push` runs the leak test and blocks the push when it
-fails, on every machine that has both clones, with nothing tracked in the
-public repo.
+— so `~/.git-hooks/pre-push` runs it with git's arguments and a replay of
+git's stdin, and blocks the push when it fails, on every machine that has
+both clones, with nothing tracked in the public repo. The guard refuses a
+`/dev/null` stdin outright: that is what the shim handed `hook.run`
+commands before it replayed the ref list, and a guard fed nothing must not
+pass everything.
 
 Leaks run in every direction, so each private repo polices its own tree
 the same way: the work overlay carries a `no-cross-leak.bats` (no personal
@@ -465,15 +485,16 @@ messages, or author emails. A repo naming another identity's *public* repo
 (this one) is fine; naming a private repo, account, or email is not.
 
 When a new private thing enters the setup — an org, a side company, a
-profile — the first edit is adding its identifiers to that DENY list; the
+profile — the first edit is adding its identifiers to that deny list; the
 second is the overlay config that uses them. Public commit messages describe
 mechanism, never the account it was for ("resolve repo-local wrangler like
 npx", not "pin <side-company> to its profile").
 
 ## Checklist for adding a new account or org
 
-1. Overlay: add the identifiers to `tests/no-public-leak.bats` `DENY` (and
-   the other overlays' cross-leak tests).
+1. Overlay: add the identifiers to its deny list (`tests/deny.bash` — one
+   family per threat, each with a canary string the guard proves fires),
+   and to the other overlays' cross-leak tests.
 2. Overlay gitconfig: `credential.https://github.com/<owner>.username` pin;
    `identity.<account>.email` and `identity.<account>.sshkey`;
    `claude.profile.<account>` (plus a `claude.<owner>/<repo>.profile` pin for
