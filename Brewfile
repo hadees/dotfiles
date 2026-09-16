@@ -112,6 +112,7 @@ brew 'terminal-notifier'
 brew 'testssl' # Tool which checks for the support of TLS/SSL ciphers and flaws
 brew 'tmux' # Terminal multiplexer — dot_tmux.conf is deployed and the run-dotfiles skill drives sessions under it
 brew 'tor' # Anonymizing overlay network for TCP
+brew 'transmission-cli' # BitTorrent command-line utilities — transmission-remote, transmission-daemon, transmission-create, transmission-edit, transmission-show; the formula installs no GUI (that is cask 'transmission')
 brew 'tree' # Display directories as trees (with optional color/HTML output)
 brew 'ucspi-tcp' # Tools for building TCP client-server applications
 brew 'uv' # Fast Python package & project manager (also manages global tools)
@@ -144,7 +145,8 @@ cask 'android-commandlinetools' # Android SDK command-line tools
 cask 'android-platform-tools'
 cask 'androidtool' # Screen recording and app installs for connected Android/iOS devices
 cask 'anki'
-cask 'antigravity' # Google Antigravity — agentic AI IDE
+cask 'antigravity' # Google Antigravity — agent orchestration platform (desktop app)
+cask 'antigravity-cli' # Google Antigravity CLI — terminal interface for Antigravity agents, installs the agy command
 cask 'balenaetcher' # Flash OS images to SD cards and USB drives
 cask 'bartender'
 cask 'caffeine'
@@ -243,6 +245,7 @@ cask 'webpquicklook'
 cask 'whatsapp'
 cask 'xquartz'
 cask 'xscreensaver'
+cask 'zoom'
 
 mas 'DaVinci Resolve', id: 571213070
 mas 'Ethernet Status', id: 1186187538
