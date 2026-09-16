@@ -2627,7 +2627,22 @@ function update() {
 	# with dependencies; suppress it so the run is unattended. Casks
 	# that install privileged helpers (e.g. docker-desktop) may still
 	# prompt — brew resets the timestamp by design.
-	command -v brew > /dev/null 2>&1 && { brew update; HOMEBREW_NO_ASK=1 brew upgrade; brew cleanup; };
+	if command -v brew > /dev/null 2>&1; then
+		brew update;
+		HOMEBREW_NO_ASK=1 brew upgrade;
+		# Then install what the Brewfile declares and this machine lacks,
+		# so editing the list is enough to get the tool. --no-upgrade
+		# because the upgrade above already did that half, and bundle's
+		# own upgrade pass is actively worse at it: it re-downloads casks
+		# that update themselves (their Caskroom record only looks stale)
+		# and dies on a mas app or .pkg whose installer wants a password.
+		# Never `brew bundle cleanup` — that uninstalls anything absent
+		# from the list, which is not what a routine update should do.
+		local brewfile;
+		brewfile="$(command chezmoi source-path 2>/dev/null)/Brewfile";
+		[[ -f $brewfile ]] && HOMEBREW_NO_ASK=1 brew bundle --no-upgrade --file="$brewfile";
+		brew cleanup;
+	fi;
 	command -v npm > /dev/null 2>&1 && npm install npm -g;
 	command -v npm > /dev/null 2>&1 && npm update -g;
 	command -v uv > /dev/null 2>&1 && uv tool upgrade --all;
