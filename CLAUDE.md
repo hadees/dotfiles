@@ -119,8 +119,9 @@ when that per-repo pin exists (a side project committing under its own
 identity — mirrors `wrangler.<owner>/<repo>.profile`). `GIT_IDENTITY_CHECK=0` bypasses one
 commit; `git-doctor` shows the verdict (`gate:`). Every hook name there is
 a shim that first runs any `hook.<name>.run` git-config commands (repeatable,
-per-repo `.git/config`; a failure blocks) and then the repo's own
-`.git/hooks/<name>` — via `git rev-parse --git-common-dir`, never
+per-repo `.git/config`; a failure blocks; each gets the hook's arguments and a
+replay of its stdin — for pre-push, the refs being pushed) and then the repo's
+own `.git/hooks/<name>` — via `git rev-parse --git-common-dir`, never
 `--git-path hooks`, which honours `core.hooksPath` and would exec the shim
 itself. Tests: `tests/git-hooks.bats` — its fixture repos must use
 absolute paths for anything under `.git/`, or a relative path lands in this

@@ -207,17 +207,45 @@ make_repo() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"NOPE"* ]]
   [[ "$output" == *"pre-commit: hook.pre-commit.run command failed: echo NOPE >&2; false"* ]]
-  # A pre-push command runs too (git feeds pre-push refs on stdin; the
-  # command gets /dev/null so it cannot eat them).
+  # A pre-push command runs too, and sees what git gave the hook: the
+  # remote name in $1 and the ref list on stdin (a guard that cannot read
+  # that list can only grep the checkout it stands in, not the push).
   bare="$BATS_TEST_TMPDIR/bare.git"; git init -q --bare "$bare"
   git -C "$repo" config --unset-all hook.pre-commit.run
   git -C "$repo" commit -q -m two
   git -C "$repo" remote add pushtarget "$bare"
-  git -C "$repo" config --add hook.pre-push.run 'echo PREPUSH-RAN >&2; false'
+  git -C "$repo" config --add hook.pre-push.run 'echo "PREPUSH-RAN to $1: $(cat)" >&2; false'
   run git -C "$repo" push -q pushtarget HEAD
   [ "$status" -ne 0 ]
-  [[ "$output" == *"PREPUSH-RAN"* ]]
+  [[ "$output" == *"PREPUSH-RAN to pushtarget: HEAD $(git -C "$repo" rev-parse HEAD) refs/heads/main 0000000000000000000000000000000000000000"* ]]
   git -C "$repo" config --unset-all hook.pre-push.run
   run git -C "$repo" push -q pushtarget HEAD
   [ "$status" -eq 0 ]
+}
+
+@test "hook.<name>.run: every command and then the local hook each get their own copy of the hook's stdin" {
+  repo=$(make_repo 'git@github.com:someone-else/some-repo.git')
+  git -C "$repo" commit -q -m init
+  bare="$BATS_TEST_TMPDIR/bare.git"; git init -q --bare "$bare"
+  git -C "$repo" remote add pushtarget "$bare"
+  # Two commands that both read stdin to exhaustion, then a repo-local
+  # pre-push that does the same: none may starve the next.
+  git -C "$repo" config --add hook.pre-push.run 'echo "ONE $(wc -l < /dev/stdin | tr -d " ")" >&2'
+  git -C "$repo" config --add hook.pre-push.run 'echo "TWO $(wc -l < /dev/stdin | tr -d " ")" >&2'
+  printf '#!/bin/sh\necho "LOCAL $1 $(wc -l < /dev/stdin | tr -d " ")" >&2\nexit 3\n' > "$repo/.git/hooks/pre-push"
+  chmod +x "$repo/.git/hooks/pre-push"
+  run git -C "$repo" push -q pushtarget HEAD
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"ONE 1"* ]]
+  [[ "$output" == *"TWO 1"* ]]
+  [[ "$output" == *"LOCAL pushtarget 1"* ]]
+  # A hook git hands no input (pre-commit) sees an empty stdin, never a
+  # blocking one.
+  rm "$repo/.git/hooks/pre-push"
+  git -C "$repo" config --unset-all hook.pre-push.run
+  git -C "$repo" config --add hook.pre-commit.run 'echo "COMMIT $(wc -l < /dev/stdin | tr -d " ")" >&2'
+  echo y >> "$repo/f"; git -C "$repo" add f
+  run git -C "$repo" commit -q -m two
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"COMMIT 0"* ]]
 }
