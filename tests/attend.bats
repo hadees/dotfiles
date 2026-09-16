@@ -489,6 +489,10 @@ it2_stub() { # "tty=id" pairs the fake iTerm2 knows about
   cat >"$BIN/it2" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$*" >>"$IT2LOG"
+if [ "$1 $2" = "session get-background-tasks" ]; then
+  cat "$IT2BG" 2>/dev/null || echo 0
+  exit 0
+fi
 if [ "$1 $2" = "session list" ]; then
   while IFS='=' read -r t id; do
     [ -n "$t" ] || continue
@@ -503,12 +507,24 @@ STUB
   export ATTEND_IT2="$BIN/it2"
   export IT2LOG="$BATS_TEST_TMPDIR/it2.log"
   export IT2MAP="$BATS_TEST_TMPDIR/it2.map"
+  export IT2BG="$BATS_TEST_TMPDIR/it2.bg"
   : >"$IT2LOG"
+}
+
+# The registry helper writes only statusUpdatedAt. A frozen row (#87131) has
+# updatedAt newer than statusUpdatedAt while status stays busy; this writes one.
+frozen_session() { # profile-dir id pid
+  mkdir -p "$1/sessions"
+  cat > "$1/sessions/$2.json" <<EOF
+{ "pid": $3, "sessionId": "fixture-$2", "status": "busy",
+  "statusUpdatedAt": 1700000000000, "updatedAt": 1700000009000,
+  "name": "frozen", "cwd": "$WORK/repo-one" }
+EOF
 }
 
 # `--` matters: every needle here starts with `--status`, which grep would
 # otherwise read as one of its own options and fail with status 2.
-it2_said() { grep -F -- "$1" "$IT2LOG" >/dev/null 2>&1; }
+it2_said() { [ "$1" = -- ] && shift; grep -F -- "$1" "$IT2LOG" >/dev/null 2>&1; }
 
 @test "sync: a busy session is reported to iTerm2 as working" {
   it2_stub "/dev/ttys900=SESSION-A"
@@ -544,6 +560,46 @@ it2_said() { grep -F -- "$1" "$IT2LOG" >/dev/null 2>&1; }
   FAKE_PS_CHAIN="1:ttys900" at sweep
   run grep -c 'set-status' "$IT2LOG"
   [ "$output" = 0 ]
+}
+
+@test "sync: the whole field set is pushed, in cc-status's colours, with the detail cleared" {
+  it2_stub "/dev/ttys900=SESSION-A"
+  session "$HOME/.claude" one "$$" busy 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  it2_said -- "--status working --dot-color #ff9500 --text-color #ff9500 --detail "
+  rm -f "$STATE/sync/$$"; : >"$IT2LOG"
+  session "$HOME/.claude" one "$$" idle 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  it2_said -- "--status idle --dot-color #00d75f --text-color #888888 --detail "
+}
+
+@test "sync: idle is not pushed while iTerm2 still counts background tasks" {
+  it2_stub "/dev/ttys900=SESSION-A"
+  printf '2\n' >"$IT2BG"
+  session "$HOME/.claude" one "$$" idle 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  [ "$status" -eq 0 ]
+  run grep -c 'set-status' "$IT2LOG"
+  [ "$output" = 0 ]
+  [ ! -f "$STATE/sync/$$" ]
+}
+
+@test "sync: a busy row Claude Code stopped maintaining is not forwarded" {
+  it2_stub "/dev/ttys900=SESSION-A"
+  frozen_session "$HOME/.claude" one "$$"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  [ "$status" -eq 0 ]
+  run grep -c 'set-status' "$IT2LOG"
+  [ "$output" = 0 ]
+}
+
+@test "sync: the session listing is fetched once per sweep, not once per session" {
+  it2_stub "/dev/ttys900=SESSION-A" "/dev/ttys901=SESSION-B"
+  session "$HOME/.claude" one "$$" busy 1700000000000 alpha "$WORK/repo-one"
+  session "$HOME/.claude" two "$PPID" busy 1700000000000 beta "$WORK/repo-two"
+  FAKE_PS_CHAIN="1:ttys900 1:ttys901" at sweep
+  run grep -c '^session list' "$IT2LOG"
+  [ "$output" = 1 ]
 }
 
 @test "sync: a session iTerm2 does not know about is left alone" {

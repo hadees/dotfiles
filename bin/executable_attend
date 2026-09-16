@@ -287,9 +287,13 @@ it2_ok() { [ -x "$IT2" ]; }
 
 # tty -> iTerm2 session id. `it2 session list` is tab-separated and prints the
 # tty with its slashes escaped.
+# A caller looping over many sessions captures the listing once into
+# IT2_LIST; each it2 round trip is ~0.2s (no ITERM2_COOKIE reaches a hook, so
+# the CLI authenticates through osascript every time), and one listing per
+# pass is the difference between a sweep that is quick and one that is not.
 it2_id_for_tty() {
   [ -n "${1:-}" ] || return 1
-  "$IT2" session list 2>/dev/null | awk -F'\t' -v want="$1" '
+  if [ -n "${IT2_LIST:-}" ]; then printf '%s\n' "$IT2_LIST"; else "$IT2" session list 2>/dev/null; fi | awk -F'\t' -v want="$1" '
     { t = $NF; gsub(/\\/, "", t); if (t == want) { print $1; exit } }'
 }
 
@@ -306,6 +310,55 @@ it2_status_for() {
     idle|shell)    printf 'idle\n' ;;
     *)             return 1 ;;
   esac
+}
+
+# The colours cc-status paints for each word (cc-status/Sources/main.swift).
+# `set-status` only touches the fields it is handed, so a push of the status
+# word alone would leave the dot and text in the previous state's colour and
+# the previous detail line ("Allow Bash: …?") standing under a new word.
+it2_colors_for() { # status -> "dot text"
+  case $1 in
+    working) printf '#ff9500 #ff9500\n' ;;
+    waiting) printf '#5f87ff #5f87ff\n' ;;
+    idle)    printf '#00d75f #888888\n' ;;
+  esac
+}
+
+# cc-status keeps a running count of background tasks in iTerm2's memory and
+# deliberately reports `working` while it is non-zero, so a lull between
+# subagents does not read as finished (iTerm2 commit 701d0b66). The registry's
+# `status` means "process busy right now", which can say idle in exactly that
+# lull; pushing it would flip the workgroup watchers, notify-on-change alerts
+# and dock badge that key off the status text. So idle is never pushed while
+# iTerm2 holds a count.
+it2_background_tasks() { # session-id -> count (0 when unknown)
+  bt=$("$IT2" session get-background-tasks -s "$1" 2>/dev/null | tr -dc '0-9')
+  printf '%s\n' "${bt:-0}"
+}
+
+# A registry row whose `updatedAt` is newer than its `statusUpdatedAt` is a
+# status Claude Code stopped maintaining: parking a mid-flight turn leaves
+# `busy` frozen for the life of the process (anthropics/claude-code#87131,
+# maintainer-confirmed), and a genuine transition writes both stamps together.
+# Forwarding it would hold "working" forever, where cc-status — which saw the
+# Stop — shows idle. Prints 1 when the row is not to be trusted.
+registry_suspect() { # pid -> 0|1
+  command -v python3 >/dev/null 2>&1 || { printf '0\n'; return 0; }
+  profile_dirs | python3 -c '
+import glob, json, os, sys
+pid = sys.argv[1]
+for d in sys.stdin.read().split():
+    for f in glob.glob(os.path.join(d, "sessions", "*.json")):
+        try:
+            r = json.load(open(f))
+        except Exception:
+            continue
+        if str(r.get("pid")) != pid:
+            continue
+        su, u = r.get("statusUpdatedAt") or 0, r.get("updatedAt") or 0
+        print(1 if (r.get("status") == "busy" and u > su) else 0); sys.exit()
+print(0)
+' "$1" 2>/dev/null || printf '0\n'
 }
 
 pushed_of() { # pid -> what we last told iTerm2, if anything
@@ -325,13 +378,20 @@ push_status() { # pid registry-status [tty]
   [ -n "$ps_tty" ] || return 0
   ps_id=$(it2_id_for_tty "$ps_tty" 2>/dev/null) || return 0
   [ -n "$ps_id" ] || return 0
-  "$IT2" session set-status --session "$ps_id" --status "$ps_want" >/dev/null 2>&1 || return 0
+  if [ "$ps_want" = working ] && [ "$(registry_suspect "$1")" = 1 ]; then return 0; fi
+  if [ "$ps_want" = idle ] && [ "$(it2_background_tasks "$ps_id")" != 0 ]; then return 0; fi
+  read -r ps_dot ps_text <<EOF
+$(it2_colors_for "$ps_want")
+EOF
+  "$IT2" session set-status --session "$ps_id" --status "$ps_want" \
+    --dot-color "$ps_dot" --text-color "$ps_text" --detail "" >/dev/null 2>&1 || return 0
   mkdir -p "$SYNC" 2>/dev/null || return 0
   printf '%s\n' "$ps_want" >"$SYNC/$1" 2>/dev/null || true
 }
 
 sync_pass() {
   it2_ok || return 0
+  IT2_LIST=$("$IT2" session list 2>/dev/null)
   registry 2>/dev/null | while IFS="$(printf '\t')" read -r pid rst since name cwd prof; do
     push_status "$pid" "$rst"
   done
@@ -583,6 +643,7 @@ watch_pass() {
 cmd_sweep() {
   need_macos sweep
   reap
+  it2_ok && IT2_LIST=$("$IT2" session list 2>/dev/null)
   registry | while IFS="$(printf '\t')" read -r pid rst since name cwd prof; do
     tty=$(tty_of "$pid" 2>/dev/null) || tty=''
     [ -n "$tty" ] || continue
