@@ -369,22 +369,50 @@ pushed_of() { # pid -> what we last told iTerm2, if anything
 
 # The tty is optional: a caller that already walked the process chain for
 # this pid passes it rather than paying for the walk twice.
+# The session id iTerm2 stamped into the process environment at launch —
+# `TERM_SESSION_ID=w0t7p0:<uuid>` (and ITERM_SESSION_ID, same value). This is
+# how cc-status itself addresses a session, and it is the only mapping that
+# works for every process: Claude Code 2.1.27x runs helpers on ptys it creates
+# itself (`bg-pty-host`, `bg-spare`), whose tty is nothing iTerm2 has ever
+# heard of, and `it2 session list` was observed to omit live tabs outright
+# (9 rows against 11 tabs). `ps -E` shows the environment of the caller's own
+# processes without privilege; an id whose session has since closed simply
+# fails the later call and is skipped.
+it2_id_for_pid() { # pid -> iTerm2 session id, or nothing
+  ps -E -o command= -p "$1" 2>/dev/null | tr ' ' '\n' |
+    awk -F: '/^(ITERM|TERM)_SESSION_ID=/ { print $2; exit }'
+}
+
 push_status() { # pid registry-status [tty]
   it2_ok || return 0
   ps_want=$(it2_status_for "$2") || return 0
   [ "$(pushed_of "$1" 2>/dev/null || true)" = "$ps_want" ] && return 0
-  ps_tty=${3:-}
-  [ -n "$ps_tty" ] || ps_tty=$(tty_of "$1" 2>/dev/null) || return 0
-  [ -n "$ps_tty" ] || return 0
-  ps_id=$(it2_id_for_tty "$ps_tty" 2>/dev/null) || return 0
+  ps_id=$(it2_id_for_pid "$1")
+  if [ -z "$ps_id" ]; then
+    ps_tty=${3:-}
+    [ -n "$ps_tty" ] || ps_tty=$(tty_of "$1" 2>/dev/null) || return 0
+    [ -n "$ps_tty" ] || return 0
+    ps_id=$(it2_id_for_tty "$ps_tty" 2>/dev/null) || return 0
+  fi
   [ -n "$ps_id" ] || return 0
   if [ "$ps_want" = working ] && [ "$(registry_suspect "$1")" = 1 ]; then return 0; fi
-  if [ "$ps_want" = idle ] && [ "$(it2_background_tasks "$ps_id")" != 0 ]; then return 0; fi
+  # Registry idle while iTerm2 still counts background tasks: say what
+  # cc-status would say — working, with its own detail line — rather than
+  # decline. Declining leaves whatever iTerm2 showed last standing, and when
+  # that was `waiting` from a permission prompt the tab keeps lying.
+  ps_detail=""
+  if [ "$ps_want" = idle ]; then
+    ps_bg=$(it2_background_tasks "$ps_id")
+    if [ "$ps_bg" != 0 ]; then
+      ps_want=working
+      case $ps_bg in 1) ps_detail="1 background task running" ;; *) ps_detail="$ps_bg background tasks running" ;; esac
+    fi
+  fi
   read -r ps_dot ps_text <<EOF
 $(it2_colors_for "$ps_want")
 EOF
   "$IT2" session set-status --session "$ps_id" --status "$ps_want" \
-    --dot-color "$ps_dot" --text-color "$ps_text" --detail "" >/dev/null 2>&1 || return 0
+    --dot-color "$ps_dot" --text-color "$ps_text" --detail "$ps_detail" >/dev/null 2>&1 || return 0
   mkdir -p "$SYNC" 2>/dev/null || return 0
   printf '%s\n' "$ps_want" >"$SYNC/$1" 2>/dev/null || true
 }
@@ -529,6 +557,11 @@ cmd_hook() {
     busy|clear)
       paint "$tty" default
       forget "$owner"
+      # A tab going busy is exactly when iTerm2 may be left saying `waiting`
+      # (a permission was just granted), and with no alerting tab the watcher
+      # would otherwise not be running to correct it. ensure_watcher is one
+      # stat when a watcher is already up.
+      it2_ok && ensure_watcher
       ;;
     *)
       # Re-alerting a tab you had already seen makes it new again: the state
@@ -576,6 +609,7 @@ cmd_watch() {
       mkdir "$LOCK" 2>/dev/null || return 0
     fi
     printf '%s\n' "$$" >"$LOCK/pid" 2>/dev/null
+    : >"$LOCK/started" 2>/dev/null
     trap 'rm -rf "$LOCK" 2>/dev/null' EXIT INT TERM
   fi
 
@@ -583,6 +617,17 @@ cmd_watch() {
   while :; do
     watch_pass
     [ "$once" = 1 ] && return 0
+    # A resident watcher keeps the code it started with. After a deploy the
+    # hooks run the new script while the watcher, possibly for hours, runs the
+    # old one — observed: an hour-old watcher never reconciled iTerm2 because
+    # it predated the code that does. `started` is touched once when the
+    # watcher takes the lock (the pid file is rewritten whenever the lock is
+    # re-taken, so it cannot serve); a script newer than it means a newer
+    # attend exists — exit and let the next hook spawn one. find(1) does the
+    # comparison portably.
+    if [ "$once" = 0 ] && [ -n "$(find "$0" -newer "$LOCK/started" 2>/dev/null)" ]; then
+      rm -rf "$LOCK" 2>/dev/null; trap - EXIT INT TERM; return 0
+    fi
     if [ "$(unseen_count)" = 0 ] && [ "$(sync_pending)" = 0 ]; then
       # Drop the lock *before* the last look. Between deciding to exit and
       # actually dying, a hook in another session can paint a new unseen tab
@@ -599,6 +644,7 @@ cmd_watch() {
       # whoever took it do the work.
       mkdir "$LOCK" 2>/dev/null || return 0
       printf '%s\n' "$$" >"$LOCK/pid" 2>/dev/null
+      : >"$LOCK/started" 2>/dev/null
       trap 'rm -rf "$LOCK" 2>/dev/null' EXIT INT TERM
     fi
     sleep "$iv"

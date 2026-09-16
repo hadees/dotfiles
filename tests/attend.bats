@@ -55,6 +55,9 @@ setup() {
   # ps applies to both columns.
   cat > "$BIN/ps" <<'STUB'
 #!/bin/sh
+# `ps -E -o command= -p PID` is how attend reads a process's environment for
+# its iTerm2 session id; answer it from FAKE_PS_ENV (empty = no such vars).
+if [ "$1" = -E ]; then printf '%s\n' "${FAKE_PS_ENV:-claude}"; exit 0; fi
 n=0
 [ -f "$PS_STEP" ] && read -r n < "$PS_STEP"
 n=$((n + 1)); printf '%s\n' "$n" > "$PS_STEP"
@@ -573,15 +576,14 @@ it2_said() { [ "$1" = -- ] && shift; grep -F -- "$1" "$IT2LOG" >/dev/null 2>&1; 
   it2_said -- "--status idle --dot-color #00d75f --text-color #888888 --detail "
 }
 
-@test "sync: idle is not pushed while iTerm2 still counts background tasks" {
+@test "sync: idle is never pushed while iTerm2 still counts background tasks" {
   it2_stub "/dev/ttys900=SESSION-A"
   printf '2\n' >"$IT2BG"
   session "$HOME/.claude" one "$$" idle 1700000000000 alpha "$WORK/repo-one"
   FAKE_PS_CHAIN="1:ttys900" at sweep
   [ "$status" -eq 0 ]
-  run grep -c 'set-status' "$IT2LOG"
+  run grep -c -- '--status idle' "$IT2LOG"
   [ "$output" = 0 ]
-  [ ! -f "$STATE/sync/$$" ]
 }
 
 @test "sync: a busy row Claude Code stopped maintaining is not forwarded" {
@@ -600,6 +602,70 @@ it2_said() { [ "$1" = -- ] && shift; grep -F -- "$1" "$IT2LOG" >/dev/null 2>&1; 
   FAKE_PS_CHAIN="1:ttys900 1:ttys901" at sweep
   run grep -c '^session list' "$IT2LOG"
   [ "$output" = 1 ]
+}
+
+@test "sync: the iTerm2 session id comes from the process environment first" {
+  it2_stub "/dev/ttys999=WRONG-BY-TTY"
+  session "$HOME/.claude" one "$$" busy 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_ENV="claude TERM_SESSION_ID=w0t7p0:FROM-ENV" FAKE_PS_CHAIN="1:ttys900" at sweep
+  it2_said "--session FROM-ENV --status working"
+  run grep -c 'WRONG-BY-TTY' "$IT2LOG"
+  [ "$output" = 0 ]
+}
+
+@test "sync: without an id in the environment the tty listing is the fallback" {
+  it2_stub "/dev/ttys900=BY-TTY"
+  session "$HOME/.claude" one "$$" busy 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_ENV="claude" FAKE_PS_CHAIN="1:ttys900" at sweep
+  it2_said "--session BY-TTY --status working"
+}
+
+@test "sync: idle with background tasks is reported as working, with cc-status's detail" {
+  it2_stub "/dev/ttys900=SESSION-A"
+  printf '2\n' >"$IT2BG"
+  session "$HOME/.claude" one "$$" idle 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  it2_said "--status working --dot-color #ff9500 --text-color #ff9500 --detail 2 background tasks running"
+  [ "$(cat "$STATE/sync/$$")" = working ]
+}
+
+@test "hook: a busy event starts the watcher when there is an iTerm2 to reconcile" {
+  # setup leaves a lock that stands in for a running watcher; drop it so the
+  # hook has to spawn one. The spawned watcher finds nothing pending and
+  # exits at its first pass, so nothing lingers.
+  unlock
+  it2_stub "/dev/ttys900=SESSION-A"
+  FAKE_PS_CHAIN="1:ttys900" at hook UserPromptSubmit
+  [ "$status" -eq 0 ]
+  i=0; while [ ! -s "$LOCK/pid" ] && [ $i -lt 30 ]; do sleep 0.1; i=$((i+1)); done
+  [ -s "$LOCK/pid" ]
+  [ "$(cat "$LOCK/pid")" != "$$" ]
+}
+
+@test "hook: a busy event does not start the watcher when there is no iTerm2" {
+  unlock
+  export ATTEND_IT2="$BATS_TEST_TMPDIR/no-such-it2"
+  FAKE_PS_CHAIN="1:ttys900" at hook UserPromptSubmit
+  [ "$status" -eq 0 ]
+  sleep 0.5
+  [ ! -d "$LOCK" ]
+}
+
+@test "watch: a watcher exits when a newer attend is on disk, so the next hook respawns it" {
+  unlock
+  cp "$AT" "$BATS_TEST_TMPDIR/attend-copy"
+  tab "$$" waiting 0 /dev/ttys900
+  # No iTerm2 in this test: a real it2 would otherwise be called every pass.
+  export ATTEND_IT2="$BATS_TEST_TMPDIR/no-such-it2"
+  git config --file "$GIT_CONFIG_GLOBAL" attend.interval 1
+  ( sh "$BATS_TEST_TMPDIR/attend-copy" watch </dev/null >/dev/null 2>&1 & echo $! >"$BATS_TEST_TMPDIR/wpid" )
+  i=0; while [ ! -f "$LOCK/started" ] && [ $i -lt 30 ]; do sleep 0.1; i=$((i+1)); done
+  [ -f "$LOCK/started" ]
+  sleep 1.1; touch "$BATS_TEST_TMPDIR/attend-copy"
+  # One pass plus one interval is enough; allow for a floored interval.
+  i=0; while [ -d "$LOCK" ] && [ $i -lt 80 ]; do sleep 0.1; i=$((i+1)); done
+  [ ! -d "$LOCK" ]
+  kill "$(cat "$BATS_TEST_TMPDIR/wpid")" 2>/dev/null || true
 }
 
 @test "sync: a session iTerm2 does not know about is left alone" {
