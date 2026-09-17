@@ -15,7 +15,8 @@ setup() {
   export GIT_CONFIG_SYSTEM=/dev/null
   export GIT_CONFIG_NOSYSTEM=1
   git config --file "$GIT_CONFIG_GLOBAL" init.defaultBranch main
-  unset CLAUDE_CONFIG_DIR XDG_STATE_HOME
+  # CI runners export XDG_CONFIG_HOME, which would move the systemd unit.
+  unset CLAUDE_CONFIG_DIR XDG_STATE_HOME XDG_CONFIG_HOME
 
   PB="$BATS_TEST_DIRNAME/../bin/executable_postbox"
   export POSTBOX_STATE="$BATS_TEST_TMPDIR/state"
@@ -26,6 +27,7 @@ setup() {
   mkdir -p "$BIN"
   export AM_LOG="$BATS_TEST_TMPDIR/am.log"
   export LAUNCHCTL_LOG="$BATS_TEST_TMPDIR/launchctl.log"
+  export SYSTEMCTL_LOG="$BATS_TEST_TMPDIR/systemctl.log"
   export CLAUDE_LOG="$BATS_TEST_TMPDIR/claude.log"
   export CURL_LOG="$BATS_TEST_TMPDIR/curl.log"
   export FAKE_INBOX=""
@@ -55,6 +57,13 @@ STUB
 #!/bin/sh
 printf '%s\n' "$*" >> "$LAUNCHCTL_LOG"
 case $1 in print) exit 1 ;; esac
+exit 0
+STUB
+  # systemctl: a Linux runner has a real one whose user session answers, so
+  # the install would really enable a unit there. Record and succeed.
+  cat > "$BIN/systemctl" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
 exit 0
 STUB
   cat > "$BIN/claude" <<'STUB'
@@ -237,6 +246,7 @@ payload() { printf '%s' "$1" | "$PB" "${@:2}"; }
   [ -f "$unit" ]
   grep -q '^ExecStart=.*serve-http --host 127.0.0.1 --port 8765 --no-tui --no-auth$' "$unit"
   grep -q '^Environment=APP_ENVIRONMENT=production$' "$unit"
+  grep -q '^--user enable --now postbox$' "$SYSTEMCTL_LOG"
   [ ! -f "$HOME/Library/LaunchAgents/local.postbox.plist" ]
 }
 
