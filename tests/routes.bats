@@ -169,7 +169,45 @@ row_for() {
   [ "$status" -eq 0 ]
   [[ "$output" != *"HERMES"* ]]
   [[ "$output" != *"TABS"* ]]
-  [[ "$output" == *"nothing configured anywhere, columns dropped: hermes, tabs"* ]]
+  [[ "$output" != *"MAIL"* ]]
+  [[ "$output" == *"nothing configured anywhere, columns dropped: hermes, tabs, mail"* ]]
+}
+
+# The MAIL column is postbox's own answer for the directory (name, then its
+# source), so the table cannot disagree with what a session registers as.
+# A stub stands in for the script: no daemon, no vocabulary, no real names.
+stub_postbox() {
+  cat > "$BATS_TEST_TMPDIR/bin/postbox" <<'STUB'
+#!/bin/sh
+[ "$1" = name ] && [ "$2" = --source ] || exit 1
+case ${PWD##*/} in
+  work-thing) printf 'AmberLake\tpin\n' ;;
+  personal-thing) printf 'NavyHawk\tpin-invalid\n' ;;
+  *) printf 'TealHeron\thash\n' ;;
+esac
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/postbox"
+}
+
+@test "mail: the column comes from postbox name --source, marking pins and rejected pins" {
+  make_repo work-thing octo-work-org/work-thing
+  make_repo personal-thing octo-personal/personal-thing
+  make_repo unpinned other-owner/unpinned
+  stub_postbox
+  routes
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"MAIL"* ]]
+  [[ "$(row_for work-thing)" == *" AmberLake* "* ]]
+  [[ "$(row_for personal-thing)" == *" NavyHawk! "* ]]
+  [[ "$(row_for unpinned)" == *" TealHeron "* ]]
+}
+
+@test "mail: --tsv carries the name as the tenth field, after gate" {
+  make_repo work-thing octo-work-org/work-thing
+  stub_postbox
+  routes --tsv
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | cut -f10)" = "AmberLake*" ]
 }
 
 @test "tabs: the column comes from worktabs' own plan, including its group" {
@@ -236,7 +274,7 @@ row_for() {
   [[ "$output" != *"projects under"* ]]
   local n
   n=$(printf '%s\n' "$output" | awk -F'\t' '{print NF}')
-  [ "$n" -eq 9 ]
+  [ "$n" -eq 10 ]
   [ "$(printf '%s\n' "$output" | cut -f1,2,6,7)" = "$(printf 'work-thing\twork-account\t-\t-')" ]
 }
 

@@ -66,6 +66,7 @@ brew 'lua' # Powerful, lightweight programming language
 brew 'lynx' # Text-based web browser
 brew 'mackup' # Keep your Mac's application settings in sync
 brew 'mas' # Mac App Store command line interface
+brew 'minisign' # Signs files and verifies signatures with Ed25519 keys
 brew 'mkcert' # Simple local HTTPS development certificates
 brew 'moreutils' # Collection of tools that nobody wrote when UNIX was young
 brew 'mpfr' # C library for multiple-precision floating-point computations
