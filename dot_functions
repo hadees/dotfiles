@@ -384,6 +384,37 @@ function claude() {
 			unset OPEN_AS_ALIAS;
 			[[ ${BROWSER:t} == open-as ]] && unset BROWSER;
 		fi;
+		# Subagents default to Sonnet, in every profile. A subagent's model
+		# resolves per-invocation argument → its own definition's `model:` →
+		# this variable → the main conversation's model, so it moves only the
+		# agents that name no model of their own — custom definitions without
+		# one, and the built-in general-purpose agent; a definition asking for
+		# haiku or fable still gets it. It does NOT move the built-in Explore
+		# and Plan agents, which inherit the main conversation's model
+		# (documented); the shared memory says to use scout-haiku and
+		# plan-fable in their place. Forcing them (CLAUDE_CODE_SUBAGENT_MODEL_FORCE)
+		# would also override every definition's own `model:`, so it is not set.
+		# What the default buys is less the per-token rate than where the
+		# tokens land: a subagent's tool output stays in its own context, so a
+		# long search costs the orchestrator a summary instead of a transcript
+		# it re-sends on every later turn.
+		# Subagents get a five-minute prompt-cache TTL by default where the
+		# main conversation gets an hour, and a session drawing on usage
+		# credits drops the main conversation to five minutes as well; the two
+		# TTL exports pin the hour (the only other legal value is 5m).
+		# PONYTAIL_SUBAGENT_MATCHER scopes the ponytail plugin's ruleset, when
+		# that plugin is installed, to the seats that write code — a read-only
+		# scout has nothing to keep small.
+		# These live here and not in each profile's settings.json because each
+		# of those files is owned by that profile's private overlay, and a
+		# default meant for every profile would have to be repeated in each
+		# overlay and kept in step by hand. The wrapper is the one surface all
+		# profiles share. An already-set value wins, so a single launch can
+		# still override any of them.
+		export CLAUDE_CODE_SUBAGENT_MODEL="${CLAUDE_CODE_SUBAGENT_MODEL:-sonnet}";
+		export CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL="${CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL:-1h}";
+		export CLAUDE_CODE_PROMPT_CACHE_TTL="${CLAUDE_CODE_PROMPT_CACHE_TTL:-1h}";
+		export PONYTAIL_SUBAGENT_MATCHER="${PONYTAIL_SUBAGENT_MATCHER:-^(work-|unstick-)}";
 		exec command claude "$@";
 	)
 }
