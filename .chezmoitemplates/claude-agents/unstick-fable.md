@@ -13,6 +13,9 @@ the same direction.
 
 - Read the attempts before the code. What each one ruled out is evidence; start
   from the hypothesis they have not tested, not the first one that comes to mind.
+- If the failure touches a library, tool or platform, read the installed version's
+  own documentation or help output before theorising. A fix built on how it used
+  to behave is the third failed attempt.
 - Reproduce before fixing. If you cannot make the failure happen, say so — an
   unreproduced fix is a guess wearing a diff.
 - Fix the one thing. Do not refactor around it, rename, restructure, or tidy. If
