@@ -55,6 +55,9 @@ setup() {
   # ps applies to both columns.
   cat > "$BIN/ps" <<'STUB'
 #!/bin/sh
+# `ps -E -o command= -p PID` is how attend reads a process's environment for
+# its iTerm2 session id; answer it from FAKE_PS_ENV (empty = no such vars).
+if [ "$1" = -E ]; then printf '%s\n' "${FAKE_PS_ENV:-claude}"; exit 0; fi
 n=0
 [ -f "$PS_STEP" ] && read -r n < "$PS_STEP"
 n=$((n + 1)); printf '%s\n' "$n" > "$PS_STEP"
@@ -474,6 +477,228 @@ esc() { printf '\033'; }
   FAKE_PS_CHAIN="" at sweep
   [ "$status" -eq 0 ]
   [ -z "$(ls "$TABS")" ]
+}
+
+# --- iTerm2's own session status --------------------------------------------
+#
+# iTerm2 3.7 shows a Claude status per session, fed by the cc-status hook its
+# installer writes. That hook latches `waiting` at a permission prompt and has
+# nothing to clear it with — approving fires no hook, so its next signal is the
+# tool *finishing*. attend forwards the registry status, which was right all
+# along. A stub `it2` records what it was told; no real session is addressed.
+
+it2_stub() { # "tty=id" pairs the fake iTerm2 knows about
+  printf '%s\n' "$@" >"$BATS_TEST_TMPDIR/it2.map"
+  cat >"$BIN/it2" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >>"$IT2LOG"
+if [ "$1 $2" = "session get-background-tasks" ]; then
+  cat "$IT2BG" 2>/dev/null || echo 0
+  exit 0
+fi
+if [ "$1 $2" = "session list" ]; then
+  while IFS='=' read -r t id; do
+    [ -n "$t" ] || continue
+    # iTerm2 prints the tty with its slashes escaped; the parser must undo it.
+    esc=$(printf '%s' "$t" | sed 's|/|\\/|g')
+    printf '%s\tname\tname\t171x46\t%s\n' "$id" "$esc"
+  done <"$IT2MAP"
+fi
+exit 0
+STUB
+  chmod +x "$BIN/it2"
+  export ATTEND_IT2="$BIN/it2"
+  export IT2LOG="$BATS_TEST_TMPDIR/it2.log"
+  export IT2MAP="$BATS_TEST_TMPDIR/it2.map"
+  export IT2BG="$BATS_TEST_TMPDIR/it2.bg"
+  : >"$IT2LOG"
+}
+
+# The registry helper writes only statusUpdatedAt. A frozen row (#87131) has
+# updatedAt newer than statusUpdatedAt while status stays busy; this writes one.
+frozen_session() { # profile-dir id pid
+  mkdir -p "$1/sessions"
+  cat > "$1/sessions/$2.json" <<EOF
+{ "pid": $3, "sessionId": "fixture-$2", "status": "busy",
+  "statusUpdatedAt": 1700000000000, "updatedAt": 1700000009000,
+  "name": "frozen", "cwd": "$WORK/repo-one" }
+EOF
+}
+
+# `--` matters: every needle here starts with `--status`, which grep would
+# otherwise read as one of its own options and fail with status 2.
+it2_said() { [ "$1" = -- ] && shift; grep -F -- "$1" "$IT2LOG" >/dev/null 2>&1; }
+
+@test "sync: a busy session is reported to iTerm2 as working" {
+  it2_stub "/dev/ttys900=SESSION-A"
+  session "$HOME/.claude" one "$$" busy 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  [ "$status" -eq 0 ]
+  it2_said "set-status --session SESSION-A --status working"
+}
+
+@test "sync: waiting and idle are reported with iTerm2's own words" {
+  it2_stub "/dev/ttys900=SESSION-A"
+  session "$HOME/.claude" one "$$" waiting 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  it2_said "--status waiting"
+  rm -f "$STATE/sync/$$"
+  session "$HOME/.claude" one "$$" idle 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  it2_said "--status idle"
+}
+
+@test "sync: a shell session reads as idle, not as whatever it was last" {
+  it2_stub "/dev/ttys900=SESSION-A"
+  session "$HOME/.claude" one "$$" shell 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  it2_said "--status idle"
+}
+
+@test "sync: the same status is not pushed twice" {
+  it2_stub "/dev/ttys900=SESSION-A"
+  session "$HOME/.claude" one "$$" busy 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  : >"$IT2LOG"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  run grep -c 'set-status' "$IT2LOG"
+  [ "$output" = 0 ]
+}
+
+@test "sync: the whole field set is pushed, in cc-status's colours, with the detail cleared" {
+  it2_stub "/dev/ttys900=SESSION-A"
+  session "$HOME/.claude" one "$$" busy 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  it2_said -- "--status working --dot-color #ff9500 --text-color #ff9500 --detail "
+  rm -f "$STATE/sync/$$"; : >"$IT2LOG"
+  session "$HOME/.claude" one "$$" idle 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  it2_said -- "--status idle --dot-color #00d75f --text-color #888888 --detail "
+}
+
+@test "sync: idle is never pushed while iTerm2 still counts background tasks" {
+  it2_stub "/dev/ttys900=SESSION-A"
+  printf '2\n' >"$IT2BG"
+  session "$HOME/.claude" one "$$" idle 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  [ "$status" -eq 0 ]
+  run grep -c -- '--status idle' "$IT2LOG"
+  [ "$output" = 0 ]
+}
+
+@test "sync: a busy row Claude Code stopped maintaining is not forwarded" {
+  it2_stub "/dev/ttys900=SESSION-A"
+  frozen_session "$HOME/.claude" one "$$"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  [ "$status" -eq 0 ]
+  run grep -c 'set-status' "$IT2LOG"
+  [ "$output" = 0 ]
+}
+
+@test "sync: the session listing is fetched once per sweep, not once per session" {
+  it2_stub "/dev/ttys900=SESSION-A" "/dev/ttys901=SESSION-B"
+  session "$HOME/.claude" one "$$" busy 1700000000000 alpha "$WORK/repo-one"
+  session "$HOME/.claude" two "$PPID" busy 1700000000000 beta "$WORK/repo-two"
+  FAKE_PS_CHAIN="1:ttys900 1:ttys901" at sweep
+  run grep -c '^session list' "$IT2LOG"
+  [ "$output" = 1 ]
+}
+
+@test "sync: the iTerm2 session id comes from the process environment first" {
+  it2_stub "/dev/ttys999=WRONG-BY-TTY"
+  session "$HOME/.claude" one "$$" busy 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_ENV="claude TERM_SESSION_ID=w0t7p0:FROM-ENV" FAKE_PS_CHAIN="1:ttys900" at sweep
+  it2_said "--session FROM-ENV --status working"
+  run grep -c 'WRONG-BY-TTY' "$IT2LOG"
+  [ "$output" = 0 ]
+}
+
+@test "sync: without an id in the environment the tty listing is the fallback" {
+  it2_stub "/dev/ttys900=BY-TTY"
+  session "$HOME/.claude" one "$$" busy 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_ENV="claude" FAKE_PS_CHAIN="1:ttys900" at sweep
+  it2_said "--session BY-TTY --status working"
+}
+
+@test "sync: idle with background tasks is reported as working, with cc-status's detail" {
+  it2_stub "/dev/ttys900=SESSION-A"
+  printf '2\n' >"$IT2BG"
+  session "$HOME/.claude" one "$$" idle 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  it2_said "--status working --dot-color #ff9500 --text-color #ff9500 --detail 2 background tasks running"
+  [ "$(cat "$STATE/sync/$$")" = working ]
+}
+
+@test "hook: a busy event starts the watcher when there is an iTerm2 to reconcile" {
+  # setup leaves a lock that stands in for a running watcher; drop it so the
+  # hook has to spawn one. Another tab — on a LIVE pid, or the first pass
+  # reaps it — is left unseen so the spawned watcher has a reason to stay up
+  # long enough to be observed: with nothing pending it takes the lock and
+  # releases it again inside its first pass, which on a fast runner is over
+  # before a 100ms poll can see the pid file. $$ is not the hook's owner (the
+  # ps chain ends at pid 1), so the busy hook does not forget it. Teardown
+  # removes the state, and the watcher exits at its next pass.
+  unlock
+  tab "$$" waiting 0 /dev/ttys901
+  it2_stub "/dev/ttys900=SESSION-A"
+  FAKE_PS_CHAIN="1:ttys900" at hook UserPromptSubmit
+  [ "$status" -eq 0 ]
+  i=0; while [ ! -s "$LOCK/pid" ] && [ $i -lt 30 ]; do sleep 0.1; i=$((i+1)); done
+  [ -s "$LOCK/pid" ]
+  [ "$(cat "$LOCK/pid")" != "$$" ]
+}
+
+@test "hook: a busy event does not start the watcher when there is no iTerm2" {
+  unlock
+  export ATTEND_IT2="$BATS_TEST_TMPDIR/no-such-it2"
+  FAKE_PS_CHAIN="1:ttys900" at hook UserPromptSubmit
+  [ "$status" -eq 0 ]
+  sleep 0.5
+  [ ! -d "$LOCK" ]
+}
+
+@test "watch: a watcher exits when a newer attend is on disk, so the next hook respawns it" {
+  unlock
+  cp "$AT" "$BATS_TEST_TMPDIR/attend-copy"
+  tab "$$" waiting 0 /dev/ttys900
+  # No iTerm2 in this test: a real it2 would otherwise be called every pass.
+  export ATTEND_IT2="$BATS_TEST_TMPDIR/no-such-it2"
+  git config --file "$GIT_CONFIG_GLOBAL" attend.interval 1
+  ( sh "$BATS_TEST_TMPDIR/attend-copy" watch </dev/null >/dev/null 2>&1 & echo $! >"$BATS_TEST_TMPDIR/wpid" )
+  # Generous bounds: the marker is written before the first pass, so these
+  # only matter on a loaded runner, where a 3s wait has flaked.
+  i=0; while [ ! -f "$LOCK/started" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done
+  [ -f "$LOCK/started" ]
+  sleep 1.1; touch "$BATS_TEST_TMPDIR/attend-copy"
+  i=0; while [ -d "$LOCK" ] && [ $i -lt 150 ]; do sleep 0.1; i=$((i+1)); done
+  [ ! -d "$LOCK" ]
+  kill "$(cat "$BATS_TEST_TMPDIR/wpid")" 2>/dev/null || true
+}
+
+@test "sync: a session iTerm2 does not know about is left alone" {
+  it2_stub "/dev/ttys999=SOMEONE-ELSE"
+  session "$HOME/.claude" one "$$" busy 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  [ "$status" -eq 0 ]
+  run grep -c 'set-status' "$IT2LOG"
+  [ "$output" = 0 ]
+}
+
+@test "sync: with no it2 present, sweep still works and reports nothing" {
+  export ATTEND_IT2="$BATS_TEST_TMPDIR/no-such-it2"
+  session "$HOME/.claude" one "$$" busy 1700000000000 alpha "$WORK/repo-one"
+  FAKE_PS_CHAIN="1:ttys900" at sweep
+  [ "$status" -eq 0 ]
+  [ ! -d "$STATE/sync" ]
+}
+
+@test "sync: a record whose process is gone is reaped" {
+  it2_stub "/dev/ttys900=SESSION-A"
+  mkdir -p "$STATE/sync"
+  printf 'working\n' >"$STATE/sync/$(dead_pid)"
+  tab "$(dead_pid)" waiting 0 /dev/ttys900
+  at sweep
+  [ ! -f "$STATE/sync/$(dead_pid)" ]
 }
 
 # --- the session registry ---------------------------------------------------

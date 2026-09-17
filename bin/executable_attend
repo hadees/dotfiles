@@ -265,6 +265,186 @@ load() { # pid -> sets t_st t_seen t_tty t_since; returns 1 if unknown
 
 forget() { rm -f "$TABS/$1" 2>/dev/null; }
 
+# --- iTerm2's own session status -------------------------------------------
+#
+# iTerm2 3.7 shows a per-session Claude status (working/waiting/idle), fed by
+# the cc-status hook its "Install Claude Code Integration" writes. That hook
+# latches `waiting` at a permission prompt and has nothing to clear it with:
+# approving fires no hook at all, so its next signal is PostToolUse — the tool
+# *finishing*. A thirty-minute command therefore reads "waiting" for thirty
+# minutes, while Claude Code's own registry has said `busy` the whole time.
+#
+# The truth is already published and nothing was forwarding it, so this does.
+# It pushes only when the registry disagrees with what we last pushed, and
+# that disagreement is also what keeps the watcher alive: there is work to do
+# until every session agrees, and then there is not. Entirely optional — with
+# no iTerm2, or an older one without `it2`, every call here is a no-op and
+# attend's own tab colours are unaffected.
+IT2=${ATTEND_IT2:-/Applications/iTerm.app/Contents/Resources/utilities/it2}
+SYNC="$STATE/sync"
+
+it2_ok() { [ -x "$IT2" ]; }
+
+# tty -> iTerm2 session id. `it2 session list` is tab-separated and prints the
+# tty with its slashes escaped.
+# A caller looping over many sessions captures the listing once into
+# IT2_LIST; each it2 round trip is ~0.2s (no ITERM2_COOKIE reaches a hook, so
+# the CLI authenticates through osascript every time), and one listing per
+# pass is the difference between a sweep that is quick and one that is not.
+it2_id_for_tty() {
+  [ -n "${1:-}" ] || return 1
+  if [ -n "${IT2_LIST:-}" ]; then printf '%s\n' "$IT2_LIST"; else "$IT2" session list 2>/dev/null; fi | awk -F'\t' -v want="$1" '
+    { t = $NF; gsub(/\\/, "", t); if (t == want) { print $1; exit } }'
+}
+
+# Registry status -> the word iTerm2 uses. iTerm2 has three states where the
+# registry has four, and `shell` — you have dropped to a shell inside the
+# session — is reported as `idle`, because what it means to a tab bar is the
+# same thing: Claude is not working and is not blocked on you. Leaving it
+# unmapped instead would be the very staleness this exists to fix, since the
+# last status pushed would stand until the session did something else.
+it2_status_for() {
+  case $1 in
+    busy)          printf 'working\n' ;;
+    waiting)       printf 'waiting\n' ;;
+    idle|shell)    printf 'idle\n' ;;
+    *)             return 1 ;;
+  esac
+}
+
+# The colours cc-status paints for each word (cc-status/Sources/main.swift).
+# `set-status` only touches the fields it is handed, so a push of the status
+# word alone would leave the dot and text in the previous state's colour and
+# the previous detail line ("Allow Bash: …?") standing under a new word.
+it2_colors_for() { # status -> "dot text"
+  case $1 in
+    working) printf '#ff9500 #ff9500\n' ;;
+    waiting) printf '#5f87ff #5f87ff\n' ;;
+    idle)    printf '#00d75f #888888\n' ;;
+  esac
+}
+
+# cc-status keeps a running count of background tasks in iTerm2's memory and
+# deliberately reports `working` while it is non-zero, so a lull between
+# subagents does not read as finished (iTerm2 commit 701d0b66). The registry's
+# `status` means "process busy right now", which can say idle in exactly that
+# lull; pushing it would flip the workgroup watchers, notify-on-change alerts
+# and dock badge that key off the status text. So idle is never pushed while
+# iTerm2 holds a count.
+it2_background_tasks() { # session-id -> count (0 when unknown)
+  bt=$("$IT2" session get-background-tasks -s "$1" 2>/dev/null | tr -dc '0-9')
+  printf '%s\n' "${bt:-0}"
+}
+
+# A registry row whose `updatedAt` is newer than its `statusUpdatedAt` is a
+# status Claude Code stopped maintaining: parking a mid-flight turn leaves
+# `busy` frozen for the life of the process (anthropics/claude-code#87131,
+# maintainer-confirmed), and a genuine transition writes both stamps together.
+# Forwarding it would hold "working" forever, where cc-status — which saw the
+# Stop — shows idle. Prints 1 when the row is not to be trusted.
+registry_suspect() { # pid -> 0|1
+  command -v python3 >/dev/null 2>&1 || { printf '0\n'; return 0; }
+  profile_dirs | python3 -c '
+import glob, json, os, sys
+pid = sys.argv[1]
+for d in sys.stdin.read().split():
+    for f in glob.glob(os.path.join(d, "sessions", "*.json")):
+        try:
+            r = json.load(open(f))
+        except Exception:
+            continue
+        if str(r.get("pid")) != pid:
+            continue
+        su, u = r.get("statusUpdatedAt") or 0, r.get("updatedAt") or 0
+        print(1 if (r.get("status") == "busy" and u > su) else 0); sys.exit()
+print(0)
+' "$1" 2>/dev/null || printf '0\n'
+}
+
+pushed_of() { # pid -> what we last told iTerm2, if anything
+  [ -f "$SYNC/$1" ] || return 1
+  read -r p_st <"$SYNC/$1" 2>/dev/null || return 1
+  printf '%s\n' "${p_st:-}"
+}
+
+# The tty is optional: a caller that already walked the process chain for
+# this pid passes it rather than paying for the walk twice.
+# The session id iTerm2 stamped into the process environment at launch —
+# `TERM_SESSION_ID=w0t7p0:<uuid>` (and ITERM_SESSION_ID, same value). This is
+# how cc-status itself addresses a session, and it is the only mapping that
+# works for every process: Claude Code 2.1.27x runs helpers on ptys it creates
+# itself (`bg-pty-host`, `bg-spare`), whose tty is nothing iTerm2 has ever
+# heard of, and `it2 session list` was observed to omit live tabs outright
+# (9 rows against 11 tabs). `ps -E` shows the environment of the caller's own
+# processes without privilege; an id whose session has since closed simply
+# fails the later call and is skipped.
+it2_id_for_pid() { # pid -> iTerm2 session id, or nothing
+  ps -E -o command= -p "$1" 2>/dev/null | tr ' ' '\n' |
+    awk -F: '/^(ITERM|TERM)_SESSION_ID=/ { print $2; exit }'
+}
+
+push_status() { # pid registry-status [tty]
+  it2_ok || return 0
+  ps_want=$(it2_status_for "$2") || return 0
+  [ "$(pushed_of "$1" 2>/dev/null || true)" = "$ps_want" ] && return 0
+  ps_id=$(it2_id_for_pid "$1")
+  if [ -z "$ps_id" ]; then
+    ps_tty=${3:-}
+    [ -n "$ps_tty" ] || ps_tty=$(tty_of "$1" 2>/dev/null) || return 0
+    [ -n "$ps_tty" ] || return 0
+    ps_id=$(it2_id_for_tty "$ps_tty" 2>/dev/null) || return 0
+  fi
+  [ -n "$ps_id" ] || return 0
+  if [ "$ps_want" = working ] && [ "$(registry_suspect "$1")" = 1 ]; then return 0; fi
+  # Registry idle while iTerm2 still counts background tasks: say what
+  # cc-status would say — working, with its own detail line — rather than
+  # decline. Declining leaves whatever iTerm2 showed last standing, and when
+  # that was `waiting` from a permission prompt the tab keeps lying.
+  ps_detail=""
+  if [ "$ps_want" = idle ]; then
+    ps_bg=$(it2_background_tasks "$ps_id")
+    if [ "$ps_bg" != 0 ]; then
+      ps_want=working
+      case $ps_bg in 1) ps_detail="1 background task running" ;; *) ps_detail="$ps_bg background tasks running" ;; esac
+    fi
+  fi
+  read -r ps_dot ps_text <<EOF
+$(it2_colors_for "$ps_want")
+EOF
+  "$IT2" session set-status --session "$ps_id" --status "$ps_want" \
+    --dot-color "$ps_dot" --text-color "$ps_text" --detail "$ps_detail" >/dev/null 2>&1 || return 0
+  mkdir -p "$SYNC" 2>/dev/null || return 0
+  printf '%s\n' "$ps_want" >"$SYNC/$1" 2>/dev/null || true
+}
+
+sync_pass() {
+  it2_ok || return 0
+  IT2_LIST=$("$IT2" session list 2>/dev/null)
+  registry 2>/dev/null | while IFS="$(printf '\t')" read -r pid rst since name cwd prof; do
+    push_status "$pid" "$rst"
+  done
+}
+
+# How many live sessions iTerm2 is still being told the wrong thing about.
+# Printed, not returned, because the loop runs in a pipeline subshell.
+sync_pending() {
+  it2_ok || { printf '0\n'; return 0; }
+  registry 2>/dev/null | while IFS="$(printf '\t')" read -r pid rst since name cwd prof; do
+    sp_want=$(it2_status_for "$rst") || continue
+    [ "$(pushed_of "$pid" 2>/dev/null || true)" = "$sp_want" ] || printf 'x\n'
+  done | wc -l | tr -d ' '
+}
+
+sync_reap() {
+  [ -d "$SYNC" ] || return 0
+  for f in "$SYNC"/*; do
+    [ -f "$f" ] || continue
+    p=${f##*/}
+    case $p in ''|*[!0-9]*) rm -f "$f" 2>/dev/null; continue ;; esac
+    kill -0 "$p" 2>/dev/null || rm -f "$f" 2>/dev/null
+  done
+}
+
 # Drop state for processes that are gone, clearing their tab on the way out.
 #
 # The watcher does this too, but it only runs while something is unseen, so a
@@ -285,6 +465,7 @@ reap() {
     [ -n "${r_tty:-}" ] && paint "$r_tty" default
     rm -f "$f" 2>/dev/null
   done
+  sync_reap
 }
 
 unseen_count() {
@@ -376,6 +557,11 @@ cmd_hook() {
     busy|clear)
       paint "$tty" default
       forget "$owner"
+      # A tab going busy is exactly when iTerm2 may be left saying `waiting`
+      # (a permission was just granted), and with no alerting tab the watcher
+      # would otherwise not be running to correct it. ensure_watcher is one
+      # stat when a watcher is already up.
+      it2_ok && ensure_watcher
       ;;
     *)
       # Re-alerting a tab you had already seen makes it new again: the state
@@ -423,6 +609,7 @@ cmd_watch() {
       mkdir "$LOCK" 2>/dev/null || return 0
     fi
     printf '%s\n' "$$" >"$LOCK/pid" 2>/dev/null
+    : >"$LOCK/started" 2>/dev/null
     trap 'rm -rf "$LOCK" 2>/dev/null' EXIT INT TERM
   fi
 
@@ -430,7 +617,18 @@ cmd_watch() {
   while :; do
     watch_pass
     [ "$once" = 1 ] && return 0
-    if [ "$(unseen_count)" = 0 ]; then
+    # A resident watcher keeps the code it started with. After a deploy the
+    # hooks run the new script while the watcher, possibly for hours, runs the
+    # old one — observed: an hour-old watcher never reconciled iTerm2 because
+    # it predated the code that does. `started` is touched once when the
+    # watcher takes the lock (the pid file is rewritten whenever the lock is
+    # re-taken, so it cannot serve); a script newer than it means a newer
+    # attend exists — exit and let the next hook spawn one. find(1) does the
+    # comparison portably.
+    if [ "$once" = 0 ] && [ -n "$(find "$0" -newer "$LOCK/started" 2>/dev/null)" ]; then
+      rm -rf "$LOCK" 2>/dev/null; trap - EXIT INT TERM; return 0
+    fi
+    if [ "$(unseen_count)" = 0 ] && [ "$(sync_pending)" = 0 ]; then
       # Drop the lock *before* the last look. Between deciding to exit and
       # actually dying, a hook in another session can paint a new unseen tab
       # and find `watcher_running` still true, skip spawning, and leave that
@@ -441,11 +639,12 @@ cmd_watch() {
       # with none.
       rm -rf "$LOCK" 2>/dev/null
       trap - EXIT INT TERM
-      [ "$(unseen_count)" = 0 ] && return 0
+      [ "$(unseen_count)" = 0 ] && [ "$(sync_pending)" = 0 ] && return 0
       # Something arrived. Take the lock back if it is still free, else let
       # whoever took it do the work.
       mkdir "$LOCK" 2>/dev/null || return 0
       printf '%s\n' "$$" >"$LOCK/pid" 2>/dev/null
+      : >"$LOCK/started" 2>/dev/null
       trap 'rm -rf "$LOCK" 2>/dev/null' EXIT INT TERM
     fi
     sleep "$iv"
@@ -453,6 +652,10 @@ cmd_watch() {
 }
 
 watch_pass() {
+  # iTerm2's status is reconciled first and unconditionally: it is wrong
+  # exactly when no tab is alerting (a granted permission, tool still
+  # running), so gating it on $TABS existing would skip the case it is for.
+  sync_pass
   [ -d "$TABS" ] || return 0
   focus=$(focused_tty) || focus=''
   for f in "$TABS"/*; do
@@ -486,9 +689,11 @@ watch_pass() {
 cmd_sweep() {
   need_macos sweep
   reap
+  it2_ok && IT2_LIST=$("$IT2" session list 2>/dev/null)
   registry | while IFS="$(printf '\t')" read -r pid rst since name cwd prof; do
     tty=$(tty_of "$pid" 2>/dev/null) || tty=''
     [ -n "$tty" ] || continue
+    push_status "$pid" "$rst" "$tty"
     case $rst in
       waiting|idle) ;;
       *) paint "$tty" default; forget "$pid"; continue ;;
