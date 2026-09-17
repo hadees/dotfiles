@@ -631,9 +631,13 @@ it2_said() { [ "$1" = -- ] && shift; grep -F -- "$1" "$IT2LOG" >/dev/null 2>&1; 
 
 @test "hook: a busy event starts the watcher when there is an iTerm2 to reconcile" {
   # setup leaves a lock that stands in for a running watcher; drop it so the
-  # hook has to spawn one. The spawned watcher finds nothing pending and
-  # exits at its first pass, so nothing lingers.
+  # hook has to spawn one. Another tab is left unseen so the spawned watcher
+  # has a reason to stay up long enough to be observed: with nothing pending
+  # it takes the lock and releases it again inside its first pass, which on
+  # a fast runner is over before a 100ms poll can see the pid file. Teardown
+  # removes the state, and the watcher exits at its next pass.
   unlock
+  tab "$(dead_pid)" waiting 0 /dev/ttys901
   it2_stub "/dev/ttys900=SESSION-A"
   FAKE_PS_CHAIN="1:ttys900" at hook UserPromptSubmit
   [ "$status" -eq 0 ]
@@ -659,11 +663,12 @@ it2_said() { [ "$1" = -- ] && shift; grep -F -- "$1" "$IT2LOG" >/dev/null 2>&1; 
   export ATTEND_IT2="$BATS_TEST_TMPDIR/no-such-it2"
   git config --file "$GIT_CONFIG_GLOBAL" attend.interval 1
   ( sh "$BATS_TEST_TMPDIR/attend-copy" watch </dev/null >/dev/null 2>&1 & echo $! >"$BATS_TEST_TMPDIR/wpid" )
-  i=0; while [ ! -f "$LOCK/started" ] && [ $i -lt 30 ]; do sleep 0.1; i=$((i+1)); done
+  # Generous bounds: the marker is written before the first pass, so these
+  # only matter on a loaded runner, where a 3s wait has flaked.
+  i=0; while [ ! -f "$LOCK/started" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done
   [ -f "$LOCK/started" ]
   sleep 1.1; touch "$BATS_TEST_TMPDIR/attend-copy"
-  # One pass plus one interval is enough; allow for a floored interval.
-  i=0; while [ -d "$LOCK" ] && [ $i -lt 80 ]; do sleep 0.1; i=$((i+1)); done
+  i=0; while [ -d "$LOCK" ] && [ $i -lt 150 ]; do sleep 0.1; i=$((i+1)); done
   [ ! -d "$LOCK" ]
   kill "$(cat "$BATS_TEST_TMPDIR/wpid")" 2>/dev/null || true
 }
