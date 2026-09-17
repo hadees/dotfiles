@@ -198,16 +198,26 @@ employer-specific — profile-specific memory belongs in that profile's own
   only its summary comes back. The orchestrator's context is re-sent on every
   later turn, so a transcript that never lands there is saved once per remaining
   turn, not once.
-- Five shared agent definitions carry the routing, deployed to every profile
+- Six shared agent definitions carry the routing, deployed to every profile
   from `.chezmoitemplates/claude-agents/`: `scout-sonnet` (Sonnet, low effort,
   read-only — the cheap reading seat), `work-sonnet-medium` (Sonnet, full
   tools — the step-down executor for mechanical work), `work-sonnet-high`
-  (Sonnet, full tools — the default executor), and `plan-fable` /
-  `review-fable` (Fable 5.1, high effort, read-only — the expensive seats, for
-  a genuinely hard design pass or a diff where a missed defect is costly). Use
-  those exact names: a misspelled agent type fails against the session's fixed
-  list. Name the model in the Agent description as well: the status line lies
-  about which model a subagent runs.
+  (Sonnet, full tools — the default executor), `plan-fable` / `review-fable`
+  (Fable 5.1, high effort, read-only — before and after the work, for a
+  genuinely hard design pass or a diff where a missed defect is costly), and
+  `unstick-fable` (Fable 5.1, high effort, full tools — during the work, for
+  the problem the other seats are stuck on). Use those exact names: a
+  misspelled agent type fails against the session's fixed list. Name the model
+  in the Agent description as well: the status line lies about which model a
+  subagent runs.
+- **Escalation is a rule, not a mood.** Any one of these means stop and spawn
+  `unstick-fable` with the failure verbatim and every attempt so far: the same
+  failure has survived two attempts with different hypotheses; a worker has
+  handed the task back twice; or the honest state is "I don't know why this
+  fails" rather than "I know what to do next". Not before — a third try at the
+  same seat is the expensive path, and so is a Fable pass on something not yet
+  tried twice. What comes back includes why the earlier attempts missed it;
+  that line is the part worth keeping.
 - **Effort is fixed in the agent file, never chosen per spawn.** Frontmatter
   takes `effort` (`low`…`max`); the Agent tool takes only `model`. So "run this
   one cheaper" means picking a different agent or editing its definition. There
