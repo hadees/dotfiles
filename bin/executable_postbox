@@ -285,6 +285,11 @@ cmd_names() {
 # --- the daemon --------------------------------------------------------------
 
 xml_escape() { sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+# launchd gives an agent 256 open files by default; the server keeps a
+# SQLite pool plus one connection per client and logged "File descriptor
+# limit exhausted" within an hour of the first install. Observed, not
+# theoretical.
+NOFILE=4096
 plist_path() { printf '%s\n' "$HOME/Library/LaunchAgents/$LABEL.plist"; }
 unit_path() { printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/postbox.service"; }
 have_systemd_user() { command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; }
@@ -327,6 +332,8 @@ write_plist() {
     printf '%s\n' '	</dict>' \
       '	<key>RunAtLoad</key>' '	<true/>' \
       '	<key>KeepAlive</key>' '	<true/>' \
+      '	<key>SoftResourceLimits</key>' '	<dict>' '		<key>NumberOfFiles</key>' "		<integer>$NOFILE</integer>" '	</dict>' \
+      '	<key>HardResourceLimits</key>' '	<dict>' '		<key>NumberOfFiles</key>' "		<integer>$NOFILE</integer>" '	</dict>' \
       '	<key>WorkingDirectory</key>' "	<string>$(printf '%s' "$STATE" | xml_escape)</string>" \
       '	<key>StandardOutPath</key>' "	<string>$(printf '%s' "$STATE/logs/postbox.log" | xml_escape)</string>" \
       '	<key>StandardErrorPath</key>' "	<string>$(printf '%s' "$STATE/logs/postbox.log" | xml_escape)</string>" \
@@ -342,7 +349,7 @@ write_unit() {
     printf '%s\n' '[Unit]' 'Description=postbox — local mailbox for Claude Code sessions' '' '[Service]'
     printf 'ExecStart=%s\n' "$(daemon_argv | tr '\n' ' ' | sed 's/ $//')"
     daemon_env | sed 's/^/Environment=/'
-    printf '%s\n' "WorkingDirectory=$STATE" 'Restart=always' 'RestartSec=2' '' '[Install]' 'WantedBy=default.target'
+    printf '%s\n' "WorkingDirectory=$STATE" "LimitNOFILE=$NOFILE" 'Restart=always' 'RestartSec=2' '' '[Install]' 'WantedBy=default.target'
   } > "$(unit_path)"
 }
 
@@ -483,12 +490,27 @@ mapped_dirs() {
       done | awk '!seen[$0]++'
 }
 
+# Where a profile keeps its user-scope config, and how to run claude as that
+# profile. The DEFAULT directory is the exception that bit once: with
+# CLAUDE_CONFIG_DIR unset — which is how the wrapper launches it — Claude
+# Code reads ~/.claude.json, not ~/.claude/.claude.json; setting the
+# variable to ~/.claude explicitly makes it read the latter, a file nothing
+# else uses. So the default directory is addressed by *unsetting* the
+# variable, and its config is the file in $HOME.
+is_default_dir() { [ "$1" = "$HOME/.claude" ]; }
+config_of() { if is_default_dir "$1"; then printf '%s\n' "$HOME/.claude.json"; else printf '%s\n' "$1/.claude.json"; fi; }
+as_profile() { # profile-dir cmd...
+  d=$1; shift
+  if is_default_dir "$d"; then env -u CLAUDE_CONFIG_DIR "$@"; else CLAUDE_CONFIG_DIR=$d "$@"; fi
+}
+
 # Is the server registered in a profile's user-scope config? That file is
 # Claude Code's own (unmanaged), so it is read, never edited by hand — the
 # `claude mcp` commands own it.
 connected() { # profile-dir
-  [ -f "$1/.claude.json" ] || return 1
-  python3 - "$1/.claude.json" "$SERVER" <<'PY'
+  cfg=$(config_of "$1")
+  [ -f "$cfg" ] || return 1
+  python3 - "$cfg" "$SERVER" <<'PY'
 import json, sys
 try:
     with open(sys.argv[1]) as fh:
@@ -506,7 +528,7 @@ cmd_connect() {
       printf 'postbox: %s: already connected\n' "$d"
       continue
     fi
-    if CLAUDE_CONFIG_DIR=$d command claude mcp add --scope user --transport http "$SERVER" "$(url)" >/dev/null 2>&1; then
+    if as_profile "$d" claude mcp add --scope user --transport http "$SERVER" "$(url)" >/dev/null 2>&1; then
       printf 'postbox: %s: connected (%s)\n' "$d" "$(url)"
     else
       warn "$d: claude mcp add failed"
@@ -518,7 +540,7 @@ cmd_disconnect() {
   command -v claude >/dev/null 2>&1 || die 'claude not found on PATH'
   mapped_dirs | while IFS= read -r d; do
     connected "$d" || continue
-    CLAUDE_CONFIG_DIR=$d command claude mcp remove --scope user "$SERVER" >/dev/null 2>&1 \
+    as_profile "$d" claude mcp remove --scope user "$SERVER" >/dev/null 2>&1 \
       && printf 'postbox: %s: disconnected\n' "$d" || warn "$d: claude mcp remove failed"
   done
 }
