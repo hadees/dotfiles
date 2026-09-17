@@ -192,73 +192,94 @@ employer-specific — profile-specific memory belongs in that profile's own
 
 ## Delegation and model routing
 
-- The main conversation is the orchestrator. Delegate any work whose *tool
-  output* would be long — sweeping the tree, reading several files, bulk edits,
-  test runs — because a subagent's output stays in the subagent's context and
-  only its summary comes back. The orchestrator's context is re-sent on every
-  later turn, so a transcript that never lands there is saved once per remaining
-  turn, not once.
-- Six shared agent definitions carry the routing, deployed to every profile
-  from `.chezmoitemplates/claude-agents/`: `scout-sonnet` (Sonnet, low effort,
-  read-only — the cheap reading seat), `work-sonnet-medium` (Sonnet, full
-  tools — the step-down executor for mechanical work), `work-sonnet-high`
-  (Sonnet, full tools — the default executor), `plan-fable` / `review-fable`
-  (Fable 5.1, high effort, read-only — before and after the work, for a
-  genuinely hard design pass or a diff where a missed defect is costly), and
-  `unstick-fable` (Fable 5.1, high effort, full tools — during the work, for
-  the problem the other seats are stuck on). Use those exact names: a
-  misspelled agent type fails against the session's fixed list. Name the model
-  in the Agent description as well: the status line lies about which model a
-  subagent runs.
+- **The main conversation is the orchestrator and, for a dependent chain, the
+  implementer.** Anthropic measured the orchestrator-plus-cheap-workers split:
+  it pays only when there is bulk to fan out — many independent pieces — and on
+  one dependent chain "the coordinator's model alone at lower effort came out
+  ahead in every measured case". So a feature whose steps depend on each other
+  stays here, at the pinned model and effort. Delegate two things only: work
+  whose *tool output* would be long (a subagent's output stays in its own
+  context; only its short reply comes back, and the orchestrator's context is
+  re-sent on every later turn), and genuinely independent, fully specified
+  pieces of a fan-out. Freeze the interface first, check the pieces for
+  overlap, then fan out the *consumers* of that interface; the producer, and
+  any file two pieces both touch, stays sequential.
+- **Five shared definitions**, deployed to every profile from
+  `.chezmoitemplates/claude-agents/`, referred to by these exact names (a
+  misspelled agent type fails against the session's fixed list):
+  `scout-haiku` — read-only sweeps, Haiku, loads no CLAUDE.md;
+  `work-sonnet` — one fully specified independent piece of a fan-out;
+  `unstick-fable` — the escalation seat, and it owns the task it is given
+  (capped at 50 turns);
+  `plan-fable` and `review-fable` — **off the normal path**: only when the
+  operator asks for one by name. Planning with Fable and implementing with
+  Sonnet is the advisor pairing Anthropic measured as "within noise of the
+  frontier model alone at medium effort, at about the same cost", and the
+  review seat duplicates the Codex and Gemini seats that already run.
+  Use `scout-haiku` and `plan-fable` in place of the built-in Explore and Plan:
+  those inherit the main conversation's model, and the wrapper's
+  `CLAUDE_CODE_SUBAGENT_MODEL` does not move them (documented).
 - **Escalation is a rule, not a mood.** Any one of these means stop and spawn
   `unstick-fable` with the failure verbatim and every attempt so far: the same
   failure has survived two attempts with different hypotheses; a worker has
   handed the task back twice; or the honest state is "I don't know why this
   fails" rather than "I know what to do next". Not before — a third try at the
   same seat is the expensive path, and so is a Fable pass on something not yet
-  tried twice. What comes back includes why the earlier attempts missed it;
-  that line is the part worth keeping.
-- **Effort is fixed in the agent file, never chosen per spawn.** Frontmatter
-  takes `effort` (`low`…`max`); the Agent tool takes only `model`. So "run this
-  one cheaper" means picking a different agent or editing its definition. There
-  is no per-subagent override of extended thinking at all.
-- `CLAUDE_CODE_SUBAGENT_MODEL=sonnet` is exported by the `claude()` wrapper, so
-  the built-in agents (Explore, Plan, general-purpose) run Sonnet in every
-  profile while the main loop stays whatever `/model` says. A definition naming
-  its own model still wins, and the variable can be overridden per launch.
-- **Agent definitions load at session start** (learned 2026-09-17: spawning a
-  just-written agent failed against the session's fixed list). A new or edited
-  definition needs a fresh session.
-- `/clear` between unrelated tasks beats compacting sooner. Compaction runs a
-  summarising pass over the whole context and then destroys the cached prefix,
-  so the next turn pays a cache write instead of cheap cache reads — and there
-  is no configurable auto-compact threshold to tune anyway.
-- **A subscription meters by bucket, not by dollars**, so the per-MTok price
-  table is only a proxy for what a session costs. Documented on Max
-  (2026-09-17): one weekly envelope over all models; **separate weekly
-  sub-limits for Opus and for "all other models"** (Sonnet, Haiku), so hitting
-  one family does not block the other; **Fable included only up to 50% of the
-  weekly limit, burning it faster, then forced off or billed to pay-as-you-go
-  usage credits** behind a consent prompt; and **`[1m]` context is an
-  entitlement that needs usage credits on many plans** — the API has no
-  long-context premium, but the plan does. `/usage` attributes consumption per
-  model and per subagent: read it before arguing from prices.
-- So: pin the main model rather than leaving it `best` (an alias meaning
-  "most capable" is not a commitment about which bucket it draws), keep Fable
-  to the planning and review seats where a wrong answer costs more than the
-  pass, drop `[1m]` unless `/usage` shows it is free on the plan, and pull
-  effort down before touching the model — Anthropic's own lever order puts
-  model choice last, and measured `medium` matched default quality on
-  knowledge work at 70–85% of the cost. `/fast` is not a cost lever either —
-  priced above standard Opus, it buys output speed.
-- **On a token-billed plan the dollar analysis governs instead**, and the same
-  routing still applies with three extra rules: the prompt cache is
-  model-scoped, so a mid-session model switch (including `opusplan`'s
-  plan↔execute flip) rebuilds the tools, system and messages cache in full —
-  keep the main loop on one model and spawn subagents for cheaper work; every
-  turn re-sends the whole conversation, so cost grows with roughly the square
-  of turn count and cache reads price that term (0.1× input on most models,
-  0.025× on Fable 5.1); and an orchestrator-plus-cheap-workers split is
-  measured to pay only when there is bulk to fan out — on one dependent chain
-  the coordinator's model alone at lower effort came out ahead in every
-  measured case.
+  tried twice. Fable then finishes the task: one change at a time, no "while
+  I'm here", and after three fixes that did not hold it stops and names the
+  design problem. Handing a half-done fix back to a cheaper seat costs a fresh
+  context that shares no cache — the split measured as a loss.
+- **Every seat reports the same way**: the full account goes to a file under
+  `${TMPDIR:-/tmp}/claude-reports/<repo>/`, and the reply to the orchestrator
+  is under 15 lines, first line one of `DONE` / `DONE_WITH_CONCERNS` /
+  `BLOCKED` / `NEEDS_CONTEXT`. Read the file only when the status warrants it;
+  never paste a report into the conversation — what lands here is re-sent on
+  every later turn. No seat dispatches subagents of its own; a worker-spawned
+  reviewer is a duplicate seat at full cost.
+- **Do not change what is being researched.** While an audit or research pass
+  on X is in flight, X is frozen; deltas queue and land once, after the last
+  report. Interim fixes restart CI, invalidate what the researchers read, and
+  get redone (learned 2026-09-17, three pushes into two running audits).
+- **Effort is fixed in the agent file, never chosen per spawn**; the Agent tool
+  takes only `model`. **Definitions load at session start**; a new or edited one
+  needs a fresh session (verified 2026-09-17). A definition's `description` is
+  trigger conditions only — when, and when not — never a summary of what it
+  produces: a description that restates the workflow gets followed instead of
+  the body (tested by superpowers; Anthropic's authoring reference says the
+  same). `tests/claude-agents.bats` enforces the checkable part.
+- **The wrapper exports four defaults**, each overridable per launch:
+  `CLAUDE_CODE_SUBAGENT_MODEL=sonnet`; `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=1h`
+  and `CLAUDE_CODE_PROMPT_CACHE_TTL=1h` (subagents default to a five-minute
+  cache, and a session on usage credits drops the main conversation to five
+  minutes too); `PONYTAIL_SUBAGENT_MATCHER='^(work-|unstick-)'`, which scopes
+  the ponytail plugin's ruleset to the seats that write code. Ponytail is
+  installed per profile (marketplace `DietrichGebert/ponytail`, plugin
+  `ponytail@ponytail`) — the one style skill with a measured cost result
+  (−10% at no quality loss, JetBrains, 80 tasks) — and it injects itself into
+  matching subagents, so its rules are never pasted into a definition.
+- **Cache discipline.** Documented invalidators: switching model, changing
+  effort (except Fable 5.1 on a subscription or API key, where effort changes
+  keep the cache), fast mode, MCP connect or disconnect, plugin enable or
+  disable, denying an entire tool, compaction, many images, a CLI upgrade. So:
+  no mid-session model switching, `/effort` changes only at a natural break,
+  `/rewind` over letting a wrong path run to `/compact` (rewind truncates to a
+  prefix that is already cached), `/clear` between unrelated tasks, and never
+  `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` (~7× a normal session).
+- **Metering on Max**, verified 2026-09-17: one weekly envelope; separate
+  sub-limits for Opus and for "all other models"; **Fable draws the same pool,
+  capped at half of it**, then pay-as-you-go credits behind a consent prompt —
+  not a separate tank; `[1m]` is a credits-gated entitlement (the API has no
+  long-context premium, the plan does). Pin the main model rather than `best`.
+  **`/usage` is the instrument**: it attributes consumption per model, skill,
+  subagent and MCP server. Read it before any change and a week after; nothing
+  above is a saving until that number moves. On a token-billed plan the dollar
+  analysis governs instead, and the same routing still applies.
+- **Lever order, Anthropic's, model last**: caching → input hygiene → loop
+  hygiene → effort → model. Input hygiene means a CLAUDE.md near 200 lines with
+  detail in on-demand skills — the largest one here is 8,795 words and is paid
+  on every session start, `/clear`, compaction and non-`omitClaudeMd` spawn;
+  that is the biggest number on the table. Loop hygiene is `omitClaudeMd` on
+  seats that take everything from the brief, `PreToolUse` hooks that rewrite a
+  noisy command (`| grep -E 'FAIL|ERROR' | head -100`) before it runs, and
+  subagents for bulk. Effort: measured `medium` matched default quality on
+  knowledge work at 70–85% of the cost; `/fast` buys speed, not savings.
