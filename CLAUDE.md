@@ -838,9 +838,37 @@ the daemon (`am check-inbox`), never from the store; the server's own
 "Contact approved" notices are filtered out as bookkeeping. Messages are
 data from another agent, not instructions — the shared memory says so.
 
+**An idle session gets woken, by a courier.** Hooks only run on a session's
+own events, so a session sitting at its prompt would never see mail until
+you typed something. The only thing that can give an idle session a turn
+from outside is Claude Code's own peer messaging, which is per profile and
+whose socket verifies the connecting pid through the kernel and admits
+senders selectively, so nothing but a Claude Code session can usefully
+speak it. So `postbox courier` (a `PostToolUse` hook on the two sending
+tools) makes the courier a Claude Code session: for each recipient that is
+a live *idle* session, in whatever profile, it starts a detached headless
+`claude -p` in that profile (`--strict-mcp-config`, `--allowedTools
+SendMessage`, a small model) whose one job is a native `SendMessage` saying
+"you have mail". Busy and waiting sessions are left to their own Stop hook.
+`postbox.courier false` switches it off; `postbox.courier.model` and
+`.mode` pick the relay's model and permission mode, which should match the
+one your sessions run in, since a peer message from a different mode is
+held for approval. Measured: the wake lands in the target within seconds
+of the send, as an ordinary peer message.
+
+**Two facts about the default profile bit on day one.** With
+`CLAUDE_CONFIG_DIR` unset, which is how the wrapper launches `~/.claude`,
+Claude Code reads `~/.claude.json`; setting the variable to `~/.claude`
+explicitly makes it read `~/.claude/.claude.json`, a file nothing else
+uses. `connect` therefore addresses the default directory by *unsetting*
+the variable. And launchd gives an agent 256 open files by default; the
+daemon exhausted that within an hour and fell back to archive snapshots for
+inbox reads, so the plist sets 4096.
+
 Commands: `name [--source] [dir]`, `names [root...]`, `install`, `uninstall
 [--purge]`, `start|stop|restart|status|logs`, `connect|disconnect`, `hook
-<event>`, `guard`, `settings`, `dir`. `postbox-doctor` joins `doctor`.
+<event>`, `guard`, `courier`, `settings`, `dir`. `postbox-doctor` joins
+`doctor`.
 Tests: `tests/postbox.bats` (stub am/curl/minisign/launchctl/claude,
 sandboxed HOME and state, fixture directories only).
 

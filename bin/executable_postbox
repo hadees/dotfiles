@@ -61,6 +61,8 @@
 #   postbox hook <event>      Claude Code hook: start (SessionStart), prompt
 #                             (UserPromptSubmit), stop (Stop)
 #   postbox guard             Claude Code PreToolUse hook on the mail tools
+#   postbox courier           Claude Code PostToolUse hook on the mail tools:
+#                             wakes each recipient's idle session
 #   postbox settings          the settings.json hook block the overlays wire
 #   postbox dir               the state directory
 set -u
@@ -528,7 +530,9 @@ cmd_connect() {
       printf 'postbox: %s: already connected\n' "$d"
       continue
     fi
-    if as_profile "$d" claude mcp add --scope user --transport http "$SERVER" "$(url)" >/dev/null 2>&1; then
+    # </dev/null: this runs inside the `while read` over the profile list, and
+    # a child that reads stdin would eat the rest of that list.
+    if as_profile "$d" claude mcp add --scope user --transport http "$SERVER" "$(url)" </dev/null >/dev/null 2>&1; then
       printf 'postbox: %s: connected (%s)\n' "$d" "$(url)"
     else
       warn "$d: claude mcp add failed"
@@ -540,7 +544,7 @@ cmd_disconnect() {
   command -v claude >/dev/null 2>&1 || die 'claude not found on PATH'
   mapped_dirs | while IFS= read -r d; do
     connected "$d" || continue
-    as_profile "$d" claude mcp remove --scope user "$SERVER" >/dev/null 2>&1 \
+    as_profile "$d" claude mcp remove --scope user "$SERVER" </dev/null >/dev/null 2>&1 \
       && printf 'postbox: %s: disconnected\n' "$d" || warn "$d: claude mcp remove failed"
   done
 }
@@ -735,6 +739,140 @@ print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permiss
   exit 0
 }
 
+# PostToolUse on the mail tools: wake the recipients. A hook only runs on a
+# session's own events, so a session sitting idle at its prompt would never
+# see mail until you typed something. The one thing that can give an idle
+# session a turn from outside is Claude Code's own peer messaging — which is
+# per profile, and whose socket protocol verifies the connecting pid through
+# the kernel and runs admission control on senders, so nothing but a Claude
+# Code session can usefully speak it. So the courier is a Claude Code
+# session: for every recipient that is a live IDLE session, in whatever
+# profile, it starts a headless `claude -p` *in that profile* whose entire
+# job is one built-in SendMessage saying "you have mail". That message is a
+# real peer message from a same-profile session, so it arrives the way any
+# native message does. Detached, so the sending session's hook returns at
+# once; MCP servers excluded, so it starts fast and cannot reach for the
+# mail tools itself; a small model, because the task is one tool call.
+# Busy and waiting sessions are left alone — their own Stop hook holds them
+# for the mail at the next turn boundary. `git config postbox.courier false`
+# turns it off; postbox.courier.model / .mode pick the relay's model and
+# permission mode (a peer message from a session in another permission mode
+# is held for the recipient's user to approve, so the mode should match the
+# one your sessions run in).
+courier_enabled() { [ "$(git config --get postbox.courier 2>/dev/null)" != false ] && [ "${POSTBOX_COURIER:-1}" != 0 ]; }
+courier_model() { m=$(git config --get postbox.courier.model 2>/dev/null); printf '%s\n' "${m:-haiku}"; }
+courier_mode() { m=$(git config --get postbox.courier.mode 2>/dev/null); printf '%s\n' "${m:-auto}"; }
+
+# Every live session across every profile: dir, pid, name, status, cwd.
+all_sessions() {
+  mapped_dirs | while IFS= read -r d; do
+    [ -d "$d/sessions" ] || continue
+    python3 - "$d" <<'REG'
+import glob, json, os, sys
+d = sys.argv[1]
+for f in sorted(glob.glob(os.path.join(d, "sessions", "*.json"))):
+    try:
+        with open(f) as fh:
+            r = json.load(fh)
+        os.kill(int(r["pid"]), 0)
+    except Exception:
+        continue
+    cwd = r.get("cwd") or ""
+    if not cwd or not os.path.isdir(cwd):
+        continue
+    def field(v):
+        s = str(v).replace("\t", " ").strip()
+        return s if s else "-"
+    print("\t".join(field(x) for x in (d, r["pid"], r.get("name") or os.path.basename(cwd), r.get("status") or "-", cwd)))
+REG
+  done
+}
+
+relay() { # profile-dir session-name recipient sender subject
+  r_dir=$1 r_session=$2 r_to=$3 r_from=$4 r_subject=$5
+  r_msg="postbox: new mail for $r_to from $r_from"
+  [ -n "$r_subject" ] && r_msg="$r_msg — '$r_subject'"
+  r_msg="$r_msg. Use fetch_inbox as $r_to in project $(project), act or reply as the message warrants, then mark_message_read."
+  r_prompt="Use the built-in SendMessage tool (not any MCP tool) exactly once: to=\"$r_session\", message=\"$r_msg\". Then stop. Do nothing else."
+  mkdir -p "$STATE/logs" 2>/dev/null
+  printf '%s courier: %s -> %s (%s) via %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$r_from" "$r_to" "$r_session" "$r_dir" >> "$STATE/logs/courier.log" 2>/dev/null
+  # Detached: the hook must return now, and must not hand the relay the
+  # hook's stdin (the pipe Claude Code wrote the event to).
+  ( cd "$STATE" 2>/dev/null || cd /
+    printf '%s' "$r_prompt" | as_profile "$r_dir" nohup claude -p --output-format text --max-turns 3 \
+      --model "$(courier_model)" --permission-mode "$(courier_mode)" --strict-mcp-config \
+      --allowedTools SendMessage >> "$STATE/logs/courier.log" 2>&1 &
+  ) </dev/null >/dev/null 2>&1
+}
+
+cmd_courier() {
+  need_python
+  PAYLOAD=$(cat)
+  courier_enabled || exit 0
+  command -v claude >/dev/null 2>&1 || exit 0
+  tool=$(json_field tool_name)
+  case $tool in
+    "mcp__${SERVER}__send_message"|"mcp__${SERVER}__reply_message") ;;
+    *) exit 0 ;;
+  esac
+  cwd=$(json_field cwd); [ -n "$cwd" ] && [ -d "$cwd" ] || cwd=$PWD
+  sender=$(name_of "$cwd" 2>/dev/null) || exit 0
+  # Recipients and subject as actually delivered (the tool's response), else
+  # as asked (a reply's `to` defaults to the original sender server-side).
+  info=$(printf '%s' "$PAYLOAD" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+ti = d.get("tool_input") or {}
+resp = d.get("tool_response")
+if isinstance(resp, str):
+    try: resp = json.loads(resp)
+    except Exception: resp = None
+if isinstance(resp, list):
+    txt = "".join(x.get("text", "") for x in resp if isinstance(x, dict) and x.get("type") == "text")
+    try: resp = json.loads(txt)
+    except Exception: resp = None
+names, subject = [], ""
+payloads = []
+if isinstance(resp, dict):
+    for dlv in resp.get("deliveries") or []:
+        if isinstance(dlv, dict) and isinstance(dlv.get("payload"), dict):
+            payloads.append(dlv["payload"])
+    if not payloads and any(k in resp for k in ("to", "subject")):
+        payloads.append(resp)
+src = payloads if payloads else [ti]
+for p in src:
+    for k in ("to", "cc", "bcc"):
+        v = p.get(k) or []
+        if isinstance(v, str): v = [v]
+        for n in v:
+            n = str(n).strip()
+            if n and n not in names: names.append(n)
+    if not subject and isinstance(p.get("subject"), str):
+        subject = p["subject"]
+subject = subject.replace("\n", " ").replace("\"", "").replace("\x27", "").strip()[:120]
+print("\n".join(names))
+print("SUBJECT\t" + subject)' 2>/dev/null)
+  [ -n "$info" ] || exit 0
+  subject=$(printf '%s\n' "$info" | awk -F'\t' '$1 == "SUBJECT" { print $2; exit }')
+  sessions=$(all_sessions)
+  [ -n "$sessions" ] || exit 0
+  printf '%s\n' "$info" | grep -v '^SUBJECT	' | while IFS= read -r to; do
+    [ -n "$to" ] && [ "$to" != "$sender" ] || continue
+    printf '%s\n' "$sessions" | while IFS="$(printf '\t')" read -r sdir spid sname sstatus scwd; do
+      [ -n "$scwd" ] || continue
+      [ "$scwd" = "$cwd" ] && continue
+      case $sstatus in idle|shell|-) ;; *) continue ;; esac
+      n=$(name_of "$scwd" 2>/dev/null) || continue
+      [ "$n" = "$to" ] || continue
+      relay "$sdir" "$sname" "$to" "$sender" "$subject"
+    done
+  done
+  exit 0
+}
+
 # --- status -------------------------------------------------------------------
 
 cmd_status() {
@@ -797,6 +935,10 @@ overlay. Add these to that file's "hooks" (merging with what is there):
   "PreToolUse": [
     { "matcher": "mcp__postbox__send_message|mcp__postbox__reply_message",
       "hooks": [{ "type": "command", "command": "[ -x ~/bin/postbox ] && exec ~/bin/postbox guard || true" }] }
+  ],
+  "PostToolUse": [
+    { "matcher": "mcp__postbox__send_message|mcp__postbox__reply_message",
+      "hooks": [{ "type": "command", "command": "[ -x ~/bin/postbox ] && exec ~/bin/postbox courier || true" }] }
   ]
 
 SessionStart tells the session its name and how to choose between the
@@ -804,7 +946,9 @@ native path and mail; UserPromptSubmit and Stop surface unread mail (Stop
 holds the session for one more turn per new message, never while already
 in that turn); the PreToolUse matcher is load-bearing — guard only reads
 the two sending tools, and matching there keeps every other tool call free
-of a python start.
+of a python start. PostToolUse on the same two tools is the courier: it
+wakes each recipient's idle session, in whatever profile, with one native
+SendMessage from a headless relay session there.
 JSON
 }
 
@@ -826,6 +970,7 @@ case $cmd in
   disconnect)  cmd_disconnect ;;
   hook)        cmd_hook "$@" ;;
   guard)       cmd_guard ;;
+  courier)     cmd_courier ;;
   settings)    cmd_settings ;;
   dir)         printf '%s\n' "$STATE" ;;
   -h|--help|help) usage ;;

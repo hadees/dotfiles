@@ -66,9 +66,13 @@ STUB
 printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
 exit 0
 STUB
+  # claude: records the profile it was run as, its argv, and (for the
+  # courier's relay, which hands the prompt over stdin) what it was told.
   cat > "$BIN/claude" <<'STUB'
 #!/bin/sh
 printf '%s\t%s\n' "${CLAUDE_CONFIG_DIR:-unset}" "$*" >> "$CLAUDE_LOG"
+[ -t 0 ] || cat >> "$CLAUDE_LOG.stdin"
+printf '\n' >> "$CLAUDE_LOG.stdin"
 exit 0
 STUB
   cat > "$BIN/uname" <<'STUB'
@@ -542,6 +546,136 @@ STUB
   [ -z "$output" ]
 }
 
+# --- courier ------------------------------------------------------------------
+
+# A live session $3 (registry name) of profile $1 in directory $2 with
+# status $4. Pid is bats' own so it counts as alive.
+live_session_at() {
+  mkdir -p "$1/sessions" "$2"
+  printf '{"pid":%s,"cwd":"%s","name":"%s","status":"%s"}\n' "$$" "$2" "$3" "$4" > "$1/sessions/$$-$3.json"
+}
+
+# The relay is detached, so give it a moment to land in the stub's log.
+wait_relays() { # expected-count
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    [ "$(grep -c . "$CLAUDE_LOG" 2>/dev/null || echo 0)" -ge "$1" ] && return 0
+    sleep 0.25
+  done
+  return 1
+}
+
+SEND='{"tool_name":"mcp__postbox__send_message","tool_input":{"to":["GreenCastle"],"subject":"asked subject"},"tool_response":{"deliveries":[{"payload":{"id":9,"to":["GreenCastle"],"cc":[],"bcc":[],"subject":"please review the plan","from":"RedStone"}}],"count":1}}'
+
+@test "courier: wakes the recipient's idle session in another profile with one native SendMessage from a relay run as that profile" {
+  export CLAUDE_CONFIG_DIR="$HOME/.claude-mine"
+  mkdir -p "$CLAUDE_CONFIG_DIR/sessions"
+  git config --file "$GIT_CONFIG_GLOBAL" claude.profile.other '~/.claude-other'
+  other="$HOME/code/other-project"
+  live_session_at "$HOME/.claude-other" "$other" "other-project-x9" idle
+  git config --file "$GIT_CONFIG_GLOBAL" postbox.code/other-project.name GreenCastle
+  git config --file "$GIT_CONFIG_GLOBAL" postbox.code/some-project.name RedStone
+  run payload "{\"cwd\":\"$WORK\",${SEND#\{}" courier
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  wait_relays 1
+  # Run as the recipient's profile, headless, MCP excluded, only SendMessage allowed.
+  grep -q "^$HOME/.claude-other	-p --output-format text --max-turns 3 --model haiku --permission-mode auto --strict-mcp-config --allowedTools SendMessage$" "$CLAUDE_LOG"
+  # Told to message that session, about this mail, as delivered (the
+  # response's subject, not the request's).
+  grep -q 'SendMessage tool (not any MCP tool) exactly once: to="other-project-x9"' "$CLAUDE_LOG.stdin"
+  grep -q "new mail for GreenCastle from RedStone — 'please review the plan'" "$CLAUDE_LOG.stdin"
+  grep -q "fetch_inbox as GreenCastle in project $HOME/code" "$CLAUDE_LOG.stdin"
+  ! grep -q 'asked subject' "$CLAUDE_LOG.stdin"
+  grep -q 'courier: RedStone -> GreenCastle (other-project-x9) via' "$POSTBOX_STATE/logs/courier.log"
+}
+
+@test "courier: a recipient in the default profile is relayed with the config-dir variable unset" {
+  export CLAUDE_CONFIG_DIR="$HOME/.claude-mine"
+  mkdir -p "$CLAUDE_CONFIG_DIR/sessions" "$HOME/.claude"
+  other="$HOME/code/other-project"
+  live_session_at "$HOME/.claude" "$other" "other-project-x9" idle
+  git config --file "$GIT_CONFIG_GLOBAL" postbox.code/other-project.name GreenCastle
+  run payload "{\"cwd\":\"$WORK\",${SEND#\{}" courier
+  wait_relays 1
+  grep -q '^unset	-p ' "$CLAUDE_LOG"
+}
+
+@test "courier: busy and waiting sessions are left to their own Stop hook" {
+  export CLAUDE_CONFIG_DIR="$HOME/.claude-mine"
+  mkdir -p "$CLAUDE_CONFIG_DIR/sessions"
+  git config --file "$GIT_CONFIG_GLOBAL" claude.profile.other '~/.claude-other'
+  other="$HOME/code/other-project"
+  live_session_at "$HOME/.claude-other" "$other" "busy-one" busy
+  live_session_at "$HOME/.claude-other" "$other" "waiting-one" waiting
+  git config --file "$GIT_CONFIG_GLOBAL" postbox.code/other-project.name GreenCastle
+  run payload "{\"cwd\":\"$WORK\",${SEND#\{}" courier
+  [ "$status" -eq 0 ]
+  sleep 1
+  [ ! -s "$CLAUDE_LOG" ]
+}
+
+@test "courier: every recipient session is woken, the sender's own directory never, and each only once" {
+  export CLAUDE_CONFIG_DIR="$HOME/.claude-mine"
+  mkdir -p "$CLAUDE_CONFIG_DIR/sessions"
+  git config --file "$GIT_CONFIG_GLOBAL" claude.profile.other '~/.claude-other'
+  live_session_at "$HOME/.claude-other" "$HOME/code/other-project" "other-a" idle
+  live_session_at "$HOME/.claude-mine" "$HOME/code/third-project" "third-b" idle
+  live_session_at "$HOME/.claude-mine" "$WORK" "me" idle
+  git config --file "$GIT_CONFIG_GLOBAL" postbox.code/other-project.name GreenCastle
+  git config --file "$GIT_CONFIG_GLOBAL" postbox.code/third-project.name BlueLake
+  git config --file "$GIT_CONFIG_GLOBAL" postbox.code/some-project.name RedStone
+  run payload '{"cwd":"'"$WORK"'","tool_name":"mcp__postbox__send_message","tool_input":{"to":["GreenCastle","BlueLake"],"cc":["RedStone"],"subject":"all hands"}}' courier
+  wait_relays 2
+  sleep 0.5
+  [ "$(grep -c . "$CLAUDE_LOG")" -eq 2 ]
+  grep -q 'to="other-a"' "$CLAUDE_LOG.stdin"
+  grep -q 'to="third-b"' "$CLAUDE_LOG.stdin"
+  ! grep -q 'to="me"' "$CLAUDE_LOG.stdin"
+  grep -q "new mail for BlueLake from RedStone — 'all hands'" "$CLAUDE_LOG.stdin"
+}
+
+@test "courier: a reply wakes whoever the server actually delivered to" {
+  export CLAUDE_CONFIG_DIR="$HOME/.claude-mine"
+  mkdir -p "$CLAUDE_CONFIG_DIR/sessions"
+  git config --file "$GIT_CONFIG_GLOBAL" claude.profile.other '~/.claude-other'
+  live_session_at "$HOME/.claude-other" "$HOME/code/other-project" "other-a" idle
+  git config --file "$GIT_CONFIG_GLOBAL" postbox.code/other-project.name GreenCastle
+  run payload '{"cwd":"'"$WORK"'","tool_name":"mcp__postbox__reply_message","tool_input":{"message_id":9,"body_md":"ok"},"tool_response":{"deliveries":[{"payload":{"id":10,"to":["GreenCastle"],"subject":"Re: the plan"}}]}}' courier
+  wait_relays 1
+  grep -q 'to="other-a"' "$CLAUDE_LOG.stdin"
+  grep -q "'Re: the plan'" "$CLAUDE_LOG.stdin"
+}
+
+@test "courier: no live session for the recipient, another tool, or the courier switched off — nothing runs" {
+  export CLAUDE_CONFIG_DIR="$HOME/.claude-mine"
+  mkdir -p "$CLAUDE_CONFIG_DIR/sessions"
+  run payload "{\"cwd\":\"$WORK\",${SEND#\{}" courier
+  [ "$status" -eq 0 ]
+  git config --file "$GIT_CONFIG_GLOBAL" claude.profile.other '~/.claude-other'
+  live_session_at "$HOME/.claude-other" "$HOME/code/other-project" "other-a" idle
+  git config --file "$GIT_CONFIG_GLOBAL" postbox.code/other-project.name GreenCastle
+  run payload '{"cwd":"'"$WORK"'","tool_name":"mcp__postbox__fetch_inbox","tool_input":{"to":["GreenCastle"]}}' courier
+  git config --file "$GIT_CONFIG_GLOBAL" postbox.courier false
+  run payload "{\"cwd\":\"$WORK\",${SEND#\{}" courier
+  [ "$status" -eq 0 ]
+  sleep 1
+  [ ! -s "$CLAUDE_LOG" ]
+}
+
+@test "courier: the relay's model and permission mode come from git config" {
+  export CLAUDE_CONFIG_DIR="$HOME/.claude-mine"
+  mkdir -p "$CLAUDE_CONFIG_DIR/sessions"
+  git config --file "$GIT_CONFIG_GLOBAL" claude.profile.other '~/.claude-other'
+  live_session_at "$HOME/.claude-other" "$HOME/code/other-project" "other-a" idle
+  git config --file "$GIT_CONFIG_GLOBAL" postbox.code/other-project.name GreenCastle
+  git config --file "$GIT_CONFIG_GLOBAL" postbox.courier.model sonnet
+  git config --file "$GIT_CONFIG_GLOBAL" postbox.courier.mode default
+  run payload "{\"cwd\":\"$WORK\",${SEND#\{}" courier
+  wait_relays 1
+  grep -q -- '--model sonnet --permission-mode default' "$CLAUDE_LOG"
+}
+
 # --- misc ---------------------------------------------------------------------
 
 @test "settings: prints the four hook blocks with the PreToolUse matcher on the two sending tools" {
@@ -552,6 +686,7 @@ STUB
   [[ "$output" == *'"Stop"'*'postbox hook stop'* ]]
   [[ "$output" == *'"matcher": "mcp__postbox__send_message|mcp__postbox__reply_message"'* ]]
   [[ "$output" == *'postbox guard'* ]]
+  [[ "$output" == *'"PostToolUse"'*'postbox courier'* ]]
 }
 
 @test "usage: --help prints the usage block and an unknown command fails" {
