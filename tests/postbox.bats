@@ -217,6 +217,9 @@ payload() { printf '%s' "$1" | "$PB" "${@:2}"; }
   grep -q '<key>HTTP_CORS_ENABLED</key>' "$plist"
   grep -q '<key>HTTP_ALLOW_LOCALHOST_UNAUTHENTICATED</key>' "$plist"
   grep -q '<key>KeepAlive</key>' "$plist"
+  # launchd's default of 256 open files was exhausted within an hour.
+  grep -A2 '<key>SoftResourceLimits</key>' "$plist" | grep -q '<key>NumberOfFiles</key>'
+  grep -A3 '<key>SoftResourceLimits</key>' "$plist" | grep -q '<integer>4096</integer>'
   grep -q "bootstrap gui/$(id -u) $plist" "$LAUNCHCTL_LOG"
   [ -d "$POSTBOX_STATE/archive" ]
   [ -d "$POSTBOX_STATE/logs" ]
@@ -246,6 +249,7 @@ payload() { printf '%s' "$1" | "$PB" "${@:2}"; }
   [ -f "$unit" ]
   grep -q '^ExecStart=.*serve-http --host 127.0.0.1 --port 8765 --no-tui --no-auth$' "$unit"
   grep -q '^Environment=APP_ENVIRONMENT=production$' "$unit"
+  grep -q '^LimitNOFILE=4096$' "$unit"
   grep -q '^--user enable --now postbox$' "$SYSTEMCTL_LOG"
   [ ! -f "$HOME/Library/LaunchAgents/local.postbox.plist" ]
 }
@@ -348,14 +352,27 @@ STUB
 
 @test "connect: adds the http server to every mapped profile that lacks it, via claude mcp" {
   mkdir -p "$HOME/.claude" "$HOME/.claude-other"
-  printf '{"mcpServers":{"postbox":{"type":"http"}}}' > "$HOME/.claude/.claude.json"
+  printf '{"mcpServers":{"postbox":{"type":"http"}}}' > "$HOME/.claude-other/.claude.json"
   git config --file "$GIT_CONFIG_GLOBAL" claude.profile.other '~/.claude-other'
   run "$PB" connect
   [ "$status" -eq 0 ]
-  [[ "$output" == *"$HOME/.claude: already connected"* ]]
-  [[ "$output" == *"$HOME/.claude-other: connected"* ]]
+  [[ "$output" == *"$HOME/.claude-other: already connected"* ]]
+  [[ "$output" == *"$HOME/.claude: connected"* ]]
   [ "$(wc -l < "$CLAUDE_LOG" | tr -d ' ')" -eq 1 ]
-  grep -q "^$HOME/.claude-other	mcp add --scope user --transport http postbox http://127.0.0.1:8765/mcp/$" "$CLAUDE_LOG"
+  # The default directory is addressed with CLAUDE_CONFIG_DIR *unset* — the
+  # stub prints "unset" for that — because that is how Claude Code reads
+  # ~/.claude.json; setting it to ~/.claude would write a file nothing reads.
+  grep -q "^unset	mcp add --scope user --transport http postbox http://127.0.0.1:8765/mcp/$" "$CLAUDE_LOG"
+}
+
+@test "connect: the default profile's config is ~/.claude.json, not ~/.claude/.claude.json" {
+  mkdir -p "$HOME/.claude"
+  printf '{"mcpServers":{"postbox":{"type":"http"}}}' > "$HOME/.claude/.claude.json"
+  run "$PB" connect
+  [[ "$output" == *"$HOME/.claude: connected"* ]]
+  printf '{"mcpServers":{"postbox":{"type":"http"}}}' > "$HOME/.claude.json"
+  run "$PB" connect
+  [[ "$output" == *"$HOME/.claude: already connected"* ]]
 }
 
 @test "status: names the profiles that are not connected" {
