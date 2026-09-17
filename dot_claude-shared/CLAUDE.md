@@ -189,3 +189,66 @@ employer-specific — profile-specific memory belongs in that profile's own
   forces one tailnet, `tailnet-as <name> <cmd…>` does that and exports the
   proxy variables for any proxy-aware tool, and `command ssh` bypasses the
   wrapper entirely.
+
+## Delegation and model routing
+
+- The main conversation is the orchestrator. Delegate any work whose *tool
+  output* would be long — sweeping the tree, reading several files, bulk edits,
+  test runs — because a subagent's output stays in the subagent's context and
+  only its summary comes back. The orchestrator's context is re-sent on every
+  later turn, so a transcript that never lands there is saved once per remaining
+  turn, not once.
+- Five shared agent definitions carry the routing, deployed to every profile
+  from `.chezmoitemplates/claude-agents/`: `scout-sonnet` (Sonnet, low effort,
+  read-only — the cheap reading seat), `work-sonnet-medium` (Sonnet, full
+  tools — the step-down executor for mechanical work), `work-sonnet-high`
+  (Sonnet, full tools — the default executor), and `plan-fable` /
+  `review-fable` (Fable 5.1, high effort, read-only — the expensive seats, for
+  a genuinely hard design pass or a diff where a missed defect is costly). Use
+  those exact names: a misspelled agent type fails against the session's fixed
+  list. Name the model in the Agent description as well: the status line lies
+  about which model a subagent runs.
+- **Effort is fixed in the agent file, never chosen per spawn.** Frontmatter
+  takes `effort` (`low`…`max`); the Agent tool takes only `model`. So "run this
+  one cheaper" means picking a different agent or editing its definition. There
+  is no per-subagent override of extended thinking at all.
+- `CLAUDE_CODE_SUBAGENT_MODEL=sonnet` is exported by the `claude()` wrapper, so
+  the built-in agents (Explore, Plan, general-purpose) run Sonnet in every
+  profile while the main loop stays whatever `/model` says. A definition naming
+  its own model still wins, and the variable can be overridden per launch.
+- **Agent definitions load at session start** (learned 2026-09-17: spawning a
+  just-written agent failed against the session's fixed list). A new or edited
+  definition needs a fresh session.
+- `/clear` between unrelated tasks beats compacting sooner. Compaction runs a
+  summarising pass over the whole context and then destroys the cached prefix,
+  so the next turn pays a cache write instead of cheap cache reads — and there
+  is no configurable auto-compact threshold to tune anyway.
+- **A subscription meters by bucket, not by dollars**, so the per-MTok price
+  table is only a proxy for what a session costs. Documented on Max
+  (2026-09-17): one weekly envelope over all models; **separate weekly
+  sub-limits for Opus and for "all other models"** (Sonnet, Haiku), so hitting
+  one family does not block the other; **Fable included only up to 50% of the
+  weekly limit, burning it faster, then forced off or billed to pay-as-you-go
+  usage credits** behind a consent prompt; and **`[1m]` context is an
+  entitlement that needs usage credits on many plans** — the API has no
+  long-context premium, but the plan does. `/usage` attributes consumption per
+  model and per subagent: read it before arguing from prices.
+- So: pin the main model rather than leaving it `best` (an alias meaning
+  "most capable" is not a commitment about which bucket it draws), keep Fable
+  to the planning and review seats where a wrong answer costs more than the
+  pass, drop `[1m]` unless `/usage` shows it is free on the plan, and pull
+  effort down before touching the model — Anthropic's own lever order puts
+  model choice last, and measured `medium` matched default quality on
+  knowledge work at 70–85% of the cost. `/fast` is not a cost lever either —
+  priced above standard Opus, it buys output speed.
+- **On a token-billed plan the dollar analysis governs instead**, and the same
+  routing still applies with three extra rules: the prompt cache is
+  model-scoped, so a mid-session model switch (including `opusplan`'s
+  plan↔execute flip) rebuilds the tools, system and messages cache in full —
+  keep the main loop on one model and spawn subagents for cheaper work; every
+  turn re-sends the whole conversation, so cost grows with roughly the square
+  of turn count and cache reads price that term (0.1× input on most models,
+  0.025× on Fable 5.1); and an orchestrator-plus-cheap-workers split is
+  measured to pay only when there is bulk to fan out — on one dependent chain
+  the coordinator's model alone at lower effort came out ahead in every
+  measured case.
