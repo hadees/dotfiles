@@ -119,3 +119,41 @@ employer-specific — profile-specific memory belongs in that profile's own
   2026-08-25: a per-paper summary layer got called "cards" only because it reused
   scraping technique from a reference repo whose own name contained "cards" — the
   name had nothing to do with what the artifact was; renamed to "synopsis").
+
+## Commit signing failures (1Password)
+
+- Commits are signed with SSH-format signatures through 1Password's
+  `op-ssh-sign`; there is no GPG keypair despite the `gpgsign` name. Three
+  connections fail independently: the `op` CLI to the app, `ssh` to the
+  agent socket named in `~/.ssh/config`, and `op-ssh-sign`'s own link to
+  the app. `op-ssh-sign` never reads `SSH_AUTH_SOCK`, and `ssh-add -l`
+  speaks only to that variable — so an agent listing keys is not evidence a
+  commit will sign, and "The agent has no identities" is not evidence
+  anything is broken.
+- `git commit` dying with `error: 1Password: failed to fill whole buffer` /
+  `fatal: failed to write commit object` means the app's reply came up
+  short: locked, an approval prompt unanswered, or the app restarting. Tell
+  me to unlock or approve, then retry the same commit. It clears with **no
+  config change**, which is the proof nothing is misconfigured.
+- Never work around it: no `--no-gpg-sign`, no `commit.gpgsign = false`, no
+  repo-local `user.signingkey` or `user.email`. Identity and signing come
+  from the include chain keyed on the remote URL.
+- `git-doctor` shows the selected identity, signing config, and whether the
+  key and signer exist; `onepassword-doctor` reports the three channels
+  separately; `doctor` runs every doctor.
+
+## Tailnet-routed ssh, scp, sftp, and curl
+
+- `ssh`, `scp`, `sftp`, and `curl` are wrapper functions from `.functions`,
+  defined inside Claude Code's Bash tool too. A destination that is a node
+  of a tailnet the Tailscale app is *not* currently on is routed through
+  that tailnet's always-on userspace daemon (ssh gets a `ProxyCommand`,
+  curl a SOCKS proxy). A node of the app's own tailnet, a public host,
+  localhost, or anything already carrying a ProxyJump/ProxyCommand or an
+  explicit curl proxy runs untouched.
+- The wrappers fail open: a broken helper leaves the command running
+  direct, so a routing problem looks like an ordinary connection failure.
+  `tailnet-doctor [host]` traces the decision for a host; `TAILNET=<name>`
+  forces one tailnet, `tailnet-as <name> <cmd…>` does that and exports the
+  proxy variables for any proxy-aware tool, and `command ssh` bypasses the
+  wrapper entirely.
