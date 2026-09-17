@@ -21,11 +21,12 @@ setup() {
   # BROWSER/OPEN_AS_ALIAS: a pinned Claude session (where these tests are
   # usually run from) exports both, and the wrapper's inherit/clear rules
   # are exactly what is under test. SSH_CONNECTION gates the pair too.
-  # CLAUDE_CODE_SUBAGENT_MODEL is the same trap: the wrapper exports it, so
-  # a session launched through the wrapper hands it to these tests, and the
-  # default it is supposed to apply would be inherited rather than tested.
+  # The wrapper's own exports are the same trap: a session launched through
+  # the wrapper hands them to these tests, and the defaults under test would
+  # be inherited rather than applied.
   unset CLAUDE_PROFILE CLAUDE_CONFIG_DIR BROWSER OPEN_AS_ALIAS SSH_CONNECTION \
-    CLAUDE_CODE_SUBAGENT_MODEL
+    CLAUDE_CODE_SUBAGENT_MODEL CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL \
+    CLAUDE_CODE_PROMPT_CACHE_TTL PONYTAIL_SUBAGENT_MATCHER
 
   # Fixture pins: one "work" org and one "personal" owner, mapped to two
   # accounts; work maps to the default dir, personal to a separate profile.
@@ -214,6 +215,26 @@ claude_in() {
   run zsh -c "source '$DOTFUNCTIONS'; claude"
   [ "$status" -eq 0 ]
   [ "$output" = "SUBAGENT=sonnet" ]
+}
+
+@test "claude: cache TTLs pin one hour and the ponytail matcher names the writing seats" {
+  # Subagents default to a five-minute prompt-cache TTL, and a session on
+  # usage credits drops the main conversation to five minutes too; the
+  # wrapper pins both to the hour. The matcher only matters once the ponytail
+  # plugin is installed, but the default must be exported regardless.
+  printf '#!/bin/sh\necho "SUB=${CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL-UNSET} MAIN=${CLAUDE_CODE_PROMPT_CACHE_TTL-UNSET} MATCH=${PONYTAIL_SUBAGENT_MATCHER-UNSET}"\n' \
+    > "$BATS_TEST_TMPDIR/bin/claude"
+  run zsh -c "source '$DOTFUNCTIONS'; claude"
+  [ "$status" -eq 0 ]
+  [ "$output" = 'SUB=1h MAIN=1h MATCH=^(work-|unstick-)' ]
+}
+
+@test "claude: an already-set cache TTL beats the default" {
+  printf '#!/bin/sh\necho "SUB=${CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL-UNSET}"\n' \
+    > "$BATS_TEST_TMPDIR/bin/claude"
+  run zsh -c "source '$DOTFUNCTIONS'; CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=5m claude"
+  [ "$status" -eq 0 ]
+  [ "$output" = "SUB=5m" ]
 }
 
 @test "claude: an already-set subagent model beats the default" {
