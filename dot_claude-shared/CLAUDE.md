@@ -247,6 +247,11 @@ employer-specific — profile-specific memory belongs in that profile's own
   produces: a description that restates the workflow gets followed instead of
   the body (tested by superpowers; Anthropic's authoring reference says the
   same). `tests/claude-agents.bats` enforces the checkable part.
+- **Each profile's `settings.json` is owned by that profile's private
+  overlay** (`chezmoi apply` of the overlay rewrites it), so a setting changed
+  by hand or by `/model`, `/effort`, `/config` lasts only until the next apply
+  — make the change in the overlay source and apply it. Cross-profile defaults
+  go in the wrapper instead, because an overlay can only speak for one profile.
 - **The wrapper exports four defaults**, each overridable per launch:
   `CLAUDE_CODE_SUBAGENT_MODEL=sonnet`; `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=1h`
   and `CLAUDE_CODE_PROMPT_CACHE_TTL=1h` (subagents default to a five-minute

@@ -405,12 +405,12 @@ function claude() {
 		# PONYTAIL_SUBAGENT_MATCHER scopes the ponytail plugin's ruleset, when
 		# that plugin is installed, to the seats that write code — a read-only
 		# scout has nothing to keep small.
-		# These live here and not in each profile's settings.json because
-		# Claude Code writes that file itself (/model, /effort, /config persist
-		# into it), so chezmoi cannot own it without the two fighting — the
-		# wrapper is the one managed surface every profile passes through. An
-		# already-set value wins, so a single launch can still override any of
-		# them.
+		# These live here and not in each profile's settings.json because each
+		# of those files is owned by that profile's private overlay, and a
+		# default meant for every profile would have to be repeated in each
+		# overlay and kept in step by hand. The wrapper is the one surface all
+		# profiles share. An already-set value wins, so a single launch can
+		# still override any of them.
 		export CLAUDE_CODE_SUBAGENT_MODEL="${CLAUDE_CODE_SUBAGENT_MODEL:-sonnet}";
 		export CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL="${CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL:-1h}";
 		export CLAUDE_CODE_PROMPT_CACHE_TTL="${CLAUDE_CODE_PROMPT_CACHE_TTL:-1h}";
