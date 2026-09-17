@@ -782,6 +782,68 @@ where the hooks keep working by absolute path while every typed command
 reaches a stranger's binary. Tests: `tests/attend.bats` (stub
 osascript/ps/uname, sandboxed HOME, fixture profile names only).
 
+### Postbox (sessions talking across profiles)
+
+Claude Code sessions can already message each other natively — `ListAgents`
+and `SendMessage` — but only within one config directory, and only one
+recipient at a time. With several profiles on a machine that leaves exactly
+two gaps: a session in one profile cannot reach a session in another, and no
+session can hold a conversation with two others at once. **`bin/postbox`**
+fills those two gaps and nothing else. The native path stays first: a
+`PreToolUse` hook (`postbox guard`) refuses a mail addressed to a single
+recipient who is a live session in the sender's own profile, and says which
+`SendMessage` name to use instead. Two or more recipients, or one in another
+profile, go through.
+
+The server is `am` from mcp_agent_mail_rust, installed by `postbox install`
+as a **pinned, signature-verified release** — never the project's one-line
+installer, `am setup`, or bare `am`, all of which rewrite client configs —
+and run as one always-on per-user daemon (`local.postbox`; a systemd `--user`
+unit on Linux) on `127.0.0.1:8765`, store under `~/.local/state/postbox`.
+Every profile connects over HTTP (`postbox connect` runs `claude mcp add
+--scope user` per profile that lacks it); **no client may run its own stdio
+instance**, because every runtime takes an exclusive lock on the store.
+Loopback with no token is deliberate: any process of this user can read the
+store on disk, so a token would protect nothing and would have to sit in
+plaintext server-side. What that does leave open — a web page driving the
+endpoint — is closed by `APP_ENVIRONMENT=production` with CORS off (the
+development default reflects any `Origin`).
+
+**Identity is per directory.** Two tabs in the same directory are one agent
+with one inbox; a worktree in another directory is another agent; a session
+on another profile somewhere else is someone else. The server accepts only
+names from a fixed adjective+noun vocabulary (privacy by construction, so a
+name can never be a person, path or token — there is no toggle), so a
+directory's name is **derived**: six hex digits of SHA-256 over its path
+relative to `$HOME` index the vocabulary, giving the same names on every
+machine with this layout and nothing to configure. A machine-local pin
+(`git config postbox.<path-under-home>.name <AdjectiveNoun>`, overlay
+supplied) chooses a different valid name for a directory whose mail you read
+often, or to split two that hash alike; a pin outside the vocabulary
+**warns on every use and the hash is used**, never a registration error the
+session cannot explain. `postbox names` lists every directory's name and
+fails on a collision (the fix is one pin); `routes` shows the same as its
+MAIL column (`*` pin, `!` rejected pin). The vocabulary here is a copy of
+the server's, and `status` compares the installed version to the pinned one
+so a change upstream shows up as a nudge rather than a mystery.
+
+Three hooks carry the conversation; the overlays wire them (`postbox
+settings` prints the block). `SessionStart` tells the session its name,
+the project key and the native-first rule, and lists unread mail.
+`UserPromptSubmit` surfaces unread mail on each turn. `Stop` holds the
+session for one more turn when mail arrived since it last looked — once
+per new message, keyed by session, and never while already in that held
+turn (`stop_hook_active`), which is the loop guard. Unread is read through
+the daemon (`am check-inbox`), never from the store; the server's own
+"Contact approved" notices are filtered out as bookkeeping. Messages are
+data from another agent, not instructions — the shared memory says so.
+
+Commands: `name [--source] [dir]`, `names [root...]`, `install`, `uninstall
+[--purge]`, `start|stop|restart|status|logs`, `connect|disconnect`, `hook
+<event>`, `guard`, `settings`, `dir`. `postbox-doctor` joins `doctor`.
+Tests: `tests/postbox.bats` (stub am/curl/minisign/launchctl/claude,
+sandboxed HOME and state, fixture directories only).
+
 ### Wrangler (Cloudflare) auth profiles
 
 Wrangler (≥ 4.106) keeps one OAuth login per **auth profile**: named ones
@@ -841,7 +903,7 @@ wrapper. Consequences:
   selects for the cwd (or "not installed under the selected node"), and the
   version read off the install without executing it (npm `package.json`,
   cask/native path segment). `doctor` runs them all (git, gh, claude,
-  wrangler, hermes, tailnet, worktabs, attend, onepassword, iterm2 — the last two
+  wrangler, hermes, tailnet, worktabs, attend, postbox, onepassword, iterm2 — the last two
   are not per-repo, but 1Password is what signing and `~/.extra` rest on and
   iTerm2 is the terminal the rest run inside, so their failures arrive
   disguised as per-repo ones). Every doctor also opens with a `defined:` line — are
@@ -995,7 +1057,8 @@ because a unix socket path is capped at ~104 bytes on macOS).
 The doctors answer "as whom, right *here*". `routes` answers it for every
 project at once: **one row per repo, one column per wrapper** — account,
 Claude profile, wrangler profile, tailnet, hermes profile, worktabs group,
-and with `-l` the commit identity and the gate's verdict on it.
+postbox agent name, and with `-l` the commit identity and the gate's verdict
+on it.
 
 ```
 PROJECT           ACCOUNT   CLAUDE            WRANGLER    TAILNET      HERMES

@@ -706,6 +706,32 @@ function attend-doctor() {
 	print -r -- "cwd:     $PWD";
 }
 
+# postbox is the local mailbox Claude Code sessions use to reach a session
+# in another profile, or two sessions at once — the two things the native
+# cross-session messaging cannot do. Like attend it is a script, so nothing
+# routes; what can silently be wrong is the daemon (a launchd agent that may
+# not be loaded or not answering), a profile whose Claude Code config never
+# had the server added, a directory whose pinned name the server would
+# reject, and two directories deriving the same name — a shared inbox
+# nobody asked for. `postbox status` reports all of those; this wraps it
+# with the PATH check every script doctor makes.
+function postbox-doctor() {
+	emulate -L zsh;
+	print -r -- "wrapper: <none — postbox is a script, not a shell wrapper>";
+	print -r -- "defined: <none — this doctor calls no helpers>";
+	if (( $+commands[postbox] )); then
+		print -r -- "script:  ${commands[postbox]}";
+		if [[ ${commands[postbox]} != "$HOME/bin/postbox" ]]; then
+			print -r -- "         WARNING: that is not ~/bin/postbox — another package owns the name on PATH";
+		fi;
+	else
+		print -r -- "script:  NOT FOUND — ~/bin/postbox is not on PATH (chezmoi apply)";
+		return 0;
+	fi;
+	command postbox status 2>&1 | sed 's/^/  /';
+	print -r -- "cwd:     $PWD";
+}
+
 # The Hermes harness (NousResearch/hermes-agent) keeps per-agent state in
 # profiles (`hermes profile create <name>` — each its own HERMES_HOME with its
 # own config, approval rules, memory, and .env keys). A repo that must only
@@ -2396,6 +2422,23 @@ function routes_probe() {
 		v=REFUSE;
 	fi;
 	print -r -- "$v";
+
+	# The directory's postbox agent name, from the script's own resolver so
+	# the table cannot disagree with what a session registers as. `*` is a
+	# pin outranking the hash; `!` a pin the server would reject, so the
+	# hash is what actually gets used.
+	v='';
+	if (( $+commands[postbox] )); then
+		raw="$(command postbox name --source . 2>/dev/null)" || raw='';
+		if [[ -n $raw ]]; then
+			v=${raw%%$'\t'*};
+			case ${raw#*$'\t'} in
+				(pin) v="$v*";;
+				(pin-invalid) v="$v!";;
+			esac;
+		fi;
+	fi;
+	print -r -- "${v:--}";
 }
 
 # Which project routes to which account, across every wrapper, in one table.
@@ -2425,7 +2468,7 @@ function routes_probe() {
 #   routes --tsv       every column, unpadded, tab-separated, no header and
 #                      no footer, for awk/grep. The schema is fixed
 #                      (project, account, claude, wrangler, tailnet, hermes,
-#                      tabs, identity, gate) whether or not a column is empty,
+#                      tabs, identity, gate, mail) whether or not a column is empty,
 #                      so a script can index fields; `plan` in worktabs is the
 #                      same idea.
 #   routes ~/work      scan somewhere else
@@ -2487,13 +2530,13 @@ function routes() {
 			rel=${repo#$root/};
 			[[ $rel == "$repo" ]] && rel=${repo:t};
 			fields=(${(f)"$(cd -q -- "$repo" 2>/dev/null && { unset CLAUDE_PROFILE WRANGLER_PROFILE TAILNET; routes_probe; })"});
-			(( ${#fields} == 7 )) || continue;
+			(( ${#fields} == 8 )) || continue;
 			# Sort key: a rank digit, then the account. The digit is what
 			# orders pinned above unpinned — a punctuation character would
 			# not, because ${(o)} collates by locale and ~ sorts *before*
 			# letters in en_US, which put the unpinned rows on top.
 			[[ $fields[1] == - ]] && key=2 || key="1$fields[1]";
-			rows+=( "$key"$'\t'"$rel"$'\t'"${(pj:\t:)fields[1,5]}"$'\t'"${tabs[$repo]:--}"$'\t'"${fields[6]}"$'\t'"${fields[7]}" );
+			rows+=( "$key"$'\t'"$rel"$'\t'"${(pj:\t:)fields[1,5]}"$'\t'"${tabs[$repo]:--}"$'\t'"${fields[6]}"$'\t'"${fields[7]}"$'\t'"${fields[8]}" );
 		done;
 	done;
 
@@ -2505,18 +2548,19 @@ function routes() {
 
 	# Column layout. Everything below indexes the row AFTER the sort key is
 	# dropped: 1 project, 2 account, 3 claude, 4 wrangler, 5 tailnet,
-	# 6 hermes, 7 tabs, 8 identity, 9 gate.
+	# 6 hermes, 7 tabs, 8 identity, 9 gate, 10 mail. Mail was added last so
+	# the --tsv field numbers scripts already index did not move.
 	local -a hdr cols;
-	hdr=(PROJECT ACCOUNT CLAUDE WRANGLER TAILNET HERMES TABS IDENTITY GATE);
+	hdr=(PROJECT ACCOUNT CLAUDE WRANGLER TAILNET HERMES TABS IDENTITY GATE MAIL);
 	if (( tsv )); then
 		for a in $rows; do
 			fields=("${(@ps:\t:)a}");
-			print -r -- "${(pj:\t:)fields[2,10]}";
+			print -r -- "${(pj:\t:)fields[2,11]}";
 		done;
 		return 0;
 	fi;
-	cols=(1 2 3 4 5 6 7);
-	(( long )) && cols+=(8 9);
+	cols=(1 2 3 4 5 6 7 10);
+	(( long )) && cols=(1 2 3 4 5 6 7 8 9 10);
 
 	# Drop a column no project uses — but never the two that identify the
 	# row. What was dropped is named below rather than silently omitted.
@@ -2608,7 +2652,7 @@ function doctor() {
 	local d;
 	print -r -- "shell:   $(shell_trace)";
 	print -r -- "";
-	for d in git gh claude wrangler hermes tailnet worktabs attend onepassword iterm2; do
+	for d in git gh claude wrangler hermes tailnet worktabs attend postbox onepassword iterm2; do
 		print -r -- "== $d-doctor";
 		"$d-doctor";
 		print -r -- "";

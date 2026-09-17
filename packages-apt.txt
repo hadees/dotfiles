@@ -39,6 +39,8 @@ fuse3
 gh
 # bats: runs this repo's own suite (bats tests) on the machine itself
 bats
+# minisign: verifies the signed release bin/postbox installs
+minisign
 # xdg-open, which .aliases uses to provide `open` off macOS
 xdg-utils
 # clipboard — .aliases and .functions guard on both names
