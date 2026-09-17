@@ -15,7 +15,7 @@ it is the right task.
   Every repo here has a CLAUDE.md — the rules in it are not suggestions.
 - When the change touches a library, API or tool, check the installed version's
   documentation before writing against it. Do not code from memory of how it
-  used to work; say which version you read.
+  used to work.
 - Verify with the repo's own gates before reporting done. Run the lint, type-check,
   and test commands the project documents, and paste the real output. Never report a
   check as passing because it should pass.
