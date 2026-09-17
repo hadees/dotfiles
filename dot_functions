@@ -384,6 +384,22 @@ function claude() {
 			unset OPEN_AS_ALIAS;
 			[[ ${BROWSER:t} == open-as ]] && unset BROWSER;
 		fi;
+		# Subagents default to Sonnet, in every profile. A subagent's model
+		# resolves per-invocation argument → its own definition's `model:` →
+		# this variable → the main conversation's model, so it only moves the
+		# agents that name no model of their own (the built-in Explore, Plan,
+		# general-purpose and the like); a definition asking for opus or fable
+		# still gets one. What this buys is less the cheaper per-token rate
+		# than where the tokens land: a subagent's tool output stays in the
+		# subagent's context, so a long search costs the orchestrator a summary
+		# instead of a transcript it re-sends on every later turn.
+		# It lives here and not in each profile's settings.json because Claude
+		# Code writes that file itself (/model, /effort, /config persist into
+		# it), so chezmoi cannot own it without the two fighting — the wrapper
+		# is the one managed surface every profile already passes through. An
+		# already-set value wins, so `CLAUDE_CODE_SUBAGENT_MODEL=opus claude`
+		# still overrides it for a single launch.
+		export CLAUDE_CODE_SUBAGENT_MODEL="${CLAUDE_CODE_SUBAGENT_MODEL:-sonnet}";
 		exec command claude "$@";
 	)
 }

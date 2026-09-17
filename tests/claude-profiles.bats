@@ -21,7 +21,11 @@ setup() {
   # BROWSER/OPEN_AS_ALIAS: a pinned Claude session (where these tests are
   # usually run from) exports both, and the wrapper's inherit/clear rules
   # are exactly what is under test. SSH_CONNECTION gates the pair too.
-  unset CLAUDE_PROFILE CLAUDE_CONFIG_DIR BROWSER OPEN_AS_ALIAS SSH_CONNECTION
+  # CLAUDE_CODE_SUBAGENT_MODEL is the same trap: the wrapper exports it, so
+  # a session launched through the wrapper hands it to these tests, and the
+  # default it is supposed to apply would be inherited rather than tested.
+  unset CLAUDE_PROFILE CLAUDE_CONFIG_DIR BROWSER OPEN_AS_ALIAS SSH_CONNECTION \
+    CLAUDE_CODE_SUBAGENT_MODEL
 
   # Fixture pins: one "work" org and one "personal" owner, mapped to two
   # accounts; work maps to the default dir, personal to a separate profile.
@@ -199,6 +203,27 @@ claude_in() {
   claude_in "$BATS_TEST_TMPDIR"
   [ "$status" -eq 0 ]
   [ "$output" = "CLAUDE_CONFIG_DIR=UNSET" ]
+}
+
+@test "claude: subagents default to sonnet, in every profile" {
+  # The default stub only echoes the config dir; extend it to prove which
+  # subagent model the wrapper handed down. Asserted with no profile pinned
+  # because the default applies to every profile, mapped or bare.
+  printf '#!/bin/sh\necho "SUBAGENT=${CLAUDE_CODE_SUBAGENT_MODEL-UNSET}"\n' \
+    > "$BATS_TEST_TMPDIR/bin/claude"
+  run zsh -c "source '$DOTFUNCTIONS'; claude"
+  [ "$status" -eq 0 ]
+  [ "$output" = "SUBAGENT=sonnet" ]
+}
+
+@test "claude: an already-set subagent model beats the default" {
+  # `CLAUDE_CODE_SUBAGENT_MODEL=opus claude` is the per-launch override; the
+  # wrapper must not stamp its default over a value somebody chose.
+  printf '#!/bin/sh\necho "SUBAGENT=${CLAUDE_CODE_SUBAGENT_MODEL-UNSET}"\n' \
+    > "$BATS_TEST_TMPDIR/bin/claude"
+  run zsh -c "source '$DOTFUNCTIONS'; CLAUDE_CODE_SUBAGENT_MODEL=opus claude"
+  [ "$status" -eq 0 ]
+  [ "$output" = "SUBAGENT=opus" ]
 }
 
 @test "claude: CLAUDE_PROFILE typo warns on stderr and falls back to the default profile" {
