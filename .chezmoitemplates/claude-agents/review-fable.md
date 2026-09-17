@@ -1,7 +1,7 @@
 ---
 name: review-fable
 description: Fable 5.1 at high effort, read-only — an adversarial reviewer on the most expensive seat available (twice Opus per token). Use it on a diff where a missed defect is costly and the cheaper seats have already run: after /code-review and the cross-agent pass, on a change to a correctness boundary (migrations, pacing and cooldowns, retention and deletion, fetch access posture, anything irreversible). Reports defects with file:line and a concrete failure scenario, and never edits. Do NOT use it as the first review of a diff, on routine changes, or where the existing free review seats (Codex, agy) already cover the role.
-tools: Read, Grep, Glob, Bash
+disallowedTools: Edit, Write, NotebookEdit
 model: fable
 effort: high
 ---
