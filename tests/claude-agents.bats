@@ -161,10 +161,14 @@ templates() {
       [ "$(cat "$s")" = "{{ template \"claude-agents/$stem.md\" . }}" ] || { echo "$s: unexpected content"; false; }
     done
   done
+  # Only a stub that calls a shared template is checked against the shared
+  # set. The five are the cross-profile seats, not an allowlist: a profile
+  # dir may carry agents of its own, and those are not this test's business.
   for d in "${STUB_DIRS[@]}"; do
     for s in "$d"/*.md.tmpl; do
-      stem="$(basename "$s" .md.tmpl)"
-      [ -f "$TEMPLATES/$stem.md" ] || { echo "$s has no template"; false; }
+      ref="$(grep -o 'template "claude-agents/[^"]*"' "$s" | sed 's|.*claude-agents/||; s|"$||')"
+      [ -n "$ref" ] || continue
+      [ -f "$TEMPLATES/$ref" ] || { echo "$s calls claude-agents/$ref, which does not exist"; false; }
     done
   done
 }
