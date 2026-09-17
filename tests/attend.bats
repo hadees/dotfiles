@@ -631,13 +631,15 @@ it2_said() { [ "$1" = -- ] && shift; grep -F -- "$1" "$IT2LOG" >/dev/null 2>&1; 
 
 @test "hook: a busy event starts the watcher when there is an iTerm2 to reconcile" {
   # setup leaves a lock that stands in for a running watcher; drop it so the
-  # hook has to spawn one. Another tab is left unseen so the spawned watcher
-  # has a reason to stay up long enough to be observed: with nothing pending
-  # it takes the lock and releases it again inside its first pass, which on
-  # a fast runner is over before a 100ms poll can see the pid file. Teardown
+  # hook has to spawn one. Another tab — on a LIVE pid, or the first pass
+  # reaps it — is left unseen so the spawned watcher has a reason to stay up
+  # long enough to be observed: with nothing pending it takes the lock and
+  # releases it again inside its first pass, which on a fast runner is over
+  # before a 100ms poll can see the pid file. $$ is not the hook's owner (the
+  # ps chain ends at pid 1), so the busy hook does not forget it. Teardown
   # removes the state, and the watcher exits at its next pass.
   unlock
-  tab "$(dead_pid)" waiting 0 /dev/ttys901
+  tab "$$" waiting 0 /dev/ttys901
   it2_stub "/dev/ttys900=SESSION-A"
   FAKE_PS_CHAIN="1:ttys900" at hook UserPromptSubmit
   [ "$status" -eq 0 ]
