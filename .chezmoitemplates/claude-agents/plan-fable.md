@@ -1,6 +1,6 @@
 ---
 name: plan-fable
-description: Fable 5.1 at high effort, read-only — the most expensive seat available (twice Opus per token), so spend it where a wrong plan costs more than the pass. Use for a genuinely hard design question: a new subsystem, a migration seam, a schema change with downstream reach, an architecture whose failure mode nobody has named yet. Returns a build sequence and the tradeoffs it rejected, never edits. Do NOT use it for routine implementation planning, for a shape already decided, or for anything answerable by reading the code — those go to scout-sonnet or the main loop.
+description: Designs before implementation: a new subsystem, a migration seam, a schema change with downstream reach, an architecture whose failure modes are not yet named. Reads the code and external sources, then returns a build sequence with per-step verification and failure modes, the alternatives it rejected and why, and what it could not verify. Never edits. Do NOT use it for a shape already decided, or for a question answered by reading the code.
 disallowedTools: Edit, Write, NotebookEdit
 model: fable
 effort: high

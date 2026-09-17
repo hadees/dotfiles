@@ -1,6 +1,6 @@
 ---
 name: work-sonnet-high
-description: Sonnet 5 at high effort, full tools. The default executor and the top Sonnet rung — hand it a task whose shape is already decided and let it write the code, run the tests, and iterate: implementing a described change, fixing a failing test, adding a migration, wiring a route, mechanical refactors across files. Give it the whole spec up front, including how to verify. Do NOT use it to decide an approach (plan first), and do NOT use it for a change whose blast radius nobody has worked out yet.
+description: Implements a decided change end to end: writes the code, runs the repo's own gates, iterates until green, and reports what changed and what it verified. The default executor for implementation work — fixing a failing test, adding a migration, wiring a route, a refactor across files. Give it the whole spec, including how to verify. Do NOT use it to choose an approach; plan first.
 model: sonnet
 effort: high
 ---

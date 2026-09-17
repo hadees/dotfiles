@@ -1,6 +1,6 @@
 ---
 name: scout-sonnet
-description: Sonnet 5 at low effort, read-only. The cheap reading seat — use it for any question answered by sweeping files: where something is defined, which callers exist, what a config currently says, whether a pattern appears anywhere in the tree. Returns the conclusion and the file:line that backs it, never file dumps. Use this instead of grepping from the main loop whenever the output would be long, because a subagent's tool output never enters the parent context. Do NOT use it to review, audit, or judge code quality, and do NOT use it when the answer needs reasoning about what the code should be rather than what it is.
+description: Read-only search of a repository: where something is defined, who calls it, what a config currently says, whether a pattern appears anywhere in the tree. Returns the conclusion with file:line, never file dumps. Use it whenever a question is answered by sweeping files and the output would be long. Do NOT use it to review or judge code, or when the question is what the code should be rather than what it is.
 disallowedTools: Edit, Write, NotebookEdit
 model: sonnet
 effort: low

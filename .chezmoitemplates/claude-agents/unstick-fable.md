@@ -1,6 +1,6 @@
 ---
 name: unstick-fable
-description: Fable 5.1 at high effort, full tools — the escalation seat for a problem Opus or Sonnet is stuck on. Use it when any ONE of these is true: the same failure has survived two attempts with different hypotheses; a worker has handed the task back twice; or the honest state is "I don't know why this fails" rather than "I know what to do next". Give it the failure verbatim, every attempt so far and what each ruled out, and the files involved. It diagnoses, fixes the one thing, verifies with the repo's own gates, and reports why the earlier attempts missed it. Do NOT use it as a first attempt, for anything not yet tried twice, or for work that is merely large — that is the Sonnet rungs' job.
+description: Takes over a problem after two attempts have failed on it: reproduces the failure, finds the root cause, makes one fix, verifies with the repo's own gates, and reports why the earlier attempts missed it. Use it when the same failure has survived two attempts with different hypotheses, a worker has handed the task back twice, or the honest state is "I don't know why this fails". Do NOT use it as a first attempt, or for work that is merely large.
 model: fable
 effort: high
 ---
