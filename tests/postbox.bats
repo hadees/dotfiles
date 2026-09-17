@@ -320,6 +320,15 @@ STUB
   [[ "$output" == *"name:    "*" (hash) for $WORK"* ]]
 }
 
+@test "status: works before install — no state directory yet — and counts the repos" {
+  git init -q "$WORK"
+  [ ! -d "$POSTBOX_STATE" ]
+  run "$PB" status
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"No such file"* ]]
+  [[ "$output" == *"names:   1 repos, no two share a name"* ]]
+}
+
 @test "status: a daemon that does not answer is called out" {
   export FAKE_HTTP=000
   run "$PB" status

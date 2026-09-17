@@ -745,13 +745,15 @@ cmd_status() {
   mapped_dirs | while IFS= read -r d; do
     if connected "$d"; then printf 'profile: %s connected\n' "$d"; else printf 'profile: %s NOT connected (postbox connect)\n' "$d"; fi
   done
-  n=$(cmd_names 2>"$STATE/.names.err" | wc -l | tr -d ' ')
-  if [ -s "$STATE/.names.err" ]; then
-    printf 'names:   %s repos, ' "$n"; sed 's/^postbox: //' "$STATE/.names.err" | head -n1
+  # Scratch in a tempfile, not the state dir: status must work before install.
+  err=$(mktemp 2>/dev/null) || err=/dev/null
+  n=$(cmd_names 2>"$err" | wc -l | tr -d ' ')
+  if [ -s "$err" ]; then
+    printf 'names:   %s repos, ' "$n"; sed 's/^postbox: //' "$err" | head -n1
   else
     printf 'names:   %s repos, no two share a name\n' "$n"
   fi
-  rm -f "$STATE/.names.err" 2>/dev/null
+  [ "$err" = /dev/null ] || rm -f "$err"
   r=$(resolve_name . 2>/dev/null) || r="?	?"
   printf 'name:    %s (%s) for %s\n' "${r%%	*}" "${r#*	}" "$PWD"
 }
