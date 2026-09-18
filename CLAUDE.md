@@ -117,7 +117,21 @@ VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 a public-only clone has no opinion), or of `identity.<owner>/<repo>.email`
 when that per-repo pin exists (a side project committing under its own
 identity — mirrors `wrangler.<owner>/<repo>.profile`). `GIT_IDENTITY_CHECK=0` bypasses one
-commit; `git-doctor` shows the verdict (`gate:`). Every hook name there is
+commit; `git-doctor` shows the verdict (`gate:`).
+
+`pre-push` is the other real gate there, and it refuses two publications
+that cannot be taken back once a ref is on the remote: a commit still
+marked **WIP**, and a **non-fast-forward push of `main`/`master`**. WIP is
+matched as a standalone word anywhere in the subject, case-insensitively —
+subjects here open with an emoji and a Conventional Commits type, so
+anchoring at the start would never fire on a real one, and the word
+boundary is what keeps `swipe` out. A force-push is not visible to a hook
+as a flag, so it is inferred the way git decides one is needed: the
+remote's commit is no longer an ancestor of what is being pushed. Only the
+commits the push would actually publish are examined (a new branch is
+diffed against `--remotes`, not the whole history), and it has no opinion
+on a ref deletion or a remote commit this clone has not fetched.
+`GIT_WIP_CHECK=0` bypasses one push. Every hook name there is
 a shim that first runs any `hook.<name>.run` git-config commands (repeatable,
 per-repo `.git/config`; a failure blocks; each gets the hook's arguments and a
 replay of its stdin — for pre-push, the refs being pushed) and then the repo's

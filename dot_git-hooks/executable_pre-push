@@ -1,0 +1,76 @@
+#!/bin/sh
+# Refuse a push that carries a commit still marked WIP, and refuse a
+# non-fast-forward push of a default branch. Both are the same class of
+# mistake — publishing something that was never meant to leave the machine —
+# and pre-push is the last place either can be caught: once a ref is on the
+# remote, another clone, a CI run, or an agent may already have it.
+#
+# WIP is read as a standalone word anywhere in the subject, case-insensitively
+# ("WIP: half the backfill", ":construction: wip guard"), because this repo's
+# subjects begin with an emoji and a Conventional Commits type, so anchoring
+# at the start would miss every one of them. The word boundary is what keeps
+# "swipe" and "wiper" out of it.
+#
+# A force-push is not visible to a hook as a flag: git only says which refs
+# are about to move. So it is inferred the way git itself decides whether a
+# push needs forcing — the remote's current commit is no longer an ancestor
+# of what is being pushed. Only the default branches are guarded; a rewritten
+# topic branch is ordinary work.
+#
+# No opinion (passes) when: the ref is being deleted, the remote commit is not
+# in this clone (nothing to compare against — fetch first), the push creates a
+# branch, or GIT_WIP_CHECK=0 is set for the one push. Never touches the
+# network. Chains to the repo's own .git/hooks/pre-push afterwards, replaying
+# the ref list on stdin (see run-local-hook).
+hooks_dir=$(dirname "$0")
+refs=$(mktemp "${TMPDIR:-/tmp}/pre-push-refs.XXXXXX") || exit 1
+trap 'rm -f "$refs"' EXIT
+if [ -t 0 ]; then :; else cat >"$refs"; fi
+chain() { HOOK_NAME=pre-push exec "$hooks_dir/run-local-hook" "$@" <"$refs"; }
+
+[ "${GIT_WIP_CHECK:-1}" = 0 ] && chain "$@"
+
+zero() { case $1 in *[!0]*) return 1 ;; *) return 0 ;; esac; }
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+	[ -n "$local_sha" ] || continue
+	zero "$local_sha" && continue          # deleting a ref pushes no commits
+
+	# Which commits this push would actually publish. A new remote branch has
+	# no counterpart to diff against, so exclude everything already on any
+	# remote rather than walking the whole history.
+	if zero "$remote_sha"; then
+		range="$local_sha --not --remotes"
+	else
+		range="$remote_sha..$local_sha"
+	fi
+	wip=$(git rev-list $range 2>/dev/null \
+		| while read -r sha; do
+			subject=$(git log -1 --format=%s "$sha" 2>/dev/null)
+			printf '%s' "$subject" | grep -qiE '(^|[^[:alnum:]])wip([^[:alnum:]]|$)' \
+				&& printf '  %s %s\n' "$(git rev-parse --short "$sha")" "$subject"
+		done)
+	if [ -n "$wip" ]; then
+		echo "pre-push: refusing to push ${local_ref#refs/heads/} — it still carries WIP commits:" >&2
+		printf '%s\n' "$wip" >&2
+		echo "  Reword or squash them away, or bypass once with GIT_WIP_CHECK=0." >&2
+		exit 1
+	fi
+
+	# Force-push onto a default branch: the remote tip would stop being an
+	# ancestor, so whatever is only on the remote would be dropped.
+	case $remote_ref in
+		refs/heads/main|refs/heads/master) ;;
+		*) continue ;;
+	esac
+	zero "$remote_sha" && continue
+	git cat-file -e "$remote_sha" 2>/dev/null || continue   # not fetched; no verdict
+	if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+		echo "pre-push: refusing a non-fast-forward push of ${remote_ref#refs/heads/}" >&2
+		echo "  ($(git rev-parse --short "$remote_sha") on the remote is not an ancestor of $(git rev-parse --short "$local_sha") — commits would be dropped)." >&2
+		echo "  Rebase onto it, or bypass once with GIT_WIP_CHECK=0." >&2
+		exit 1
+	fi
+done <"$refs" || exit 1
+
+chain "$@"

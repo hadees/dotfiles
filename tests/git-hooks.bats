@@ -55,11 +55,13 @@ make_repo() {
 @test "dot_git-hooks: every hook file is deployable and the shims point at run-local-hook" {
   [ -x "$HOOKS/pre-commit" ]
   [ -x "$HOOKS/run-local-hook" ]
-  for h in pre-push commit-msg prepare-commit-msg post-commit post-checkout post-merge pre-rebase post-rewrite pre-merge-commit; do
+  [ -x "$HOOKS/pre-push" ]
+  for h in commit-msg prepare-commit-msg post-commit post-checkout post-merge pre-rebase post-rewrite pre-merge-commit; do
     [ "$(readlink "$HOOKS/$h")" = run-local-hook ]
     [ -x "$HOOKS/$h" ]
   done
   sh -n "$HOOKS/pre-commit"
+  sh -n "$HOOKS/pre-push"
   sh -n "$HOOKS/run-local-hook"
 }
 
@@ -248,4 +250,129 @@ make_repo() {
   run git -C "$repo" commit -q -m two
   [ "$status" -eq 0 ]
   [[ "$output" == *"COMMIT 0"* ]]
+}
+
+# --- pre-push: WIP commits and force-pushed default branches -----------------
+#
+# Every fixture here pushes to a bare repo on disk, so the identity gate has
+# no opinion (a local path has no owner) and nothing touches the network.
+
+push_repo() {
+  local repo="$BATS_TEST_TMPDIR/pushrepo" bare="$BATS_TEST_TMPDIR/pushbare.git"
+  rm -rf "$repo" "$bare"
+  git init -q --bare "$bare"
+  git init -q "$repo"
+  echo x > "$repo/f"; git -C "$repo" add f; git -C "$repo" commit -q -m "init"
+  git -C "$repo" remote add origin "$bare"
+  git -C "$repo" push -q origin main
+  echo "$repo"
+}
+
+@test "pre-push: a commit whose subject carries WIP is refused, and named" {
+  repo=$(push_repo)
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "WIP: half the backfill"
+  run git -C "$repo" push -q origin main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"still carries WIP commits"* ]]
+  [[ "$output" == *"WIP: half the backfill"* ]]
+}
+
+@test "pre-push: WIP is matched case-insensitively and anywhere in the subject" {
+  repo=$(push_repo)
+  # This repo's subjects lead with an emoji and a Conventional Commits type,
+  # so anchoring the match at the start would never fire on a real one.
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: wip guard, do not ship"
+  run git -C "$repo" push -q origin main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"still carries WIP commits"* ]]
+}
+
+@test "pre-push: a word merely containing wip is not a WIP commit" {
+  repo=$(push_repo)
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "fix: stop the swipe handler wiping state"
+  run git -C "$repo" push -q origin main
+  [ "$status" -eq 0 ]
+}
+
+@test "pre-push: only the commits being pushed are examined" {
+  repo=$(push_repo)
+  # A WIP commit that is already on the remote is somebody else's problem;
+  # this push publishes nothing new about it.
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "WIP: already out there"
+  GIT_WIP_CHECK=0 git -C "$repo" push -q origin main
+  echo z >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: a finished thing"
+  run git -C "$repo" push -q origin main
+  [ "$status" -eq 0 ]
+}
+
+@test "pre-push: a new branch is scanned without walking the whole history" {
+  repo=$(push_repo)
+  git -C "$repo" checkout -q -b topic
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "WIP: on a fresh branch"
+  run git -C "$repo" push -q origin topic
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"still carries WIP commits"* ]]
+}
+
+@test "pre-push: GIT_WIP_CHECK=0 bypasses the gate for one push" {
+  repo=$(push_repo)
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "WIP: deliberate"
+  run env GIT_WIP_CHECK=0 git -C "$repo" push -q origin main
+  [ "$status" -eq 0 ]
+}
+
+@test "pre-push: deleting a ref pushes no commits and is not judged" {
+  repo=$(push_repo)
+  git -C "$repo" checkout -q -b topic
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: fine"
+  git -C "$repo" push -q origin topic
+  run git -C "$repo" push -q origin --delete topic
+  [ "$status" -eq 0 ]
+}
+
+@test "pre-push: a non-fast-forward push of the default branch is refused" {
+  repo=$(push_repo)
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: one"
+  git -C "$repo" push -q origin main
+  git -C "$repo" reset -q --hard HEAD~1
+  echo z >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: a different one"
+  run git -C "$repo" push -q --force origin main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"non-fast-forward push of main"* ]]
+  run env GIT_WIP_CHECK=0 git -C "$repo" push -q --force origin main
+  [ "$status" -eq 0 ]
+}
+
+@test "pre-push: force-pushing a topic branch is ordinary work" {
+  repo=$(push_repo)
+  git -C "$repo" checkout -q -b topic
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: one"
+  git -C "$repo" push -q origin topic
+  git -C "$repo" commit -q --amend -m "feat: one, reworded"
+  run git -C "$repo" push -q --force origin topic
+  [ "$status" -eq 0 ]
+}
+
+@test "pre-push: the gate still chains to hook.pre-push.run and the repo's own hook" {
+  repo=$(push_repo)
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: fine"
+  git -C "$repo" config --add hook.pre-push.run 'echo "RAN $(wc -l < /dev/stdin | tr -d " ")" >&2'
+  printf '#!/bin/sh\necho "LOCAL $(wc -l < /dev/stdin | tr -d " ")" >&2\n' > "$repo/.git/hooks/pre-push"
+  chmod +x "$repo/.git/hooks/pre-push"
+  run git -C "$repo" push -q origin main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"RAN 1"* ]]
+  [[ "$output" == *"LOCAL 1"* ]]
 }
