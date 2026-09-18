@@ -705,7 +705,7 @@ print("\n".join(seen))' 2>/dev/null)
   to=$recipients
   [ "$to" = "$own" ] && exit 0
   # The registry of this profile: which live session's directory has that
-  # name? (Observed layout, same dependency attend takes.)
+  # name? (Observed layout, not a documented interface.)
   d=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
   [ -d "$d/sessions" ] || exit 0
   native=$(python3 - "$d" <<'PY'
