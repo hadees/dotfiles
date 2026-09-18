@@ -39,6 +39,10 @@ fuse3
 gh
 # bats: runs this repo's own suite (bats tests) on the machine itself
 bats
+# python3: bin/denyguard and bin/workset are sh wrappers around a python3
+# heredoc, and denyguard is the one hook wired fail-closed — without python3
+# it refuses every Bash call in a profile that wires it
+python3
 # minisign: verifies the signed release bin/postbox installs
 minisign
 # xdg-open, which .aliases uses to provide `open` off macOS

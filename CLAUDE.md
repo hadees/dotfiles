@@ -516,6 +516,89 @@ extension lands where the tabs do. No pin fits such a repo, so it has none. Test
 Local State, fixture LevelDB bytes, fixture Finicky fragments; no real
 Chrome touched).
 
+### Deny rules reach Bash (`denyguard`)
+
+Claude Code's `permissions.deny` list (`Read(...)`/`Edit(...)` path rules)
+binds only those two tools. Its own docs say plainly that it also catches
+the handful of Bash commands it recognises as reading a path directly
+(`cat`, `head`, `tail`, `sed`, `tee`) and redirection targets, but not "a
+command that reads files without naming them, such as `grep -r pattern .`",
+nor a script that opens files itself (permissions doc, "Read and Edit",
+Warning box). Auto mode actively *prefers* Bash (`cat`, `grep`, `sed`) over
+the Read tool, which makes that gap the default path rather than an exotic
+one: `grep -c foo ~/code/<repo>/CLAUDE.md` against a tree a profile's deny
+list names returns a count regardless.
+
+`bin/executable_denyguard` (`~/bin/denyguard` once deployed) is a
+PreToolUse hook on Bash that reads the *same* `permissions.deny` list at
+hook time — no second list anywhere — maps every `Read(...)`/`Edit(...)`
+entry to an absolute prefix (`~/x` → `$HOME/x`; `//x` → `/x` from the
+filesystem root; `/x` → project-relative, resolved against the session's
+cwd; bare `x` → gitignore any-depth), and refuses any Bash command whose
+literal path tokens, glob prefixes, or cwd land inside one. It widens
+coverage to every command that names a denied path in its literal text
+(grep, rg, ls, find, wc, awk, diff, `git -C`, a Python file argument, an
+`-exec` argument, a heredoc body — the whole command string is scanned), to
+a glob that could expand into a denied tree, to a relative path or `cd`
+target resolved against the hook's cwd, to a symlink whose target is
+denied, and to a session whose cwd already is one. `denyguard check
+--profile DIR PATH...` exposes the same boundary test for anything else
+that needs it (a working-set opener, for one), and `denyguard settings`
+prints the PreToolUse block below for a profile's `settings.json` to
+paste — it never edits one, since every profile's settings file is
+overlay-owned (see "Private overlays" below).
+
+**What it cannot see.** This is a lexical guard, not a sandbox: a shell
+variable other than `$HOME`, `$(...)` output, a script file's own
+contents, `find <parent> -exec` without a recursive tell, `eval`, base64,
+or any program that computes the path at run time all pass through unseen.
+One gap is worth stating separately because a rule's *shape* invites
+over-trust: a token containing a glob is matched only against rules that
+carry a directory prefix, so a bare any-depth rule (`Read(**/*.env)`) does
+not catch `cat *.env` — the rule looks like it covers the case and does
+not.
+It guards the accidental and default case — Bash preferred over Read — not
+a determined command. OS-level enforcement exists: the Bash sandbox's
+`sandbox.filesystem.denyRead` applies to "all commands running inside the
+sandbox, including their child processes." That is deliberately **not**
+this change — it needs the sandbox on, and it changes what a session can
+do with paths it *is* allowed to read too — and is recorded here as the
+upgrade path if the lexical gaps above ever cost more than that setup
+would.
+
+**Fails closed, on purpose — the one place in this repo that does.** The
+tailnet wrappers fail open because routing there is an optimisation and
+the command is the point; here the *refusal* is the point, and a guard
+that silently becomes a no-op would leave the operator believing the hole
+is closed, which is worse than the hole itself. Missing python3, or an
+unreadable/unparsable `settings.json`: exit 2, which blocks the tool call
+outright (hooks reference §3 — exit 2 blocks unconditionally, with or
+without JSON on stdout). An ABSENT `permissions.deny` reads as zero rules
+and allows — that is the correct reading of an empty list, not a failure.
+The one way this still fails open is documented by Claude Code itself and
+cannot be fixed from here: a hook that TIMES OUT does not block ("don't
+count on a stalled hook to act as a gate" — hooks reference §4). So the
+script does no network, no subprocesses, and stats only paths it has not
+already ruled on lexically; the wiring's `timeout: 10` exists only so a
+wedged mount cannot hold a whole turn for the 600s default.
+
+**Cost**: one `sh -c`, one `python3` start, a JSON parse of the settings
+file, and a few dozen `lstat`s — about 25–35ms per Bash call, on every Bash
+call in every profile it is wired into (hooks run inside subagents too).
+Denials are appended to
+`${XDG_STATE_HOME:-$HOME/.local/state}/denyguard/denied.log` (`ts \t
+profile-label \t rule \t fragment`) — a count of the mechanism acting, not
+part of the gate; a failed append is ignored. `claude-doctor`'s `deny:`
+line reports the rule count, whether the hook is wired and fail-closed (as
+opposed to a `|| true` that silently defangs it), whether `~/bin/denyguard`
+is on PATH, and how many denials it has logged.
+
+This script only ships the mechanism: wiring `denyguard settings`'s output
+into a profile's `settings.json` is a separate change, since that file is
+overlay-owned. Tests: `tests/denyguard.bats` (sandboxed HOME, fixture repos
+and rules — no real path, repo, profile or account name; the shape a rule
+takes is `Read(~/code/<repo>/**)`, never the operator's own).
+
 ### Worktabs launcher (iTerm2 tabs, on demand)
 
 `bin/worktabs` puts a set of terminal tabs back on screen: **one iTerm2 window

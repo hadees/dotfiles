@@ -417,6 +417,16 @@ names count as private (they name accounts and companies).
 `~/.claude/CLAUDE.work.md` (work account/org notes; imported by the public
 `~/.claude/CLAUDE.md`, unresolved and harmless where absent).
 
+### Bash deny guard wiring — every profile's `settings.json`
+
+The public `bin/executable_denyguard` and its `PreToolUse` block are
+identity-free; only the *file* they get pasted into is private, because
+each profile's `settings.json` is overlay-owned (see "Deny rules reach
+Bash" in CLAUDE.md). Paste `denyguard settings`'s output into each
+profile's settings source as an additional `PreToolUse` matcher, keeping
+its `exit 2` branch intact — that branch is what makes a missing
+`~/bin/denyguard` block Bash instead of silently allowing it.
+
 ### Secrets — `~/.extra` from `private_dot_extra.tmpl` (personal overlay)
 
 Never a value, only a 1Password reference; chezmoi resolves it at apply time
@@ -501,7 +511,10 @@ npx", not "pin <side-company> to its profile").
    any single repo that should run under a different login than its owner's,
    and a `claude.<dir>.browser` alias so that profile's login page opens in
    the browser profile signed into that account; `claude.<owner>/<repo>.browser`
-   for a repo whose pages live in a Chrome profile of their own);
+   for a repo whose pages live in a Chrome profile of their own); if that
+   profile's `settings.json` carries a `permissions.deny` block, paste
+   `denyguard settings`'s output into its `PreToolUse` array too, so Bash is
+   covered the same as Read/Edit;
    `wrangler.profile.<account>` (or a `wrangler.<owner>/<repo>.profile` pin
    for a one-off repo); `tailnet.profile.<account>` if that account has a
    tailnet; `tailnet-mount.<name>.*` if that tailnet serves a directory

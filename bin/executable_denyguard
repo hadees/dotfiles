@@ -1,0 +1,477 @@
+#!/bin/sh
+# denyguard — a profile's permissions.deny, enforced on Bash too.
+#
+# Claude Code's Read/Edit deny rules only ever bind those two tools. Bash is
+# not covered: `grep -c foo ~/code/<denied>/CLAUDE.md` from a session whose
+# profile denies Read on that tree returns a count anyway, and Claude Code's
+# own auto mode *prefers* Bash (cat, grep, sed) over Read — so the bypass is
+# the default path, not an exotic one. denyguard is a PreToolUse hook on
+# Bash that reads the same `permissions.deny` list the profile already
+# carries — no second list anywhere — and refuses any command whose literal
+# path tokens, glob prefixes, or cwd land inside a denied tree.
+#
+# Honesty about reach, up front: Claude Code already applies Read/Edit deny
+# rules to the Bash commands it recognises (cat, head, tail, sed, tee) and to
+# redirection targets, and its own docs say plainly that this does not cover
+# "a command that reads files without naming them, such as `grep -r pattern
+# .`" or a script that opens files itself (permissions doc, "Read and Edit",
+# Warning box). denyguard widens coverage to *every* command that names a
+# denied path in its literal text — grep, rg, ls, find, wc, awk, diff,
+# git -C, python file arguments, -exec arguments, heredoc bodies, the whole
+# command string is scanned — to globs that could expand into one, to
+# relative paths and `cd` targets resolved against the hook's cwd, to
+# symlinks whose target is denied, and to a session whose cwd already is.
+#
+# It is still a LEXICAL guard, not a sandbox, and cannot see a path that
+# only exists at run time: a shell variable other than $HOME, `$(...)`
+# output, a script file's own contents, `find <parent> -exec` without a
+# recursive tell, `eval`, base64, or a program that computes the path by any
+# means. That is a guard against the accidental and default case (Bash
+# preferred over Read), not against a determined command. OS-level
+# enforcement exists — the Bash sandbox's `sandbox.filesystem.denyRead`
+# applies to "all commands running inside the sandbox, including their
+# child processes" — and is deliberately NOT this change: it needs the
+# sandbox on, changes what a session can do with paths it is allowed to
+# read too, and is a bigger step than closing the one hole this fixes. If
+# the lexical gaps above ever matter more than the setup cost, that key is
+# the upgrade path.
+#
+# Fails CLOSED, on purpose, and this is the one place in this repo that
+# does. The tailnet wrappers fail open because routing there is an
+# optimisation and the command is the point; here the *refusal* is the
+# point, and a guard that silently becomes a no-op would leave the operator
+# believing the hole is closed — worse than the hole itself. Missing
+# python3, an unreadable or unparsable settings.json: exit 2, which blocks
+# the tool call (hooks reference §3: exit 2 blocks unconditionally, with or
+# without JSON on stdout). An ABSENT permissions.deny is read as zero rules
+# and allowed — that is the correct reading of an empty list, not a
+# failure. The one way this still fails open is documented by Claude Code
+# itself and cannot be fixed from here: a hook that TIMES OUT does not
+# block ("don't count on a stalled hook to act as a gate" — hooks reference
+# §4). So this script does no network, no subprocesses, and only stats
+# paths it has not already ruled on lexically; the wiring's `timeout: 10`
+# (see `denyguard settings`) exists so a wedged mount cannot hold a whole
+# turn for the 600s default instead.
+#
+# Usage:
+#   denyguard hook               PreToolUse hook body; reads the event JSON
+#                                 from stdin, examines tool_input.command for
+#                                 Bash and every string leaf otherwise.
+#   denyguard rules [--profile DIR]
+#                                 one line per Read/Edit path rule in the
+#                                 profile's settings.json: tool, rule as
+#                                 written, resolved absolute prefix, kind.
+#   denyguard check [--profile DIR] PATH...
+#                                 does PATH fall inside (or contain) one of
+#                                 the profile's denied trees? — the boundary
+#                                 test a working-set opener can reuse rather
+#                                 than carrying its own scanner.
+#   denyguard settings            the PreToolUse hook block to paste into a
+#                                 profile's settings.json (overlay-owned;
+#                                 this script never edits one).
+#   denyguard dir                 the profile directory this invocation reads.
+# env:
+#   CLAUDE_CONFIG_DIR   the profile directory (else $HOME/.claude — the same
+#                       default claude() and postbox use unset, not spelled
+#                       out, so the default profile is addressed the same
+#                       way everywhere).
+#   DENYGUARD_LOG       overrides the denial log path (tests).
+set -eu
+
+command -v python3 >/dev/null 2>&1 || {
+  printf 'denyguard: python3 not found; refusing Bash until python3 is installed (Brewfile / packages-apt.txt declare it)\n' >&2
+  exit 2
+}
+
+# `python3 -` reads its own program from stdin, which the heredoc below
+# already occupies — so `hook`'s PreToolUse payload (also arriving on
+# stdin) is saved to fd 3 first and read from there once inside. Same trick
+# as iterm2-prefs-clean's git filter; postbox's heredocs sidestep it by
+# passing a filename in argv instead, which a hook has none of.
+exec 3<&0
+exec python3 - "$@" <<'PY'
+import fnmatch
+import json
+import os
+import re
+import sys
+import time
+
+HOME = os.environ.get("HOME", "")
+GLOB_CHARS = set("*?[")
+RECURSIVE_WORDS = {
+    "find", "fd", "rg", "grep", "egrep", "fgrep", "ag", "ack",
+    "du", "tree", "tar", "zip", "rsync", "cp", "scp",
+}
+RULE_RE = re.compile(r"^(Read|Edit)\((.+)\)$")
+# Split a command string the way a lexical (not a real shell) scanner can:
+# on whitespace, the metacharacters that separate commands/arguments, and
+# both quote characters — good enough to find path-shaped tokens, not a
+# parser.
+SPLIT_RE = re.compile(r"""[\s;|&()<>'"]+""")
+# `~` counts as $HOME only at the start of a token or right after `=`/`:`
+# (VAR=~/x, --opt=~/x) — a bare `~` elsewhere is an ordinary character.
+TILDE_RE = re.compile(r"""(?:(?<=[\s;|&()<>'"=:])~|^~)(?=/|$)""")
+
+
+def profile_dir(explicit=None):
+    if explicit:
+        return os.path.expanduser(explicit)
+    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
+
+
+def load_deny(dir_):
+    # A settings.json that is simply ABSENT means no rules, not a failure. The
+    # public repo ships none — every profile's is overlay-owned — so a stranger
+    # who wires this hook through a project-level .claude/settings.json has no
+    # profile settings file at all, and refusing there would deny every Bash
+    # call in the project while naming a remedy that cannot exist for them.
+    # Unreadable or unparsable is the opposite case: something is configured
+    # and we cannot tell what it forbids, so refuse and name the file we tried.
+    path = os.path.join(dir_, "settings.json")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return []
+    except Exception as exc:
+        sys.stderr.write(
+            "denyguard: cannot read %s: %s; refusing Bash until that file is "
+            "readable JSON\n" % (path, exc)
+        )
+        sys.exit(2)
+    perms = data.get("permissions") or {}
+    return perms.get("deny") or []
+
+
+class Rule:
+    __slots__ = ("tool", "raw", "anchor", "prefix", "kind", "pattern", "evaluable")
+
+    def __init__(self, tool, raw, anchor, prefix, kind, pattern, evaluable):
+        self.tool = tool
+        self.raw = raw
+        self.anchor = anchor
+        self.prefix = prefix
+        self.kind = kind
+        self.pattern = pattern
+        self.evaluable = evaluable
+
+
+def strip_recursive_suffix(s):
+    for suf in ("/**/*", "/**"):
+        if s.endswith(suf):
+            return s[: -len(suf)]
+    return s
+
+
+def literal_prefix(path):
+    """Text before the first glob character, cut back to the last `/` —
+    used both for a rule's own glob remainder and for a glob-bearing
+    command fragment, so the two compare on the same footing."""
+    idx = next((i for i, c in enumerate(path) if c in GLOB_CHARS), None)
+    if idx is None:
+        return path
+    head = path[:idx]
+    pos = head.rfind("/")
+    return head[:pos] if pos >= 0 else ""
+
+
+def parse_rule(tool, path_str, cwd):
+    """cwd resolves a project-relative rule (hook); None (check, rules)
+    leaves it unevaluable — the frozen normalisation table's own split."""
+    raw = "%s(%s)" % (tool, path_str)
+    if path_str == "~":
+        anchor, core = "home", ""
+    elif path_str.startswith("~/"):
+        anchor, core = "home", path_str[2:]
+    elif path_str.startswith("//"):
+        anchor, core = "root", path_str[1:]
+    elif path_str.startswith("/"):
+        anchor, core = "project-relative", path_str[1:]
+    else:
+        anchor, core = "any-depth", path_str
+
+    trimmed = strip_recursive_suffix(core)
+    has_glob = any(c in trimmed for c in GLOB_CHARS)
+
+    if anchor == "any-depth":
+        # A gitignore-style bare pattern matches at any depth, so it never
+        # has one absolute prefix — always "glob" kind, matched separately.
+        return Rule(tool, raw, anchor, None, "glob", trimmed, True)
+
+    kind = "glob" if has_glob else "prefix"
+    literal = literal_prefix(trimmed) if kind == "glob" else trimmed
+
+    if anchor == "home":
+        prefix = os.path.normpath(os.path.join(HOME, literal)) if literal else HOME
+        evaluable = True
+    elif anchor == "root":
+        prefix = os.path.normpath(literal) if literal else "/"
+        evaluable = True
+    else:  # project-relative
+        if cwd is None:
+            prefix, evaluable = None, False
+        else:
+            prefix = os.path.normpath(os.path.join(cwd, literal)) if literal else os.path.normpath(cwd)
+            evaluable = True
+
+    return Rule(tool, raw, anchor, prefix, kind, trimmed, evaluable)
+
+
+def parse_deny_list(deny_list, cwd):
+    rules = []
+    for entry in deny_list:
+        m = RULE_RE.match(entry)
+        if not m:
+            continue  # Write(...)/Glob(...) etc. carry no path rule (doc).
+        rules.append(parse_rule(m.group(1), m.group(2), cwd))
+    return rules
+
+
+def match_any_depth(path, pattern):
+    if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, "*/" + pattern):
+        return True
+    return any(fnmatch.fnmatch(part, pattern) for part in path.split(os.sep) if part)
+
+
+def is_recursive(words):
+    for w in words:
+        if os.path.basename(w) in RECURSIVE_WORDS:
+            return True
+        if w == "--recursive" or re.match(r"^-[A-Za-z]*[rR]$", w):
+            return True
+    return False
+
+
+def substitute_home(text):
+    if not HOME:
+        return text
+    text = text.replace("${HOME}", HOME).replace("$HOME", HOME)
+    return TILDE_RE.sub(HOME, text)
+
+
+def candidates_of(text, cwd):
+    """Every path-shaped fragment in `text`, resolved against `cwd`, plus a
+    realpath variant where the resolved path exists (deny rules apply to a
+    symlink and its target alike — doc, "Symlinks"). Each item is
+    (raw_token, resolved_absolute_path, has_glob_chars)."""
+    tokens = [t for t in SPLIT_RE.split(substitute_home(text)) if t]
+    out = []
+    for tok in tokens:
+        has_glob = any(c in tok for c in GLOB_CHARS)
+        if tok.startswith("/"):
+            resolved = os.path.normpath(tok)
+        elif tok.startswith("./") or tok.startswith("../") or "/" in tok:
+            resolved = os.path.normpath(os.path.join(cwd, tok))
+        else:
+            candidate = os.path.join(cwd, tok)
+            if not os.path.lexists(candidate):
+                continue  # a bare word with no such file is just a word
+            resolved = os.path.normpath(candidate)
+        out.append((tok, resolved, has_glob))
+        if not has_glob and os.path.exists(resolved):
+            rp = os.path.realpath(resolved)
+            if rp != resolved:
+                out.append((tok, rp, False))
+    return tokens, out
+
+
+def scan(text, cwd, rules):
+    """First rule this text trips, as (fragment, rule, reason) — or None."""
+    tokens, candidates = candidates_of(text, cwd)
+    recursive = is_recursive(tokens)
+    for tok, cand, has_glob in candidates:
+        if has_glob:
+            gp = literal_prefix(cand)
+            if not gp:
+                continue
+            for rule in rules:
+                if not rule.evaluable or rule.prefix is None:
+                    continue
+                if gp == rule.prefix or gp.startswith(rule.prefix + os.sep) \
+                        or rule.prefix.startswith(gp + os.sep):
+                    return tok, rule, "%s may expand into %s" % (tok, rule.raw)
+            continue
+        for rule in rules:
+            if rule.anchor == "any-depth":
+                if match_any_depth(cand, rule.pattern):
+                    return tok, rule, "%s is inside %s" % (tok, rule.raw)
+                continue
+            if not rule.evaluable or rule.prefix is None:
+                continue
+            if cand == rule.prefix or cand.startswith(rule.prefix + os.sep):
+                return tok, rule, "%s is inside %s" % (tok, rule.raw)
+            if recursive and cand != rule.prefix and rule.prefix.startswith(cand + os.sep):
+                return tok, rule, "%s is an ancestor of %s and this command looks recursive" % (tok, rule.raw)
+    return None
+
+
+def cwd_hit(cwd, rules):
+    cands = {os.path.normpath(cwd), os.path.realpath(cwd)}
+    for rule in rules:
+        if rule.anchor == "any-depth" or not rule.evaluable or rule.prefix is None:
+            continue
+        for cand in cands:
+            if cand == rule.prefix or cand.startswith(rule.prefix + os.sep):
+                return rule
+    return None
+
+
+def strings_of(obj):
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            for s in strings_of(v):
+                yield s
+    elif isinstance(obj, list):
+        for v in obj:
+            for s in strings_of(v):
+                yield s
+
+
+def log_denial(dir_, rule_raw, fragment):
+    path = os.environ.get("DENYGUARD_LOG") or os.path.join(
+        os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local", "state"),
+        "denyguard", "denied.log",
+    )
+    try:
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(path, "a") as f:
+            f.write("%d\t%s\t%s\t%s\n" % (int(time.time()), os.path.basename(dir_.rstrip("/")), rule_raw, fragment))
+    except Exception:
+        pass  # the log is a record of the mechanism acting, not the gate
+
+
+def deny(dir_, rule, fragment, reason):
+    sys.stdout.write(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }) + "\n")
+    log_denial(dir_, rule.raw, fragment)
+
+
+def cmd_hook():
+    try:
+        payload = os.fdopen(3, "r").read()
+        event = json.loads(payload)
+    except Exception as exc:
+        sys.stderr.write("denyguard: unreadable PreToolUse payload: %s\n" % exc)
+        sys.exit(2)
+
+    dir_ = profile_dir()
+    cwd = event.get("cwd") or os.getcwd()
+    rules = parse_deny_list(load_deny(dir_), cwd)
+
+    hit = cwd_hit(cwd, rules)
+    if hit is not None:
+        deny(dir_, hit, cwd, "session cwd %s is inside %s" % (cwd, hit.raw))
+        return
+
+    tool_input = event.get("tool_input") or {}
+    texts = [tool_input.get("command") or ""] if event.get("tool_name") == "Bash" \
+        else list(strings_of(tool_input))
+
+    for text in texts:
+        found = scan(text, cwd, rules)
+        if found is not None:
+            fragment, rule, reason = found
+            deny(dir_, rule, fragment, reason)
+            return
+    # No rule tripped: no opinion. Silence is the correct "allow" here —
+    # the hooks reference treats empty stdout on exit 0 as no decision.
+
+
+def parse_profile_flag(argv):
+    it = iter(argv)
+    rest = []
+    dir_ = None
+    for a in it:
+        if a == "--profile":
+            dir_ = next(it, None)
+        else:
+            rest.append(a)
+    return dir_, rest
+
+
+def cmd_rules(argv):
+    dir_flag, _ = parse_profile_flag(argv)
+    dir_ = profile_dir(dir_flag)
+    for rule in parse_deny_list(load_deny(dir_), cwd=None):
+        print("%s\t%s\t%s\t%s" % (rule.tool, rule.raw, rule.prefix or "", rule.kind))
+
+
+def check_unevaluable(rule):
+    return not rule.evaluable or rule.anchor == "any-depth"
+
+
+def cmd_check(argv):
+    dir_flag, paths = parse_profile_flag(argv)
+    dir_ = profile_dir(dir_flag)
+    rules = parse_deny_list(load_deny(dir_), cwd=None)
+
+    bad = [r for r in rules if check_unevaluable(r)]
+    if bad:
+        for r in bad:
+            sys.stderr.write("denyguard: %s cannot be evaluated without a session cwd\n" % r.raw)
+        sys.exit(2)
+
+    found = False
+    for p in paths:
+        rp = os.path.realpath(os.path.expanduser(p))
+        for rule in rules:
+            if rule.prefix is None:
+                continue
+            if rp == rule.prefix or rp.startswith(rule.prefix + os.sep):
+                sys.stderr.write("%s is inside %s\n" % (p, rule.raw))
+                found = True
+            elif rule.prefix == rp or rule.prefix.startswith(rp + os.sep):
+                sys.stderr.write("%s contains %s's region\n" % (p, rule.raw))
+                found = True
+    sys.exit(1 if found else 0)
+
+
+def cmd_settings():
+    entry = {
+        "matcher": "Bash",
+        "hooks": [{
+            "type": "command",
+            "timeout": 10,
+            "command": (
+                "[ -x ~/bin/denyguard ] && exec ~/bin/denyguard hook || "
+                "{ echo 'denyguard: ~/bin/denyguard is not installed; "
+                "refusing Bash until `dotfiles` deploys it' >&2; exit 2; }"
+            ),
+        }],
+    }
+    print(json.dumps(entry, indent=2))
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv:
+        sys.stderr.write("usage: denyguard hook|rules|check|settings|dir\n")
+        sys.exit(2)
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "hook":
+        cmd_hook()
+    elif cmd == "rules":
+        cmd_rules(rest)
+    elif cmd == "check":
+        cmd_check(rest)
+    elif cmd == "settings":
+        cmd_settings()
+    elif cmd == "dir":
+        print(profile_dir())
+    else:
+        sys.stderr.write("denyguard: unknown command %r\n" % cmd)
+        sys.exit(2)
+
+
+main()
+PY
