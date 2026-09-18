@@ -14,7 +14,7 @@ setup() {
   export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig"
   export GIT_CONFIG_SYSTEM=/dev/null
   export GIT_CONFIG_NOSYSTEM=1
-  unset GIT_IDENTITY_CHECK GIT_AUTHOR_EMAIL GIT_COMMITTER_EMAIL GIT_AUTHOR_NAME GIT_COMMITTER_NAME
+  unset GIT_IDENTITY_CHECK GIT_PUSH_CHECK GIT_AUTHOR_EMAIL GIT_COMMITTER_EMAIL GIT_AUTHOR_NAME GIT_COMMITTER_NAME
 
   # Deploy the hooks the way chezmoi would: executable_ prefix dropped,
   # symlink_ files become symlinks to their content.
@@ -55,11 +55,13 @@ make_repo() {
 @test "dot_git-hooks: every hook file is deployable and the shims point at run-local-hook" {
   [ -x "$HOOKS/pre-commit" ]
   [ -x "$HOOKS/run-local-hook" ]
-  for h in pre-push commit-msg prepare-commit-msg post-commit post-checkout post-merge pre-rebase post-rewrite pre-merge-commit; do
+  [ -x "$HOOKS/pre-push" ]
+  for h in commit-msg prepare-commit-msg post-commit post-checkout post-merge pre-rebase post-rewrite pre-merge-commit; do
     [ "$(readlink "$HOOKS/$h")" = run-local-hook ]
     [ -x "$HOOKS/$h" ]
   done
   sh -n "$HOOKS/pre-commit"
+  sh -n "$HOOKS/pre-push"
   sh -n "$HOOKS/run-local-hook"
 }
 
@@ -248,4 +250,227 @@ make_repo() {
   run git -C "$repo" commit -q -m two
   [ "$status" -eq 0 ]
   [[ "$output" == *"COMMIT 0"* ]]
+}
+
+# --- pre-push: WIP commits and force-pushed default branches -----------------
+#
+# Every fixture here pushes to a bare repo on disk, so the identity gate has
+# no opinion (a local path has no owner) and nothing touches the network.
+
+push_repo() {
+  local repo="$BATS_TEST_TMPDIR/pushrepo" bare="$BATS_TEST_TMPDIR/pushbare.git"
+  rm -rf "$repo" "$bare"
+  git init -q --bare "$bare"
+  git init -q "$repo"
+  echo x > "$repo/f"; git -C "$repo" add f; git -C "$repo" commit -q -m "init"
+  git -C "$repo" remote add origin "$bare"
+  git -C "$repo" push -q origin main
+  echo "$repo"
+}
+
+@test "pre-push: a commit whose subject carries the marker is refused, and named" {
+  repo=$(push_repo)
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "WIP: half the backfill"
+  run git -C "$repo" push -q origin main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"still carries unfinished commits"* ]]
+  [[ "$output" == *"WIP: half the backfill"* ]]
+}
+
+@test "pre-push: WIP is matched case-insensitively and anywhere in the subject" {
+  repo=$(push_repo)
+  # This repo's subjects lead with an emoji and a Conventional Commits type,
+  # so anchoring the match at the start would never fire on a real one.
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: wip guard, do not ship"
+  run git -C "$repo" push -q origin main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"still carries unfinished commits"* ]]
+}
+
+@test "pre-push: a word merely containing wip is not a WIP commit" {
+  repo=$(push_repo)
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "fix: stop the swipe handler wiping state"
+  run git -C "$repo" push -q origin main
+  [ "$status" -eq 0 ]
+}
+
+@test "pre-push: only the commits being pushed are examined" {
+  repo=$(push_repo)
+  # A WIP commit that is already on the remote is somebody else's problem;
+  # this push publishes nothing new about it.
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "WIP: already out there"
+  GIT_PUSH_CHECK=0 git -C "$repo" push -q origin main
+  echo z >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: a finished thing"
+  run git -C "$repo" push -q origin main
+  [ "$status" -eq 0 ]
+}
+
+@test "pre-push: a new branch is scanned without walking the whole history" {
+  repo=$(push_repo)
+  git -C "$repo" checkout -q -b topic
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "WIP: on a fresh branch"
+  run git -C "$repo" push -q origin topic
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"still carries unfinished commits"* ]]
+}
+
+@test "pre-push: GIT_PUSH_CHECK=0 bypasses the gate for one push" {
+  repo=$(push_repo)
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "WIP: deliberate"
+  run env GIT_PUSH_CHECK=0 git -C "$repo" push -q origin main
+  [ "$status" -eq 0 ]
+}
+
+@test "pre-push: deleting a ref pushes no commits and is not judged" {
+  repo=$(push_repo)
+  git -C "$repo" checkout -q -b topic
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: fine"
+  git -C "$repo" push -q origin topic
+  run git -C "$repo" push -q origin --delete topic
+  [ "$status" -eq 0 ]
+}
+
+@test "pre-push: a non-fast-forward push of the default branch is refused" {
+  repo=$(push_repo)
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: one"
+  git -C "$repo" push -q origin main
+  git -C "$repo" reset -q --hard HEAD~1
+  echo z >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: a different one"
+  run git -C "$repo" push -q --force origin main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"non-fast-forward push of main"* ]]
+  run env GIT_PUSH_CHECK=0 git -C "$repo" push -q --force origin main
+  [ "$status" -eq 0 ]
+}
+
+@test "pre-push: force-pushing a topic branch is ordinary work" {
+  repo=$(push_repo)
+  git -C "$repo" checkout -q -b topic
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: one"
+  git -C "$repo" push -q origin topic
+  git -C "$repo" commit -q --amend -m "feat: one, reworded"
+  run git -C "$repo" push -q --force origin topic
+  [ "$status" -eq 0 ]
+}
+
+@test "pre-push: the gate still chains to hook.pre-push.run and the repo's own hook" {
+  repo=$(push_repo)
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: fine"
+  git -C "$repo" config --add hook.pre-push.run 'echo "RAN $(wc -l < /dev/stdin | tr -d " ")" >&2'
+  printf '#!/bin/sh\necho "LOCAL $(wc -l < /dev/stdin | tr -d " ")" >&2\n' > "$repo/.git/hooks/pre-push"
+  chmod +x "$repo/.git/hooks/pre-push"
+  run git -C "$repo" push -q origin main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"RAN 1"* ]]
+  [[ "$output" == *"LOCAL 1"* ]]
+}
+
+@test "pre-push: the gate stays armed when the remote's commit is not in this clone" {
+  # git reads the remote sha over the push connection, so it runs ahead of
+  # the tracking ref whenever a collaborator has pushed. Scanning must not
+  # degrade into an empty, silently passing range there.
+  repo=$(push_repo)
+  other="$BATS_TEST_TMPDIR/other"
+  git clone -q "$BATS_TEST_TMPDIR/pushbare.git" "$other"
+  echo o >> "$other/f"; git -C "$other" add f
+  git -C "$other" -c user.email=personal@example.org commit -q -m "feat: theirs"
+  git -C "$other" push -q origin main
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "WIP: mine"
+  run git -C "$repo" push -q origin main
+  [ "$status" -ne 0 ]
+  # Refused for the marker, not merely rejected as non-fast-forward by git.
+  [[ "$output" == *"still carries unfinished commits"* ]]
+}
+
+@test "pre-push: the bypass still chains, so the overlay leak guard is never switched off with it" {
+  repo=$(push_repo)
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "WIP: deliberate"
+  git -C "$repo" config --add hook.pre-push.run 'echo "GUARD $(wc -l < /dev/stdin | tr -d " ")" >&2'
+  run env GIT_PUSH_CHECK=0 git -C "$repo" push -q origin main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"GUARD 1"* ]]
+}
+
+@test "pre-push: a failing hook.pre-push.run still blocks a bypassed push" {
+  repo=$(push_repo)
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "WIP: deliberate"
+  git -C "$repo" config --add hook.pre-push.run 'echo LEAK >&2; false'
+  run env GIT_PUSH_CHECK=0 git -C "$repo" push -q origin main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"LEAK"* ]]
+}
+
+@test "pre-push: the ref list is not left behind in TMPDIR" {
+  # An EXIT trap does not survive exec, and this hook runs on every push of
+  # every repo on the machine, so a leak here is unbounded.
+  repo=$(push_repo)
+  export TMPDIR="$BATS_TEST_TMPDIR/tmp"; mkdir -p "$TMPDIR"
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: fine"
+  git -C "$repo" push -q origin main
+  run sh -c 'ls "$TMPDIR" | grep -c "^pre-push-refs\." || true'
+  [ "$output" = 0 ]
+}
+
+@test "pre-push: hook.pre-push.wip=false turns the marker gate off and leaves force protection on" {
+  repo=$(push_repo)
+  git -C "$repo" config hook.pre-push.wip false
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "WIP: allowed here"
+  run git -C "$repo" push -q origin main
+  [ "$status" -eq 0 ]
+  git -C "$repo" reset -q --hard HEAD~1
+  echo z >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: divergent"
+  run git -C "$repo" push -q --force origin main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"non-fast-forward push of main"* ]]
+}
+
+@test "pre-push: hook.pre-push.protect replaces the default branch list" {
+  repo=$(push_repo)
+  git -C "$repo" config --add hook.pre-push.protect trunk
+  # main is no longer protected once the list is stated.
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: one"
+  git -C "$repo" push -q origin main
+  git -C "$repo" reset -q --hard HEAD~1
+  echo z >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: other"
+  run git -C "$repo" push -q --force origin main
+  [ "$status" -eq 0 ]
+  # trunk is.
+  git -C "$repo" checkout -q -b trunk
+  git -C "$repo" push -q origin trunk
+  git -C "$repo" reset -q --hard HEAD~1
+  echo w >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: rewritten"
+  run git -C "$repo" push -q --force origin trunk
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"non-fast-forward push of trunk"* ]]
+}
+
+@test "pre-push: a tag is named as itself, not as a branch" {
+  repo=$(push_repo)
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "WIP: tagged"
+  git -C "$repo" tag v1
+  run git -C "$repo" push -q origin v1
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"push v1"* ]]
 }

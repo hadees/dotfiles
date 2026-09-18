@@ -1,0 +1,111 @@
+#!/bin/sh
+# Refuse a push that carries a commit still marked unfinished, and refuse a
+# non-fast-forward push of a protected branch. Both are the same class of
+# mistake — publishing something that was never meant to leave the machine —
+# and pre-push is the last place either can be caught: once a ref is on the
+# remote, another clone, a CI run, or an agent may already have it.
+#
+# Mechanism here, policy in machine-local git config, like every other
+# opinionated thing in this tree:
+#
+#	hook.pre-push.wip      = false   # off; default is on
+#	hook.pre-push.protect  = <branch># repeatable; default main and master
+#
+# The marker is matched as a standalone word anywhere in the subject, case
+# insensitively. Conventional Commits subjects lead with a type (and often an
+# emoji before it), so anchoring at the start would never fire on one; the
+# word boundary is what keeps "swipe" and "wiping" out. `[^[:alnum:]]` is
+# deliberate in place of `\b`, which BSD grep does not implement.
+#
+# A force-push is not visible to a hook as a flag: git only says which refs
+# are about to move. So it is inferred the way git itself decides whether a
+# push needs forcing — the remote's current commit is no longer an ancestor
+# of what is being pushed.
+#
+# No opinion (passes) when: the ref is being deleted, or the remote commit is
+# not in this clone (nothing to compare against). GIT_PUSH_CHECK=0 bypasses
+# both gates for one push — it is named for the hook, not for one of them,
+# because that is what it does. Never touches the network. Chains to every
+# `hook.pre-push.run` command and then the repo's own .git/hooks/pre-push,
+# replaying the ref list on stdin to each (see run-local-hook) — including on
+# a bypassed push, since the overlay's leak guard hangs off that path and is
+# not this gate's to switch off.
+hooks_dir=$(dirname "$0")
+remote=$1
+refs=$(mktemp "${TMPDIR:-/tmp}/pre-push-refs.XXXXXX") || exit 1
+trap 'rm -f "$refs"' EXIT
+if [ -t 0 ]; then :; else cat >"$refs"; fi
+
+# NOT `exec`: an EXIT trap does not survive it, and this hook runs on every
+# push of every repo on the machine, so the leaked ref lists accumulate
+# without bound (48 of them on the machine this was written on).
+chain() {
+	HOOK_NAME=pre-push "$hooks_dir/run-local-hook" "$@" <"$refs"
+	exit $?
+}
+
+[ "${GIT_PUSH_CHECK:-1}" = 0 ] && chain "$@"
+
+zero() { case $1 in *[!0]*) return 1 ;; *) return 0 ;; esac; }
+
+case $(git config --get hook.pre-push.wip) in
+	false|0|no|off) wip_gate=0 ;;
+	*) wip_gate=1 ;;
+esac
+protected=$(git config --get-all hook.pre-push.protect 2>/dev/null)
+[ -n "$protected" ] || protected='main
+master'
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+	[ -n "$local_sha" ] || continue
+	zero "$local_sha" && continue          # deleting a ref pushes no commits
+
+	# Which commits this push would actually publish. git hands the hook the
+	# remote's LIVE sha, read over the push connection — routinely ahead of
+	# the tracking ref, and then absent from this clone. Falling back to
+	# "everything this remote has not got" keeps the gate armed there instead
+	# of letting rev-list fail into an empty, silently passing scan. On a
+	# first push that fallback is the whole history, which is correct: the
+	# whole history is what is being published.
+	if [ "$wip_gate" = 1 ]; then
+		if zero "$remote_sha" || ! git cat-file -e "$remote_sha" 2>/dev/null; then
+			range="$local_sha --not --remotes=$remote"
+		else
+			range="$remote_sha..$local_sha"
+		fi
+		commits=$(git rev-list $range) || {
+			echo "pre-push: cannot list the commits ${local_ref#refs/*/} would publish; refusing." >&2
+			echo "  Fetch $remote and retry, or bypass once with GIT_PUSH_CHECK=0." >&2
+			exit 1
+		}
+		unfinished=$(
+			for sha in $commits; do
+				subject=$(git log -1 --format=%s "$sha" 2>/dev/null)
+				printf '%s' "$subject" | grep -qiE '(^|[^[:alnum:]])wip([^[:alnum:]]|$)' \
+					&& printf '  %s %s\n' "$(git rev-parse --short "$sha")" "$subject"
+			done
+		)
+		if [ -n "$unfinished" ]; then
+			echo "pre-push: refusing to push ${local_ref#refs/*/} — it still carries unfinished commits:" >&2
+			printf '%s\n' "$unfinished" >&2
+			echo "  Reword or squash them away, or bypass once with GIT_PUSH_CHECK=0." >&2
+			exit 1
+		fi
+	fi
+
+	# Force-push onto a protected branch: the remote tip would stop being an
+	# ancestor, so whatever is only on the remote would be dropped.
+	branch=${remote_ref#refs/heads/}
+	[ "$branch" != "$remote_ref" ] || continue      # not a branch
+	printf '%s\n' "$protected" | grep -qxF "$branch" || continue
+	zero "$remote_sha" && continue
+	git cat-file -e "$remote_sha" 2>/dev/null || continue   # not fetched; no verdict
+	if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+		echo "pre-push: refusing a non-fast-forward push of $branch" >&2
+		echo "  ($(git rev-parse --short "$remote_sha") on the remote is not an ancestor of $(git rev-parse --short "$local_sha") — commits would be dropped)." >&2
+		echo "  Rebase onto it, or bypass once with GIT_PUSH_CHECK=0." >&2
+		exit 1
+	fi
+done <"$refs"
+
+chain "$@"
