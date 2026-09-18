@@ -158,6 +158,36 @@ claude_in() {
   [[ "$output" == *"defined: MISSING claude_profile_dir — a shell snapshot or partial source dropped them; source ~/.functions again"* ]]
 }
 
+@test "claude-doctor: names the deny guard's rule count and fail-closed wiring" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  # denyguard itself needs a real python3: an asdf shim (as on this
+  # machine) resolves relative to $HOME and breaks under the sandboxed one
+  # these tests already use, which has nothing to do with the doctor line
+  # under test.
+  command -v python3 >/dev/null || skip "python3 not installed"
+  REAL_PYTHON3="$(python3 -c 'import sys; print(sys.executable)')"
+  printf '#!/bin/sh\nexec "%s" "$@"\n' "$REAL_PYTHON3" > "$BATS_TEST_TMPDIR/bin/python3"
+  chmod +x "$BATS_TEST_TMPDIR/bin/python3"
+  ln -s "$BATS_TEST_DIRNAME/../bin/executable_denyguard" "$BATS_TEST_TMPDIR/bin/denyguard"
+
+  mkdir -p "$HOME/.claude-personal"
+  cat > "$HOME/.claude-personal/settings.json" <<'JSON'
+{
+  "permissions": {"deny": ["Read(~/code/octo-secret/**)", "Read(~/.hushfile)"]},
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Bash", "hooks": [{"type": "command", "timeout": 10,
+        "command": "[ -x ~/bin/denyguard ] && exec ~/bin/denyguard hook || { echo 'denyguard: ~/bin/denyguard is not installed; refusing Bash until `dotfiles` deploys it' >&2; exit 2; }"}]}
+    ]
+  }
+}
+JSON
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"deny:    2 path rules in $HOME/.claude-personal/settings.json; Bash guard: wired fail-closed; ~/bin/denyguard: "* ]]
+  [[ "$output" == *"denies logged: 0"* ]]
+}
+
 @test "claude-doctor: names the logged-in account from the profile's .claude.json" {
   repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
   mkdir -p "$HOME/.claude-personal"

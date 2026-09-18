@@ -621,6 +621,45 @@ function claude-doctor() {
 		fi;
 	fi;
 	print -r -- "creds:   $cred";
+	# The profile's Bash deny guard: how many path rules it would enforce,
+	# whether the PreToolUse hook is actually wired and fail-closed (not
+	# silently defanged with `|| true`), whether the binary itself is on
+	# PATH, and how many denials it has ever logged. Computed from the
+	# script's own `rules` output and the settings file's own text, never a
+	# second copy of either — see CLAUDE.md, "Deny rules reach Bash".
+	local settings="$dir/settings.json" deny_n deny_bin deny_wired deny_log deny_hits deny_line deny_rules deny_rc;
+	# The exit status matters more than the count: a corrupt settings.json and
+	# an absent one both yield zero lines, and printing "0 path rules" at the
+	# exact moment the guard is refusing every Bash call would send you looking
+	# in the wrong place. 2 is denyguard's own "I cannot tell what is
+	# forbidden"; an absent file is legitimately no rules.
+	if (( $+commands[denyguard] )); then
+		deny_rules="$(command denyguard rules --profile "$dir" 2>/dev/null)";
+		deny_rc=$?;
+		if (( deny_rc == 2 )); then
+			deny_n='UNREADABLE settings.json — the guard is refusing every Bash call';
+		elif [[ ! -e $settings ]]; then
+			deny_n='no settings.json (0 rules)';
+		else
+			deny_n="$(print -r -- "$deny_rules" | command grep -c . | tr -d ' ') path rules";
+		fi;
+		deny_bin="$(bin_trace "$commands[denyguard]")";
+	else
+		deny_n='? path rules';
+		deny_bin='MISSING — chezmoi apply';
+	fi;
+	if [[ -r $settings ]] && deny_line="$(command grep 'denyguard hook' "$settings" 2>/dev/null)" && [[ -n $deny_line ]]; then
+		if [[ $deny_line == *'|| true'* ]]; then
+			deny_wired='wired FAIL-OPEN (|| true)';
+		else
+			deny_wired='wired fail-closed';
+		fi;
+	else
+		deny_wired='NOT wired';
+	fi;
+	deny_log="${XDG_STATE_HOME:-$HOME/.local/state}/denyguard/denied.log";
+	deny_hits="$(command wc -l < "$deny_log" 2>/dev/null | tr -d ' ')"; deny_hits="${deny_hits:-0}";
+	print -r -- "deny:    $deny_n in $settings; Bash guard: $deny_wired; ~/bin/denyguard: $deny_bin; denies logged: $deny_hits";
 	# Where this profile's links open: the pin, whether the link router can
 	# decode it (browser.tag.<alias>), whether open-as is there to tag, and
 	# whether a window can appear at all. Same helpers, same order as the
