@@ -274,8 +274,43 @@ STUB
   [[ "$output" != *"projects under"* ]]
   local n
   n=$(printf '%s\n' "$output" | awk -F'\t' '{print NF}')
-  [ "$n" -eq 10 ]
-  [ "$(printf '%s\n' "$output" | cut -f1,2,6,7)" = "$(printf 'work-thing\twork-account\t-\t-')" ]
+  [ "$n" -eq 11 ]
+  [ "$(printf '%s\n' "$output" | cut -f1,2,6,7,11)" = "$(printf 'work-thing\twork-account\t-\t-\t-')" ]
+}
+
+@test "set: a fixture set over two fixture repos shows in both rows, and a heterogeneous set is marked" {
+  make_repo alpha octo-personal/alpha
+  make_repo beta octo-personal/beta
+  gc claude.profile.other-account '~/.claude'
+  gc credential.https://github.com/other-owner.username other-account
+  make_repo gamma other-owner/gamma
+  # Real paths, symlink-resolved: $HOME under bats' tmpdir sits under /var,
+  # itself a symlink to /private/var on macOS, and the SET column matches
+  # by real path exactly the way workset_profile does — an unresolved
+  # $HOME here would never agree with it (same reason tests/denyguard.bats
+  # resolves HOME up front).
+  local rhome; rhome="$(cd "$HOME" && pwd -P)"
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  printf '#!/bin/sh\nexit 0\n' > "$BATS_TEST_TMPDIR/bin/denyguard"
+  chmod +x "$BATS_TEST_TMPDIR/bin/denyguard"
+  cat > "$BATS_TEST_TMPDIR/bin/workset" <<SCRIPT
+#!/bin/sh
+case "\$1" in
+  list) printf 'fixture-good\nfixture-bad\n' ;;
+  members)
+    case "\$2" in
+      fixture-good) printf 'a\t%s/code/alpha\tok\nb\t%s/code/beta\tok\n' "$rhome" "$rhome" ;;
+      fixture-bad) printf 'a\t%s/code/alpha\tok\nc\t%s/code/gamma\tok\n' "$rhome" "$rhome" ;;
+    esac
+    ;;
+esac
+SCRIPT
+  chmod +x "$BATS_TEST_TMPDIR/bin/workset"
+  routes
+  [ "$status" -eq 0 ]
+  [[ "$(row_for alpha)" == *" fixture-good,fixture-bad!"* ]]
+  [[ "$(row_for beta)" == *" fixture-good "* ]]
+  [[ "$(row_for gamma)" == *" fixture-bad!"* ]]
 }
 
 @test "overrides: a set TAILNET describes this shell, not the repos, and is called out" {

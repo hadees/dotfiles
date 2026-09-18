@@ -289,6 +289,70 @@ hands the Alfred workflow in `alfred/worktabs/` to Alfred; its keyword `ws`
 lists the groups with their open/total counts and opens the one you pick. The
 workflow contains no names — it calls `worktabs`, which reads this config.
 
+### Working sets: several repos, one session
+
+`~/bin/workset` opens one Claude Code session over N repos at once — a
+worktree per member, one branch, the session launched in the primary's
+worktree with `--add-dir` for the rest (see CLAUDE.md, "Working sets"). Set
+names and member paths are private the same way `[workspace]` entries are,
+so the whole list lives here too:
+
+```gitconfig
+[workset "<name>"]                 # <name>: letters, digits, - and _
+	member   = ~/code/<repo>         # repeatable, ordered; the first entry
+	                                 # that survives real-path dedupe is the
+	                                 # PRIMARY
+	profile  = <account|alias|dir>   # optional; what CLAUDE_PROFILE accepts.
+	                                 # Absent: every member must resolve to
+	                                 # the same Claude profile
+	note     = <one line>            # repeatable; landing order, the
+	                                 # contract artefact that must stay
+	                                 # green, PR-vs-push per member
+	disabled = true                 # optional; keep the entry, skip it
+```
+
+**A set whose members two overlays each own is declared by both, under the
+same name.** Neither overlay names the other's clone or its own overlay;
+git composes a multi-valued key (`member`, `note`) across every included
+file in the order the files are included, and `workset` dedupes by real
+path. A worked example: a set spanning a public repo, a personal overlay of
+it, and a work overlay of it — three clones, two Claude accounts, one
+codebase.
+
+Personal overlay:
+
+```gitconfig
+[workset "atlas"]
+	member  = ~/code/atlas
+	member  = ~/code/atlas-private
+	profile = personal
+	note    = public repo: branch + PR, wait for review. Overlay: commit,
+	          merge to main, push — never leave it unpushed.
+```
+
+Work overlay:
+
+```gitconfig
+[workset "atlas"]
+	member = ~/code/atlas
+	member = ~/code/atlas-work
+```
+
+On the personal machine, `workset profile atlas` resolves to the personal
+Claude profile (the explicit `profile` line) and opens all three worktrees;
+a work-only box sees only its own two `member` lines and needs no `profile`
+line if both resolve to the same account. Neither file's `member`/`note`
+lines mention the other overlay's clone.
+
+Once per machine, after `dotfiles`, paste `workset settings`'s output into
+each profile's `settings.json` source (see "Bash deny guard wiring" below
+for the same pattern) — a `SessionStart` brief and a `PreToolUse` guard
+against writing a member's live checkout, both `[ -x ] && … || true`
+fail-open conveniences, unrelated to the fail-closed `denyguard` wiring.
+`workset list` then shows every configured set, `workset-doctor` (also run
+by `doctor`) reports each set's resolved profile or refusal, and the
+`routes` `SET` column shows which sets a given repo belongs to.
+
 ### Wrangler (Cloudflare) profile per account — and per repo
 
 ```gitconfig
