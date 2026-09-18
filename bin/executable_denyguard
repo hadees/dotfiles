@@ -26,7 +26,11 @@
 # only exists at run time: a shell variable other than $HOME, `$(...)`
 # output, a script file's own contents, `find <parent> -exec` without a
 # recursive tell, `eval`, base64, or a program that computes the path by any
-# means. That is a guard against the accidental and default case (Bash
+# means. Also invisible: a heredoc written to a FILE by cat/tee and executed
+# later — the write itself is data (so it is scanned for a direct hit only,
+# never an ancestor guess, letting prose that names a denied path pass), but
+# whatever ends up in that file is unseen the moment it runs as its own
+# command. That is a guard against the accidental and default case (Bash
 # preferred over Read), not against a determined command. OS-level
 # enforcement exists — the Bash sandbox's `sandbox.filesystem.denyRead`
 # applies to "all commands running inside the sandbox, including their
@@ -99,16 +103,41 @@ import time
 
 HOME = os.environ.get("HOME", "")
 GLOB_CHARS = set("*?[")
-RECURSIVE_WORDS = {
-    "find", "fd", "rg", "grep", "egrep", "fgrep", "ag", "ack",
-    "du", "tree", "tar", "zip", "rsync", "cp", "scp",
+# A command word that is recursive by nature — no flag needed.
+DEFAULT_RECURSIVE = {
+    "find", "fd", "rg", "ag", "ack", "du", "tree", "tar", "zip", "rsync",
 }
+# A command word that is recursive only with one of these flags present,
+# as a standalone `--long` form or inside a `-xyz` short-flag cluster.
+FLAG_RECURSIVE = {
+    "cp": {"-r", "-R", "--recursive"},
+    "scp": {"-r", "-R", "--recursive"},
+    "rm": {"-r", "-R", "--recursive"},
+    "chmod": {"-r", "-R", "--recursive"},
+    "chown": {"-r", "-R", "--recursive"},
+    "chgrp": {"-r", "-R", "--recursive"},
+    "diff": {"-r", "-R", "--recursive"},
+    "ls": {"-R", "--recursive"},
+}
+GREP_LIKE = {"grep", "egrep", "fgrep"}
+GREP_RECURSIVE_FLAGS = {"-r", "-R", "--recursive", "--dereference-recursive"}
 RULE_RE = re.compile(r"^(Read|Edit)\((.+)\)$")
 # Split a command string the way a lexical (not a real shell) scanner can:
 # on whitespace, the metacharacters that separate commands/arguments, and
 # both quote characters — good enough to find path-shaped tokens, not a
 # parser.
 SPLIT_RE = re.compile(r"""[\s;|&()<>'"]+""")
+# Split a heredoc-free fragment into simple commands on the separators a
+# shell would treat as ending one command and starting the next.
+SEP_RE = re.compile(r"(\|\||&&|[;|&()])")
+# `<<WORD`, `<<-WORD`, `<<'WORD'`, `<<"WORD"` — the body runs to a line
+# that equals WORD (leading whitespace ignored only for the `<<-` form).
+HEREDOC_RE = re.compile(r"<<(-)?\s*(['\"]?)(\w+)\2")
+# A heredoc fed to one of these, unpiped, is DATA being written — text
+# about a path, not a path being opened — so only a direct hit still
+# refuses it; every other consumer (an interpreter, or any piped body)
+# keeps the full rule set, including the ancestor/recursion check.
+DATA_HEREDOC_CONSUMERS = {"cat", "tee", "printf"}
 # `~` counts as $HOME only at the start of a token or right after `=`/`:`
 # (VAR=~/x, --opt=~/x) — a bare `~` elsewhere is an ordinary character.
 TILDE_RE = re.compile(r"""(?:(?<=[\s;|&()<>'"=:])~|^~)(?=/|$)""")
@@ -234,13 +263,112 @@ def match_any_depth(path, pattern):
     return any(fnmatch.fnmatch(part, pattern) for part in path.split(os.sep) if part)
 
 
-def is_recursive(words):
-    for w in words:
-        if os.path.basename(w) in RECURSIVE_WORDS:
+def split_words(text):
+    return [t for t in SPLIT_RE.split(text) if t]
+
+
+def command_word_of(words):
+    return os.path.basename(words[0]) if words else ""
+
+
+def has_short_or_long_flag(words, flags):
+    """`flags` holds `-x`/`-X`/`--long` spellings; a `-x` also matches
+    inside a short cluster like `-ltr` or `-Rf`, never `--long`."""
+    short_letters = {f[1] for f in flags if len(f) == 2 and f[0] == "-"}
+    longs = {f for f in flags if f.startswith("--")}
+    for w in words[1:]:
+        if w in longs:
             return True
-        if w == "--recursive" or re.match(r"^-[A-Za-z]*[rR]$", w):
-            return True
+        if w.startswith("--"):
+            continue
+        if w.startswith("-") and len(w) > 1:
+            if any(c in short_letters for c in w[1:]):
+                return True
     return False
+
+
+def recursion_signal(words, command_word):
+    """Is this ONE simple command, by itself, a real recursion signal? —
+    a command word that always recurses, or one that recurses only with an
+    explicit flag. A bare mention of a recursive-sounding word, or a flag
+    cluster that merely contains the letter r/R for an unrelated reason
+    (`sort -nr`, `ls -ltr`, `sed -r`, `xargs -r`), is not a signal."""
+    if not words:
+        return False
+    if command_word in DEFAULT_RECURSIVE:
+        return True
+    if command_word in GREP_LIKE:
+        if has_short_or_long_flag(words, GREP_RECURSIVE_FLAGS):
+            return True
+        for i, w in enumerate(words[1:-1], 1):
+            if w == "-d" and words[i + 1] == "recurse":
+                return True
+        return False
+    flags = FLAG_RECURSIVE.get(command_word)
+    return bool(flags) and has_short_or_long_flag(words, flags)
+
+
+def split_simple_commands(text):
+    """A heredoc-free fragment, split on `; && || | & ( )` into simple
+    commands: (words, command_word, is_heredoc_body=False, is_data=False)."""
+    segments = []
+    current = []
+    for part in SEP_RE.split(text):
+        if part is None:
+            continue
+        if SEP_RE.fullmatch(part):
+            if current:
+                words = split_words("".join(current))
+                if words:
+                    segments.append((words, command_word_of(words), False, False))
+                current = []
+        else:
+            current.append(part)
+    if current:
+        words = split_words("".join(current))
+        if words:
+            segments.append((words, command_word_of(words), False, False))
+    return segments
+
+
+def segments_of(text):
+    """Every simple command in `text`, in order, as (words, command_word,
+    is_heredoc_body, is_data) — a heredoc body is its own run of segments
+    carrying the word that opened it and whether that body is DATA (fed to
+    cat/tee/printf, unpiped) or kept under the full rule set."""
+    lines = text.split("\n")
+    segments = []
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        m = HEREDOC_RE.search(line)
+        if not m:
+            segments.extend(split_simple_commands(line))
+            i += 1
+            continue
+        dash = m.group(1)
+        delim = m.group(3)
+        segments.extend(split_simple_commands(line[: m.start()]))
+        opening_words = split_words(line[: m.start()])
+        consumer = command_word_of(opening_words)
+        piped = "|" in line[m.end():]
+        is_data = consumer in DATA_HEREDOC_CONSUMERS and not piped
+        j = i + 1
+        while j < n:
+            body_line = lines[j]
+            probe = body_line.strip() if dash else body_line
+            if probe == delim:
+                break
+            if is_data:
+                words = split_words(body_line)
+                if words:
+                    segments.append((words, consumer, True, True))
+            else:
+                for words, cw, _, _ in split_simple_commands(body_line):
+                    segments.append((words, cw, True, False))
+            j += 1
+        i = j + 1
+    return segments
 
 
 def substitute_home(text):
@@ -250,59 +378,73 @@ def substitute_home(text):
     return TILDE_RE.sub(HOME, text)
 
 
-def candidates_of(text, cwd):
-    """Every path-shaped fragment in `text`, resolved against `cwd`, plus a
-    realpath variant where the resolved path exists (deny rules apply to a
-    symlink and its target alike — doc, "Symlinks"). Each item is
-    (raw_token, resolved_absolute_path, has_glob_chars)."""
-    tokens = [t for t in SPLIT_RE.split(substitute_home(text)) if t]
-    out = []
-    for tok in tokens:
-        has_glob = any(c in tok for c in GLOB_CHARS)
-        if tok.startswith("/"):
-            resolved = os.path.normpath(tok)
-        elif tok.startswith("./") or tok.startswith("../") or "/" in tok:
-            resolved = os.path.normpath(os.path.join(cwd, tok))
-        else:
-            candidate = os.path.join(cwd, tok)
-            if not os.path.lexists(candidate):
-                continue  # a bare word with no such file is just a word
-            resolved = os.path.normpath(candidate)
-        out.append((tok, resolved, has_glob))
-        if not has_glob and os.path.exists(resolved):
-            rp = os.path.realpath(resolved)
-            if rp != resolved:
-                out.append((tok, rp, False))
-    return tokens, out
+def candidate_of_token(raw_tok, cwd):
+    """`raw_tok`, resolved against `cwd`, plus a realpath variant where the
+    resolved path exists (deny rules apply to a symlink and its target
+    alike — doc, "Symlinks"). Each item is (raw_token, resolved_absolute_
+    path, has_glob_chars); empty when the token is a bare word matching no
+    file (just a word, not a path)."""
+    tok = substitute_home(raw_tok)
+    has_glob = any(c in tok for c in GLOB_CHARS)
+    if tok.startswith("/"):
+        resolved = os.path.normpath(tok)
+    elif tok.startswith("./") or tok.startswith("../") or "/" in tok:
+        resolved = os.path.normpath(os.path.join(cwd, tok))
+    else:
+        candidate = os.path.join(cwd, tok)
+        if not os.path.lexists(candidate):
+            return []
+        resolved = os.path.normpath(candidate)
+    out = [(raw_tok, resolved, has_glob)]
+    if not has_glob and os.path.exists(resolved):
+        rp = os.path.realpath(resolved)
+        if rp != resolved:
+            out.append((raw_tok, rp, False))
+    return out
 
 
 def scan(text, cwd, rules):
-    """First rule this text trips, as (fragment, rule, reason) — or None."""
-    tokens, candidates = candidates_of(text, cwd)
-    recursive = is_recursive(tokens)
-    for tok, cand, has_glob in candidates:
-        if has_glob:
-            gp = literal_prefix(cand)
-            if not gp:
-                continue
-            for rule in rules:
-                if not rule.evaluable or rule.prefix is None:
+    """First rule this text trips, as (fragment, rule, reason) — or None.
+    A recursion signal only counts within the SAME simple command as the
+    candidate token (`segments_of`); a data heredoc body never counts as
+    one, so an ancestor guess never fires there — only a direct hit does."""
+    for words, command_word, _is_heredoc, is_data in segments_of(text):
+        recursive = False if is_data else recursion_signal(words, command_word)
+        for raw_tok in words:
+            for tok, cand, has_glob in candidate_of_token(raw_tok, cwd):
+                if has_glob:
+                    gp = literal_prefix(cand)
+                    if not gp:
+                        continue
+                    for rule in rules:
+                        if not rule.evaluable or rule.prefix is None:
+                            continue
+                        if gp == rule.prefix or gp.startswith(rule.prefix + os.sep) \
+                                or rule.prefix.startswith(gp + os.sep):
+                            return tok, rule, "%s may expand into %s" % (tok, rule.raw)
                     continue
-                if gp == rule.prefix or gp.startswith(rule.prefix + os.sep) \
-                        or rule.prefix.startswith(gp + os.sep):
-                    return tok, rule, "%s may expand into %s" % (tok, rule.raw)
-            continue
-        for rule in rules:
-            if rule.anchor == "any-depth":
-                if match_any_depth(cand, rule.pattern):
-                    return tok, rule, "%s is inside %s" % (tok, rule.raw)
-                continue
-            if not rule.evaluable or rule.prefix is None:
-                continue
-            if cand == rule.prefix or cand.startswith(rule.prefix + os.sep):
-                return tok, rule, "%s is inside %s" % (tok, rule.raw)
-            if recursive and cand != rule.prefix and rule.prefix.startswith(cand + os.sep):
-                return tok, rule, "%s is an ancestor of %s and this command looks recursive" % (tok, rule.raw)
+                for rule in rules:
+                    if rule.anchor == "any-depth":
+                        if match_any_depth(cand, rule.pattern):
+                            return tok, rule, "%s is inside %s" % (tok, rule.raw)
+                        continue
+                    if not rule.evaluable or rule.prefix is None:
+                        continue
+                    if cand == rule.prefix or cand.startswith(rule.prefix + os.sep):
+                        return tok, rule, "%s is inside %s" % (tok, rule.raw)
+                    if not recursive or cand == rule.prefix \
+                            or not rule.prefix.startswith(cand + os.sep):
+                        continue
+                    # A bare $HOME or / candidate is an ancestor of nearly
+                    # everything; only a command that is ALWAYS recursive
+                    # (never just flagged) is trusted to reach that far.
+                    if cand in (HOME, os.sep) and command_word not in DEFAULT_RECURSIVE:
+                        continue
+                    return tok, rule, (
+                        "%s is an ancestor of %s and %s recurses here; "
+                        "name the file under it directly, or drop the "
+                        "recursive flag" % (tok, rule.raw, command_word)
+                    )
     return None
 
 

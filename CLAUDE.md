@@ -587,6 +587,20 @@ prints the PreToolUse block below for a profile's `settings.json` to
 paste — it never edits one, since every profile's settings file is
 overlay-owned (see "Private overlays" below).
 
+**An ancestor match needs a real recursion signal, in the same simple
+command.** Naming a directory that happens to be an ancestor of a denied
+rule is not itself a hit — `ls ~/.claude` over a profile that only denies
+`~/.claude/projects/**` passes, and so does a heredoc body written as
+documentation (`cat <<EOF … EOF`), which is scanned for a direct hit only,
+never an ancestor guess, so prose that names a denied path passes while a
+script that actually opens it still refuses. A hit fires only when that
+SAME command also carries a genuine recursion signal — `find`/`rg`/`du`/…
+by nature, or `-r`/`-R`/`--recursive` on `grep`/`cp`/`rm`/`ls`/… — never a
+bare mention of a recursive-sounding word or a flag cluster that merely
+contains the letter (`sort -nr`, `ls -ltr`). First three real firings were
+all false positives of the OLD, whole-command version of this check
+(2026-09-18); this narrowing is that fix.
+
 **What it cannot see.** This is a lexical guard, not a sandbox: a shell
 variable other than `$HOME`, `$(...)` output, a script file's own
 contents, `find <parent> -exec` without a recursive tell, `eval`, base64,
