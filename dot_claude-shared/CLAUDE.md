@@ -317,8 +317,13 @@ employer-specific — profile-specific memory belongs in that profile's own
   minutes too); `PONYTAIL_SUBAGENT_MATCHER='^(work-|unstick-)'`, which scopes
   the ponytail plugin's ruleset to the seats that write code. Ponytail is
   installed per profile (marketplace `DietrichGebert/ponytail`, plugin
-  `ponytail@ponytail`) — the one style skill with a measured cost result
-  (−10% at no quality loss, JetBrains, 80 tasks) — and it injects itself into
+  `ponytail@ponytail`) — the one style skill that ships a benchmark at all,
+  and it is the vendor's own, not an independent one: real headless Claude
+  Code sessions editing a seeded codebase, 12 one-line tickets scored on diff
+  size plus 7 tasks scored on whether the code survives adversarial input,
+  Haiku 4.5, n=4. Treat that as a reason to try it, never as a number to
+  quote: it is not this machine, this model, or this work, and by the rule
+  above nothing here is a saving until `/usage` moves. It injects itself into
   matching subagents, so its rules are never pasted into a definition.
 - **Cache discipline.** Documented invalidators: switching model, changing
   effort (except Fable 5.1 on a subscription or API key, where effort changes
