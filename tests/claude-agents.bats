@@ -9,7 +9,16 @@
 # image. Documented rules and this repo's own conventions are marked as such.
 
 TEMPLATES="$BATS_TEST_DIRNAME/../.chezmoitemplates/claude-agents"
-STUB_DIRS=("$BATS_TEST_DIRNAME/../dot_claude/agents" "$BATS_TEST_DIRNAME/../private_dot_claude-hadees/agents")
+# Every directory in THIS source that deploys the shared set. Discovered, not
+# listed: a hardcoded pair is what hid an overlay-owned profile having no
+# agents at all until 2026-09-18 — that profile's directory is not in this
+# source, so it is invisible here whatever we write, which is why the neutral
+# `dot_claude-shared/agents` copy exists for an overlay to symlink at. A new
+# profile directory added to this repo is picked up with no edit to this line.
+STUB_DIRS=()
+while IFS= read -r d; do STUB_DIRS+=("$d"); done < <(
+  find "$BATS_TEST_DIRNAME/.." -maxdepth 2 -type d -name agents -not -path '*/.git/*' | sort
+)
 
 # Documented frontmatter fields (code.claude.com/docs/en/sub-agents), plus the
 # nested key of the `experimental` map. Anything else is a typo the loader
@@ -152,7 +161,7 @@ templates() {
   done
 }
 
-@test "each template has a stub in both profiles, and every stub points at a template" {
+@test "each template has a stub in every stub dir, and every stub points at a template" {
   for t in $(templates); do
     stem="$(basename "$t" .md)"
     for d in "${STUB_DIRS[@]}"; do
@@ -189,4 +198,18 @@ templates() {
       || { echo "$stem: stub did not render the template"; false; }
   done
   rm -rf "$TMPHOME"
+}
+
+@test "the neutral shared copy exists, because an overlay-owned profile can only symlink at it" {
+  # A profile directory owned by a private overlay cannot render these
+  # templates: chezmoi resolves .chezmoitemplates within one source dir. So the
+  # overlay symlinks its agents dir at ~/.claude-shared/agents, which THIS repo
+  # deploys. Deleting this directory would leave that link dangling and the
+  # profile silently back on the built-in seats — the failure found on
+  # 2026-09-18 — so the cross-repo contract is pinned here.
+  local shared="$BATS_TEST_DIRNAME/../dot_claude-shared/agents"
+  [ -d "$shared" ]
+  for t in "$TEMPLATES"/*.md; do
+    [ -f "$shared/$(basename "$t" .md).md.tmpl" ]
+  done
 }
