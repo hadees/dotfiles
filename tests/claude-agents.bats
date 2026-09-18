@@ -15,10 +15,17 @@ TEMPLATES="$BATS_TEST_DIRNAME/../.chezmoitemplates/claude-agents"
 # source, so it is invisible here whatever we write, which is why the neutral
 # `dot_claude-shared/agents` copy exists for an overlay to symlink at. A new
 # profile directory added to this repo is picked up with no edit to this line.
+# `.claude/agents` is deliberately excluded: those are this repo's own seats,
+# loaded from the clone and deployed nowhere, so they have no stubs to check.
 STUB_DIRS=()
 while IFS= read -r d; do STUB_DIRS+=("$d"); done < <(
-  find "$BATS_TEST_DIRNAME/.." -maxdepth 2 -type d -name agents -not -path '*/.git/*' | sort
+  find "$BATS_TEST_DIRNAME/.." -maxdepth 2 -type d -name agents \
+    -not -path '*/.git/*' -not -path '*/.claude/*' | sort
 )
+# Seats that belong to this repo alone, loaded from the clone rather than
+# deployed to every profile. Same frontmatter and body rules; no stubs, since
+# nothing deploys them anywhere.
+LOCAL_AGENTS="$BATS_TEST_DIRNAME/../.claude/agents"
 
 # Documented frontmatter fields (code.claude.com/docs/en/sub-agents), plus the
 # nested key of the `experimental` map. Anything else is a typo the loader
@@ -47,7 +54,14 @@ has_heading() {
   grep -q -- " ## $2" <<< "$1"
 }
 
+# Every definition the lint rules apply to: the shared templates plus this
+# repo's own seats.
 templates() {
+  ls "$TEMPLATES"/*.md "$LOCAL_AGENTS"/*.md 2>/dev/null
+}
+
+# Only the shared ones are deployed into the profiles, so only they need stubs.
+shared_templates() {
   ls "$TEMPLATES"/*.md
 }
 
@@ -162,7 +176,7 @@ templates() {
 }
 
 @test "each template has a stub in every stub dir, and every stub points at a template" {
-  for t in $(templates); do
+  for t in $(shared_templates); do
     stem="$(basename "$t" .md)"
     for d in "${STUB_DIRS[@]}"; do
       s="$d/$stem.md.tmpl"
@@ -191,7 +205,7 @@ templates() {
     XDG_STATE_HOME="$TMPHOME/.local/state" XDG_CACHE_HOME="$TMPHOME/.cache" chezmoi "$@"
   }
   chez init --source "$PWD" --promptString machineClass=linux
-  for t in $(templates); do
+  for t in $(shared_templates); do
     stem="$(basename "$t" .md)"
     rendered="$(chez execute-template --source "$PWD" < "dot_claude/agents/$stem.md.tmpl")"
     [ "$(printf '%s\n' "$rendered" | awk 'index($0,"name:")==1 {sub("^name:[ \t]*",""); print; exit}')" = "$stem" ] \
