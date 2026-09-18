@@ -407,10 +407,20 @@ Two profiles are deployed:
 | --- | --- | --- |
 | `~/.claude` | work (the default config dir; keeps the existing login, plugins, and session history) | `dot_claude/` here + the work overlay's `settings.json` and `CLAUDE.work.md` |
 | `~/.claude-hadees` | personal | `private_dot_claude-hadees/` here + the personal overlay's `settings.json` |
-| `~/.claude-shared` | memory imported by both | `dot_claude-shared/` here |
+| `~/.claude-shared` | memory imported by both, plus the agent definitions an overlay-owned profile symlinks at | `dot_claude-shared/` here |
 
 Overlays may add further profiles (mapping, pins, and config dir all their
-own); this repo neither knows nor cares which. Each profile's `CLAUDE.md` is
+own); this repo neither knows nor cares which — with one exception that cost
+an overlay-owned profile its subagents. The shared **agent definitions** reach a profile
+through a one-line stub per profile directory, and chezmoi resolves
+`.chezmoitemplates` within a single source, so an overlay-owned profile
+directory cannot render them at all. It has no access to these templates. So
+the same bodies are also deployed, once, to `~/.claude-shared/agents`, and
+such a profile symlinks its `agents` directory at that — the
+public-machinery/private-profile split the shared `CLAUDE.md` already uses.
+`tests/claude-agents.bats` discovers the stub directories rather than listing
+them, and pins the shared copy's existence, because a hardcoded list is what
+hid an overlay profile having no `agents` directory at all. Each profile's `CLAUDE.md` is
 a thin file that imports the shared memory plus
 its own machine-local (and, for work, work-specific) notes. Settings are
 **not** shared: neither profile's `settings.json` lives in this repo — the
