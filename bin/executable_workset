@@ -92,8 +92,16 @@ need_python() { command -v python3 >/dev/null 2>&1 || exit 0; }
 # accepts but this rejects (`[workset "bad name"]`) is warned, never
 # silently dropped.
 cmd_list() {
-  git config --get-regexp '^workset\.' 2>/dev/null |
-    sed -n 's/^workset\.\(.*\)\.[^.[:space:]][^.[:space:]]* .*$/\1/p' |
+  # --name-only, so the VALUE is never on the line to be parsed. Without it
+  # git prints `workset.<name>.<key> <value>` and the name capture runs past
+  # the space into the value: a note mentioning a filename put dots there,
+  # the capture swallowed most of the line, and the set was warned away as a
+  # bad name — gone from `list`, its brief never printed. Anchoring the name
+  # to non-space instead would fix that but re-break the opposite case, since
+  # an invalid name may itself contain a space and must still be warned
+  # about. With no value present, neither problem exists.
+  git config --name-only --get-regexp '^workset\.' 2>/dev/null |
+    sed -n 's/^workset\.\(.*\)\.[^.]*$/\1/p' |
     awk '!seen[$0]++' |
   while IFS= read -r n; do
     [ -n "$n" ] || continue
