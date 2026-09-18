@@ -1,0 +1,424 @@
+#!/bin/sh
+# workset — a set of repos one Claude Code session works as one codebase:
+# N worktrees on one branch, opened together, torn down together.
+#
+# What a set is, is machine-local and identity-bearing (real project paths,
+# real overlay names), so it lives in git config supplied by the overlays —
+# the same stance as `workspace.*` (worktabs), `routes.root`,
+# `tailnet-mount.*`. Nothing in this file names a repo, an overlay, or an
+# account.
+#
+#   [workset "<name>"]                 # <name>: letters, digits, - and _
+#       member   = ~/code/<repo>        # repeatable, ordered; the first
+#                                       # entry that survives real-path
+#                                       # dedupe is the PRIMARY
+#       profile  = <account|alias|dir>  # optional; what CLAUDE_PROFILE
+#                                       # accepts. Absent: every member must
+#                                       # resolve to the same Claude profile
+#       note     = <one line>           # repeatable; printed in the brief
+#       disabled = true                 # optional; keep the entry, skip it
+#
+# The profile a set's session runs under, and whether any member is inside
+# that profile's deny rules, is decided by workset_profile() in
+# ~/.functions (which calls `denyguard check` — one definition of "does
+# this profile forbid this path", never a second scanner here) and by
+# workset() (which launches `claude` itself with --add-dir for every
+# member but the primary). This script only ever manages config, worktrees,
+# and the two hooks a set session runs under:
+#
+#   hook start   SessionStart: print the set's brief when $WORKSET is set
+#   guard        PreToolUse on Edit|Write|NotebookEdit: refuse a write to a
+#                member's LIVE checkout while a set session is open — Bash
+#                is not parsed, and both hooks are conveniences, never the
+#                sensitivity boundary (that is denyguard, wired fail-closed
+#                on Bash separately).
+#
+# Usage: workset <command> [args]
+#   list                    configured set names, one per line
+#   members <name>          member<TAB>realpath<TAB>state; state is one of
+#                           ok|missing|not-a-repo|duplicate. Exit 2 if any
+#                           member is not ok.
+#   plan <name> <branch>    member<TAB>worktree<TAB>branch<TAB>action; action
+#                           is one of create|reuse|conflict|missing-member.
+#   checkout <name> <branch>
+#                           creates the worktrees `plan` says to create;
+#                           refuses (exit 2) and creates nothing if any row
+#                           is conflict or missing-member. Same columns as
+#                           plan, with action replaced by created|reused.
+#   status [name [branch]]  member<TAB>worktree<TAB>branch<TAB>dirty(0/1)
+#                           <TAB>ahead<TAB>behind<TAB>remote(present|gone|none)
+#                           for every worktree found under the members'
+#                           .claude/worktrees/. No arguments: every
+#                           configured member of every set.
+#   close <name> <branch>   removes each member's worktree only when clean
+#                           and its commits are on the remote; never
+#                           --force. Deletes the local branch only when
+#                           merged into origin/HEAD.
+#   hook start              SessionStart hook body (see above)
+#   guard                   PreToolUse hook body (see above)
+#   settings                the hooks block to paste into a profile's
+#                           settings.json (overlay-owned; never edited here)
+#   dir                     where a set's worktrees live, given its member
+#   help
+set -u
+
+die() { printf 'workset: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'workset: %s\n' "$*" >&2; }
+usage() { sed -n '/^# Usage:/,/^set -u/{ /^set -u/d; s/^# \{0,1\}//p; }' "$0" >&2; exit 2; }
+
+valid_name() {
+  case ${1-} in
+    ''|*[!A-Za-z0-9_-]*|-*) return 1;;
+  esac
+  return 0
+}
+
+expand_home() {
+  case ${1-} in
+    '~') printf '%s\n' "$HOME";;
+    '~/'*) printf '%s\n' "$HOME/${1#\~/}";;
+    *) printf '%s\n' "${1-}";;
+  esac
+}
+
+need_python() { command -v python3 >/dev/null 2>&1 || exit 0; }
+
+# --- configuration -----------------------------------------------------------
+
+# Set names in config order (the order `member` lines were declared across
+# every included file). A key with no subsection has only one dot and
+# cannot match, which is what keeps `workset.<key>` itself out of the list.
+# Everything configured is either used or complained about — a name git
+# accepts but this rejects (`[workset "bad name"]`) is warned, never
+# silently dropped.
+cmd_list() {
+  git config --get-regexp '^workset\.' 2>/dev/null |
+    sed -n 's/^workset\.\(.*\)\.[^.[:space:]][^.[:space:]]* .*$/\1/p' |
+    awk '!seen[$0]++' |
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    if valid_name "$n"; then
+      printf '%s\n' "$n"
+    else
+      warn "ignoring workset.$n.* — a name may only hold letters, digits, - and _"
+    fi
+  done
+}
+
+# member<TAB>realpath<TAB>state, in config order (git returns a multi-valued
+# key's entries in the order the including files were read, not last-wins).
+# Dedupe is by real path, not by the literal string, so `~/code/x` and
+# `~/code/x/` collide correctly; the first survivor is the PRIMARY.
+cmd_members() {
+  name=${1-}
+  [ -n "$name" ] || die "usage: workset members <name>"
+  raw=$(git config --get-all "workset.$name.member" 2>/dev/null)
+  seen=""
+  bad=0
+  while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    ex=$(expand_home "$m")
+    rp=""
+    [ -d "$ex" ] && rp=$(cd "$ex" 2>/dev/null && pwd -P)
+    if [ -z "$rp" ]; then
+      st=missing; bad=1
+    elif printf '%s\n' "$seen" | grep -qxF "$rp"; then
+      st=duplicate; bad=1
+    elif [ ! -e "$rp/.git" ]; then
+      st=not-a-repo; bad=1
+    else
+      st=ok
+      seen="$seen
+$rp"
+    fi
+    printf '%s\t%s\t%s\n' "$m" "$rp" "$st"
+  done <<MEMBERS
+$raw
+MEMBERS
+  [ "$bad" -eq 0 ] || return 2
+  return 0
+}
+
+slug_of() { printf '%s' "${1-}" | tr '/' '-'; }
+
+# member<TAB>worktree<TAB>branch<TAB>action
+cmd_plan() {
+  name=${1-}; branch=${2-}
+  [ -n "$name" ] && [ -n "$branch" ] || die "usage: workset plan <name> <branch>"
+  slug=$(slug_of "$branch")
+  members_tsv=$(cmd_members "$name") || true
+  while IFS='	' read -r m rp st; do
+    [ -n "$m" ] || continue
+    if [ "$st" != ok ]; then
+      printf '%s\t%s\t%s\t%s\n' "$m" "" "$branch" missing-member
+      continue
+    fi
+    wt="$rp/.claude/worktrees/$slug"
+    if [ -d "$wt" ]; then
+      cur=$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null)
+      if [ "$cur" = "$branch" ]; then act=reuse; else act=conflict; fi
+    else
+      act=create
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$m" "$wt" "$branch" "$act"
+  done <<PLAN
+$members_tsv
+PLAN
+}
+
+ensure_exclude() { # member-realpath
+  excl="$1/.git/info/exclude"
+  mkdir -p "$(dirname "$excl")" 2>/dev/null
+  grep -qxF '**/.claude/worktrees/' "$excl" 2>/dev/null ||
+    printf '**/.claude/worktrees/\n' >> "$excl"
+}
+
+cmd_checkout() {
+  name=${1-}; branch=${2-}
+  [ -n "$name" ] && [ -n "$branch" ] || die "usage: workset checkout <name> <branch>"
+  plan=$(cmd_plan "$name" "$branch") || true
+  [ -n "$plan" ] || die "no members configured for '$name'"
+  if printf '%s\n' "$plan" | awk -F'\t' '$4=="conflict"||$4=="missing-member"{f=1} END{exit !f}'; then
+    printf '%s\n' "$plan" >&2
+    die "cannot checkout '$name' on '$branch' — a member above is conflicting or missing; nothing was created"
+  fi
+  while IFS='	' read -r m wt br act; do
+    [ -n "$m" ] || continue
+    rp=${wt%/.claude/worktrees/*}
+    case $act in
+      create)
+        ensure_exclude "$rp"
+        base=HEAD
+        git -C "$rp" rev-parse --verify -q origin/HEAD >/dev/null 2>&1 && base=origin/HEAD
+        if git -C "$rp" show-ref --verify -q "refs/heads/$branch"; then
+          # git worktree add prints its "HEAD is now at ..." line to
+          # stdout (Preparing worktree goes to stderr) — silence stdout so
+          # it never lands inside this command's own TSV output.
+          git -C "$rp" worktree add "$wt" "$branch" >/dev/null || die "$m: git worktree add failed"
+        else
+          git -C "$rp" worktree add -b "$branch" "$wt" "$base" >/dev/null || die "$m: git worktree add failed"
+        fi
+        printf '%s\t%s\t%s\tcreated\n' "$m" "$wt" "$br"
+        ;;
+      reuse)
+        printf '%s\t%s\t%s\treused\n' "$m" "$wt" "$br"
+        ;;
+    esac
+  done <<PLAN
+$plan
+PLAN
+}
+
+# All configured real member paths across every set (or just one set's),
+# deduped — the pool `status` with no arguments scans.
+all_member_realpaths() {
+  name=${1-}
+  if [ -n "$name" ]; then
+    cmd_members "$name" 2>/dev/null | awk -F'\t' '$3=="ok"{print $2}'
+  else
+    for n in $(cmd_list); do
+      cmd_members "$n" 2>/dev/null | awk -F'\t' '$3=="ok"{print $2}'
+    done | awk '!seen[$0]++'
+  fi
+}
+
+remote_state_of() { # worktree branch -> "remote\tahead\tbehind"
+  wt=$1; br=$2
+  up=$(git -C "$wt" for-each-ref --format='%(upstream)' "refs/heads/$br" 2>/dev/null)
+  if [ -z "$up" ]; then
+    printf 'none\t0\t0\n'; return
+  fi
+  if git -C "$wt" rev-parse --verify -q "$up" >/dev/null 2>&1; then
+    counts=$(git -C "$wt" rev-list --left-right --count "$up...HEAD" 2>/dev/null)
+    behind=${counts%%[[:space:]]*}; ahead=${counts##*[[:space:]]}
+    printf 'present\t%s\t%s\n' "${ahead:-0}" "${behind:-0}"
+  else
+    printf 'gone\t0\t0\n'
+  fi
+}
+
+cmd_status() {
+  name=${1-}; branch=${2-}
+  members=$(all_member_realpaths "$name")
+  while IFS= read -r rp; do
+    [ -n "$rp" ] || continue
+    wtroot="$rp/.claude/worktrees"
+    [ -d "$wtroot" ] || continue
+    for wt in "$wtroot"/*/; do
+      [ -d "$wt" ] || continue
+      wt=${wt%/}
+      br=$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null)
+      [ -n "$branch" ] && [ "$br" != "$branch" ] && continue
+      dirty=0
+      [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ] && dirty=1
+      rsb=$(remote_state_of "$wt" "$br")
+      remote=${rsb%%	*}; rest=${rsb#*	}; ahead=${rest%%	*}; behind=${rest#*	}
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$rp" "$wt" "$br" "$dirty" "$ahead" "$behind" "$remote"
+    done
+  done <<MEMBERS
+$members
+MEMBERS
+}
+
+cmd_close() {
+  name=${1-}; branch=${2-}
+  [ -n "$name" ] && [ -n "$branch" ] || die "usage: workset close <name> <branch>"
+  slug=$(slug_of "$branch")
+  members_tsv=$(cmd_members "$name" 2>/dev/null) || true
+  while IFS='	' read -r m rp st; do
+    [ "$st" = ok ] || continue
+    wt="$rp/.claude/worktrees/$slug"
+    if [ ! -d "$wt" ]; then
+      warn "$m: no worktree at $wt"
+      continue
+    fi
+    if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
+      warn "$m: refusing — $wt is dirty"
+      continue
+    fi
+    up=$(git -C "$wt" for-each-ref --format='%(upstream)' "refs/heads/$branch" 2>/dev/null)
+    mergeable=0
+    if [ -n "$up" ] && git -C "$wt" rev-parse --verify -q "$up" >/dev/null 2>&1; then
+      ahead=$(git -C "$wt" rev-list --count "$up..HEAD" 2>/dev/null)
+      [ "${ahead:-1}" = 0 ] && mergeable=1
+    elif git -C "$wt" rev-parse --verify -q origin/HEAD >/dev/null 2>&1 &&
+         git -C "$wt" merge-base --is-ancestor "$branch" origin/HEAD 2>/dev/null; then
+      mergeable=1
+    fi
+    if [ "$mergeable" != 1 ]; then
+      warn "$m: refusing — $branch has commits not on the remote"
+      continue
+    fi
+    if git -C "$rp" worktree remove "$wt"; then
+      if git -C "$rp" rev-parse --verify -q origin/HEAD >/dev/null 2>&1 &&
+         git -C "$rp" merge-base --is-ancestor "$branch" origin/HEAD 2>/dev/null; then
+        git -C "$rp" branch -d "$branch" >/dev/null 2>&1
+      fi
+      printf 'workset: %s: closed %s\n' "$m" "$wt"
+    else
+      warn "$m: git worktree remove failed"
+    fi
+  done <<MEMBERS
+$members_tsv
+MEMBERS
+}
+
+# --- hooks --------------------------------------------------------------------
+
+cmd_hook_start() {
+  [ -n "${WORKSET-}" ] || { cat >/dev/null 2>&1; return 0; }
+  name=$WORKSET; branch=${WORKSET_BRANCH-}
+  slug=$(slug_of "$branch")
+  dirtail=${CLAUDE_CONFIG_DIR:-$HOME/.claude}; dirtail=${dirtail##*/}
+  printf 'workset: %s on %s (profile %s)\n' "$name" "$branch" "$dirtail"
+  i=0
+  cmd_members "$name" 2>/dev/null | while IFS='	' read -r m rp st; do
+    [ "$st" = ok ] || continue
+    wt="$rp/.claude/worktrees/$slug"
+    if [ "$i" -eq 0 ]; then role=primary; else role=member; fi
+    i=$((i + 1))
+    printf '  %-7s %s -> %s\n' "$role" "$wt" "$rp"
+  done
+  git config --get-all "workset.$name.note" 2>/dev/null | while IFS= read -r n; do
+    [ -n "$n" ] && printf '  note: %s\n' "$n"
+  done
+  cat <<'RULES'
+  Edit only inside the worktrees listed above; each repo commits under its
+  own identity and the commit gate refuses the wrong one. Land in member
+  order. If a later member's change is rejected after an earlier one
+  merged, revert the earlier one forward — never rewrite history. The leak
+  guard runs per push, so a public commit message must not name an overlay.
+RULES
+}
+
+# PreToolUse on Edit|Write|NotebookEdit: deny a write to a member's LIVE
+# checkout while a set session is open. Bash is not parsed here — that is
+# denyguard's job, wired separately and fail-closed; this hook (like
+# worktabs and postbox) fails open on its own absence.
+cmd_guard() {
+  need_python
+  payload=$(cat)
+  [ -n "${WORKSET-}" ] || exit 0
+  members=$(cmd_members "$WORKSET" 2>/dev/null | awk -F'\t' '$3=="ok"{print $2}')
+  printf '%s' "$payload" | python3 -c '
+import json, os, sys
+
+members = [m for m in sys.argv[1].splitlines() if m]
+try:
+    event = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+ti = event.get("tool_input") or {}
+path = ti.get("file_path") or ti.get("notebook_path") or ""
+if not path:
+    sys.exit(0)
+path = os.path.realpath(os.path.expanduser(path))
+for m in members:
+    m = os.path.realpath(m)
+    if path == m or path.startswith(m + os.sep):
+        root = os.path.join(m, ".claude", "worktrees")
+        if path == root or path.startswith(root + os.sep):
+            sys.exit(0)
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "%s is the live checkout of %s; this set works in a worktree under %s" % (path, m, root)}}))
+        sys.exit(0)
+sys.exit(0)
+' "$members"
+  exit 0
+}
+
+cmd_settings() {
+  cat <<'JSON'
+workset does not edit settings.json — each profile's file is owned by its
+overlay. Add these to that file's "hooks" (merging with what is there):
+
+  "SessionStart": [
+    { "hooks": [{ "type": "command", "command": "[ -x ~/bin/workset ] && exec ~/bin/workset hook start || true" }] }
+  ],
+  "PreToolUse": [
+    { "matcher": "Edit|Write|NotebookEdit",
+      "hooks": [{ "type": "command", "command": "[ -x ~/bin/workset ] && exec ~/bin/workset guard || true" }] }
+  ]
+
+SessionStart prints the open set's brief when $WORKSET is set (workset
+open exports it) and nothing otherwise, so an ordinary single-repo session
+sees no change. PreToolUse guards Edit/Write/NotebookEdit against a
+member's live checkout while a set session is open. Both are conveniences,
+never the sensitivity boundary — that is denyguard, wired fail-closed on
+Bash, unaffected by this block.
+JSON
+}
+
+# --- dispatch -----------------------------------------------------------------
+
+[ $# -ge 1 ] || usage
+cmd=$1
+shift
+case $cmd in
+  list)     cmd_list;;
+  members)  cmd_members "$@";;
+  plan)     cmd_plan "$@";;
+  checkout) cmd_checkout "$@";;
+  status)   cmd_status "$@";;
+  close)    cmd_close "$@";;
+  hook)
+    sub=${1-}
+    case $sub in
+      start) cmd_hook_start;;
+      *) die "unknown hook '$sub' (workset hook start)";;
+    esac
+    ;;
+  guard)    cmd_guard;;
+  settings) cmd_settings;;
+  dir)
+    name=${1-}
+    if [ -n "$name" ]; then
+      cmd_members "$name" 2>/dev/null | awk -F'\t' '$3=="ok"{print $2 "/.claude/worktrees"}'
+    else
+      printf 'workset keeps no state of its own: sets live in git config (workset.<name>.*), worktrees live under each member'"'"'s .claude/worktrees/\n'
+    fi
+    ;;
+  -h|--help|help) usage;;
+  *) die "unknown command '$cmd' (workset help)";;
+esac

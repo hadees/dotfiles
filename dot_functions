@@ -802,6 +802,186 @@ function postbox-doctor() {
 	print -r -- "cwd:     $PWD";
 }
 
+# The profile a working set's session runs under, and whether every member
+# is even readable from it — the two questions `workset open` (below) must
+# answer before it launches anything, extracted so workset-doctor and the
+# `routes` SET column read the identical verdict.
+#
+# workset.<name>.member/.profile is machine-local git config, overlay-
+# supplied, exactly like workspace.* (worktabs); this reads it, never
+# writes it. Prints the resolved profile directory on success. On failure,
+# prints the reason to stderr and returns:
+#   2  a config error — no usable members, or workset.<name>.profile set to
+#      two different values across included files (checked with --get-all,
+#      since for an ordinary key the LAST include silently wins, and that
+#      must not decide a login)
+#   3  heterogeneous — no explicit `profile`, and the members do not all
+#      resolve to the same claude_profile_dir
+#   4  denied — a member falls inside (or contains) one of the resolved
+#      profile's permissions.deny rules, per `denyguard check`, which is
+#      the one definition of that boundary; this function never re-derives
+#      it. The remedy is always "drop the member, or run a smaller set" —
+#      never a per-repo pin, since the tier a repo sits in is a sensitivity
+#      boundary this function only reads.
+function workset_profile() {
+	emulate -L zsh;
+	local name=${1-} dir explicit m one first=1 msg;
+	local -a realpaths mismatches vals;
+	if [[ -z $name ]]; then
+		print -ru2 -- "usage: workset_profile <name>";
+		return 2;
+	fi;
+	local members_tsv;
+	members_tsv="$(command workset members "$name" 2>&1)";
+	if (( $? != 0 )); then
+		[[ -n $members_tsv ]] && print -ru2 -- "$members_tsv";
+		return 2;
+	fi;
+	realpaths=(${(f)"$(print -r -- "$members_tsv" | awk -F'\t' '{print $2}')"});
+	(( ${#realpaths} )) || { print -ru2 -- "workset: '$name' has no members configured (workset.$name.member)"; return 2; };
+
+	vals=(${(f)"$(command git config --get-all "workset.$name.profile" 2>/dev/null)"});
+	if (( ${#vals} )); then
+		local -a uniqvals;
+		uniqvals=(${(u)vals});
+		if (( ${#uniqvals} > 1 )); then
+			print -ru2 -- "workset: workset.$name.profile disagrees across includes: ${(j:, :)vals}";
+			return 2;
+		fi;
+		explicit=$vals[1];
+		dir="$(CLAUDE_PROFILE=$explicit claude_profile_dir 2>/dev/null)";
+		if [[ -z $dir ]]; then
+			print -ru2 -- "workset: workset.$name.profile='$explicit' is neither a mapped account nor a directory";
+			return 2;
+		fi;
+	else
+		for m in $realpaths; do
+			one="$(cd -q -- "$m" 2>/dev/null && unset CLAUDE_PROFILE && claude_profile_dir 2>/dev/null)";
+			[[ -n $one ]] || one='<bare claude — no profile resolved>';
+			mismatches+=("$m -> $one");
+			if (( first )); then dir=$one; first=0;
+			elif [[ $one != $dir ]]; then
+				print -ru2 -- "workset: '$name' resolves to different Claude profiles:";
+				print -ru2 -- "${(F)mismatches}";
+				return 3;
+			fi;
+		done;
+		if [[ $dir == '<bare claude'* ]]; then
+			print -ru2 -- "workset: no member of '$name' resolves to a Claude profile (workset.$name.profile can name one)";
+			return 2;
+		fi;
+	fi;
+
+	msg="$(command denyguard check --profile "$dir" "${realpaths[@]}" 2>&1)";
+	case $? in
+		0) ;;
+		1) print -ru2 -- "$msg"; return 4;;
+		2) print -ru2 -- "workset: cannot evaluate a deny rule; refusing ($msg)"; return 4;;
+		*) print -ru2 -- "workset: denyguard check failed: $msg"; return 4;;
+	esac;
+
+	print -r -- "$dir";
+	return 0;
+}
+
+# `workset open <name> <branch> [claude args...]` — resolve the set's
+# profile (workset_profile, above; a refusal is printed there and simply
+# returned), create or reuse its worktrees (`command workset checkout`),
+# then launch `claude` (the wrapper, so CLAUDE_CONFIG_DIR, the browser pin,
+# the TTL and subagent-model exports all still apply) cd'd into the
+# PRIMARY worktree — config order's first surviving member — with
+# --add-dir for every other member's worktree and
+# CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1 so their CLAUDE.md files
+# load too. `workset profile <name>` prints the resolver's verdict alone;
+# every other subcommand passes straight through to the script.
+function workset() {
+	emulate -L zsh;
+	local sub=${1-};
+	case $sub in
+		(open)
+			shift;
+			local name=${1-} branch=${2-};
+			if [[ -z $name || -z $branch ]]; then
+				print -ru2 -- "usage: workset open <name> <branch> [claude args...]";
+				return 2;
+			fi;
+			shift 2;
+			local dir rc;
+			dir="$(workset_profile "$name")"; rc=$?;
+			(( rc == 0 )) || return $rc;
+			local -a plan fields others add;
+			local primary row;
+			plan=(${(f)"$(command workset checkout "$name" "$branch")"}); rc=$?;
+			(( rc == 0 )) || return $rc;
+			(( ${#plan} )) || { print -ru2 -- "workset: open: '$name' has no members"; return 2; };
+			local i=0;
+			for row in $plan; do
+				fields=("${(@ps:\t:)row}");
+				if (( i == 0 )); then primary=$fields[2]; else others+=("$fields[2]"); fi;
+				(( i++ ));
+			done;
+			for row in $others; do add+=(--add-dir "$row"); done;
+			(
+				cd -q -- "$primary" || exit 1;
+				export CLAUDE_PROFILE=$dir WORKSET=$name WORKSET_BRANCH=$branch;
+				export CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1;
+				claude --name "$name $branch" $add "$@";
+			);;
+		(profile)
+			shift;
+			workset_profile "$@";;
+		(*)
+			command workset "$@";;
+	esac;
+}
+
+# Diagnose what `workset open` would do for every configured set: is the
+# script deployed, what does each set's own `members`/`workset_profile`
+# say — the SAME resolver the `routes` SET column and `open` itself call,
+# so none of the three can ever disagree — and does the active profile's
+# settings.json wire the two convenience hooks (SessionStart brief,
+# PreToolUse live-checkout guard). Report-only: opens nothing, creates no
+# worktree.
+function workset-doctor() {
+	emulate -L zsh;
+	local name dir out rc hooks_settings;
+	local -a names;
+	print -r -- "wrapper: $(whence -w workset)";
+	print -r -- "defined: $(defined_trace workset_profile claude_profile_dir gh_account_for_cwd git_origin_slug)";
+	if (( $+commands[workset] )); then
+		print -r -- "script:  ${commands[workset]}";
+	else
+		print -r -- "script:  NOT FOUND — ~/bin/workset is not on PATH (chezmoi apply)";
+		return 0;
+	fi;
+	names=(${(f)"$(command workset list 2>/dev/null)"});
+	print -r -- "sets:    ${#names}";
+	for name in $names; do
+		[[ -n $name ]] || continue;
+		print -r -- "-- $name";
+		command workset members "$name" 2>/dev/null | while IFS=$'\t' read -r m rp st; do
+			[[ $st == ok ]] && print -r -- "   member:  $m" || print -r -- "   member:  $m ($st)";
+		done;
+		out="$(workset_profile "$name" 2>&1)"; rc=$?;
+		case $rc in
+			(0) print -r -- "   profile: $out";;
+			(3) print -r -- "   profile: heterogeneous — ${out//$'\n'/; }";;
+			(4) print -r -- "   profile: denied — ${out//$'\n'/; }";;
+			(*) print -r -- "   profile: error — ${out//$'\n'/; }";;
+		esac;
+		print -r -- "   worktrees: $(command workset status "$name" 2>/dev/null | wc -l | tr -d ' ')";
+	done;
+	local profiledir; profiledir="$(claude_profile_dir 2>/dev/null)";
+	[[ -n $profiledir ]] && hooks_settings="$profiledir/settings.json" || hooks_settings='';
+	if [[ -n $hooks_settings && -r $hooks_settings ]] && command grep -q 'workset hook start' "$hooks_settings" 2>/dev/null \
+		&& command grep -q 'workset guard' "$hooks_settings" 2>/dev/null; then
+		print -r -- "hooks:   wired in $hooks_settings";
+	else
+		print -r -- "hooks:   NOT wired in ${hooks_settings:-<no profile resolved for this cwd>} (workset settings)";
+	fi;
+	print -r -- "cwd:     $PWD";
+}
+
 # The Hermes harness (NousResearch/hermes-agent) keeps per-agent state in
 # profiles (`hermes profile create <name>` — each its own HERMES_HOME with its
 # own config, approval rules, memory, and .env keys). A repo that must only
@@ -2509,6 +2689,30 @@ function routes_probe() {
 		fi;
 	fi;
 	print -r -- "${v:--}";
+
+	# Which configured workset(s) this repo is a member of, matched by real
+	# path against `workset members` — never a second membership list, so
+	# this cell and workset-doctor's own per-set report read the identical
+	# answer. `!` marks a set whose workset_profile is non-zero (denied,
+	# heterogeneous, or a config error) for THIS machine's active profile.
+	v='';
+	if (( $+commands[workset] )); then
+		local wsname wsrp here;
+		local -a wsets;
+		here=${PWD:A};
+		for wsname in ${(f)"$(command workset list 2>/dev/null)"}; do
+			[[ -n $wsname ]] || continue;
+			wsrp="$(command workset members "$wsname" 2>/dev/null | awk -F'\t' -v h="$here" '$2==h{print; exit}')";
+			[[ -n $wsrp ]] || continue;
+			if workset_profile "$wsname" >/dev/null 2>&1; then
+				wsets+=("$wsname");
+			else
+				wsets+=("$wsname!");
+			fi;
+		done;
+		v="${(j:,:)wsets}";
+	fi;
+	print -r -- "${v:--}";
 }
 
 # Which project routes to which account, across every wrapper, in one table.
@@ -2538,9 +2742,9 @@ function routes_probe() {
 #   routes --tsv       every column, unpadded, tab-separated, no header and
 #                      no footer, for awk/grep. The schema is fixed
 #                      (project, account, claude, wrangler, tailnet, hermes,
-#                      tabs, identity, gate, mail) whether or not a column is empty,
-#                      so a script can index fields; `plan` in worktabs is the
-#                      same idea.
+#                      tabs, identity, gate, mail, set) whether or not a column
+#                      is empty, so a script can index fields; `plan` in
+#                      worktabs is the same idea.
 #   routes ~/work      scan somewhere else
 function routes() {
 	emulate -L zsh;
@@ -2600,13 +2804,13 @@ function routes() {
 			rel=${repo#$root/};
 			[[ $rel == "$repo" ]] && rel=${repo:t};
 			fields=(${(f)"$(cd -q -- "$repo" 2>/dev/null && { unset CLAUDE_PROFILE WRANGLER_PROFILE TAILNET; routes_probe; })"});
-			(( ${#fields} == 8 )) || continue;
+			(( ${#fields} == 9 )) || continue;
 			# Sort key: a rank digit, then the account. The digit is what
 			# orders pinned above unpinned — a punctuation character would
 			# not, because ${(o)} collates by locale and ~ sorts *before*
 			# letters in en_US, which put the unpinned rows on top.
 			[[ $fields[1] == - ]] && key=2 || key="1$fields[1]";
-			rows+=( "$key"$'\t'"$rel"$'\t'"${(pj:\t:)fields[1,5]}"$'\t'"${tabs[$repo]:--}"$'\t'"${fields[6]}"$'\t'"${fields[7]}"$'\t'"${fields[8]}" );
+			rows+=( "$key"$'\t'"$rel"$'\t'"${(pj:\t:)fields[1,5]}"$'\t'"${tabs[$repo]:--}"$'\t'"${fields[6]}"$'\t'"${fields[7]}"$'\t'"${fields[8]}"$'\t'"${fields[9]}" );
 		done;
 	done;
 
@@ -2618,19 +2822,20 @@ function routes() {
 
 	# Column layout. Everything below indexes the row AFTER the sort key is
 	# dropped: 1 project, 2 account, 3 claude, 4 wrangler, 5 tailnet,
-	# 6 hermes, 7 tabs, 8 identity, 9 gate, 10 mail. Mail was added last so
-	# the --tsv field numbers scripts already index did not move.
+	# 6 hermes, 7 tabs, 8 identity, 9 gate, 10 mail, 11 set. Each was added
+	# last in its turn so the --tsv field numbers scripts already index did
+	# not move.
 	local -a hdr cols;
-	hdr=(PROJECT ACCOUNT CLAUDE WRANGLER TAILNET HERMES TABS IDENTITY GATE MAIL);
+	hdr=(PROJECT ACCOUNT CLAUDE WRANGLER TAILNET HERMES TABS IDENTITY GATE MAIL SET);
 	if (( tsv )); then
 		for a in $rows; do
 			fields=("${(@ps:\t:)a}");
-			print -r -- "${(pj:\t:)fields[2,11]}";
+			print -r -- "${(pj:\t:)fields[2,12]}";
 		done;
 		return 0;
 	fi;
-	cols=(1 2 3 4 5 6 7 10);
-	(( long )) && cols=(1 2 3 4 5 6 7 8 9 10);
+	cols=(1 2 3 4 5 6 7 10 11);
+	(( long )) && cols=(1 2 3 4 5 6 7 8 9 10 11);
 
 	# Drop a column no project uses — but never the two that identify the
 	# row. What was dropped is named below rather than silently omitted.
@@ -2689,7 +2894,7 @@ function routes() {
 	line='';
 	for acct in ${(ok)tally}; do line+="$acct ${tally[$acct]}, "; done;
 	print -r -- "${#rows} projects under ${(j:, :)${roots/#$HOME/~}} — ${line%, }";
-	(( marks )) && print -r -- "* per-repo pin, outranking the account mapping   ! mapped but not created on this machine";
+	(( marks )) && print -r -- "* per-repo pin, outranking the account mapping   ! mapped but not created on this machine (SET: workset_profile refused — workset-doctor says why)";
 	(( ${#dropped} )) && print -r -- "nothing configured anywhere, columns dropped: ${(j:, :)dropped}";
 	(( long )) || print -r -- "-l adds the commit identity and the gate's verdict on it";
 	local -a overrides;
@@ -2722,7 +2927,7 @@ function doctor() {
 	local d;
 	print -r -- "shell:   $(shell_trace)";
 	print -r -- "";
-	for d in git gh claude wrangler hermes tailnet worktabs attend postbox onepassword iterm2; do
+	for d in git gh claude wrangler hermes tailnet worktabs attend postbox workset onepassword iterm2; do
 		print -r -- "== $d-doctor";
 		"$d-doctor";
 		print -r -- "";
