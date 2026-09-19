@@ -46,10 +46,11 @@ STUB
 
   DG="$BATS_TEST_DIRNAME/../bin/executable_denyguard"
 
-  # The standard fixture rule set: a tree, a single file, and an
-  # already-anchored-from-root rule, each of a shape the docs allow but
-  # naming nothing real.
-  fixture_rules '["Read(~/code/octo-secret/**)","Edit(~/code/octo-secret/**)","Read(~/.hushfile)","Read(//srv/vault/**)"]'
+  # The standard fixture rule set: a tree, a single file, an
+  # already-anchored-from-root rule, and the fixture profile's own
+  # projects/** — a shape the docs allow but naming nothing real, and the
+  # one that makes the profile directory itself an ancestor of a rule.
+  fixture_rules '["Read(~/code/octo-secret/**)","Edit(~/code/octo-secret/**)","Read(~/.hushfile)","Read(//srv/vault/**)","Read(~/.claude-fixture/projects/**)"]'
 }
 
 fixture_rules() { # json array literal
@@ -67,6 +68,15 @@ evt_field() { # cwd tool field value
 }
 
 hook() { printf '%s' "$1" | "$DG" hook; } # $1: event JSON
+
+# A PreToolUse Bash event whose command may contain real newlines (a
+# heredoc) — JSON-escaped with python3 rather than hand-rolled, since a raw
+# newline is not valid inside a JSON string.
+evt_ml() { # cwd command
+  local cmd_json
+  cmd_json="$(python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.argv[1]))' "$2")"
+  printf '{"session_id":"s1","cwd":"%s","tool_name":"Bash","tool_input":{"command":%s}}' "$1" "$cmd_json"
+}
 
 @test "cat on a denied file is refused, naming the rule" {
   run hook "$(evt "$HOME/code" "cat $HOME/code/octo-secret/x")"
@@ -127,7 +137,7 @@ hook() { printf '%s' "$1" | "$DG" hook; } # $1: event JSON
 @test "find over an ancestor of a denied tree is refused as recursive" {
   run hook "$(evt "$HOME/code" "find $HOME/code -name x")"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"looks recursive"* ]]
+  [[ "$output" == *"recurses here"* ]]
 }
 
 @test "ls over the same ancestor, with no recursive tell, is allowed" {
@@ -257,6 +267,94 @@ hook() { printf '%s' "$1" | "$DG" hook; } # $1: event JSON
   run env CLAUDE_CONFIG_DIR="$HOME/.claude-absent" "$DG" rules
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+}
+
+@test "an ancestor read with no recursion signal in that command is allowed" {
+  run hook "$(evt "$HOME/code" "grep cleanup $HOME/.claude-fixture/settings.json; ls $HOME/.claude-fixture")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "the same ancestor with an actual -r flag is refused, naming the fix" {
+  run hook "$(evt "$HOME/code" "grep -r x $HOME/.claude-fixture")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"recurses here"* ]]
+  [[ "$output" == *"name the file under it directly"* ]]
+}
+
+@test "a data heredoc body naming an ancestor as prose is allowed" {
+  run hook "$(evt_ml "$HOME/code" "cat <<EOF > notes.md
+the fix stops grep -r on $HOME/.claude-fixture from being refused
+EOF")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "a code heredoc body opening a denied file directly is still refused" {
+  run hook "$(evt_ml "$HOME/code" "python3 - <<PY
+with open('$HOME/code/octo-secret/x') as f:
+    pass
+PY")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]]
+}
+
+@test "a code heredoc body over an ancestor keeps the recursion check" {
+  run hook "$(evt_ml "$HOME/code" "sh <<EOF
+find $HOME/code -name x
+EOF")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"recurses here"* ]]
+}
+
+@test "a bare home fragment written as data inside a cat heredoc is allowed" {
+  run hook "$(evt_ml "$HOME/code" "cat <<EOF
+printf '%s' '$HOME/.'
+EOF")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "find over the bare home directory is still refused" {
+  run hook "$(evt "$HOME/code" "find $HOME -name x")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"recurses here"* ]]
+}
+
+@test "a default-recursive tool other than find is refused the same way" {
+  run hook "$(evt "$HOME/code" "rg foo $HOME/code")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"recurses here"* ]]
+}
+
+@test "flag table: ls -ltr over an ancestor is allowed (the r is not --recursive)" {
+  run hook "$(evt "$HOME/code" "ls -ltr $HOME/code")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "flag table: ls -R over an ancestor is refused" {
+  run hook "$(evt "$HOME/code" "ls -R $HOME/code")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"recurses here"* ]]
+}
+
+@test "flag table: cp -r over an ancestor is refused" {
+  run hook "$(evt "$HOME/code" "cp -r $HOME/code /tmp/x")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"recurses here"* ]]
+}
+
+@test "flag table: sort -nr over an ancestor is allowed (sort is not tracked)" {
+  run hook "$(evt "$HOME/code" "sort -nr $HOME/code/list")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "flag table: du over an ancestor is refused (recursive by nature)" {
+  run hook "$(evt "$HOME/code" "du $HOME/code")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"recurses here"* ]]
 }
 
 @test "an unparsable settings.json still refuses, naming the file not the deploy" {
