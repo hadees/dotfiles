@@ -94,6 +94,20 @@ workset_fn() { # subcommand...
   [[ "$output" == *"a name may only hold letters, digits, - and _"* ]]
 }
 
+@test "list: a value containing a dot does not swallow the set name" {
+  # git prints `workset.<name>.<key> <value>` on one line, so a greedy
+  # capture of the name runs past the space and into the value. A note
+  # mentioning a filename is the ordinary case, and it warned the whole set
+  # away as a bad name — the set vanished from `list` and its brief was
+  # never printed, with only a warning naming the note as the "name".
+  git config --file "$GIT_CONFIG_GLOBAL" --add 'workset.demo.member' '~/code/octo-alpha'
+  git config --file "$GIT_CONFIG_GLOBAL" --add 'workset.demo.note' 'tag first; the coupling is src/pkg/_thing.py and tests/_runner.*'
+  run "$WS" list
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -qx demo
+  ! [[ "$output" == *"a name may only hold"* ]]
+}
+
 @test "members: ok/missing/not-a-repo/duplicate, exit 2 if any is not ok" {
   mk_repo octo-alpha
   mkdir -p "$HOME/code/octo-plain"
