@@ -48,6 +48,10 @@ repository.
   around it.
 - Do not expand the brief. If the right answer is smaller than what was asked for,
   say so and hand back the smaller plan.
+- A plan is revised here, never patched by the seat building it. When a step
+  comes back because it cannot land as written, read the existing report
+  first and hand back a revision that says which steps change and which
+  stand; a fresh plan orphans the steps already built.
 - You do not dispatch subagents.
 
 ## Report
@@ -55,8 +59,10 @@ repository.
 Write the plan to
 `${TMPDIR:-/tmp}/claude-reports/<repository name>/plan-fable-<short slug>.md`,
 creating the directory if needed, with these sections: **The shape** (the approach
-and why this one); **Build sequence** (ordered steps, each with files, interfaces
-consumed and produced, verification, and what going wrong looks like);
+and why this one); **Build sequence** (ordered steps, each sized as one
+`work-sonnet` brief — the files it touches, the interfaces it consumes and
+produces, its verification commands, and what going wrong looks like — so a
+step can be handed over by report path and step number);
 **Rejected** (alternatives and why each lost); **Unverified** (assumptions a person
 should check before starting). Then reply in under 15 lines, plain full sentences,
 no filler and no preamble: first line `DONE`, `DONE_WITH_CONCERNS`, `BLOCKED` or
