@@ -64,6 +64,24 @@ mk_repo() { # name
   git -C "$r" commit -q -m init >/dev/null
 }
 
+# A bare origin for a fixture repo: pushed, fetched, and with
+# refs/remotes/origin/HEAD set explicitly. `git clone` creates that ref; a
+# repo built up from `init` + `remote add` only gets it from `fetch` on
+# git >= 2.48 (remote.<name>.followRemoteHEAD, default create). Ubuntu
+# 24.04 — CI's WSL job and the `wsl` machine class — ships 2.43, where fetch
+# never creates it and `workset checkout`/`close` take their documented
+# no-origin/HEAD fallback. set-head with a branch name is local; it does
+# not query the remote.
+mk_origin() { # name
+  local r="$HOME/code/$1"
+  mkdir -p "$HOME/remotes"
+  git -C "$HOME/remotes" init -q --bare -b main "$1.git"
+  git -C "$r" remote add origin "$HOME/remotes/$1.git"
+  git -C "$r" push -q origin main
+  git -C "$r" fetch -q origin
+  git -C "$r" remote set-head origin main
+}
+
 # A fixture profile directory with the given permissions.deny array literal
 # (or no block at all when omitted), mapped as `workset.<set>.profile`.
 fixture_profile() { # dir-name [deny-json-array]
@@ -146,11 +164,7 @@ workset_fn() { # subcommand...
 
 @test "checkout: creates worktrees on origin/HEAD when it resolves, and adds the exclude line once" {
   mk_repo octo-alpha
-  mkdir -p "$HOME/remote"
-  git -C "$HOME/remote" init -q --bare -b main
-  git -C "$HOME/code/octo-alpha" remote add origin "$HOME/remote"
-  git -C "$HOME/code/octo-alpha" push -q origin main
-  git -C "$HOME/code/octo-alpha" fetch -q origin
+  mk_origin octo-alpha
   git config --file "$GIT_CONFIG_GLOBAL" --add workset.demo.member '~/code/octo-alpha'
   run "$WS" checkout demo feat/probe
   [ "$status" -eq 0 ]
@@ -179,11 +193,7 @@ workset_fn() { # subcommand...
 
 @test "close: refuses dirty, refuses unpushed, removes merged and deletes the branch" {
   mk_repo octo-alpha
-  mkdir -p "$HOME/remote"
-  git -C "$HOME/remote" init -q --bare -b main
-  git -C "$HOME/code/octo-alpha" remote add origin "$HOME/remote"
-  git -C "$HOME/code/octo-alpha" push -q origin main
-  git -C "$HOME/code/octo-alpha" fetch -q origin
+  mk_origin octo-alpha
   git config --file "$GIT_CONFIG_GLOBAL" --add workset.demo.member '~/code/octo-alpha'
   "$WS" checkout demo feat/probe >/dev/null
   WT="$HOME/code/octo-alpha/.claude/worktrees/feat-probe"
