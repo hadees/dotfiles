@@ -64,6 +64,24 @@ mk_repo() { # name
   git -C "$r" commit -q -m init >/dev/null
 }
 
+# A bare origin for a fixture repo: pushed, fetched, and with
+# refs/remotes/origin/HEAD set explicitly. `git clone` creates that ref; a
+# repo built up from `init` + `remote add` only gets it from `fetch` on
+# git >= 2.48 (remote.<name>.followRemoteHEAD, default create). Ubuntu
+# 24.04 — CI's WSL job and the `wsl` machine class — ships 2.43, where fetch
+# never creates it and `workset checkout`/`close` take their documented
+# no-origin/HEAD fallback. set-head with a branch name is local; it does
+# not query the remote.
+mk_origin() { # name
+  local r="$HOME/code/$1"
+  mkdir -p "$HOME/remotes"
+  git -C "$HOME/remotes" init -q --bare -b main "$1.git"
+  git -C "$r" remote add origin "$HOME/remotes/$1.git"
+  git -C "$r" push -q origin main
+  git -C "$r" fetch -q origin
+  git -C "$r" remote set-head origin main
+}
+
 # A fixture profile directory with the given permissions.deny array literal
 # (or no block at all when omitted), mapped as `workset.<set>.profile`.
 fixture_profile() { # dir-name [deny-json-array]
@@ -146,11 +164,7 @@ workset_fn() { # subcommand...
 
 @test "checkout: creates worktrees on origin/HEAD when it resolves, and adds the exclude line once" {
   mk_repo octo-alpha
-  mkdir -p "$HOME/remote"
-  git -C "$HOME/remote" init -q --bare -b main
-  git -C "$HOME/code/octo-alpha" remote add origin "$HOME/remote"
-  git -C "$HOME/code/octo-alpha" push -q origin main
-  git -C "$HOME/code/octo-alpha" fetch -q origin
+  mk_origin octo-alpha
   git config --file "$GIT_CONFIG_GLOBAL" --add workset.demo.member '~/code/octo-alpha'
   run "$WS" checkout demo feat/probe
   [ "$status" -eq 0 ]
@@ -179,11 +193,7 @@ workset_fn() { # subcommand...
 
 @test "close: refuses dirty, refuses unpushed, removes merged and deletes the branch" {
   mk_repo octo-alpha
-  mkdir -p "$HOME/remote"
-  git -C "$HOME/remote" init -q --bare -b main
-  git -C "$HOME/code/octo-alpha" remote add origin "$HOME/remote"
-  git -C "$HOME/code/octo-alpha" push -q origin main
-  git -C "$HOME/code/octo-alpha" fetch -q origin
+  mk_origin octo-alpha
   git config --file "$GIT_CONFIG_GLOBAL" --add workset.demo.member '~/code/octo-alpha'
   "$WS" checkout demo feat/probe >/dev/null
   WT="$HOME/code/octo-alpha/.claude/worktrees/feat-probe"
@@ -214,6 +224,43 @@ workset_fn() { # subcommand...
   [[ "$output" == *"closed"* ]]
   [ ! -d "$WT" ]
   ! git -C "$HOME/code/octo-alpha" show-ref --verify -q refs/heads/feat/probe
+}
+
+@test "checkout without origin/HEAD bases on HEAD, and close keeps the branch it cannot prove merged" {
+  # A repo built from `init` + `remote add` on git < 2.48 (Ubuntu 24.04's
+  # 2.43 — the WSL job, the wsl machine class) has no origin/HEAD. The
+  # script's contract: base the worktree on HEAD, and never delete a branch
+  # it cannot show merged into origin/HEAD — remove the worktree, keep the
+  # branch, and say so. On git >= 2.48 a later fetch would recreate the ref
+  # (remote.<name>.followRemoteHEAD defaults to create), so the fixture pins
+  # `never` — unknown to, and ignored by, the older git this stands in for.
+  mk_repo octo-alpha
+  mk_origin octo-alpha
+  git -C "$HOME/code/octo-alpha" config remote.origin.followRemoteHEAD never
+  git -C "$HOME/code/octo-alpha" remote set-head origin --delete
+  ! git -C "$HOME/code/octo-alpha" rev-parse --verify -q origin/HEAD \
+    || { echo "origin/HEAD still resolves after set-head --delete"; false; }
+  git config --file "$GIT_CONFIG_GLOBAL" --add workset.demo.member '~/code/octo-alpha'
+
+  run "$WS" checkout demo feat/probe
+  [ "$status" -eq 0 ]
+  [[ "$output" == *$'\tcreated'* ]]
+  WT="$HOME/code/octo-alpha/.claude/worktrees/feat-probe"
+  [ "$(git -C "$WT" rev-parse HEAD)" = "$(git -C "$HOME/code/octo-alpha" rev-parse HEAD)" ]
+
+  echo landed >> "$WT/README.md"
+  git -C "$WT" commit -q -am landed
+  git -C "$WT" push -q -u origin feat/probe
+  git -C "$HOME/code/octo-alpha" merge -q --no-ff feat/probe -m merge
+  git -C "$HOME/code/octo-alpha" push -q origin main
+  git -C "$HOME/code/octo-alpha" fetch -q origin
+  ! git -C "$HOME/code/octo-alpha" rev-parse --verify -q origin/HEAD \
+    || { echo "fetch recreated origin/HEAD: the remote.origin.followRemoteHEAD=never pin did not take"; false; }
+
+  run "$WS" close demo feat/probe
+  [[ "$output" == *"closed"* ]]
+  [ ! -d "$WT" ]
+  git -C "$HOME/code/octo-alpha" show-ref --verify -q refs/heads/feat/probe
 }
 
 @test "guard: denies a live path, allows the worktree path, and is silent without WORKSET" {
