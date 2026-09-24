@@ -1,6 +1,6 @@
 ---
 name: work-sonnet
-description: Use it for one fully specified, self-contained piece of a fan-out — a change whose files, behaviour and verification are all stated in the brief, and that does not depend on another piece finishing first. Do NOT use it for a dependent chain of steps (the main conversation does those itself), or to choose an approach.
+description: Use it for one fully specified, self-contained piece of work — files, behaviour and verification all stated in the brief — either an independent piece of a fan-out or the next step of a plan-fable plan, briefed once the steps before it have landed. Do NOT use it to choose an approach, to carry several dependent steps in one brief, or for a dependent chain with no plan-fable plan behind it (the main conversation does those itself).
 tools: Read, Edit, Write, Grep, Glob, Bash, WebFetch, WebSearch, Skill
 model: sonnet
 effort: high
