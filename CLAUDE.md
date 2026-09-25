@@ -281,6 +281,14 @@ cannot answer. That failure used to abort the whole apply partway. Neither
 path ever runs `brew bundle cleanup`: that uninstalls anything absent from the
 list, which is not what converging a machine should mean.
 
+`update()` itself always runs from `$HOME` and puts the shell back where it
+started, whatever directory it was typed in — a removed cwd (a deleted
+worktree, the usual way) is inherited by every child and each dies on its own
+`getcwd`/`[[ -d $PWD ]]` check, and asdf shims resolve node/ruby/uv from the
+nearest `.tool-versions` above the cwd, so a run typed inside a project would
+update that project's toolchain instead of the global one pinned in
+`~/.tool-versions`. `tests/update.bats` pins this.
+
 **A half-installed cask is invisible to all of this.** A `.pkg` cask whose
 installer never ran still leaves a Caskroom entry, so `brew bundle` counts it
 as satisfied and never retries while the app is missing from `/Applications`.
