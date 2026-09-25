@@ -464,6 +464,12 @@ function claude_browser_alias() {
 		print -ru2 -- "claude: the browser pin for this session ('$alias') is not a valid open-as alias (letters, digits, - and _); links open untagged";
 		return 1;
 	fi;
+	# BROWSER takes every link, the OAuth login included, and the iTerm2
+	# browser has no passkeys: it is a per-page target, never a profile's.
+	if [[ $alias == iterm2 ]]; then
+		print -ru2 -- "claude: the browser pin for this session is 'iterm2' — the iTerm2 browser cannot take Claude Code's own links (no passkeys; the login belongs in Chrome); links open untagged. Use \`open-as iterm2 <url>\` per page instead";
+		return 1;
+	fi;
 	print -r -- "$alias";
 }
 
@@ -684,6 +690,8 @@ function claude-doctor() {
 		else
 			print -r -- "browser: $balias — pinned, but no browser.tag.$balias token: open-as opens untagged, the router's default applies";
 		fi;
+	elif [[ "$(claude_browser_alias "$dir" 2>&1)" == *"is 'iterm2'"* ]]; then
+		print -r -- "browser: REFUSED pin 'iterm2' — the iTerm2 browser is a per-page target (open-as iterm2 <url>), not a profile's link target; links open in $fallback";
 	elif [[ -n "$(command git config --get "claude.${dir/#$HOME/~}.browser" 2>/dev/null)$(command git config --get "claude.$dir.browser" 2>/dev/null)${slug:+$(command git config --get "claude.$slug.browser" 2>/dev/null)}" ]]; then
 		print -r -- "browser: INVALID pin (claude.${slug:+$slug.browser or claude.}${dir/#$HOME/~}.browser; letters, digits, - and _ only) — ignored; links open in $fallback";
 	else

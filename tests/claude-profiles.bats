@@ -651,6 +651,18 @@ browser_setup() {
   [[ "$output" == *"browser: INVALID pin (claude.octo-personal/some-repo.browser or claude.~/.claude-personal.browser"* ]]
 }
 
+@test "browser: iterm2 is refused as a profile pin — it cannot take the login" {
+  browser_setup
+  git config --file "$GIT_CONFIG_GLOBAL" 'claude.~/.claude-personal.browser' iterm2
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  claude_in "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"claude: the browser pin for this session is 'iterm2'"* ]]
+  [[ "$output" == *"CLAUDE_CONFIG_DIR=$HOME/.claude-personal BROWSER=UNSET OPEN_AS_ALIAS=UNSET" ]]
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"browser: REFUSED pin 'iterm2'"* ]]
+}
+
 @test "browser: a per-repo pin outranks the profile's, and its siblings are untouched" {
   browser_setup
   git config --file "$GIT_CONFIG_GLOBAL" 'claude.octo-personal/side-project.browser' side
