@@ -40,6 +40,24 @@
 # (`BROWSER=~/bin/open-as OPEN_AS_ALIAS=<alias>`) and every link that
 # program opens lands in the right profile. An explicit alias argument
 # outranks the variable.
+#
+# One alias is reserved: `iterm2` opens the URL in an iTerm2 web-browser tab
+# in the CALLING session's window, for a status page or report beside the
+# terminal. It drives iTerm2's Python API (AppleScript has no URL verb; the
+# library fetches its own cookie from iTerm2, which is iTerm2 automating
+# itself when the caller is one of its sessions — no TCC grant). One browser
+# tab per window, reused on the next call. Tabs are created from a dynamic
+# profile `open-as` with a FIXED UUID Guid, because WebKit keys the cookie jar
+# by the profile's GUID: log in to a site once and it stays logged in. There
+# is no cookie import from Chrome, and deliberately none (that would copy live
+# session credentials into a second store); 1Password fills through iTerm2's
+# own Password Manager, not an extension; passkeys do not work there — which
+# is also why `iterm2` is never a Claude profile's BROWSER pin. Anything
+# missing (not in iTerm2, Python API off, no runtime, script error) falls
+# open: one stderr line naming the reason, then the normal path below, tagged
+# with browser.tag.iterm2 if an overlay pins one. OPEN_AS_PYTHON names the
+# interpreter (default: the runtime iTerm2 installs via Scripts > Manage >
+# Install Python Runtime).
 set -u
 
 case $# in
@@ -52,6 +70,75 @@ esac
 case $alias in
   ''|*[!A-Za-z0-9_-]*) printf 'open-as: invalid alias %s (letters, digits, - and _)\n' "$alias" >&2; exit 2;;
 esac
+
+iterm2_guid=9ED98362-3781-4A38-BEDC-A6C7D843BC86 # never change: it names the cookie jar
+iterm2_decline() { printf 'open-as: iTerm2 browser unavailable (%s); opening in the browser instead\n' "$1" >&2; }
+if [ "$alias" = iterm2 ]; then
+  support="$HOME/Library/Application Support/iTerm2"
+  py=${OPEN_AS_PYTHON-}
+  if [ -z "$py" ]; then
+    for p in "$support"/iterm2env/versions/*/bin/python3; do [ -x "$p" ] && py=$p; done
+  fi
+  # Order matters: nothing may talk to iTerm2 before the runtime is known to
+  # be there, or iTerm2 offers to install it in a dialog nobody is watching.
+  if [ "${TERM_PROGRAM-}" != iTerm.app ] || [ -z "${ITERM_SESSION_ID-}" ]; then
+    iterm2_decline 'not inside an iTerm2 session'
+  elif [ "$(defaults read com.googlecode.iterm2 EnableAPIServer 2>/dev/null)" != 1 ]; then
+    iterm2_decline 'Python API disabled: Settings > General > Magic > Enable Python API'
+  elif [ -z "$py" ]; then
+    iterm2_decline 'no Python runtime: Scripts > Manage > Install Python Runtime, or set OPEN_AS_PYTHON'
+  else
+    profiles=${OPEN_AS_ITERM_PROFILES:-$support/DynamicProfiles}
+    if [ ! -e "$profiles/open-as.json" ]; then
+      { mkdir -p "$profiles" && printf '{"Profiles":[{"Name":"open-as","Guid":"%s","Dynamic Profile Parent Name":"Default","Custom Command":"Browser","Tags":["open-as"]}]}\n' \
+          "$iterm2_guid" > "$profiles/open-as.json"; } 2>/dev/null \
+        || printf 'open-as: could not write %s/open-as.json; using an ad hoc browser profile\n' "$profiles" >&2
+    fi
+    "$py" - "$url" "${ITERM_SESSION_ID#*:}" "$iterm2_guid" <<'PY' && exit 0
+import asyncio, sys, iterm2
+url, caller, guid = sys.argv[1:4]
+
+async def main(connection):
+    app = await iterm2.async_get_app(connection)
+    me = app.get_session_by_id(caller)
+    window = app.get_window_and_tab_for_session(me)[0] if me else None
+    window = window or app.current_window
+    if window is None:
+        window = await iterm2.Window.async_create(connection, profile="open-as")
+    for tab in window.tabs:
+        for s in tab.sessions:
+            try:
+                ours = (await s.async_get_profile()).guid == guid
+            except Exception:
+                ours = False
+            if ours:
+                await s.async_load_url(url)
+                await s.async_activate(select_tab=True, order_window_front=True)
+                return
+    # A just-written dynamic profile loads on a file-change notification, so
+    # the first call ever may beat it: retry before settling for an ad hoc
+    # tab, whose cookies would not be the persistent jar.
+    tab = None
+    for attempt in range(12):
+        try:
+            tab = await window.async_create_tab(profile="open-as")
+            break
+        except Exception:
+            await asyncio.sleep(0.25)
+    if tab is None:
+        print("open-as: profile 'open-as' not visible to iTerm2; logins in this tab may not persist", file=sys.stderr)
+        custom = iterm2.LocalWriteOnlyProfile()
+        custom.set_use_custom_command("Browser")
+        tab = await window.async_create_tab(profile_customizations=custom)
+    # The first load of a domain asks for approval in iTerm2 and blocks
+    # until answered — once per domain, remembered globally.
+    await tab.current_session.async_load_url(url)
+
+iterm2.run_until_complete(main)
+PY
+    iterm2_decline 'script failed'
+  fi
+fi
 
 token=$(git config --get "browser.tag.$alias" 2>/dev/null) || token=
 case $url in
