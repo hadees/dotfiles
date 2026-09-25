@@ -555,6 +555,32 @@ extension lands where the tabs do. No pin fits such a repo, so it has none. Test
 Local State, fixture LevelDB bytes, fixture Finicky fragments; no real
 Chrome touched).
 
+**The terminal is also a browser target — per page, never per profile.**
+`open-as iterm2 <url>` (a reserved alias) opens the URL in an iTerm2 3.7
+web-browser tab in the *calling* session's window, and reuses that tab on
+the next call — for a localhost dashboard or a report beside the terminal.
+AppleScript has no URL verb, so it drives the Python API (a heredoc in the
+script; the `iterm2` library fetches its own cookie, and a caller inside
+iTerm2 is iTerm2 automating itself, so no TCC grant). Tabs come from a
+dynamic profile `open-as` with a **fixed UUID Guid**, because WebKit keys the
+cookie jar by the profile's GUID: log in to a site once and it stays logged
+in. There is no cookie import from Chrome, deliberately — it would decrypt
+live session credentials out of Chrome's Keychain-protected store into a
+second, weaker one. 1Password fills there through iTerm2's own Password
+Manager (`op` backend, chosen in its window; the choice is a `NoSync` pref, so
+machine-local), not the extension; passkeys do not work in iTerm2's browser
+at all, which is why `claude_browser_alias` **refuses `iterm2` as a
+profile's pin** — `BROWSER` takes the OAuth login too. Every missing piece
+(not in iTerm2, `EnableAPIServer` off, no Python runtime, script error) falls
+open to the ordinary path with one stderr line saying which, tagged with
+`browser.tag.iterm2` if an overlay pins one; the runtime is checked before
+anything talks to iTerm2, which would otherwise offer to install it in a
+dialog nobody is watching. It is for viewing, not automation: the tab has no
+Claude in Chrome pairing. Tests: `tests/open-as.bats` (a fake `iterm2`
+module; no real iTerm2 touched). Unverified until the first live run: that
+`ITERM_SESSION_ID`'s UUID is the API's session id (miss: the tab lands in the
+current window), and that `file://` URLs render (else serve over localhost).
+
 ### Deny rules reach Bash (`denyguard`)
 
 Claude Code's `permissions.deny` list (`Read(...)`/`Edit(...)` path rules)

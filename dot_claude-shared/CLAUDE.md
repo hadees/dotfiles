@@ -142,6 +142,11 @@ employer-specific — profile-specific memory belongs in that profile's own
   prints that profile's id. Pick by the site the task is about, and say
   which profile you picked. If I name a profile outright, `chrome-pairing
   for <profile name>` gives its id; use that instead.
+- To *show* me a page beside the terminal — a localhost dashboard, a status
+  page, a report — run `open-as iterm2 <url>`: it opens in an iTerm2 browser
+  tab in this session's window and reuses it on the next call. If it cannot,
+  it says why and opens the normal browser instead. It is for viewing only;
+  Claude in Chrome stays the way to automate a page.
 
 ## Web fetching
 
