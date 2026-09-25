@@ -2904,54 +2904,83 @@ function doctor() {
 	done;
 }
 
-# Get macOS Software Updates, and update installed Ruby gems, Homebrew, npm, uv, and their installed packages
+# Get macOS Software Updates, and update installed Ruby gems, Homebrew, npm, uv,
+# and their installed packages. Runs from $HOME whatever directory it was typed
+# in, and puts the shell back afterwards.
 function update() {
 	setopt localoptions nomonitor nonotify;
+	local here=${PWD:-} keepalive_pid=;
 
-	# No-sudo work first. brew can't share an upfront sudo session
-	# anyway: every brew invocation wipes the sudo timestamp (brew.sh
-	# runs `sudo --reset-timestamp`), so sudo steps are clustered after
-	# it behind a single prompt instead.
-	# HOMEBREW_NO_ASK: brew >=4.5 "ask mode" prompts before upgrades
-	# with dependencies; suppress it so the run is unattended. Casks
-	# that install privileged helpers (e.g. docker-desktop) may still
-	# prompt — brew resets the timestamp by design.
-	if command -v brew > /dev/null 2>&1; then
-		brew update;
-		HOMEBREW_NO_ASK=1 brew upgrade;
-		# Then install what the Brewfile declares and this machine lacks,
-		# so editing the list is enough to get the tool. --no-upgrade
-		# because the upgrade above already did that half, and bundle's
-		# own upgrade pass is actively worse at it: it re-downloads casks
-		# that update themselves (their Caskroom record only looks stale)
-		# and dies on a mas app or .pkg whose installer wants a password.
-		# Never `brew bundle cleanup` — that uninstalls anything absent
-		# from the list, which is not what a routine update should do.
-		local brewfile;
-		brewfile="$(command chezmoi source-path 2>/dev/null)/Brewfile";
-		[[ -f $brewfile ]] && HOMEBREW_NO_ASK=1 brew bundle --no-upgrade --file="$brewfile";
-		brew cleanup;
+	# Two reasons this never runs where it was typed. A directory that no
+	# longer exists (a removed worktree is the usual way) is inherited by
+	# every child and kills each on its own startup check: brew refuses
+	# outright (`[[ -d $PWD ]]` in bin/brew), npm dies in uv_cwd, uv and gem
+	# in getcwd. And asdf shims resolve node/ruby/uv from the nearest
+	# .tool-versions ABOVE the cwd before falling back to ~/.tool-versions,
+	# so `npm -g` and `gem` typed inside a project would update that
+	# project's toolchain and leave the global one alone. Nothing below
+	# needs the caller's directory (the Brewfile path is absolute).
+	# `cd` into $here is the liveness test rather than -d: it is the same
+	# question brew asks, and a directory removed and re-created at the same
+	# path re-anchors the shell on the new one instead of just looking fine.
+	if ! cd -q -- "$here" 2>/dev/null; then
+		print -ru2 -- "update: $here no longer exists; running from ~ and leaving the shell there";
+		here=$HOME;
 	fi;
-	command -v npm > /dev/null 2>&1 && npm install npm -g;
-	command -v npm > /dev/null 2>&1 && npm update -g;
-	command -v uv > /dev/null 2>&1 && uv tool upgrade --all;
+	cd -q -- "$HOME" || return;
+	{
+		# No-sudo work first. brew can't share an upfront sudo session
+		# anyway: every brew invocation wipes the sudo timestamp (brew.sh
+		# runs `sudo --reset-timestamp`), so sudo steps are clustered after
+		# it behind a single prompt instead.
+		# HOMEBREW_NO_ASK: brew >=4.5 "ask mode" prompts before upgrades
+		# with dependencies; suppress it so the run is unattended. Casks
+		# that install privileged helpers (e.g. docker-desktop) may still
+		# prompt — brew resets the timestamp by design.
+		if command -v brew > /dev/null 2>&1; then
+			brew update;
+			HOMEBREW_NO_ASK=1 brew upgrade;
+			# Then install what the Brewfile declares and this machine lacks,
+			# so editing the list is enough to get the tool. --no-upgrade
+			# because the upgrade above already did that half, and bundle's
+			# own upgrade pass is actively worse at it: it re-downloads casks
+			# that update themselves (their Caskroom record only looks stale)
+			# and dies on a mas app or .pkg whose installer wants a password.
+			# Never `brew bundle cleanup` — that uninstalls anything absent
+			# from the list, which is not what a routine update should do.
+			local brewfile;
+			brewfile="$(command chezmoi source-path 2>/dev/null)/Brewfile";
+			[[ -f $brewfile ]] && HOMEBREW_NO_ASK=1 brew bundle --no-upgrade --file="$brewfile";
+			brew cleanup;
+		fi;
+		command -v npm > /dev/null 2>&1 && npm install npm -g;
+		command -v npm > /dev/null 2>&1 && npm update -g;
+		command -v uv > /dev/null 2>&1 && uv tool upgrade --all;
 
-	# One password prompt for the rest; keep the sudo timestamp alive
-	# until the updates finish (same pattern as ~/.macos). Disowned (&!):
-	# the localoptions above are restored before the shell would report
-	# the trap's kill, so a job-table entry prints "terminated" anyway.
-	sudo -v || return;
-	while true; do sudo -n true; sleep 60; kill -0 $$ 2>/dev/null || exit; done 2>/dev/null &!
-	local keepalive_pid=$!;
-	# Expand the PID now: by the time the trap fires the local is gone.
-	trap "kill $keepalive_pid 2>/dev/null" EXIT;
+		# One password prompt for the rest; keep the sudo timestamp alive
+		# until the updates finish (same pattern as ~/.macos). Disowned (&!)
+		# so the kill in the always block below never surfaces as a
+		# job-table "terminated" line.
+		sudo -v || return;
+		while true; do sudo -n true; sleep 60; kill -0 $$ 2>/dev/null || exit; done 2>/dev/null &!
+		keepalive_pid=$!;
 
-	[[ $(uname) == Darwin ]] && sudo softwareupdate -i -a;
-	# gem --version guards against version-manager shims with no ruby
-	# selected (asdf prints an error for every gem call otherwise).
-	if [[ $(which ruby) != /usr/bin/ruby ]] && gem --version > /dev/null 2>&1; then
-		sudo gem update --system;
-		sudo gem update;
-		sudo gem cleanup;
-	fi;
+		[[ $(uname) == Darwin ]] && sudo softwareupdate -i -a;
+		# gem --version guards against version-manager shims with no ruby
+		# selected (asdf prints an error for every gem call otherwise).
+		if [[ $(which ruby) != /usr/bin/ruby ]] && gem --version > /dev/null 2>&1; then
+			sudo gem update --system;
+			sudo gem update;
+			sudo gem cleanup;
+		fi;
+	} always {
+		# Every way out lands here — the normal end, the `return` above, an
+		# error, and ^C (TRY_BLOCK_INTERRUPT) — with the locals still in
+		# scope. The EXIT trap this replaces had neither property: a
+		# function's EXIT trap runs after the function with its locals gone,
+		# and does not fire on an interrupt at all, so a ^C'd update left the
+		# keepalive polling sudo for the life of the shell.
+		[[ -n $keepalive_pid ]] && kill "$keepalive_pid" 2>/dev/null;
+		cd -q -- "$here" 2>/dev/null || print -ru2 -- "update: $here vanished during the update; shell left in $PWD";
+	};
 }
