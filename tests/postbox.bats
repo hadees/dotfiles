@@ -343,6 +343,48 @@ STUB
   [[ "$output" == *"NOT answering"* ]]
 }
 
+@test "install: waits for bootout to finish before bootstrapping again" {
+  # launchd keeps the old job for a moment after bootout returns; a
+  # bootstrap in that window fails with error 5 and leaves nothing loaded.
+  echo 3 > "$BATS_TEST_TMPDIR/still-loaded"
+  cat > "$BIN/launchctl" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$LAUNCHCTL_LOG"
+f="$BATS_TEST_TMPDIR/still-loaded"
+if [ "$1" = print ]; then
+  n=$(cat "$f"); [ "$n" -gt 0 ] || exit 1
+  echo $((n - 1)) > "$f"; exit 0
+fi
+exit 0
+STUB
+  run "$PB" install
+  [ "$status" -eq 0 ]
+  # bootout, three prints that still see the job, the one that does not, then bootstrap.
+  [ "$(grep -o '^[a-z]*' "$LAUNCHCTL_LOG" | tr '\n' ' ')" = "bootout print print print print bootstrap kickstart " ]
+}
+
+@test "status: open files against the installed plist's limit, and a stale plist is named" {
+  cat > "$BIN/launchctl" <<'STUB'
+#!/bin/sh
+[ "$1" = print ] && printf '\tpid = 4242\n'
+exit 0
+STUB
+  cat > "$BIN/lsof" <<'STUB'
+#!/bin/sh
+echo HEADER; i=0; while [ $i -lt "$FAKE_FDS" ]; do echo fd; i=$((i + 1)); done
+STUB
+  chmod +x "$BIN/launchctl" "$BIN/lsof"
+  "$PB" install >/dev/null
+  FAKE_FDS=40 run "$PB" status
+  [[ "$output" == *"files:   40 open of 4096"$'\n'* ]]
+  FAKE_FDS=3300 run "$PB" status
+  [[ "$output" == *"files:   3300 open of 4096 — WARNING: over 80%; postbox restart"* ]]
+  # A plist written before the limit existed runs on launchd's default.
+  sed -i.bak '/ResourceLimits/,/<\/dict>/d' "$HOME/Library/LaunchAgents/local.postbox.plist"
+  FAKE_FDS=261 run "$PB" status
+  [[ "$output" == *"files:   261 open of 256 (launchd default: the installed plist predates the limit — postbox install) — WARNING"* ]]
+}
+
 @test "status: an installed version other than the pinned one is a nudge to re-check the vocabulary" {
   cat > "$BIN/am" <<'STUB'
 #!/bin/sh

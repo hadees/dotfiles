@@ -416,6 +416,12 @@ cmd_install() {
       mkdir -p "$HOME/Library/LaunchAgents"
       write_plist
       launchctl bootout "gui/$(uid)/$LABEL" >/dev/null 2>&1
+      # bootout returns before launchd has torn the job down; a bootstrap in
+      # that window fails "5: Input/output error" and leaves nothing loaded.
+      i=0
+      while launchctl print "gui/$(uid)/$LABEL" >/dev/null 2>&1 && [ $i -lt 50 ]; do
+        sleep 0.1; i=$((i + 1))
+      done
       launchctl bootstrap "gui/$(uid)" "$(plist_path)" || die "launchctl bootstrap failed (see $(plist_path))"
       launchctl kickstart -k "gui/$(uid)/$LABEL" >/dev/null 2>&1
       printf 'postbox: daemon registered as %s on %s\n' "$LABEL" "$(url)"
@@ -887,6 +893,17 @@ cmd_status() {
       if launchctl print "gui/$(uid)/$LABEL" >/dev/null 2>&1; then
         pid=$(launchctl print "gui/$(uid)/$LABEL" 2>/dev/null | awk '/^\tpid = / { print $3; exit }')
         printf 'daemon:  %s loaded%s\n' "$LABEL" "${pid:+ (pid $pid)}"
+        # am leaks sqlite handles (~1 per half hour on 0.3.36), so the
+        # headroom is worth watching. The limit is what the INSTALLED plist
+        # says — a plist from before the limit existed runs on launchd's 256.
+        if [ -n "$pid" ]; then
+          open=$(lsof -p "$pid" 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')
+          lim=$(grep -A3 '<key>SoftResourceLimits</key>' "$(plist_path)" 2>/dev/null | sed -n 's:.*<integer>\([0-9]*\)</integer>.*:\1:p')
+          printf 'files:   %s open of %s' "$open" "${lim:-256}"
+          [ -z "$lim" ] && printf ' (launchd default: the installed plist predates the limit — postbox install)'
+          [ "$open" -ge $(( ${lim:-256} * 4 / 5 )) ] && printf ' — WARNING: over 80%%; postbox restart'
+          printf '\n'
+        fi
       else
         printf 'daemon:  %s not loaded (postbox install)\n' "$LABEL"
       fi
