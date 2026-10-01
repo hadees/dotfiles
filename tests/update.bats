@@ -101,3 +101,25 @@ run_update() {
   ! grep -qF "sudo -n true" calls.log || { echo "keepalive started after sudo -v failed"; false; }
   ! grep -qF "sudo gem" calls.log || { echo "gem ran after sudo -v failed"; false; }
 }
+
+@test "update.check commands run after the upgrades; a failure is repeated at the end and never stops the update" {
+  export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig" GIT_CONFIG_NOSYSTEM=1
+  git config --file "$GIT_CONFIG_GLOBAL" --add update.check 'echo first-check-ran'
+  git config --file "$GIT_CONFIG_GLOBAL" --add update.check 'echo 50% broken >&2; exit 3'
+  start="$BATS_TEST_TMPDIR/start"; mkdir -p "$start"
+  run_update "cd -q -- '$start'"
+  grep -q "^RC=0 PWD=$(cd "$start" && pwd -P)\$" out
+  grep -qF "first-check-ran" out
+  grep -qF "== update.check: echo 50% broken >&2; exit 3" out
+  # The banner comes last, after gem, and names the failing command verbatim.
+  [ "$(tail -n 1 err | sed $'s/\e\\[[0-9;]*m//g')" = "✘ update.check failed: echo 50% broken >&2; exit 3" ]
+  ! grep -q "update.check failed: echo first" err
+  grep -qF "sudo gem cleanup" calls.log
+}
+
+@test "with no update.check configured, nothing extra is printed" {
+  export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig" GIT_CONFIG_NOSYSTEM=1
+  : > "$GIT_CONFIG_GLOBAL"
+  run_update ":"
+  ! grep -q "update.check" out err
+}

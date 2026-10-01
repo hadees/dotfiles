@@ -289,6 +289,16 @@ nearest `.tool-versions` above the cwd, so a run typed inside a project would
 update that project's toolchain instead of the global one pinned in
 `~/.tool-versions`. `tests/update.bats` pins this.
 
+**`update()` runs machine-local checks after the upgrades.** Every
+`update.check` command in git config (repeatable, overlay-supplied — the
+public repo names none) runs right after the no-sudo upgrades, while an
+upgrade is still the obvious suspect for whatever it breaks: a service whose
+networking a formula update changed, a cask a daemon reads secrets through.
+A failing check never stops the update; each failure is repeated in a red
+banner at the very end, past the softwareupdate and gem output that would
+otherwise bury it. A value containing `;` must be quoted in the config file
+(git reads a bare `;` as a comment) — `git config --add` does that for you.
+
 **A half-installed cask is invisible to all of this.** A `.pkg` cask whose
 installer never ran still leaves a Caskroom entry, so `brew bundle` counts it
 as satisfied and never retries while the app is missing from `/Applications`.

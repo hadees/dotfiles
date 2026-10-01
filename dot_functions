@@ -2915,9 +2915,17 @@ function doctor() {
 # Get macOS Software Updates, and update installed Ruby gems, Homebrew, npm, uv,
 # and their installed packages. Runs from $HOME whatever directory it was typed
 # in, and puts the shell back afterwards.
+#
+# After the no-sudo upgrades it runs every `update.check` command from git
+# config (repeatable, machine-local, overlay-supplied — this repo names none):
+# whatever on this machine an upgrade can silently break gets to say so while
+# the upgrade is the obvious suspect. A failing check never stops the update;
+# failures are repeated in a red banner at the very end, past the
+# softwareupdate and gem output that would otherwise bury them.
 function update() {
 	setopt localoptions nomonitor nonotify;
-	local here=${PWD:-} keepalive_pid=;
+	local here=${PWD:-} keepalive_pid= check;
+	local -a failed;
 
 	# Two reasons this never runs where it was typed. A directory that no
 	# longer exists (a removed worktree is the usual way) is inherited by
@@ -2964,6 +2972,10 @@ function update() {
 		command -v npm > /dev/null 2>&1 && npm install npm -g;
 		command -v npm > /dev/null 2>&1 && npm update -g;
 		command -v uv > /dev/null 2>&1 && uv tool upgrade --all;
+		for check in ${(f)"$(command git config --get-all update.check 2>/dev/null)"}; do
+			print -r -- "== update.check: $check";
+			sh -c "$check" || failed+=("$check");
+		done;
 
 		# One password prompt for the rest; keep the sudo timestamp alive
 		# until the updates finish (same pattern as ~/.macos). Disowned (&!)
@@ -2989,6 +3001,9 @@ function update() {
 		# and does not fire on an interrupt at all, so a ^C'd update left the
 		# keepalive polling sudo for the life of the shell.
 		[[ -n $keepalive_pid ]] && kill "$keepalive_pid" 2>/dev/null;
+		for check in $failed; do
+			print -Pru2 -- "%F{red}%B✘ update.check failed:%b%f ${check//\%/%%}";
+		done;
 		cd -q -- "$here" 2>/dev/null || print -ru2 -- "update: $here vanished during the update; shell left in $PWD";
 	};
 }
