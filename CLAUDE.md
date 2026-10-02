@@ -99,6 +99,7 @@ VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 - **`.chezmoi.toml.tmpl`** — config template; prompts once for the machine class and pins `sourceDir` to the clone on macs
 - **`.chezmoiignore`** — target paths chezmoi must not manage (repo-level files everywhere, `CLAUDE.md` and `com.googlecode.iterm2.plist` among them; macOS GUI config off-mac; identity/secrets on `ephemeral`)
 - **`bootstrap.sh`** — deprecated wrapper around `chezmoi init --source . --apply`
+- **`docs/watchlist.md`** — tools evaluated and parked as "not yet", each with what would make it worth another look; check it before re-evaluating something, and add to it when an evaluation ends in "not yet"
 - **`.macos`** — macOS `defaults write` settings; reads `$COMPUTER_NAME` env var for machine-specific naming
 - **`Brewfile`** — Homebrew formulae, casks, and Mac App Store apps (macOS only; `.chezmoiscripts/darwin/` runs `brew bundle` when it changes)
 - **`packages-apt.txt`** — Debian/Ubuntu/WSL package list (`.chezmoiscripts/linux/` installs it when it changes; skips gracefully without apt or sudo)
