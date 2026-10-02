@@ -2231,6 +2231,19 @@ function git-doctor() {
 	print -r -- "configs: $(command git config --list --show-origin --name-only 2>/dev/null | command awk -F'\t' '$1 ~ /^file:/ {print substr($1, 6)}' | command awk '!seen[$0]++' | command paste -sd, - | command sed 's/,/, /g')";
 }
 
+# Set this tab's row in iTerm2's Session Status panel:
+#   tabstatus <status> [detail] [--dot-color '#rrggbb' --text-color …]
+# `tabstatus` alone clears it. Goes through `it2 set-status` (the API), not the
+# OSC 21337 escape, because the escape needs the tab's tty and neither Claude
+# Code's Bash tool nor its hooks have one. iTerm2's own cc-status hook rewrites
+# the row on the next Claude Code event, so inside a session this lasts a turn.
+function tabstatus() {
+	[[ -n $ITERM_SESSION_ID ]] || { print -ru2 -- "tabstatus: not inside an iTerm2 session"; return 1; }
+	local st=${1-} detail=${2-};
+	(( $# )) && shift; (( $# )) && shift;
+	command it2 set-status --session "${ITERM_SESSION_ID#*:}" --status "$st" --detail "$detail" "$@" >/dev/null;
+}
+
 # Where iTerm2 is installed, or nothing. $ITERM2_APP names a non-standard
 # location and, when set, is used *exclusively* — an override that quietly
 # fell back to /Applications would make every answer below a lie about a
