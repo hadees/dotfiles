@@ -81,6 +81,7 @@ poppler-utils
 imagemagick
 ffmpeg
 lynx
+apktool
 
 # transmission-cli is deliberately macOS-only, not missing from Ubuntu: the
 #   package exists here and does carry transmission-remote (as well as

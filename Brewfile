@@ -2,6 +2,7 @@
 brew 'ack' # a tool like grep, optimized for programmers
 brew 'actionlint' # Static checker for GitHub Actions workflow files
 brew 'asdf' # multi-language version manager (ruby, node, python, etc.)
+brew 'apktool' # Decodes Android APKs to resources and smali, and rebuilds them
 brew 'aircrack-ng' # a complete suite of tools to assess WiFi network security.
 brew 'ansible' # Radically simple IT automation
 brew 'autoconf' # an extensible package of M4 macros that produce shell scripts to automatically configure software source code packages.
