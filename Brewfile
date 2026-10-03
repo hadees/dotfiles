@@ -43,6 +43,7 @@ brew 'gnu-sed' # sed (stream editor) is a non-interactive command-line text edit
 brew 'grep' # searches one or more input files for lines containing a match to a specified pattern.
 brew 'heroku' # a tool for creating and managing Heroku apps from the command line / shell of various operating systems.
 brew 'imagemagick'
+brew 'jadx' # Dex to Java decompiler for Android APKs (CLI and GUI)
 brew 'jc' # Serializes the output of command-line tools to structured JSON
 brew 'john' # John the Ripper password cracker
 brew 'jpeg' # Image manipulation library

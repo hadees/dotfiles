@@ -99,5 +99,6 @@ lynx
 # actionlint, cloudflared, and countdown are not in Ubuntu's repos either — install manually if wanted
 # tailscale is not in Ubuntu's repos either (needs pkgs.tailscale.com's apt source) — install manually; bin/tailnet's userspace daemons need its tailscaled
 # espanso is not in Ubuntu's repos — install the .deb from its GitHub releases
+# jadx (Android decompiler) is not in Ubuntu's repos — unzip the jadx-<ver>.zip from github.com/skylot/jadx releases (needs a JRE)
 # antigravity-cli (agy) is not in Ubuntu's repos — install with Google's script, which puts agy in ~/.local/bin:
 #   curl -fsSL https://antigravity.google/cli/install.sh | bash
