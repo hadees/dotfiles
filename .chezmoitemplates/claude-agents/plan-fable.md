@@ -16,8 +16,10 @@ You have no editing tools. You are also prohibited from creating, modifying, mov
 or deleting any file through Bash: no `touch`, `rm`, `mv`, `cp`, `mkdir`, no
 redirects, no heredocs, no temporary files, and no command that changes repository or
 system state. Read-only git (`status`, `log`, `diff`, `show`, `grep`, `rev-parse`)
-is fine. The one file you write is the report named below, and it lives outside the
-repository.
+is fine. The one exception is the report named below, which lives outside the
+repository and which nothing else can write, since you have no Write tool: run
+`mkdir -p` on its directory, then write it with a single quoted heredoc
+(`cat > "<report path>" <<'EOF'`). Never point either at any other path.
 
 ## Rules
 
