@@ -1507,6 +1507,44 @@ disagreement is half of what makes it worth keeping.
 Tests: `tests/iterm2-doctor.bats` (fake `iTerm.app` bundles and a stub
 `defaults`; nothing ever touches the real iTerm2 or opens a dialog).
 
+**Session Status rows come from Claude Code hooks, through a shim.** iTerm2
+3.7 ships `cc-status`, a binary its onboarding symlinks at
+`~/.config/iterm2/cc-status` and wires into every hook event of a profile's
+`settings.json`; it turns each event into a row (name, status word,
+optional detail of up to three lines, dot and text colours). On Stop it
+reads the payload's `background_tasks` — the session's whole task registry,
+which Claude Code never ages out — and keeps the row at "working" while
+that array is non-empty. Measured: a backgrounded shell blocked on stdin
+kept a tab "working" for 41 hours; a subagent that never reported back did
+the same with no process behind it. A shim, deployed as
+`~/.local/libexec/cc-status-shim/cc-status`
+(`dot_local/libexec/cc-status-shim/`), takes cc-status's place in each
+profile's `settings.json` hook command (here, the overlays write that
+line) and changes exactly that case: cc-status gets the Stop payload with
+the array emptied and paints idle, then one `it2 set-status` call writes
+what is still registered into the detail, keeps the stored count truthful,
+and turns the dot blue. Every other event passes through untouched. Two
+details are load-bearing. The shim is **named** `cc-status`, in a
+directory off `PATH`, because iTerm2 3.7.3's health check accepts a hook
+only if its command is a bare executable path ending in `/cc-status`
+(verified in the app's onboarding source at that tag): a wrapper line or
+any other name makes the app report its integration broken, and a
+Reinstall then appends a raw cc-status beside it, which repaints "working"
+on Stop. And iTerm2's own symlink at `~/.config/iterm2/cc-status` is left
+alone — `ensureCCStatusSymlink` removes anything else put there — and is
+where the shim finds the real binary, with `it2` taken from beside it;
+`PATH` only carries `it2` while an experimental iTerm2 setting is on.
+`it2 set-status` keeps every field it is not given — a reset that sends
+only the status word leaves the old colours in place — so anything
+repainting a row sends the full field set. The shim fails open everywhere
+(no binary, no it2, no python3, no session id, bad JSON): the row is
+cosmetic and must never cost a turn. The facts it rests on — the payload
+keys cc-status reads, the it2 flag it stores the count under, its detail
+text and colours, the app's symlink upkeep — are `utilstr`/`binstr` lines
+in the skill's `manifest.txt`, so `verify.sh` says when a point release
+moves them. Tests: `tests/cc-status-shim.bats` (stub cc-status and it2,
+side by side like the bundle ships them).
+
 ### Machine-local secrets (~/.extra)
 
 `~/.extra` is rendered by chezmoi from `private_dot_extra.tmpl` (mode 0600)

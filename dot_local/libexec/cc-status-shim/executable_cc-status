@@ -1,0 +1,98 @@
+#!/bin/sh
+# cc-status (shim) — stands between Claude Code's hooks and iTerm2's cc-status.
+#
+# iTerm2 3.7 paints a Session Status row per tab from Claude Code hook events
+# through its bundled cc-status binary. On Stop it keeps the row at "working"
+# whenever the payload's background_tasks array is non-empty — and that array
+# is the session's whole task registry, which nothing ages out: a backgrounded
+# shell blocked on stdin, or a subagent that never reported back, keeps a tab
+# "working" for days. This shim rewrites that one case. Every other event is
+# handed to cc-status untouched.
+#
+# On Stop with background tasks: cc-status gets the payload with the array
+# emptied, so it paints idle like any finished turn; then one it2 call sets
+# the detail to what is still registered ("1 background task: …"), keeps the
+# stored count truthful for `it2 session get-background-tasks`, and turns the
+# dot blue — idle, but something is still in flight. set-status keeps every
+# field it is not given, so the status word and text colour cc-status just
+# painted stay.
+#
+# Wiring: each profile's settings.json runs cc-status on every hook event;
+# point that command at this file instead:
+#   ~/.local/libexec/cc-status-shim/cc-status
+# The file is deliberately NAMED cc-status, in a directory off PATH. iTerm2
+# 3.7.3's own health check accepts a hook only if the command is a bare
+# executable path ending in /cc-status (a wrapper line, or any other name,
+# makes the app report its integration broken and a Reinstall append a raw
+# cc-status beside it). The symlink iTerm2 maintains at
+# ~/.config/iterm2/cc-status is left alone — the app recreates it over
+# anything else put there — and is where the real binary is found;
+# CC_STATUS_BIN overrides that (tests). it2 is taken from beside the real
+# binary, where iTerm2 ships it, before PATH is tried: PATH only has it while
+# an experimental iTerm2 setting is on.
+#
+# Fails open: no cc-status, no python3, no it2, no session id, unparsable
+# JSON — the payload passes through or the shim exits 0. The status is
+# cosmetic and must never cost a turn.
+set -u
+
+real=${CC_STATUS_BIN:-$HOME/.config/iterm2/cc-status}
+[ -x "$real" ] || exit 0
+target=$(readlink "$real" 2>/dev/null || printf '%s' "$real")
+case $target in "$0"|*/cc-status-shim/cc-status) exit 0 ;; esac   # never recurse into ourselves
+
+payload=$(cat)
+
+# Cheap gate before paying for python3: Claude Code emits compact JSON.
+case $payload in
+  *'"hook_event_name":"Stop"'*) ;;
+  *) printf '%s' "$payload" | "$real"; exit 0 ;;
+esac
+
+it2="$(dirname "$target")/it2"
+[ -x "$it2" ] || it2=$(command -v it2 2>/dev/null || true)
+
+if [ -z "${ITERM_SESSION_ID:-}" ] || [ -z "$it2" ] || ! command -v python3 >/dev/null 2>&1; then
+  printf '%s' "$payload" | "$real"; exit 0
+fi
+
+# The script goes in via -c so stdin stays free for the payload: `python3 -`
+# with a heredoc would make the heredoc the stdin and the payload vanish.
+py=$(cat <<'PY'
+import json, subprocess, sys
+
+raw = sys.stdin.read()
+real, it2, sid = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def passthrough():
+    subprocess.run([real], input=raw.encode())
+    sys.exit(0)
+
+try:
+    payload = json.loads(raw)
+except ValueError:
+    passthrough()
+if payload.get("hook_event_name") != "Stop":
+    passthrough()
+tasks = payload.get("background_tasks") or []
+if not isinstance(tasks, list) or not tasks:
+    passthrough()
+
+payload["background_tasks"] = []
+subprocess.run([real], input=json.dumps(payload).encode())
+
+n = len(tasks)
+what = ", ".join(
+    str(t.get("description") or t.get("task_type") or "?") if isinstance(t, dict) else "?"
+    for t in tasks
+)
+detail = f"{n} background task{'s' if n != 1 else ''}: {what}"
+subprocess.run(
+    [it2, "set-status", "--session", sid, "--detail", detail[:240],
+     "--dot-color", "#5f87ff", "--background-tasks", str(n)],
+    stdout=subprocess.DEVNULL,
+)
+PY
+)
+printf '%s' "$payload" | python3 -c "$py" "$real" "$it2" "${ITERM_SESSION_ID#*:}"
+exit 0
