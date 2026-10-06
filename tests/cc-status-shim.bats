@@ -130,7 +130,11 @@ run_shim() { run sh "$SHIM"; }
   grep -qx 'idle · 2 quiet background tasks: first, local_agent' "$BATS_TEST_TMPDIR/argv"
   local long; long=$(printf 'x%.0s' $(seq 1 300))
   run_shim <<< "$(payload Stop "[{\"task_id\":\"a\",\"description\":\"$long\"}]")"
-  [ "$(grep -A1 '^--detail$' "$BATS_TEST_TMPDIR/argv" | tail -1 | wc -m)" -eq 182 ]   # 180 + … + newline
+  # Code points, counted by python: wc -m depends on the locale (a C locale,
+  # as in the Rocky CI container, counts the ellipsis as three) and the
+  # detail's "·" makes a byte count wrong everywhere.
+  grep -A1 '^--detail$' "$BATS_TEST_TMPDIR/argv" | tail -1 \
+    | python3 -c 'import sys; s=sys.stdin.buffer.read().decode().rstrip("\n"); assert len(s)==181 and s.endswith("…"), len(s)'
 }
 
 @test "shim: tabstatus config overrides the window and the colour; an invalid colour falls back with a note" {
