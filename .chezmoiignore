@@ -49,8 +49,6 @@ com.googlecode.iterm2.plist
 .config/finicky
 # The worktabs launcher drives iTerm2, which is macOS-only
 bin/worktabs
-# So does the cc-status shim: it fronts a binary iTerm2 ships
-.local/libexec/cc-status-shim
 {{ end -}}
 
 {{ if eq .machineClass "ephemeral" -}}

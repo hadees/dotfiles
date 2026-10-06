@@ -1520,12 +1520,25 @@ the same with no process behind it. A shim, deployed as
 `~/.local/libexec/cc-status-shim/cc-status`
 (`dot_local/libexec/cc-status-shim/`), takes cc-status's place in each
 profile's `settings.json` hook command (here, the overlays write that
-line) and changes exactly that case: cc-status gets the Stop payload with
-the array emptied and paints idle, then one `it2 set-status` call writes
-what is still registered into the detail, keeps the stored count truthful,
-and turns the dot blue. Every other event passes through untouched. Two
-details are load-bearing. The shim is **named** `cc-status`, in a
-directory off `PATH`, because iTerm2 3.7.3's health check accepts a hook
+line; `cc-status settings` prints the block, the ten events iTerm2 wires
+plus `SubagentStart`, with the home path expanded — 3.7.3 tests the literal
+string, so `~` fails it) and, on Stop, StopFailure and SubagentStop, tells
+**quiet** from **active** tasks. A task's output file, `tasks/<task_id>.output`
+beside the payload's `scratchpad_dir` (a symlink to the transcript for an
+agent), is its last sign of life: written within `tabstatus.quiet-minutes`
+(git config, default 15) is active, older is quiet, and no file to judge by
+counts as active — wrongly active only delays the idle, wrongly idle lies.
+cc-status is fed only the active tasks, so a Stop over a running background
+agent still reads "working"; when nothing is active, one `it2 set-status`
+paints the row idle in amber (`tabstatus.color.quiet`, default `#af8700` —
+cc-status's blue is its "waiting" colour) with the quiet tasks in the
+detail. The count stored back is **0** on purpose: cc-status's
+`Notification(idle_prompt)` handler, a minute after Stop, reads the stored
+count with `get-background-tasks` and repaints "working · N background tasks
+running", so storing the quiet N would revive the lie. `cc-status explain`
+(payload on stdin) prints each task's verdict without calling anything.
+Every other event passes through untouched. Two details are load-bearing.
+The shim is **named** `cc-status`, in a directory off `PATH`, because iTerm2 3.7.3's health check accepts a hook
 only if its command is a bare executable path ending in `/cc-status`
 (verified in the app's onboarding source at that tag): a wrapper line or
 any other name makes the app report its integration broken, and a
@@ -1536,9 +1549,9 @@ where the shim finds the real binary, with `it2` taken from beside it;
 `PATH` only carries `it2` while an experimental iTerm2 setting is on.
 `it2 set-status` keeps every field it is not given — a reset that sends
 only the status word leaves the old colours in place — so anything
-repainting a row sends the full field set. The shim fails open everywhere
-(no binary, no it2, no python3, no session id, bad JSON): the row is
-cosmetic and must never cost a turn. The facts it rests on — the payload
+repainting a row sends the full field set (the shim's paint does). The
+shim fails open everywhere (no binary, no it2, no python3, no session id,
+bad JSON): the row is cosmetic and must never cost a turn. The facts it rests on — the payload
 keys cc-status reads, the it2 flag it stores the count under, its detail
 text and colours, the app's symlink upkeep — are `utilstr`/`binstr` lines
 in the skill's `manifest.txt`, so `verify.sh` says when a point release

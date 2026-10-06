@@ -9,17 +9,29 @@
 # "working" for days. This shim rewrites that one case. Every other event is
 # handed to cc-status untouched.
 #
-# On Stop with background tasks: cc-status gets the payload with the array
-# emptied, so it paints idle like any finished turn; then one it2 call sets
-# the detail to what is still registered ("1 background task: …"), keeps the
-# stored count truthful for `it2 session get-background-tasks`, and turns the
-# dot blue — idle, but something is still in flight. set-status keeps every
-# field it is not given, so the status word and text colour cc-status just
-# painted stay.
+# On Stop, StopFailure and SubagentStop with background tasks, each task is
+# classified by its output file, <session dir>/tasks/<task_id>.output (the
+# sibling of the payload's scratchpad_dir; for an agent it is a symlink to the
+# transcript): modified within tabstatus.quiet-minutes (default 15) it is
+# active, older it is quiet, and a task with no file to judge by counts as
+# active — wrongly active only delays the idle, wrongly idle lies. cc-status
+# is fed only the active ones, so a Stop over a running background agent still
+# paints "working". When nothing is active but something is quiet, one it2
+# call then paints the row idle with the quiet tasks in the detail, in amber
+# (tabstatus.color.quiet, default #af8700; cc-status's own blue is its
+# "waiting" colour). It stores 0 as the background-task count, never the
+# quiet ones: cc-status re-reads the stored count on Notification(idle_prompt)
+# a minute after Stop and repaints "working · N background tasks running".
+# The paint sends the full field set, so a cc-status that failed cannot leave
+# a half-painted row. Items also get the id and status keys that cc-status
+# (written against an older Claude Code) reads and 2.1.289 no longer sends.
+#
+#   cc-status             hook mode: payload on stdin, exit 0 always
+#   cc-status explain     payload on stdin; print the decision, call nothing
+#   cc-status settings    print the hooks block for a profile's settings.json
 #
 # Wiring: each profile's settings.json runs cc-status on every hook event;
-# point that command at this file instead:
-#   ~/.local/libexec/cc-status-shim/cc-status
+# point that command at this file instead (`cc-status settings` prints it).
 # The file is deliberately NAMED cc-status, in a directory off PATH. iTerm2
 # 3.7.3's own health check accepts a hook only if the command is a bare
 # executable path ending in /cc-status (a wrapper line, or any other name,
@@ -37,62 +49,161 @@
 set -u
 
 real=${CC_STATUS_BIN:-$HOME/.config/iterm2/cc-status}
-[ -x "$real" ] || exit 0
+mode=${1:-}
+
+if [ "$mode" = settings ]; then
+  cmd="$HOME/.local/libexec/cc-status-shim/cc-status"
+  printf 'cc-status settings: the shim does not edit settings.json — each profile'"'"'s\nfile is owned by its overlay. Put this in that file, replacing iTerm2'"'"'s own\ncc-status entries (never beside them):\n\n{\n  "hooks": {\n'
+  sep=
+  for ev in SessionStart SessionEnd UserPromptSubmit PreToolUse PostToolUse PermissionRequest Notification Stop StopFailure SubagentStart SubagentStop; do
+    printf '%s    "%s": [\n      { "hooks": [{ "type": "command", "command": "%s" }] }\n    ]' "$sep" "$ev" "$cmd"
+    sep=,'
+'
+  done
+  printf '\n  }\n}\n\n'
+  cat <<'TXT'
+The command is a bare absolute path: iTerm2 3.7.3's health check tests the
+literal string with isExecutableFile, so "~" and "$HOME" fail it and the app
+reports the integration broken. iTerm2 > Reinstall rewrites the entry back to
+the raw cc-status (re-paste afterwards); Uninstall strips it. SubagentStart is
+not one of the ten events iTerm2 wires; cc-status ignores it.
+TXT
+  exit 0
+fi
+
 target=$(readlink "$real" 2>/dev/null || printf '%s' "$real")
-case $target in "$0"|*/cc-status-shim/cc-status) exit 0 ;; esac   # never recurse into ourselves
-
-payload=$(cat)
-
-# Cheap gate before paying for python3: Claude Code emits compact JSON.
-case $payload in
-  *'"hook_event_name":"Stop"'*) ;;
-  *) printf '%s' "$payload" | "$real"; exit 0 ;;
-esac
-
 it2="$(dirname "$target")/it2"
 [ -x "$it2" ] || it2=$(command -v it2 2>/dev/null || true)
+sid=${ITERM_SESSION_ID#*:}
+[ -x "$real" ] || real=
+[ -x "$it2" ] || it2=
 
-if [ -z "${ITERM_SESSION_ID:-}" ] || [ -z "$it2" ] || ! command -v python3 >/dev/null 2>&1; then
-  printf '%s' "$payload" | "$real"; exit 0
+# A leading dash is cc-status's own flag (--agent codex): not ours to read.
+case $mode in -*) [ -n "$real" ] && exec "$real" "$@"; exit 0 ;; esac
+
+if [ "$mode" != explain ]; then
+  [ -n "$real" ] || exit 0
+  case $target in "$0"|*/cc-status-shim/cc-status) exit 0 ;; esac   # never recurse into ourselves
+fi
+
+payload=$(cat)
+pass() { printf '%s' "$payload" | "$real"; exit 0; }
+
+# Cheap gate before paying for python3: Claude Code emits compact JSON.
+if [ "$mode" != explain ]; then
+  case $payload in
+    *'"hook_event_name":"Stop"'*|*'"hook_event_name":"StopFailure"'*|*'"hook_event_name":"SubagentStop"'*)
+      case $payload in *'"background_tasks":[{'*) ;; *) pass ;; esac ;;
+    *) pass ;;
+  esac
+  if [ -z "$sid" ] || [ -z "$it2" ] || ! command -v python3 >/dev/null 2>&1; then pass; fi
+elif ! command -v python3 >/dev/null 2>&1; then
+  echo 'cc-status explain: needs python3' >&2; exit 0
 fi
 
 # The script goes in via -c so stdin stays free for the payload: `python3 -`
 # with a heredoc would make the heredoc the stdin and the payload vanish.
 py=$(cat <<'PY'
-import json, subprocess, sys
+import json, os, re, subprocess, sys, time
 
+mode, real, it2, sid = sys.argv[1:5]
+explain = mode == "explain"
 raw = sys.stdin.read()
-real, it2, sid = sys.argv[1], sys.argv[2], sys.argv[3]
 
-def passthrough():
-    subprocess.run([real], input=raw.encode())
+def call(argv, data=None, timeout=5, silent=False):
+    # A hung or missing helper must never cost the turn.
+    kw = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL} if silent else {}
+    kw["input" if data else "stdin"] = data or subprocess.DEVNULL
+    try:
+        subprocess.run(argv, timeout=timeout, **kw)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+cfg = {}
+try:
+    out = subprocess.run(["git", "config", "--get-regexp", r"^tabstatus\."],
+                         capture_output=True, text=True, timeout=5).stdout
+    for line in out.splitlines():
+        k, _, v = line.partition(" ")
+        cfg[k] = v.strip()
+except (OSError, subprocess.SubprocessError):
+    pass
+
+quiet_minutes, quiet_color = 15, "#af8700"
+v = cfg.get("tabstatus.quiet-minutes")
+if v is not None:
+    if re.fullmatch(r"[0-9]+", v):
+        quiet_minutes = int(v)
+    else:
+        print(f"cc-status: ignoring tabstatus.quiet-minutes={v!r}", file=sys.stderr)
+v = cfg.get("tabstatus.color.quiet")
+if v is not None:
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", v):
+        quiet_color = v
+    else:
+        print(f"cc-status: ignoring tabstatus.color.quiet={v!r}", file=sys.stderr)
+
+def finish(action, event="?", rows=()):
+    if explain:
+        print(f"event={event}")
+        print(f"session={sid or 'none'}")
+        for r in rows:
+            print(r)
+        print(f"action={action}")
+        print(f"cc-status={real or 'absent'}")
+        print(f"it2={it2 or 'absent'}")
     sys.exit(0)
 
 try:
     payload = json.loads(raw)
-except ValueError:
-    passthrough()
-if payload.get("hook_event_name") != "Stop":
-    passthrough()
-tasks = payload.get("background_tasks") or []
-if not isinstance(tasks, list) or not tasks:
-    passthrough()
+    event, tasks = payload.get("hook_event_name", "?"), payload.get("background_tasks")
+except (ValueError, AttributeError):
+    event, tasks = "?", None
+if event not in ("Stop", "StopFailure", "SubagentStop") or not isinstance(tasks, list) or not tasks:
+    if not explain:
+        call([real], raw.encode(), 10)
+    finish("passthrough", event)
 
-payload["background_tasks"] = []
-subprocess.run([real], input=json.dumps(payload).encode())
+if event == "SubagentStop" and payload.get("agent_id"):
+    tasks = [t for t in tasks if not (isinstance(t, dict) and t.get("task_id") == payload["agent_id"])]
 
-n = len(tasks)
-what = ", ".join(
-    str(t.get("description") or t.get("task_type") or "?") if isinstance(t, dict) else "?"
-    for t in tasks
-)
-detail = f"{n} background task{'s' if n != 1 else ''}: {what}"
-subprocess.run(
-    [it2, "set-status", "--session", sid, "--detail", detail[:240],
-     "--dot-color", "#5f87ff", "--background-tasks", str(n)],
-    stdout=subprocess.DEVNULL,
-)
+now = time.time()
+scratch = payload.get("scratchpad_dir")
+active, quiet, rows = [], [], []
+for t in tasks:
+    tid = t.get("task_id") if isinstance(t, dict) else None
+    state, age = "unknown", None
+    if tid and isinstance(tid, str) and "/" not in tid and isinstance(scratch, str) and scratch:
+        p = os.path.join(os.path.dirname(scratch.rstrip("/")), "tasks", tid + ".output")
+        try:
+            age = now - os.stat(p).st_mtime
+            state = "active" if age < quiet_minutes * 60 else "quiet"
+        except OSError:
+            if os.path.islink(p):   # an agent whose transcript is gone
+                state = "quiet"
+    (quiet if state == "quiet" else active).append(t)
+    kind, d = (t.get("task_type"), t.get("description")) if isinstance(t, dict) else (None, None)
+    rows.append(f"task {tid} {kind} {state} age={'-' if age is None else int(age)}  {d or ''}")
+
+fed = [{**t, "id": t["task_id"], "status": "running"} if isinstance(t, dict) and "task_id" in t else t
+       for t in active]
+paint_idle = bool(quiet) and not active
+if explain:
+    finish("rewrite+idle" if paint_idle else "rewrite", event, rows)
+
+payload["background_tasks"] = fed
+call([real], json.dumps(payload).encode(), 10)
+
+if paint_idle:
+    n = len(quiet)
+    what = ", ".join(str(t.get("description") or t.get("task_type") or "?") if isinstance(t, dict) else "?"
+                     for t in quiet)
+    detail = " ".join(f"idle · {n} quiet background task{'s' if n != 1 else ''}: {what}".split())
+    if len(detail) > 180:
+        detail = detail[:180] + "…"
+    call([it2, "set-status", "--session", sid, "--status", "idle", "--detail", detail,
+          "--dot-color", quiet_color, "--text-color", "#888888", "--background-tasks", "0"], silent=True)
 PY
 )
-printf '%s' "$payload" | python3 -c "$py" "$real" "$it2" "${ITERM_SESSION_ID#*:}"
+printf '%s' "$payload" | python3 -c "$py" "$mode" "$real" "$it2" "$sid"
 exit 0
