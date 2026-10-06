@@ -666,6 +666,36 @@ function claude-doctor() {
 	deny_log="${XDG_STATE_HOME:-$HOME/.local/state}/denyguard/denied.log";
 	deny_hits="$(command wc -l < "$deny_log" 2>/dev/null | tr -d ' ')"; deny_hits="${deny_hits:-0}";
 	print -r -- "deny:    $deny_n in $settings; Bash guard: $deny_wired; ~/bin/denyguard: $deny_bin; denies logged: $deny_hits";
+	# Session Status wiring: how many of the eleven events run the cc-status
+	# shim (the one this repo deploys), how many still run iTerm2's raw
+	# cc-status (a Reinstall puts it back, and it can sit beside the shim), and
+	# how many run neither. Read from the settings file's own text, as the deny
+	# line is. The state files are keyed by session id, not by profile, so the
+	# seat count is the whole machine's; one untouched for a day is ignored,
+	# as the shim itself ignores it.
+	local ts_shim="$HOME/.local/libexec/cc-status-shim/cc-status" ts_state ts_seats ts_counts;
+	[[ -x $ts_shim ]] || ts_shim='MISSING — chezmoi apply';
+	ts_state="${XDG_STATE_HOME:-$HOME/.local/state}/tabstatus";
+	ts_seats="$(command find "$ts_state" -name '*.seats' -mtime -1 -exec cat {} + 2>/dev/null | command wc -l | tr -d ' ')";
+	if [[ ! -e $settings ]]; then
+		ts_counts='no settings.json';
+	elif (( ! $+commands[python3] )); then
+		ts_counts='? (no python3)';
+	elif ts_counts="$(command python3 -c 'import json, sys
+ev = "SessionStart SessionEnd UserPromptSubmit PreToolUse PostToolUse PermissionRequest Notification Stop StopFailure SubagentStart SubagentStop".split()
+h = json.load(open(sys.argv[1])).get("hooks") or {}
+n = [0, 0, 0]
+for e in ev:
+    c = [x.get("command") or "" for g in h.get(e) or [] for x in g.get("hooks") or []]
+    s = any(x.strip().endswith("/cc-status-shim/cc-status") for x in c)
+    r = any(not x.strip().endswith("/cc-status-shim/cc-status") and (x.strip().endswith("/cc-status") or "cc-status ]" in x) for x in c)
+    n[0] += s; n[1] += r; n[2] += not (s or r)
+print("shim on %d/%d events, raw cc-status on %d, none on %d" % (n[0], len(ev), n[1], n[2]))' "$settings" 2>/dev/null)"; then
+		:;
+	else
+		ts_counts='? (unreadable settings.json)';
+	fi;
+	print -r -- "tabstatus: $ts_counts in $settings; shim: $ts_shim; seats live: ${ts_seats:-0}";
 	# Where this profile's links open: the pin, whether the link router can
 	# decode it (browser.tag.<alias>), whether open-as is there to tag, and
 	# whether a window can appear at all. Same helpers, same order as the
@@ -2365,6 +2395,19 @@ function iterm2-doctor() {
 	else
 		print -r -- "channel: no iterm2 cask in the Caskroom — installed by hand or by another manager";
 	fi;
+	# The cc-status binary iTerm2's Claude Code onboarding symlinks, and the
+	# it2 the shim paints with — read by readlink and -x, never executed.
+	local ccs="$HOME/.config/iterm2/cc-status" cct ccstate ccit2;
+	cct="$(readlink "$ccs" 2>/dev/null)";
+	if [[ -x $ccs ]]; then ccstate=executable;
+	elif [[ -L $ccs ]]; then ccstate=DANGLING;
+	elif [[ -e $ccs ]]; then ccstate='not executable';
+	else ccstate=absent; fi;
+	[[ -n $cct && $cct != /* ]] && cct="${ccs:h}/$cct";
+	if [[ -n $cct && -x ${cct:h}/it2 ]]; then ccit2='beside it';
+	elif (( $+commands[it2] )); then ccit2=PATH;
+	else ccit2=absent; fi;
+	print -r -- "cc-status: ~/.config/iterm2/cc-status${cct:+ -> $cct} ($ccstate); it2: $ccit2";
 	# The generative-AI and browser features ship as separate bundles since
 	# 3.5; their absence is why an AI menu item can be missing on an app that
 	# otherwise looks current. They install alongside iTerm.app, so look

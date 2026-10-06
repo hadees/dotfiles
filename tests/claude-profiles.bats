@@ -188,6 +188,51 @@ JSON
   [[ "$output" == *"denies logged: 0"* ]]
 }
 
+@test "claude-doctor: tabstatus counts events on the shim, on raw cc-status, on neither" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  command -v python3 >/dev/null || skip "python3 not installed"
+  # A real python3 for the same reason as the deny test above.
+  REAL_PYTHON3="$(python3 -c 'import sys; print(sys.executable)')"
+  printf '#!/bin/sh\nexec "%s" "$@"\n' "$REAL_PYTHON3" > "$BATS_TEST_TMPDIR/bin/python3"
+  chmod +x "$BATS_TEST_TMPDIR/bin/python3"
+  mkdir -p "$HOME/.claude-personal" "$HOME/.local/libexec/cc-status-shim" "$HOME/.local/state/tabstatus"
+  settings="$HOME/.claude-personal/settings.json"
+  shim="$HOME/.local/libexec/cc-status-shim/cc-status"
+  tabstatus() { run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"; }
+
+  tabstatus
+  [[ "$output" == *"tabstatus: no settings.json in $settings; shim: MISSING"* ]]
+
+  printf '#!/bin/sh\n' > "$shim"; chmod +x "$shim"
+  printf 'a\tplan-fable\nb\twork-sonnet\n' > "$HOME/.local/state/tabstatus/s1.seats"
+  # Settings with every one of the eleven events on the shim, then Stop on a
+  # bare raw entry and SubagentStart on nothing, then Stop on the guarded form.
+  python3 - "$settings" "$shim" "$HOME" <<'PY'
+import json, sys
+path, shim, home = sys.argv[1:]
+ev = "SessionStart SessionEnd UserPromptSubmit PreToolUse PostToolUse PermissionRequest Notification Stop StopFailure SubagentStart SubagentStop".split()
+def entry(cmd): return [{"hooks": [{"type": "command", "command": cmd}]}]
+raw = home + "/.config/iterm2/cc-status"
+for name, over in (("all", {}), ("bare", {"Stop": raw, "SubagentStart": None}),
+                   ("guarded", {"Stop": "[ -x %s ] && %s || true" % (raw, raw), "SubagentStart": None})):
+    hooks = {e: entry(over.get(e, shim)) for e in ev if over.get(e, shim) is not None}
+    json.dump({"hooks": hooks}, open(path + "." + name, "w"))
+PY
+  cp "$settings.all" "$settings"
+  tabstatus
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"tabstatus: shim on 11/11 events, raw cc-status on 0, none on 0 in $settings; shim: $shim; seats live: 2"* ]]
+  cp "$settings.bare" "$settings"
+  tabstatus
+  [[ "$output" == *"tabstatus: shim on 9/11 events, raw cc-status on 1, none on 1 in $settings"* ]]
+  cp "$settings.guarded" "$settings"
+  tabstatus
+  [[ "$output" == *"tabstatus: shim on 9/11 events, raw cc-status on 1, none on 1 in $settings"* ]]
+  echo '{not json' > "$settings"
+  tabstatus
+  [[ "$output" == *"tabstatus: ? (unreadable settings.json) in $settings"* ]]
+}
+
 @test "claude-doctor: names the logged-in account from the profile's .claude.json" {
   repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
   mkdir -p "$HOME/.claude-personal"

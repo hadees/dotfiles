@@ -1572,8 +1572,12 @@ bad JSON): the row is cosmetic and must never cost a turn. The facts it rests on
 keys cc-status reads, the it2 flag it stores the count under, its detail
 text and colours, the app's symlink upkeep — are `utilstr`/`binstr` lines
 in the skill's `manifest.txt`, so `verify.sh` says when a point release
-moves them. Tests: `tests/cc-status-shim.bats` (stub cc-status and it2,
-side by side like the bundle ships them).
+moves them. `claude-doctor`'s `tabstatus:` line counts how many of the eleven
+events in a profile's `settings.json` run the shim, how many still run iTerm2's
+raw cc-status, and how many neither; `iterm2-doctor`'s `cc-status:` line reads
+the app's symlink and where `it2` is, never executing either. Tests:
+`tests/cc-status-shim.bats` (stub cc-status and it2, side by side like the
+bundle ships them).
 
 ### Machine-local secrets (~/.extra)
 
