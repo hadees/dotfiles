@@ -100,7 +100,7 @@ VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 - **`.chezmoiignore`** — target paths chezmoi must not manage (repo-level files everywhere, `CLAUDE.md` and `com.googlecode.iterm2.plist` among them; macOS GUI config off-mac; identity/secrets on `ephemeral`)
 - **`bootstrap.sh`** — deprecated wrapper around `chezmoi init --source . --apply`
 - **`docs/watchlist.md`** — tools evaluated and parked as "not yet", each with what would make it worth another look; check it before re-evaluating something, and add to it when an evaluation ends in "not yet"
-- **`.macos`** — macOS `defaults write` settings; reads `$COMPUTER_NAME` env var for machine-specific naming
+- **`.macos`** — macOS `defaults write` settings; reads `$COMPUTER_NAME` env var for machine-specific naming; also enables Touch ID for sudo (via `/etc/pam.d/sudo_local`, Apple's update-proof hook) and a global sudo timestamp (`/etc/sudoers.d/timestamp`, `visudo`-checked before install, mode 0440), because a per-process cache plus Touch ID means one prompt per step for anything that runs sudo from fresh processes; the 60-minute timeout is a preference, overridable with `$SUDO_TIMESTAMP_TIMEOUT`
 - **`Brewfile`** — Homebrew formulae, casks, and Mac App Store apps (macOS only; `.chezmoiscripts/darwin/` runs `brew bundle` when it changes)
 - **`packages-apt.txt`** — Debian/Ubuntu/WSL package list (`.chezmoiscripts/linux/` installs it when it changes; skips gracefully without apt or sudo)
 - **`packages-apt-wsl.txt`** — WSL-only additions, installed on top of the shared list when the machine class is `wsl`
