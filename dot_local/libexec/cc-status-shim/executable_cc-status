@@ -74,7 +74,7 @@ fi
 target=$(readlink "$real" 2>/dev/null || printf '%s' "$real")
 it2="$(dirname "$target")/it2"
 [ -x "$it2" ] || it2=$(command -v it2 2>/dev/null || true)
-sid=${ITERM_SESSION_ID#*:}
+sid=${ITERM_SESSION_ID:-}; sid=${sid#*:}   # two steps: dash under set -u rejects ${unset#pat}
 [ -x "$real" ] || real=
 [ -x "$it2" ] || it2=
 
