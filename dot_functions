@@ -2237,11 +2237,25 @@ function git-doctor() {
 # OSC 21337 escape, because the escape needs the tab's tty and neither Claude
 # Code's Bash tool nor its hooks have one. iTerm2's own cc-status hook rewrites
 # the row on the next Claude Code event, so inside a session this lasts a turn.
+# `idle`, `working` and `waiting` also send cc-status's colour pair (it2 leaves
+# a field it is not given unchanged, so a bare `idle` over an orange row stayed
+# orange) unless a colour flag is given, and `idle` stores a background-task
+# count of 0, since cc-status revives an idle row whose stored count is not 0
+# a minute after Stop. So `tabstatus idle` is the manual reset for a stuck row.
 function tabstatus() {
 	[[ -n $ITERM_SESSION_ID ]] || { print -ru2 -- "tabstatus: not inside an iTerm2 session"; return 1; }
 	local st=${1-} detail=${2-};
 	(( $# )) && shift; (( $# )) && shift;
-	command it2 set-status --session "${ITERM_SESSION_ID#*:}" --status "$st" --detail "$detail" "$@" >/dev/null;
+	local -a add;
+	if (( ! ${@[(Ie)--dot-color]} && ! ${@[(Ie)--text-color]} )); then
+		case $st in
+			idle) add=(--dot-color '#00d75f' --text-color '#888888');;
+			working) add=(--dot-color '#ff9500' --text-color '#ff9500');;
+			waiting) add=(--dot-color '#5f87ff' --text-color '#5f87ff');;
+		esac;
+	fi;
+	[[ $st == idle ]] && (( ! ${@[(Ie)--background-tasks]} )) && add+=(--background-tasks 0);
+	command it2 set-status --session "${ITERM_SESSION_ID#*:}" --status "$st" --detail "$detail" "$@" "${add[@]}" >/dev/null;
 }
 
 # Where iTerm2 is installed, or nothing. $ITERM2_APP names a non-standard

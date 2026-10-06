@@ -1564,7 +1564,9 @@ where the shim finds the real binary, with `it2` taken from beside it;
 `PATH` only carries `it2` while an experimental iTerm2 setting is on.
 `it2 set-status` keeps every field it is not given — a reset that sends
 only the status word leaves the old colours in place — so anything
-repainting a row sends the full field set (the shim's paint does). The
+repainting a row sends the full field set (the shim's paint does), and
+`tabstatus idle|working|waiting` now sends cc-status's colour pair and, for
+idle, a zero count, so it is the manual reset for a stuck row. The
 shim fails open everywhere (no binary, no it2, no python3, no session id,
 bad JSON): the row is cosmetic and must never cost a turn. The facts it rests on — the payload
 keys cc-status reads, the it2 flag it stores the count under, its detail
