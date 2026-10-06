@@ -6,8 +6,9 @@
 # whenever the payload's background_tasks array is non-empty — and that array
 # is the session's whole task registry, which nothing ages out: a backgrounded
 # shell blocked on stdin, or a subagent that never reported back, keeps a tab
-# "working" for days. This shim rewrites that one case. Every other event is
-# handed to cc-status untouched.
+# "working" for days. This shim rewrites that one case, and paints subagent
+# seats in their own colours. Every other event is handed to cc-status
+# untouched.
 #
 # On Stop, StopFailure and SubagentStop with background tasks, each task is
 # classified by its output file, <session dir>/tasks/<task_id>.output (the
@@ -25,6 +26,22 @@
 # The paint sends the full field set, so a cc-status that failed cannot leave
 # a half-painted row. Items also get the id and status keys that cc-status
 # (written against an older Claude Code) reads and 2.1.289 no longer sends.
+#
+# Subagent seats (plan-fable, unstick-fable, review-fable, work-sonnet,
+# scout-haiku, or any agent_type given a tabstatus.color.<agent_type>) get a
+# colour of their own while they run, so a tab says which seat is working. The
+# status stays one of cc-status's three words — the Session Status tool sorts
+# by them — and only the dot and text colours change. Hooks fired inside a
+# seat carry agent_type: a PreToolUse/PostToolUse there is painted by the shim
+# instead of cc-status (which would paint plain orange working);
+# PermissionRequest and Notification pass through, since waiting outranks a
+# colour. SubagentStart and SubagentStop keep one line per running seat in
+# ${XDG_STATE_HOME:-~/.local/state}/tabstatus/<session_id>.seats, so a Stop
+# over a still-running background seat paints that seat's colour rather than
+# amber or orange; SessionStart and SessionEnd delete the file and one older
+# than a day is ignored. Every detail the shim writes starts with the repo
+# (basename of the payload's cwd): the row name is the tab title, often a task
+# title, not the repo.
 #
 #   cc-status             hook mode: payload on stdin, exit 0 always
 #   cc-status explain     payload on stdin; print the decision, call nothing
@@ -66,7 +83,8 @@ The command is a bare absolute path: iTerm2 3.7.3's health check tests the
 literal string with isExecutableFile, so "~" and "$HOME" fail it and the app
 reports the integration broken. iTerm2 > Reinstall rewrites the entry back to
 the raw cc-status (re-paste afterwards); Uninstall strips it. SubagentStart is
-not one of the ten events iTerm2 wires; cc-status ignores it.
+not one of the ten events iTerm2 wires; cc-status ignores it, and the shim
+uses it to track which seats are running.
 TXT
   exit 0
 fi
@@ -89,13 +107,27 @@ fi
 payload=$(cat)
 pass() { printf '%s' "$payload" | "$real"; exit 0; }
 
-# Cheap gate before paying for python3: Claude Code emits compact JSON.
+# Cheap gate before paying for python3: Claude Code emits compact JSON. Only
+# turn-ending events with background tasks, session start/end (the seat state
+# file) and hooks fired inside a seat need the decision; the rest pass through.
+# A seat is an agent_type with a default colour (keep in step with SEATS below)
+# or a tabstatus.color.<agent_type> setting.
 if [ "$mode" != explain ]; then
+  go=
   case $payload in
     *'"hook_event_name":"Stop"'*|*'"hook_event_name":"StopFailure"'*|*'"hook_event_name":"SubagentStop"'*)
-      case $payload in *'"background_tasks":[{'*) ;; *) pass ;; esac ;;
-    *) pass ;;
+      case $payload in *'"background_tasks":[{'*) go=1 ;; esac ;;
+    *'"hook_event_name":"SessionStart"'*|*'"hook_event_name":"SessionEnd"'*) go=1 ;;
   esac
+  case $payload in
+    *'"agent_type":"'*)
+      at=${payload#*'"agent_type":"'}; at=${at%%'"'*}
+      case $at in
+        plan-fable|unstick-fable|review-fable|work-sonnet|scout-haiku) go=1 ;;
+        *) git config --get "tabstatus.color.$at" >/dev/null 2>&1 && go=1 ;;
+      esac ;;
+  esac
+  [ -n "$go" ] || pass
   if [ -z "$sid" ] || [ -z "$it2" ] || ! command -v python3 >/dev/null 2>&1; then pass; fi
 elif ! command -v python3 >/dev/null 2>&1; then
   echo 'cc-status explain: needs python3' >&2; exit 0
@@ -104,7 +136,7 @@ fi
 # The script goes in via -c so stdin stays free for the payload: `python3 -`
 # with a heredoc would make the heredoc the stdin and the payload vanish.
 py=$(cat <<'PY'
-import json, os, re, subprocess, sys, time
+import functools, json, os, re, subprocess, sys, time
 
 mode, real, it2, sid = sys.argv[1:5]
 explain = mode == "explain"
@@ -129,80 +161,156 @@ try:
 except (OSError, subprocess.SubprocessError):
     pass
 
-quiet_minutes, quiet_color = 15, "#af8700"
-v = cfg.get("tabstatus.quiet-minutes")
-if v is not None:
-    if re.fullmatch(r"[0-9]+", v):
-        quiet_minutes = int(v)
-    else:
-        print(f"cc-status: ignoring tabstatus.quiet-minutes={v!r}", file=sys.stderr)
-v = cfg.get("tabstatus.color.quiet")
-if v is not None:
-    if re.fullmatch(r"#[0-9a-fA-F]{6}", v):
-        quiet_color = v
-    else:
-        print(f"cc-status: ignoring tabstatus.color.quiet={v!r}", file=sys.stderr)
+def setting(key, default, pattern):
+    v = cfg.get("tabstatus." + key)
+    if v is None:
+        return default
+    if re.fullmatch(pattern, v):
+        return v
+    print(f"cc-status: ignoring tabstatus.{key}={v!r}", file=sys.stderr)
+    return default
 
-def finish(action, event="?", rows=()):
-    if explain:
-        print(f"event={event}")
-        print(f"session={sid or 'none'}")
-        for r in rows:
-            print(r)
-        print(f"action={action}")
-        print(f"cc-status={real or 'absent'}")
-        print(f"it2={it2 or 'absent'}")
-    sys.exit(0)
+HEX = r"#[0-9a-fA-F]{6}"
+quiet_minutes = int(setting("quiet-minutes", "15", r"[0-9]+"))
+quiet_color = setting("color.quiet", "#af8700", HEX)
+SEATS = {"plan-fable": "#d787ff", "unstick-fable": "#ff5faf", "review-fable": "#af87ff",
+         "work-sonnet": "#00afaf", "scout-haiku": "#87af5f"}
+
+@functools.lru_cache(None)   # a bad setting is noted once, not per lookup
+def seat_color(agent_type):
+    # git lower-cases the last key component; "quiet" is the idle colour, not a seat
+    if not isinstance(agent_type, str) or agent_type.lower() == "quiet":
+        return None
+    return setting("color." + agent_type.lower(), SEATS.get(agent_type), HEX)
 
 try:
     payload = json.loads(raw)
-    event, tasks = payload.get("hook_event_name", "?"), payload.get("background_tasks")
+    event = payload.get("hook_event_name", "?")
 except (ValueError, AttributeError):
-    event, tasks = "?", None
-if event not in ("Stop", "StopFailure", "SubagentStop") or not isinstance(tasks, list) or not tasks:
-    if not explain:
-        call([real], raw.encode(), 10)
-    finish("passthrough", event)
+    payload, event = {}, "?"
+tasks, aid, agent_type = payload.get("background_tasks"), payload.get("agent_id"), payload.get("agent_type")
+seat_col = seat_color(agent_type)
+seat = agent_type if seat_col else None
+repo = os.path.basename(str(payload.get("cwd") or "").rstrip("/"))
 
-if event == "SubagentStop" and payload.get("agent_id"):
-    tasks = [t for t in tasks if not (isinstance(t, dict) and t.get("task_id") == payload["agent_id"])]
+# Seat state: one "<agent_id>\t<agent_type>" line per running seat of a session.
+ID = re.compile(r"[A-Za-z0-9_-]+")
+pid = payload.get("session_id")
+state_dir = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "tabstatus")
+sf = os.path.join(state_dir, pid + ".seats") if isinstance(pid, str) and ID.fullmatch(pid) else None
+
+def seats_read():
+    try:
+        if time.time() - os.stat(sf).st_mtime > 86400:
+            if not explain:
+                os.remove(sf)
+            return []
+        with open(sf) as f:
+            return [l.rstrip("\n").split("\t", 1) for l in f if "\t" in l]
+    except (OSError, TypeError):
+        return []
+
+def seats_write(rows):
+    try:
+        if rows:
+            os.makedirs(state_dir, exist_ok=True)
+            with open(sf, "w") as f:
+                f.writelines(f"{a}\t{t}\n" for a, t in rows)
+        else:
+            os.remove(sf)
+    except (OSError, TypeError):
+        pass
+
+before = seats_read()
+live = list(before)
+if event in ("SessionStart", "SessionEnd"):
+    live = []
+elif event == "SubagentStart" and seat and isinstance(aid, str) and ID.fullmatch(aid) \
+        and aid not in [a for a, _ in live]:
+    live.append([aid, agent_type])
+elif event == "SubagentStop" and aid:
+    live = [r for r in live if r[0] != aid]
+
+def paint(status, detail, dot, text, count=None):
+    # The full field set every time, whatever cc-status did or failed to do.
+    d = " ".join((f"{repo} · {detail}" if repo else detail).split())
+    if len(d) > 180:
+        d = d[:180] + "…"
+    argv = [it2, "set-status", "--session", sid, "--status", status, "--detail", d,
+            "--dot-color", dot, "--text-color", text]
+    if count is not None:
+        argv += ["--background-tasks", str(count)]
+    call(argv, silent=True)
 
 now = time.time()
 scratch = payload.get("scratchpad_dir")
-active, quiet, rows = [], [], []
-for t in tasks:
-    tid = t.get("task_id") if isinstance(t, dict) else None
-    state, age = "unknown", None
-    if tid and isinstance(tid, str) and "/" not in tid and isinstance(scratch, str) and scratch:
-        p = os.path.join(os.path.dirname(scratch.rstrip("/")), "tasks", tid + ".output")
-        try:
-            age = now - os.stat(p).st_mtime
-            state = "active" if age < quiet_minutes * 60 else "quiet"
-        except OSError:
-            if os.path.islink(p):   # an agent whose transcript is gone
-                state = "quiet"
-    (quiet if state == "quiet" else active).append(t)
-    kind, d = (t.get("task_type"), t.get("description")) if isinstance(t, dict) else (None, None)
-    rows.append(f"task {tid} {kind} {state} age={'-' if age is None else int(age)}  {d or ''}")
+active, quiet, rows, fed = [], [], [], None
+if event in ("Stop", "StopFailure", "SubagentStop") and isinstance(tasks, list) and tasks:
+    if event == "SubagentStop" and aid:
+        tasks = [t for t in tasks if not (isinstance(t, dict) and t.get("task_id") == aid)]
+    for t in tasks:
+        tid = t.get("task_id") if isinstance(t, dict) else None
+        state, age = "unknown", None
+        if tid and isinstance(tid, str) and "/" not in tid and isinstance(scratch, str) and scratch:
+            p = os.path.join(os.path.dirname(scratch.rstrip("/")), "tasks", tid + ".output")
+            try:
+                age = now - os.stat(p).st_mtime
+                state = "active" if age < quiet_minutes * 60 else "quiet"
+            except OSError:
+                if os.path.islink(p):   # an agent whose transcript is gone
+                    state = "quiet"
+        (quiet if state == "quiet" else active).append(t)
+        kind, d = (t.get("task_type"), t.get("description")) if isinstance(t, dict) else (None, None)
+        rows.append(f"task {tid} {kind} {state} age={'-' if age is None else int(age)}  {d or ''}")
+    fed = [{**t, "id": t["task_id"], "status": "running"} if isinstance(t, dict) and "task_id" in t else t
+           for t in active]
 
-fed = [{**t, "id": t["task_id"], "status": "running"} if isinstance(t, dict) and "task_id" in t else t
-       for t in active]
+# A running seat among the active tasks: the row stays that seat's colour, not the parent's.
+ids = {t.get("task_id") for t in active if isinstance(t, dict)}
+busy = [t for a, t in live if a in ids and seat_color(t)]
+in_seat_tool = bool(seat) and event in ("PreToolUse", "PostToolUse")
 paint_idle = bool(quiet) and not active
+
 if explain:
-    finish("rewrite+idle" if paint_idle else "rewrite", event, rows)
+    action = ("seat-paint" if in_seat_tool else "passthrough" if fed is None else
+              "rewrite+idle" if paint_idle else "rewrite")
+    if busy or (event == "SubagentStart" and seat):
+        action += "+seat"
+    print(f"event={event}")
+    print(f"session={sid or 'none'}")
+    for r in rows:
+        print(r)
+    print(f"seat={seat or 'none'} colour={seat_col or 'none'} state={len(live)}")
+    print(f"action={action}")
+    print(f"cc-status={real or 'absent'}")
+    print(f"it2={it2 or 'absent'}")
+    sys.exit(0)
 
-payload["background_tasks"] = fed
-call([real], json.dumps(payload).encode(), 10)
+if live != before or event in ("SessionStart", "SessionEnd"):
+    seats_write(live)
+if in_seat_tool:
+    tool = payload.get("tool_name")
+    paint("working", f"{seat}: {tool}" if tool else seat, seat_col, seat_col)
+    sys.exit(0)
 
+if fed is None:
+    call([real], raw.encode(), 10)
+else:
+    payload["background_tasks"] = fed
+    call([real], json.dumps(payload).encode(), 10)
+if event == "SubagentStart" and seat:
+    paint("working", f"{seat} running", seat_col, seat_col)
 if paint_idle:
     n = len(quiet)
     what = ", ".join(str(t.get("description") or t.get("task_type") or "?") if isinstance(t, dict) else "?"
                      for t in quiet)
-    detail = " ".join(f"idle · {n} quiet background task{'s' if n != 1 else ''}: {what}".split())
-    if len(detail) > 180:
-        detail = detail[:180] + "…"
-    call([it2, "set-status", "--session", sid, "--status", "idle", "--detail", detail,
-          "--dot-color", quiet_color, "--text-color", "#888888", "--background-tasks", "0"], silent=True)
+    paint("idle", f"idle · {n} quiet background task{'s' if n != 1 else ''}: {what}",
+          quiet_color, "#888888", 0)
+elif busy:
+    k = len(active)
+    c = seat_color(busy[0])
+    paint("working", f"{', '.join(dict.fromkeys(busy))} running · {k} background task{'s' if k != 1 else ''} running",
+          c, c, k)
 PY
 )
 printf '%s' "$payload" | python3 -c "$py" "$mode" "$real" "$it2" "$sid"

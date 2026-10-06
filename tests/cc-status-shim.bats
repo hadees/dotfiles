@@ -20,6 +20,8 @@ setup() {
   SHIM="$BATS_TEST_DIRNAME/../dot_local/libexec/cc-status-shim/executable_cc-status"
   # Config comes from git; keep the machine's own out of it.
   export HOME="$BATS_TEST_TMPDIR/home" GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig" GIT_CONFIG_NOSYSTEM=1
+  export XDG_STATE_HOME="$BATS_TEST_TMPDIR/state"
+  SEATS_FILE="$XDG_STATE_HOME/tabstatus/s1.seats"
   mkdir -p "$HOME"
   : > "$GIT_CONFIG_GLOBAL"
   SESS="$BATS_TEST_TMPDIR/sess"
@@ -34,6 +36,9 @@ age_file() {
 
 # payload <event> <tasks-json> [extra-json-members]: a compact payload, as Claude Code writes it.
 payload() { printf '{"hook_event_name":"%s","scratchpad_dir":"%s/scratchpad","background_tasks":%s%s}' "$1" "$SESS" "$2" "${3:+,$3}"; }
+
+# seat_payload <event> <agent_type> [extra-json-members]: a hook fired inside a subagent.
+seat_payload() { printf '{"hook_event_name":"%s","session_id":"s1","cwd":"/work/proj","agent_id":"ag1","agent_type":"%s"%s}' "$1" "$2" "${3:+,$3}"; }
 
 it2_argv() { paste -sd'|' "$BATS_TEST_TMPDIR/argv"; }
 fed_tasks() { python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["background_tasks"],sort_keys=True))' "$BATS_TEST_TMPDIR/fed"; }
@@ -267,5 +272,167 @@ PY
   export CC_STATUS_BIN="$BATS_TEST_TMPDIR/cc-status-shim/cc-status"
   run "$BATS_TEST_TMPDIR/cc-status-shim/cc-status" <<< '{"hook_event_name":"Stop","background_tasks":[]}'
   [ "$status" -eq 0 ]
+  [ ! -e "$BATS_TEST_TMPDIR/fed" ]
+}
+
+@test "seat: a PreToolUse inside plan-fable is painted by the shim in its colour, and cc-status is not called" {
+  run_shim <<< "$(seat_payload PreToolUse plan-fable '"tool_name":"Bash"')"
+  [ "$status" -eq 0 ]
+  [ ! -e "$BATS_TEST_TMPDIR/fed" ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|working|--detail|proj · plan-fable: Bash|--dot-color|#d787ff|--text-color|#d787ff" ]
+}
+
+@test "seat: every default colour, and a PostToolUse, paint the same way" {
+  local pair seat col
+  for pair in unstick-fable:#ff5faf review-fable:#af87ff work-sonnet:#00afaf scout-haiku:#87af5f; do
+    seat=${pair%%:*} col=${pair#*:}
+    run_shim <<< "$(seat_payload PostToolUse "$seat" '"tool_name":"Edit"')"
+    [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|working|--detail|proj · $seat: Edit|--dot-color|$col|--text-color|$col" ]
+  done
+}
+
+@test "seat: an agent type with no colour passes through untouched" {
+  local p; p=$(seat_payload PreToolUse Explore '"tool_name":"Bash"')
+  run_shim <<< "$p"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
+  [ ! -e "$BATS_TEST_TMPDIR/argv" ]
+}
+
+@test "seat: PermissionRequest and Notification inside a seat pass through, waiting outranks colour" {
+  local ev p
+  for ev in PermissionRequest Notification; do
+    p=$(seat_payload "$ev" plan-fable '"tool_name":"Bash"')
+    run_shim <<< "$p"
+    [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
+    [ ! -e "$BATS_TEST_TMPDIR/argv" ]
+  done
+}
+
+@test "seat: tabstatus.color.<agent_type> overrides a default and adds a seat; a bad value falls back" {
+  git config -f "$GIT_CONFIG_GLOBAL" tabstatus.color.plan-fable '#112233'
+  git config -f "$GIT_CONFIG_GLOBAL" tabstatus.color.my-seat '#445566'
+  run_shim <<< "$(seat_payload PreToolUse plan-fable '"tool_name":"Bash"')"
+  grep -qx '#112233' "$BATS_TEST_TMPDIR/argv"
+  run_shim <<< "$(seat_payload PreToolUse my-seat '"tool_name":"Bash"')"
+  grep -qx '#445566' "$BATS_TEST_TMPDIR/argv"
+
+  git config -f "$GIT_CONFIG_GLOBAL" tabstatus.color.plan-fable 'purple'
+  run --separate-stderr sh "$SHIM" <<< "$(seat_payload PreToolUse plan-fable '"tool_name":"Bash"')"
+  grep -qx '#d787ff' "$BATS_TEST_TMPDIR/argv"
+  [[ $stderr == *"tabstatus.color.plan-fable"* ]]
+}
+
+@test "seat: SubagentStart records the seat, reaches cc-status, and paints working without a count" {
+  local p; p=$(seat_payload SubagentStart work-sonnet)
+  run_shim <<< "$p"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
+  [ "$(cat "$SEATS_FILE")" = "$(printf 'ag1\twork-sonnet')" ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|working|--detail|proj · work-sonnet running|--dot-color|#00afaf|--text-color|#00afaf" ]
+  run_shim <<< "$p"   # a repeat does not duplicate
+  [ "$(wc -l < "$SEATS_FILE")" -eq 1 ]
+}
+
+@test "seat: SubagentStop prunes its own line only, and reaches cc-status unpainted" {
+  mkdir -p "$(dirname "$SEATS_FILE")"
+  printf 'ag1\tplan-fable\nag2\twork-sonnet\n' > "$SEATS_FILE"
+  run_shim <<< "$(seat_payload SubagentStop plan-fable)"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$SEATS_FILE")" = "$(printf 'ag2\twork-sonnet')" ]
+  [ -e "$BATS_TEST_TMPDIR/fed" ]
+  [ ! -e "$BATS_TEST_TMPDIR/argv" ]
+}
+
+@test "seat: SubagentStop of the last seat deletes the state file" {
+  mkdir -p "$(dirname "$SEATS_FILE")"
+  printf 'ag1\tplan-fable\n' > "$SEATS_FILE"
+  run_shim <<< "$(seat_payload SubagentStop plan-fable)"
+  [ ! -e "$SEATS_FILE" ]
+}
+
+@test "seat: SessionStart and SessionEnd delete the state file and still reach cc-status" {
+  local ev p
+  for ev in SessionStart SessionEnd; do
+    mkdir -p "$(dirname "$SEATS_FILE")"
+    printf 'ag1\tplan-fable\n' > "$SEATS_FILE"
+    p="{\"hook_event_name\":\"$ev\",\"session_id\":\"s1\"}"
+    run_shim <<< "$p"
+    [ ! -e "$SEATS_FILE" ]
+    [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
+    rm "$BATS_TEST_TMPDIR/fed"
+  done
+}
+
+@test "seat: a Stop over an active background seat paints its colour with the active count" {
+  age_file ag1 5
+  mkdir -p "$(dirname "$SEATS_FILE")"
+  printf 'ag1\tplan-fable\n' > "$SEATS_FILE"
+  run_shim <<< "$(payload Stop '[{"task_id":"ag1","task_type":"local_agent"}]' '"cwd":"/work/proj","session_id":"s1"')"
+  [ "$status" -eq 0 ]
+  [ "$(fed_tasks | grep -c '"ag1"')" -eq 1 ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|working|--detail|proj · plan-fable running · 1 background task running|--dot-color|#d787ff|--text-color|#d787ff|--background-tasks|1" ]
+}
+
+@test "seat: two live seats name both, in the first one's colour, counting every active task" {
+  age_file ag1 5
+  age_file ag2 5
+  age_file sh 5
+  mkdir -p "$(dirname "$SEATS_FILE")"
+  printf 'ag1\twork-sonnet\nag2\tplan-fable\n' > "$SEATS_FILE"
+  run_shim <<< "$(payload Stop '[{"task_id":"ag1"},{"task_id":"ag2"},{"task_id":"sh","task_type":"local_bash"}]' '"cwd":"/work/proj","session_id":"s1"')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|working|--detail|proj · work-sonnet, plan-fable running · 3 background tasks running|--dot-color|#00afaf|--text-color|#00afaf|--background-tasks|3" ]
+}
+
+@test "seat: a seat in the state file that is not among the active tasks paints nothing" {
+  age_file sh 5
+  mkdir -p "$(dirname "$SEATS_FILE")"
+  printf 'gone\tplan-fable\n' > "$SEATS_FILE"
+  run_shim <<< "$(payload Stop '[{"task_id":"sh","task_type":"local_bash"}]' '"cwd":"/work/proj","session_id":"s1"')"
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
+@test "seat: a quiet seat is not painted as running; the amber idle wins" {
+  age_file ag1 7200
+  mkdir -p "$(dirname "$SEATS_FILE")"
+  printf 'ag1\tplan-fable\n' > "$SEATS_FILE"
+  run_shim <<< "$(payload Stop '[{"task_id":"ag1","task_type":"local_agent","description":"stuck"}]' '"cwd":"/work/proj","session_id":"s1"')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|idle|--detail|proj · idle · 1 quiet background task: stuck|--dot-color|#af8700|--text-color|#888888|--background-tasks|0" ]
+}
+
+@test "seat: a state file older than a day is ignored and removed" {
+  age_file ag1 5
+  mkdir -p "$(dirname "$SEATS_FILE")"
+  printf 'ag1\tplan-fable\n' > "$SEATS_FILE"
+  python3 -c 'import os,sys,time; t=time.time()-25*3600; os.utime(sys.argv[1],(t,t))' "$SEATS_FILE"
+  run_shim <<< "$(payload Stop '[{"task_id":"ag1","task_type":"local_agent"}]' '"cwd":"/work/proj","session_id":"s1"')"
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  [ ! -e "$SEATS_FILE" ]
+}
+
+@test "seat: a session id that is not a plain token never reaches the filesystem" {
+  run_shim <<< '{"hook_event_name":"SubagentStart","session_id":"../../x","agent_id":"ag1","agent_type":"plan-fable"}'
+  [ "$status" -eq 0 ]
+  [ -z "$(find "$BATS_TEST_TMPDIR" -name '*.seats')" ]
+}
+
+@test "repo: the quiet-task detail starts with the cwd's basename" {
+  age_file a 7200
+  run_shim <<< "$(payload Stop '[{"task_id":"a","description":"tail -F build.log"}]' '"cwd":"/work/proj/"')"
+  grep -qx 'proj · idle · 1 quiet background task: tail -F build.log' "$BATS_TEST_TMPDIR/argv"
+}
+
+@test "explain: a seat event names the seat, its colour and the live state, and writes nothing" {
+  run sh "$SHIM" explain <<< "$(seat_payload SubagentStart plan-fable)"
+  [ "$status" -eq 0 ]
+  [[ $output == *"seat=plan-fable colour=#d787ff state=1"* ]]
+  [[ $output == *"action=passthrough+seat"* ]]
+  run sh "$SHIM" explain <<< "$(seat_payload PreToolUse plan-fable '"tool_name":"Bash"')"
+  [[ $output == *"action=seat-paint"* ]]
+  run sh "$SHIM" explain <<< "$(seat_payload PreToolUse Explore)"
+  [[ $output == *"seat=none colour=none state=0"* && $output == *"action=passthrough"* ]]
+  [ ! -e "$SEATS_FILE" ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
   [ ! -e "$BATS_TEST_TMPDIR/fed" ]
 }

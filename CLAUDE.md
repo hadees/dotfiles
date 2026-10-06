@@ -1535,9 +1535,24 @@ cc-status's blue is its "waiting" colour) with the quiet tasks in the
 detail. The count stored back is **0** on purpose: cc-status's
 `Notification(idle_prompt)` handler, a minute after Stop, reads the stored
 count with `get-background-tasks` and repaints "working · N background tasks
-running", so storing the quiet N would revive the lie. `cc-status explain`
-(payload on stdin) prints each task's verdict without calling anything.
-Every other event passes through untouched. Two details are load-bearing.
+running", so storing the quiet N would revive the lie. A subagent **seat**
+gets its own dot and text colour while it runs — the status stays one of
+cc-status's three words, which the Session Status tool sorts by. Hooks
+fired inside a subagent carry `agent_type`; the shim paints an in-seat
+PreToolUse/PostToolUse itself (cc-status would paint plain orange),
+passes PermissionRequest and Notification through (waiting outranks a
+colour), and tracks running seats in `${XDG_STATE_HOME:-~/.local/state}/
+tabstatus/<session_id>.seats` — written on SubagentStart, pruned on
+SubagentStop, deleted on SessionStart/SessionEnd and ignored past a day —
+so a Stop over a still-running background seat repaints its colour instead
+of orange. Defaults: `plan-fable #d787ff`, `unstick-fable #ff5faf`,
+`review-fable #af87ff`, `work-sonnet #00afaf`, `scout-haiku #87af5f`, and
+`tabstatus.color.quiet #af8700`; `git config tabstatus.color.<agent_type>
+'#rrggbb'` overrides one or adds a seat. Every detail the shim writes
+starts with the repo (the payload cwd's basename), because the row name is
+the tab title. `cc-status explain` (payload on stdin) prints each task's
+verdict and the seat it resolved without calling anything. Every other
+event passes through untouched. Two details are load-bearing.
 The shim is **named** `cc-status`, in a directory off `PATH`, because iTerm2 3.7.3's health check accepts a hook
 only if its command is a bare executable path ending in `/cc-status`
 (verified in the app's onboarding source at that tag): a wrapper line or
