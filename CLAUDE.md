@@ -1515,69 +1515,101 @@ optional detail of up to three lines, dot and text colours). On Stop it
 reads the payload's `background_tasks` — the session's whole task registry,
 which Claude Code never ages out — and keeps the row at "working" while
 that array is non-empty. Measured: a backgrounded shell blocked on stdin
-kept a tab "working" for 41 hours; a subagent that never reported back did
-the same with no process behind it. A shim, deployed as
-`~/.local/libexec/cc-status-shim/cc-status`
+kept a tab "working" for 41 hours (a foreground command that outlives its
+timeout moves to the background still holding its stdin pipe, and a local
+session has no time limit on background commands); a subagent that never
+reported back did the same with no process behind it. No hook can kill
+such a task — the payload carries no pid — so the shim only stops the row
+believing it.
+
+The shim, deployed as `~/.local/libexec/cc-status-shim/cc-status`
 (`dot_local/libexec/cc-status-shim/`), takes cc-status's place in each
-profile's `settings.json` hook command (here, the overlays write that
-line; `cc-status settings` prints the block, the ten events iTerm2 wires
-plus `SubagentStart`, with the home path expanded — 3.7.3 tests the literal
-string, so `~` fails it) and, on Stop, StopFailure and SubagentStop, tells
-**quiet** from **active** tasks. A task's output file, `tasks/<task_id>.output`
-beside the payload's `scratchpad_dir` (a symlink to the transcript for an
-agent), is its last sign of life: written within `tabstatus.quiet-minutes`
-(git config, default 15) is active, older is quiet, and no file to judge by
-counts as active — wrongly active only delays the idle, wrongly idle lies.
-cc-status is fed only the active tasks, so a Stop over a running background
-agent still reads "working"; when nothing is active, one `it2 set-status`
-paints the row idle in amber (`tabstatus.color.quiet`, default `#af8700` —
-cc-status's blue is its "waiting" colour) with the quiet tasks in the
-detail. The count stored back is **0** on purpose: cc-status's
-`Notification(idle_prompt)` handler, a minute after Stop, reads the stored
-count with `get-background-tasks` and repaints "working · N background tasks
-running", so storing the quiet N would revive the lie. A subagent **seat**
-gets its own dot and text colour while it runs — the status stays one of
-cc-status's three words, which the Session Status tool sorts by. Hooks
-fired inside a subagent carry `agent_type`; the shim paints an in-seat
-PreToolUse/PostToolUse itself (cc-status would paint plain orange),
-passes PermissionRequest and Notification through (waiting outranks a
-colour), and tracks running seats in `${XDG_STATE_HOME:-~/.local/state}/
-tabstatus/<session_id>.seats` — written on SubagentStart, pruned on
-SubagentStop, deleted on SessionStart/SessionEnd and ignored past a day —
-so a Stop over a still-running background seat repaints its colour instead
-of orange. Defaults: `plan-fable #d787ff`, `unstick-fable #ff5faf`,
-`review-fable #af87ff`, `work-sonnet #00afaf`, `scout-haiku #87af5f`, and
-`tabstatus.color.quiet #af8700`; `git config tabstatus.color.<agent_type>
-'#rrggbb'` overrides one or adds a seat. Every detail the shim writes
-starts with the repo (the payload cwd's basename), because the row name is
-the tab title. `cc-status explain` (payload on stdin) prints each task's
-verdict and the seat it resolved without calling anything. Every other
-event passes through untouched. Two details are load-bearing.
-The shim is **named** `cc-status`, in a directory off `PATH`, because iTerm2 3.7.3's health check accepts a hook
-only if its command is a bare executable path ending in `/cc-status`
-(verified in the app's onboarding source at that tag): a wrapper line or
-any other name makes the app report its integration broken, and a
-Reinstall then appends a raw cc-status beside it, which repaints "working"
-on Stop. And iTerm2's own symlink at `~/.config/iterm2/cc-status` is left
-alone — `ensureCCStatusSymlink` removes anything else put there — and is
-where the shim finds the real binary, with `it2` taken from beside it;
-`PATH` only carries `it2` while an experimental iTerm2 setting is on.
-`it2 set-status` keeps every field it is not given — a reset that sends
-only the status word leaves the old colours in place — so anything
-repainting a row sends the full field set (the shim's paint does), and
-`tabstatus idle|working|waiting` now sends cc-status's colour pair and, for
-idle, a zero count, so it is the manual reset for a stuck row. The
-shim fails open everywhere (no binary, no it2, no python3, no session id,
-bad JSON): the row is cosmetic and must never cost a turn. The facts it rests on — the payload
-keys cc-status reads, the it2 flag it stores the count under, its detail
-text and colours, the app's symlink upkeep — are `utilstr`/`binstr` lines
-in the skill's `manifest.txt`, so `verify.sh` says when a point release
-moves them. `claude-doctor`'s `tabstatus:` line counts how many of the eleven
-events in a profile's `settings.json` run the shim, how many still run iTerm2's
-raw cc-status, and how many neither; `iterm2-doctor`'s `cc-status:` line reads
-the app's symlink and where `it2` is, never executing either. Tests:
-`tests/cc-status-shim.bats` (stub cc-status and it2, side by side like the
-bundle ships them).
+profile's hook command. On Stop, StopFailure and SubagentStop it tells
+**quiet** tasks from **active** ones by the task's output file,
+`tasks/<task_id>.output` beside the payload's `scratchpad_dir` (a symlink
+to the transcript for an agent): written within `tabstatus.quiet-minutes`
+(git config, default 15 — above the ten-minute foreground ceiling) is
+active, older is quiet, and no file to judge by counts as active, because
+wrongly active only delays the idle and wrongly idle lies. Hiding every
+task would be the opposite lie — a Stop over a running background agent is
+what iTerm2 3.7.2 made cc-status cover — so cc-status is fed only the
+active ones. When nothing is active, one `it2 set-status` paints the row
+idle in amber (`tabstatus.color.quiet`, default `#af8700`; cc-status's blue
+is its "waiting" colour, and a quiet row must not look like a permission
+prompt) with the quiet tasks in the detail. The count stored back is **0**
+on purpose: cc-status's `Notification(idle_prompt)` handler, a minute after
+Stop, reads the stored count with `get-background-tasks` and repaints
+"working · N background tasks running", so storing the quiet N would revive
+the lie. `it2 set-status` keeps every field it is not given — a reset
+sending only the status word leaves the old dot colour — so every paint
+sends the full field set, and `tabstatus idle|working|waiting` sends
+cc-status's colour pair (plus a zero count for idle) unless given a colour,
+which makes it the manual reset for a stuck row. The shim also adds the
+`id` and `status` keys cc-status reads and 2.1.289 no longer sends, and
+drops the stopping agent from its own SubagentStop.
+
+A subagent **seat** gets its own dot and text colour while it runs
+(`plan-fable #d787ff`, `unstick-fable #ff5faf`, `review-fable #af87ff`,
+`work-sonnet #00afaf`, `scout-haiku #87af5f`; `git config
+tabstatus.color.<agent_type> '#rrggbb'` overrides one or adds a seat). The
+status stays one of the three words: the Session Status tool sorts by them,
+and an unknown word's place is unspecified. Hooks fired inside a subagent
+carry `agent_type`; the shim paints an in-seat PreToolUse/PostToolUse itself
+(cc-status would paint plain orange) and passes PermissionRequest and
+Notification through, since waiting outranks a colour. Running seats are
+tracked in `${XDG_STATE_HOME:-~/.local/state}/tabstatus/<session_id>.seats`
+— written on SubagentStart, pruned on SubagentStop, deleted on
+SessionStart/SessionEnd, ignored past a day — so a Stop over a still-running
+background seat repaints its colour, not orange. Every detail the shim
+writes starts with the repo (the payload cwd's basename), because the row
+name is the tab title, often a task title.
+
+Wiring is the load-bearing part. The shim is **named** `cc-status`, in a
+directory off `PATH`, and its hook command is the bare absolute path with
+the home directory expanded: iTerm2 3.7.3's health check accepts a hook
+only if the command ends in `/cc-status` and `isExecutableFile` passes on
+the literal string (verified in the app's onboarding source at that tag), so
+`~`, `$HOME`, a wrapper line or another name makes the app report its
+integration broken, and a Reinstall then appends a raw cc-status beside it,
+which repaints "working". Master's hook lexer (`CCStatusHookCommand.swift`,
+2026-10-03) will relax this, but 3.7.3 and 3.7.4 do not. The shim sits in
+cc-status's own slot, never beside it — hooks for one event run in
+parallel, so a second hook would race the thing it fixes — on eleven
+events: the ten iTerm2 wires plus `SubagentStart`, which cc-status ignores
+and the seat file relies on. Reinstall rewrites the entry back to the raw
+binary and Uninstall strips it; re-applying the overlays restores it. The
+overlays write the line (`cc-status settings` prints the block;
+`docs/private-overlays.md`). iTerm2's own symlink at
+`~/.config/iterm2/cc-status` is left alone — `ensureCCStatusSymlink`
+removes anything else put there — and is where the shim finds the real
+binary, with `it2` from beside it; `PATH` only carries `it2` while an
+experimental iTerm2 setting is on. The shim deploys on every machine class
+and exits 0 at once without the binary, which beats a hook entry that
+errors on every event.
+
+Pass-through events cost one `sh`, a `cat`, two `case` matches and a pipe
+into cc-status; a Stop with background tasks adds one `python3` (~30 ms), a
+`stat` per task, one `git config --get-regexp`, and an extra `it2` call only
+when nothing is active; an in-seat tool call makes one `it2` call instead of
+cc-status's. It fails open to stock behaviour everywhere (no binary, `it2`,
+python3 or session id, bad JSON, `it2` past five seconds) and never exits
+non-zero: the row is cosmetic and must never cost a turn. It cannot see task
+types that keep no output file (`monitor`, `in_process_teammate`,
+`local_workflow`, `remote_agent` are unverified; a missing file reads as
+active), nor a dead process behind a recently written file. The upstream
+reports — the moved command keeping its stdin pipe, the hooks reference's
+stale `background_tasks[].status`, cc-status reading `id`/`status` where
+2.1.289 sends `task_id` — are drafts, not yet filed. `cc-status explain`
+(payload on stdin) prints each task's verdict, the seat and the action,
+calling nothing; `unknown` means the output file is not where it looks,
+`passthrough` that the gate missed the payload. The facts the shim rests on
+are `utilstr`/`binstr` lines in the skill's `manifest.txt`, so `verify.sh`
+says when a point release moves them. `claude-doctor`'s `tabstatus:` line
+counts the eleven events in a profile's `settings.json` that run the shim,
+still run iTerm2's raw cc-status, or run neither, plus the seats live;
+`iterm2-doctor`'s `cc-status:` line reads the app's symlink and where `it2`
+is, never executing either. Tests: `tests/cc-status-shim.bats` (stub
+cc-status and it2, side by side like the bundle ships them).
 
 ### Machine-local secrets (~/.extra)
 
