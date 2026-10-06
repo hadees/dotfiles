@@ -436,3 +436,89 @@ PY
   [ ! -e "$BATS_TEST_TMPDIR/calls" ]
   [ ! -e "$BATS_TEST_TMPDIR/fed" ]
 }
+
+# question_payload <last-line-or-message-json-text> [tasks-json]: a Stop whose final message is the given JSON string body.
+question_payload() { payload Stop "${2:-[]}" "\"cwd\":\"/work/proj\",\"last_assistant_message\":\"$1\""; }
+
+@test "question: a Stop ending in a question paints waiting in yellow with the question as the detail, after cc-status" {
+  local p; p=$(question_payload 'Done.\n\nWhich branch should I use?')
+  run_shim <<< "$p"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|proj · Which branch should I use?|--dot-color|#ffd75f|--text-color|#ffd75f|--background-tasks|0" ]
+}
+
+@test "question: StopFailure is handled like Stop, and a full-width question mark counts" {
+  run_shim <<< "$(payload StopFailure '[]' '"cwd":"/work/proj","last_assistant_message":"どちらにしますか？"')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|proj · どちらにしますか？|--dot-color|#ffd75f|--text-color|#ffd75f|--background-tasks|0" ]
+}
+
+@test "question: a message ending in a statement paints nothing, even with a question earlier" {
+  local p; p=$(question_payload 'Is it ok?\n\nYes, it is.')
+  run_shim <<< "$p"
+  [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
+@test "question: with an active task the shim paints nothing and cc-status keeps the row working" {
+  age_file a 5
+  run_shim <<< "$(question_payload 'Which branch?' '[{"task_id":"a","task_type":"local_bash"}]')"
+  [ "$(fed_tasks | grep -c '"a"')" -eq 1 ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
+@test "question: beside only a quiet task the question paint wins over the amber idle" {
+  age_file a 7200
+  run_shim <<< "$(question_payload 'Which branch?' '[{"task_id":"a","task_type":"local_bash","description":"stuck"}]')"
+  [ "$(fed_tasks)" = "[]" ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|proj · Which branch?|--dot-color|#ffd75f|--text-color|#ffd75f|--background-tasks|0" ]
+}
+
+@test "question: leading bullets, quotes and spaces, and trailing spaces, are stripped" {
+  run_shim <<< "$(question_payload 'Fine.\n\n> - is this right?  \n\n')"
+  grep -qx 'proj · is this right?' "$BATS_TEST_TMPDIR/argv"
+}
+
+@test "question: a long question is cut like any other detail" {
+  local long; long=$(printf 'x%.0s' $(seq 1 300))
+  run_shim <<< "$(question_payload "$long?")"
+  grep -A1 '^--detail$' "$BATS_TEST_TMPDIR/argv" | tail -1 \
+    | python3 -c 'import sys; s=sys.stdin.buffer.read().decode().rstrip("\n"); assert len(s)==181 and s.endswith("…"), len(s)'
+}
+
+@test "question: SubagentStop never paints one" {
+  run_shim <<< "$(seat_payload SubagentStop plan-fable '"last_assistant_message":"Which branch?"')"
+  [ ! -e "$BATS_TEST_TMPDIR/argv" ]
+  run_shim <<< "$(payload SubagentStop '[]' '"cwd":"/work/proj","last_assistant_message":"Which branch?"')"
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
+@test "question: tabstatus.color.question overrides the colour; a bad value falls back with a note" {
+  git config -f "$GIT_CONFIG_GLOBAL" tabstatus.color.question '#112233'
+  run_shim <<< "$(question_payload 'Which branch?')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|proj · Which branch?|--dot-color|#112233|--text-color|#112233|--background-tasks|0" ]
+
+  git config -f "$GIT_CONFIG_GLOBAL" tabstatus.color.question 'yellow'
+  run --separate-stderr sh "$SHIM" <<< "$(question_payload 'Which branch?')"
+  grep -qx '#ffd75f' "$BATS_TEST_TMPDIR/argv"
+  [[ $stderr == *"tabstatus.color.question"* ]]
+}
+
+@test "question: a Stop with no question mark and no tasks passes through without it2" {
+  local p; p=$(question_payload 'All done.')
+  run_shim <<< "$p"
+  [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
+@test "explain: prints question=yes with the extracted line, or question=no" {
+  run sh "$SHIM" explain <<< "$(question_payload 'Done.\n\n- Which branch should I use?')"
+  [[ $output == *"question=yes Which branch should I use?"* ]]
+  [[ $output == *"action=passthrough+question"* ]]
+  run sh "$SHIM" explain <<< "$(question_payload 'All done.')"
+  [[ $output == *"question=no"* && $output == *"action=passthrough"* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  [ ! -e "$BATS_TEST_TMPDIR/fed" ]
+}

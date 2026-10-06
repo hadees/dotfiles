@@ -1564,6 +1564,17 @@ background seat repaints its colour, not orange. Every detail the shim
 writes starts with the repo (the payload cwd's basename), because the row
 name is the tab title, often a task title.
 
+A turn that **ends by asking the operator a question** paints `waiting` in
+yellow (`tabstatus.color.question`, default `#ffd75f`) with the question as
+the detail: on Stop or StopFailure with nothing active, a
+`last_assistant_message` whose last non-empty line (bullets and quotes
+stripped) ends in `?` or `？`. cc-status alone cannot show it — it reserves
+"waiting" for PermissionRequest and AskUserQuestion, paints a plain Stop
+idle, and its detail is only the message's opening ~180 characters, where a
+closing question is cut off. The paint follows cc-status's and outranks the
+quiet-task one; a Stop with something active stays working, and
+SubagentStop never fires it.
+
 Wiring is the load-bearing part. The shim is **named** `cc-status`, in a
 directory off `PATH`, and its hook command is the bare absolute path with
 the home directory expanded: iTerm2 3.7.3's health check accepts a hook
@@ -1588,7 +1599,8 @@ and exits 0 at once without the binary, which beats a hook entry that
 errors on every event.
 
 Pass-through events cost one `sh`, a `cat`, two `case` matches and a pipe
-into cc-status; a Stop with background tasks adds one `python3` (~30 ms), a
+into cc-status; a Stop with background tasks, or whose final message contains a `?` (most
+Stops), adds one `python3` (~30 ms), a
 `stat` per task, one `git config --get-regexp`, and an extra `it2` call only
 when nothing is active; an in-seat tool call makes one `it2` call instead of
 cc-status's. It fails open to stock behaviour everywhere (no binary, `it2`,

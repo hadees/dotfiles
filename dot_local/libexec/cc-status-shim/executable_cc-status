@@ -43,6 +43,19 @@
 # (basename of the payload's cwd): the row name is the tab title, often a task
 # title, not the repo.
 #
+# A turn that ends by asking the operator something is not idle: on Stop and
+# StopFailure, with nothing active, a last_assistant_message whose last
+# non-empty line (leading bullets and quotes stripped) ends in ? or U+FF1F is
+# painted "waiting" in yellow (tabstatus.color.question, default #ffd75f) with
+# that line as the detail. cc-status paints Stop-with-no-tasks idle and shows
+# only the message's opening, where the question rarely is. The question paint
+# follows cc-status's and outranks the quiet-task one; with something active
+# the row stays working, and SubagentStop (a subagent's message) never fires it.
+#
+# Cost: python3 now runs on every Stop whose message contains a ? as well as
+# on those with background tasks, so on most Stops; the other events still
+# cost only the sh gate.
+#
 #   cc-status             hook mode: payload on stdin, exit 0 always
 #   cc-status explain     payload on stdin; print the decision, call nothing
 #   cc-status settings    print the hooks block for a profile's settings.json
@@ -108,15 +121,20 @@ payload=$(cat)
 pass() { printf '%s' "$payload" | "$real"; exit 0; }
 
 # Cheap gate before paying for python3: Claude Code emits compact JSON. Only
-# turn-ending events with background tasks, session start/end (the seat state
-# file) and hooks fired inside a seat need the decision; the rest pass through.
+# turn-ending events with background tasks (or, on Stop and StopFailure, a
+# final message containing a ?), session start/end (the seat state file) and
+# hooks fired inside a seat need the decision; the rest pass through.
 # A seat is an agent_type with a default colour (keep in step with SEATS below)
 # or a tabstatus.color.<agent_type> setting.
 if [ "$mode" != explain ]; then
   go=
   case $payload in
     *'"hook_event_name":"Stop"'*|*'"hook_event_name":"StopFailure"'*|*'"hook_event_name":"SubagentStop"'*)
-      case $payload in *'"background_tasks":[{'*) go=1 ;; esac ;;
+      case $payload in
+        *'"background_tasks":[{'*) go=1 ;;
+        *'"hook_event_name":"SubagentStop"'*) ;;
+        *'"last_assistant_message":"'*'?'*|*'"last_assistant_message":"'*'？'*) go=1 ;;
+      esac ;;
     *'"hook_event_name":"SessionStart"'*|*'"hook_event_name":"SessionEnd"'*) go=1 ;;
   esac
   case $payload in
@@ -173,13 +191,14 @@ def setting(key, default, pattern):
 HEX = r"#[0-9a-fA-F]{6}"
 quiet_minutes = int(setting("quiet-minutes", "15", r"[0-9]+"))
 quiet_color = setting("color.quiet", "#af8700", HEX)
+question_color = setting("color.question", "#ffd75f", HEX)
 SEATS = {"plan-fable": "#d787ff", "unstick-fable": "#ff5faf", "review-fable": "#af87ff",
          "work-sonnet": "#00afaf", "scout-haiku": "#87af5f"}
 
 @functools.lru_cache(None)   # a bad setting is noted once, not per lookup
 def seat_color(agent_type):
-    # git lower-cases the last key component; "quiet" is the idle colour, not a seat
-    if not isinstance(agent_type, str) or agent_type.lower() == "quiet":
+    # git lower-cases the last key component; "quiet" and "question" are paint colours, not seats
+    if not isinstance(agent_type, str) or agent_type.lower() in ("quiet", "question"):
         return None
     return setting("color." + agent_type.lower(), SEATS.get(agent_type), HEX)
 
@@ -265,22 +284,34 @@ if event in ("Stop", "StopFailure", "SubagentStop") and isinstance(tasks, list) 
     fed = [{**t, "id": t["task_id"], "status": "running"} if isinstance(t, dict) and "task_id" in t else t
            for t in active]
 
+# A turn ending in a question: the last non-empty line, bullets and quotes off.
+question = None
+msg = payload.get("last_assistant_message")
+if event in ("Stop", "StopFailure") and not active and isinstance(msg, str):
+    lines = [l for l in msg.splitlines() if l.strip()]
+    q = re.sub(r"^[\s>*+-]+", "", lines[-1]).rstrip() if lines else ""
+    if q.endswith(("?", "？")):
+        question = q
+
 # A running seat among the active tasks: the row stays that seat's colour, not the parent's.
 ids = {t.get("task_id") for t in active if isinstance(t, dict)}
 busy = [t for a, t in live if a in ids and seat_color(t)]
 in_seat_tool = bool(seat) and event in ("PreToolUse", "PostToolUse")
-paint_idle = bool(quiet) and not active
+paint_idle = bool(quiet) and not active and not question
 
 if explain:
     action = ("seat-paint" if in_seat_tool else "passthrough" if fed is None else
               "rewrite+idle" if paint_idle else "rewrite")
     if busy or (event == "SubagentStart" and seat):
         action += "+seat"
+    if question:
+        action += "+question"
     print(f"event={event}")
     print(f"session={sid or 'none'}")
     for r in rows:
         print(r)
     print(f"seat={seat or 'none'} colour={seat_col or 'none'} state={len(live)}")
+    print(f"question={'yes ' + question if question else 'no'}")
     print(f"action={action}")
     print(f"cc-status={real or 'absent'}")
     print(f"it2={it2 or 'absent'}")
@@ -300,7 +331,9 @@ else:
     call([real], json.dumps(payload).encode(), 10)
 if event == "SubagentStart" and seat:
     paint("working", f"{seat} running", seat_col, seat_col)
-if paint_idle:
+if question:
+    paint("waiting", question, question_color, question_color, 0)
+elif paint_idle:
     n = len(quiet)
     what = ", ".join(str(t.get("description") or t.get("task_type") or "?") if isinstance(t, dict) else "?"
                      for t in quiet)
