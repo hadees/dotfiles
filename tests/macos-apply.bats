@@ -45,6 +45,6 @@ setup() {
   ./.macos > "$BATS_TEST_TMPDIR/macos2.log" 2>&1
   # Anchored: the template's commented-out line also says pam_tid.so.
   [ "$(grep -Ec '^auth[[:space:]]+sufficient[[:space:]]+pam_tid\.so' /etc/pam.d/sudo_local)" = 1 ]
-  [ "$(grep -c 'timestamp_type' /etc/sudoers.d/timestamp)" = 1 ]
+  [ "$(sudo -n grep -c 'timestamp_type' /etc/sudoers.d/timestamp)" = 1 ]
   [ "$(stat -f %Lp /etc/sudoers.d/timestamp)" = 440 ]
 }
