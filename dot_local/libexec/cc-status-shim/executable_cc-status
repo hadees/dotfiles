@@ -52,9 +52,27 @@
 # follows cc-status's and outranks the quiet-task one; with something active
 # the row stays working, and SubagentStop (a subagent's message) never fires it.
 #
+# A quiet shell task may be quiet because a long compile prints nothing, or
+# because its process is wedged. For each quiet task whose output file is a
+# regular file (a shell, not an agent's symlink) the shim asks `lsof -t` who
+# holds the file open and sums the cumulative CPU time of those processes and
+# all their descendants from one `ps -axo pid,ppid,time` (visible for every
+# user, so a root child counts; no root needed). Per task it keeps
+# "task_id<TAB>last_mtime<TAB>cpu_seconds<TAB>first_seen_quiet_ts" in
+# ${XDG_STATE_HOME:-~/.local/state}/tabstatus/<session_id>.tasks (pruned to the
+# payload's tasks, deleted on SessionStart/SessionEnd). A quiet shell task is
+# stalled when nothing holds its file (the process is gone, the task still
+# registered) or when it was first seen quiet tabstatus.stall-minutes (default
+# 15) ago and its CPU has moved under a second since, with the file untouched.
+# With nothing active a stalled task paints "waiting" in red
+# (tabstatus.color.stalled, default #ff5f5f), outranking the question and quiet
+# paints; CPU that moved shows as "(cpu busy)" in the quiet paint. No lsof, or
+# a failed probe, means unknown, never stalled.
+#
 # Cost: python3 now runs on every Stop whose message contains a ? as well as
 # on those with background tasks, so on most Stops; the other events still
-# cost only the sh gate.
+# cost only the sh gate. lsof and one ps run only on a Stop that has at least
+# one quiet shell task.
 #
 #   cc-status             hook mode: payload on stdin, exit 0 always
 #   cc-status explain     payload on stdin; print the decision, call nothing
@@ -192,13 +210,15 @@ HEX = r"#[0-9a-fA-F]{6}"
 quiet_minutes = int(setting("quiet-minutes", "15", r"[0-9]+"))
 quiet_color = setting("color.quiet", "#af8700", HEX)
 question_color = setting("color.question", "#ffd75f", HEX)
+stall_minutes = int(setting("stall-minutes", "15", r"[0-9]+"))
+stalled_color = setting("color.stalled", "#ff5f5f", HEX)
 SEATS = {"plan-fable": "#d787ff", "unstick-fable": "#ff5faf", "review-fable": "#af87ff",
          "work-sonnet": "#00afaf", "scout-haiku": "#87af5f"}
 
 @functools.lru_cache(None)   # a bad setting is noted once, not per lookup
 def seat_color(agent_type):
-    # git lower-cases the last key component; "quiet" and "question" are paint colours, not seats
-    if not isinstance(agent_type, str) or agent_type.lower() in ("quiet", "question"):
+    # git lower-cases the last key component; "quiet", "question" and "stalled" are paint colours, not seats
+    if not isinstance(agent_type, str) or agent_type.lower() in ("quiet", "question", "stalled"):
         return None
     return setting("color." + agent_type.lower(), SEATS.get(agent_type), HEX)
 
@@ -217,6 +237,7 @@ ID = re.compile(r"[A-Za-z0-9_-]+")
 pid = payload.get("session_id")
 state_dir = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "tabstatus")
 sf = os.path.join(state_dir, pid + ".seats") if isinstance(pid, str) and ID.fullmatch(pid) else None
+tf = sf[:-len(".seats")] + ".tasks" if sf else None
 
 def seats_read():
     try:
@@ -261,28 +282,132 @@ def paint(status, detail, dot, text, count=None):
         argv += ["--background-tasks", str(count)]
     call(argv, silent=True)
 
+def run_out(argv, timeout=5):
+    # stdout of a read-only probe; None when it is missing, hung or failed to start.
+    try:
+        return subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                              text=True, errors="replace", timeout=timeout).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+def cpu_seconds(s):
+    # ps time: [D-][HH:]MM:SS[.ss]
+    days, _, rest = s.rpartition("-")
+    total = 0.0
+    for part in rest.split(":"):
+        total = total * 60 + float(part)
+    return total + (int(days) * 86400 if days else 0)
+
+_ps = []
+def ps_tree(pids):
+    # Summed CPU seconds of pids and all their descendants, or None if ps failed.
+    if not _ps:
+        _ps.append(run_out(["ps", "-axo", "pid,ppid,time"]))
+    if _ps[0] is None:
+        return None
+    kids, own = {}, {}
+    for line in _ps[0].splitlines():
+        f = line.split()
+        try:
+            own[f[0]] = cpu_seconds(f[2])
+            kids.setdefault(f[1], []).append(f[0])
+        except (IndexError, ValueError):
+            pass   # the header, or a line we cannot read
+    seen, todo = set(), list(pids)
+    while todo:
+        p = todo.pop()
+        if p not in seen:
+            seen.add(p)
+            todo += kids.get(p, [])
+    return sum(own.get(p, 0.0) for p in seen)
+
+def holders_of(path):
+    # pids holding path open: [] none, None unknown (no lsof, hung)
+    out = run_out(["lsof", "-t", "--", path])
+    return None if out is None else sorted({l for l in out.split() if l.isdigit()})
+
+def tasks_read():
+    recs = {}
+    try:
+        with open(tf) as f:
+            for l in f:
+                k = l.rstrip("\n").split("\t")
+                try:
+                    recs[k[0]] = (float(k[1]), float(k[2]), float(k[3]))
+                except (IndexError, ValueError):
+                    pass
+    except (OSError, TypeError):
+        pass
+    return recs
+
+def tasks_write(recs):
+    try:
+        if recs:
+            os.makedirs(state_dir, exist_ok=True)
+            with open(tf, "w") as f:
+                f.writelines(f"{k}\t{m!r}\t{c:.2f}\t{t:.0f}\n" for k, (m, c, t) in recs.items())
+        else:
+            os.remove(tf)
+    except (OSError, TypeError):
+        pass
+
+def label(t):
+    return str(t.get("description") or t.get("task_type") or "?") if isinstance(t, dict) else "?"
+
 now = time.time()
 scratch = payload.get("scratchpad_dir")
 active, quiet, rows, fed = [], [], [], None
+stalled, busy_cpu, keep, quiet_ages = [], set(), {}, []
 if event in ("Stop", "StopFailure", "SubagentStop") and isinstance(tasks, list) and tasks:
     if event == "SubagentStop" and aid:
         tasks = [t for t in tasks if not (isinstance(t, dict) and t.get("task_id") == aid)]
+    prior = tasks_read()
     for t in tasks:
         tid = t.get("task_id") if isinstance(t, dict) else None
-        state, age = "unknown", None
+        state, age, probe = "unknown", None, ""
+        if isinstance(tid, str) and tid in prior:
+            keep[tid] = prior[tid]
         if tid and isinstance(tid, str) and "/" not in tid and isinstance(scratch, str) and scratch:
             p = os.path.join(os.path.dirname(scratch.rstrip("/")), "tasks", tid + ".output")
             try:
-                age = now - os.stat(p).st_mtime
+                mtime = os.stat(p).st_mtime
+                age = now - mtime
                 state = "active" if age < quiet_minutes * 60 else "quiet"
+                if state == "quiet":
+                    quiet_ages.append(age)
+                if state == "quiet" and not os.path.islink(p):
+                    # A quiet shell: who holds the file, and is that process getting CPU?
+                    holders = holders_of(p)
+                    cpu = ps_tree(holders) if holders else None
+                    rec = prior.get(tid)
+                    if rec and abs(rec[0] - mtime) >= 1:
+                        rec = None   # written since: not the same silence
+                    stalled_min = None
+                    if holders == []:
+                        stalled_min = int(age // 60)
+                    elif cpu is not None:
+                        if rec and cpu - rec[1] >= 1:
+                            busy_cpu.add(tid)
+                            keep[tid] = (mtime, cpu, now)
+                        elif rec:
+                            if now - rec[2] >= stall_minutes * 60:
+                                stalled_min = int((now - rec[2]) // 60)
+                        else:
+                            keep[tid] = (mtime, cpu, now)
+                    if stalled_min is not None:
+                        stalled.append((t, stalled_min))
+                    probe = (f" holder={','.join(holders) if holders else 'none' if holders == [] else 'unknown'}"
+                             f" cpu={'-' if cpu is None else f'{cpu:.2f}'} stalled={'no' if stalled_min is None else 'yes'}")
             except OSError:
                 if os.path.islink(p):   # an agent whose transcript is gone
                     state = "quiet"
         (quiet if state == "quiet" else active).append(t)
         kind, d = (t.get("task_type"), t.get("description")) if isinstance(t, dict) else (None, None)
-        rows.append(f"task {tid} {kind} {state} age={'-' if age is None else int(age)}  {d or ''}")
+        rows.append(f"task {tid} {kind} {state} age={'-' if age is None else int(age)}{probe}  {d or ''}")
     fed = [{**t, "id": t["task_id"], "status": "running"} if isinstance(t, dict) and "task_id" in t else t
            for t in active]
+    if not explain:
+        tasks_write(keep)
 
 # A turn ending in a question: the last non-empty line, bullets and quotes off.
 question = None
@@ -297,14 +422,15 @@ if event in ("Stop", "StopFailure") and not active and isinstance(msg, str):
 ids = {t.get("task_id") for t in active if isinstance(t, dict)}
 busy = [t for a, t in live if a in ids and seat_color(t)]
 in_seat_tool = bool(seat) and event in ("PreToolUse", "PostToolUse")
-paint_idle = bool(quiet) and not active and not question
+paint_stalled = bool(stalled) and not active
+paint_idle = bool(quiet) and not active and not question and not paint_stalled
 
 if explain:
     action = ("seat-paint" if in_seat_tool else "passthrough" if fed is None else
-              "rewrite+idle" if paint_idle else "rewrite")
+              "rewrite+idle" if paint_idle else "rewrite+stalled" if paint_stalled else "rewrite")
     if busy or (event == "SubagentStart" and seat):
         action += "+seat"
-    if question:
+    if question and not paint_stalled:
         action += "+question"
     print(f"event={event}")
     print(f"session={sid or 'none'}")
@@ -319,6 +445,8 @@ if explain:
 
 if live != before or event in ("SessionStart", "SessionEnd"):
     seats_write(live)
+    if event in ("SessionStart", "SessionEnd"):
+        tasks_write({})
 if in_seat_tool:
     tool = payload.get("tool_name")
     paint("working", f"{seat}: {tool}" if tool else seat, seat_col, seat_col)
@@ -331,13 +459,19 @@ else:
     call([real], json.dumps(payload).encode(), 10)
 if event == "SubagentStart" and seat:
     paint("working", f"{seat} running", seat_col, seat_col)
-if question:
+if paint_stalled:
+    m = max(m for _, m in stalled)
+    paint("waiting", f"stalled {m} min: {', '.join(label(t) for t, _ in stalled)}",
+          stalled_color, stalled_color, 0)
+elif question:
     paint("waiting", question, question_color, question_color, 0)
 elif paint_idle:
     n = len(quiet)
-    what = ", ".join(str(t.get("description") or t.get("task_type") or "?") if isinstance(t, dict) else "?"
+    what = ", ".join(label(t) + (" (cpu busy)" if isinstance(t, dict) and t.get("task_id") in busy_cpu else "")
                      for t in quiet)
-    paint("idle", f"idle · {n} quiet background task{'s' if n != 1 else ''}: {what}",
+    # the shortest silence among the quiet tasks; a task with no file has no age
+    since = f", quiet {int(min(quiet_ages) // 60)} min" if quiet_ages else ""
+    paint("idle", f"idle · {n} quiet background task{'s' if n != 1 else ''}{since}: {what}",
           quiet_color, "#888888", 0)
 elif busy:
     k = len(active)

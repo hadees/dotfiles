@@ -4,6 +4,8 @@
 # Code's hooks and iTerm2's cc-status. Both cc-status and it2 are stubbed in
 # one directory, the way iTerm2 ships them side by side: cc-status records
 # the payload it was fed, it2 records its argv. No real iTerm2 is touched.
+# lsof and ps are stubbed there too (and that directory put on PATH): they print
+# lsof.out and ps.out, fixtures a test overwrites, and record their argv.
 
 bats_require_minimum_version 1.5.0
 
@@ -12,7 +14,13 @@ setup() {
   mkdir -p "$STUB"
   printf '#!/bin/sh\ncat > "%s/fed"\n' "$BATS_TEST_TMPDIR" > "$STUB/cc-status"
   printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/argv"\necho x >> "%s/calls"\n' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$STUB/it2"
-  chmod +x "$STUB/cc-status" "$STUB/it2"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/lsof_argv"\ncat "%s/lsof.out"\n' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$STUB/lsof"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/ps_argv"\ncat "%s/ps.out"\n' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$STUB/ps"
+  chmod +x "$STUB/cc-status" "$STUB/it2" "$STUB/lsof" "$STUB/ps"
+  export PATH="$STUB:$PATH"
+  # By default one shell (4242) holds every output file, with a child: 3.5 s of CPU in all.
+  echo 4242 > "$BATS_TEST_TMPDIR/lsof.out"
+  set_cpu 1.00 2.50
   # The real wiring is a symlink to the bundle; it2 is found beside its target.
   ln -s "$STUB/cc-status" "$BATS_TEST_TMPDIR/cc-status-link"
   export CC_STATUS_BIN="$BATS_TEST_TMPDIR/cc-status-link"
@@ -22,6 +30,7 @@ setup() {
   export HOME="$BATS_TEST_TMPDIR/home" GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig" GIT_CONFIG_NOSYSTEM=1
   export XDG_STATE_HOME="$BATS_TEST_TMPDIR/state"
   SEATS_FILE="$XDG_STATE_HOME/tabstatus/s1.seats"
+  TASKS_FILE="$XDG_STATE_HOME/tabstatus/s1.tasks"
   mkdir -p "$HOME"
   : > "$GIT_CONFIG_GLOBAL"
   SESS="$BATS_TEST_TMPDIR/sess"
@@ -33,6 +42,21 @@ age_file() {
   : > "$SESS/tasks/$1.output"
   python3 -c 'import os,sys,time; t=time.time()-int(sys.argv[2]); os.utime(sys.argv[1],(t,t))' "$SESS/tasks/$1.output" "$2"
 }
+
+# set_cpu <holder-seconds> <child-seconds>: what the ps stub reports for pid 4242 and its child 4243.
+set_cpu() {
+  printf '  PID  PPID      TIME\n    1     0   9:99.00\n 4242     1   0:%05.2f\n 4243  4242   0:%05.2f\n 4300     1   1:00.00\n' "$1" "$2" > "$BATS_TEST_TMPDIR/ps.out"
+}
+
+# task_state <name> <seconds-ago>: a .tasks line for task a quiet since the output file's own mtime, first seen that long ago.
+task_state() {
+  local mt; mt=$(python3 -c 'import os,sys; print(repr(os.stat(sys.argv[1]).st_mtime))' "$SESS/tasks/$1.output")
+  mkdir -p "$(dirname "$TASKS_FILE")"
+  printf '%s\t%s\t%s\t%s\n' "$1" "$mt" "$3" "$(python3 -c 'import sys,time; print(int(time.time()-int(sys.argv[1])))' "$2")" > "$TASKS_FILE"
+}
+
+# stall_payload [extra-json-members]: a Stop with one quiet shell task and a session id.
+stall_payload() { payload Stop '[{"task_id":"a","task_type":"local_bash","description":"install.sh --all"}]' '"cwd":"/work/proj","session_id":"s1"'"${1:+,$1}"; }
 
 # payload <event> <tasks-json> [extra-json-members]: a compact payload, as Claude Code writes it.
 payload() { printf '{"hook_event_name":"%s","scratchpad_dir":"%s/scratchpad","background_tasks":%s%s}' "$1" "$SESS" "$2" "${3:+,$3}"; }
@@ -66,7 +90,7 @@ run_shim() { run sh "$SHIM"; }
   run_shim <<< "$(payload Stop '[{"task_id":"a","task_type":"local_bash","description":"tail -F build.log"}]')"
   [ "$status" -eq 0 ]
   [ "$(fed_tasks)" = "[]" ]
-  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|idle|--detail|idle · 1 quiet background task: tail -F build.log|--dot-color|#af8700|--text-color|#888888|--background-tasks|0" ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|idle|--detail|idle · 1 quiet background task, quiet 120 min: tail -F build.log|--dot-color|#af8700|--text-color|#888888|--background-tasks|0" ]
 }
 
 @test "shim: an active task alongside a quiet one is fed to cc-status with id and status, and it2 is left alone" {
@@ -116,7 +140,7 @@ run_shim() { run sh "$SHIM"; }
   run_shim <<< "$(payload StopFailure '[{"task_id":"a","task_type":"local_bash"}]')"
   [ "$status" -eq 0 ]
   [ "$(fed_tasks)" = "[]" ]
-  grep -qx 'idle · 1 quiet background task: local_bash' "$BATS_TEST_TMPDIR/argv"
+  grep -qx 'idle · 1 quiet background task, quiet 120 min: local_bash' "$BATS_TEST_TMPDIR/argv"
 }
 
 @test "shim: SubagentStop drops the agent that just stopped" {
@@ -132,7 +156,7 @@ run_shim() { run sh "$SHIM"; }
   age_file a 7200
   age_file b 7200
   run_shim <<< "$(payload Stop '[{"task_id":"a","description":"first"},{"task_id":"b","task_type":"local_agent"}]')"
-  grep -qx 'idle · 2 quiet background tasks: first, local_agent' "$BATS_TEST_TMPDIR/argv"
+  grep -qx 'idle · 2 quiet background tasks, quiet 120 min: first, local_agent' "$BATS_TEST_TMPDIR/argv"
   local long; long=$(printf 'x%.0s' $(seq 1 300))
   run_shim <<< "$(payload Stop "[{\"task_id\":\"a\",\"description\":\"$long\"}]")"
   # Code points, counted by python: wc -m depends on the locale (a C locale,
@@ -398,7 +422,7 @@ PY
   mkdir -p "$(dirname "$SEATS_FILE")"
   printf 'ag1\tplan-fable\n' > "$SEATS_FILE"
   run_shim <<< "$(payload Stop '[{"task_id":"ag1","task_type":"local_agent","description":"stuck"}]' '"cwd":"/work/proj","session_id":"s1"')"
-  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|idle|--detail|proj · idle · 1 quiet background task: stuck|--dot-color|#af8700|--text-color|#888888|--background-tasks|0" ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|idle|--detail|proj · idle · 1 quiet background task, quiet 120 min: stuck|--dot-color|#af8700|--text-color|#888888|--background-tasks|0" ]
 }
 
 @test "seat: a state file older than a day is ignored and removed" {
@@ -420,7 +444,7 @@ PY
 @test "repo: the quiet-task detail starts with the cwd's basename" {
   age_file a 7200
   run_shim <<< "$(payload Stop '[{"task_id":"a","description":"tail -F build.log"}]' '"cwd":"/work/proj/"')"
-  grep -qx 'proj · idle · 1 quiet background task: tail -F build.log' "$BATS_TEST_TMPDIR/argv"
+  grep -qx 'proj · idle · 1 quiet background task, quiet 120 min: tail -F build.log' "$BATS_TEST_TMPDIR/argv"
 }
 
 @test "explain: a seat event names the seat, its colour and the live state, and writes nothing" {
@@ -519,6 +543,145 @@ question_payload() { payload Stop "${2:-[]}" "\"cwd\":\"/work/proj\",\"last_assi
   [[ $output == *"action=passthrough+question"* ]]
   run sh "$SHIM" explain <<< "$(question_payload 'All done.')"
   [[ $output == *"question=no"* && $output == *"action=passthrough"* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  [ ! -e "$BATS_TEST_TMPDIR/fed" ]
+}
+
+@test "stalled: a first sighting of a quiet shell stays quiet, with its age, and is recorded" {
+  age_file a 7200
+  run_shim <<< "$(stall_payload)"
+  [ "$status" -eq 0 ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|idle|--detail|proj · idle · 1 quiet background task, quiet 120 min: install.sh --all|--dot-color|#af8700|--text-color|#888888|--background-tasks|0" ]
+  [ "$(paste -sd'|' "$BATS_TEST_TMPDIR/lsof_argv")" = "-t|--|$SESS/tasks/a.output" ]
+  [ "$(paste -sd'|' "$BATS_TEST_TMPDIR/ps_argv")" = "-axo|pid,ppid,time" ]
+  [ "$(wc -l < "$TASKS_FILE")" -eq 1 ]
+  [ "$(cut -f1,3 "$TASKS_FILE")" = "$(printf 'a\t3.50')" ]
+}
+
+@test "stalled: quiet for stall-minutes with the same CPU and file paints waiting in red" {
+  age_file a 7200
+  task_state a 965 3.50
+  run_shim <<< "$(stall_payload)"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|proj · stalled 16 min: install.sh --all|--dot-color|#ff5f5f|--text-color|#ff5f5f|--background-tasks|0" ]
+  [ "$(fed_tasks)" = "[]" ]
+}
+
+@test "stalled: a CPU that moved resets the clock, stays quiet and says so" {
+  age_file a 7200
+  task_state a 965 3.50
+  set_cpu 1.00 7.50
+  run_shim <<< "$(stall_payload)"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|idle|--detail|proj · idle · 1 quiet background task, quiet 120 min: install.sh --all (cpu busy)|--dot-color|#af8700|--text-color|#888888|--background-tasks|0" ]
+  [ "$(cut -f3 "$TASKS_FILE")" = "8.50" ]
+  run_shim <<< "$(stall_payload)"   # nothing moved since, but the clock restarted a moment ago
+  grep -qx 'proj · idle · 1 quiet background task, quiet 120 min: install.sh --all' "$BATS_TEST_TMPDIR/argv"
+}
+
+@test "stalled: quiet for less than stall-minutes is not stalled, and the record keeps its first sighting" {
+  age_file a 7200
+  task_state a 300 3.50
+  local before; before=$(cat "$TASKS_FILE")
+  run_shim <<< "$(stall_payload)"
+  grep -qx 'idle' "$BATS_TEST_TMPDIR/argv"
+  [ "$(cat "$TASKS_FILE")" = "$before" ]
+}
+
+@test "stalled: a file written since the record is a new silence, not a stall" {
+  age_file a 7200
+  task_state a 965 3.50
+  python3 -c 'import os,sys,time; t=time.time()-3600; os.utime(sys.argv[1],(t,t))' "$SESS/tasks/a.output"
+  run_shim <<< "$(stall_payload)"
+  grep -qx 'idle' "$BATS_TEST_TMPDIR/argv"
+}
+
+@test "stalled: nothing holds the file, so the task is stalled at once" {
+  age_file a 7200
+  : > "$BATS_TEST_TMPDIR/lsof.out"
+  run_shim <<< "$(stall_payload)"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|proj · stalled 120 min: install.sh --all|--dot-color|#ff5f5f|--text-color|#ff5f5f|--background-tasks|0" ]
+  [ ! -e "$BATS_TEST_TMPDIR/ps_argv" ]
+}
+
+@test "stalled: an agent's symlinked output is never probed" {
+  : > "$BATS_TEST_TMPDIR/agent.jsonl"
+  python3 -c 'import os,sys,time; t=time.time()-7200; os.utime(sys.argv[1],(t,t))' "$BATS_TEST_TMPDIR/agent.jsonl"
+  ln -s "$BATS_TEST_TMPDIR/agent.jsonl" "$SESS/tasks/a.output"
+  : > "$BATS_TEST_TMPDIR/lsof.out"
+  run_shim <<< "$(stall_payload)"
+  grep -qx 'idle' "$BATS_TEST_TMPDIR/argv"
+  [ ! -e "$BATS_TEST_TMPDIR/lsof_argv" ]
+  [ ! -e "$TASKS_FILE" ]
+}
+
+@test "stalled: outranks a question in the same payload" {
+  age_file a 7200
+  : > "$BATS_TEST_TMPDIR/lsof.out"
+  run_shim <<< "$(stall_payload '"last_assistant_message":"Which branch?"')"
+  grep -qx 'proj · stalled 120 min: install.sh --all' "$BATS_TEST_TMPDIR/argv"
+  grep -qx 'waiting' "$BATS_TEST_TMPDIR/argv"
+}
+
+@test "stalled: an active task beside a stalled one keeps the row working, painted by nobody" {
+  age_file a 7200
+  age_file b 5
+  : > "$BATS_TEST_TMPDIR/lsof.out"
+  run_shim <<< "$(payload Stop '[{"task_id":"a","task_type":"local_bash"},{"task_id":"b","task_type":"local_bash"}]' '"session_id":"s1"')"
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
+@test "stalled: tabstatus.color.stalled and stall-minutes override; a bad colour falls back with a note" {
+  age_file a 7200
+  task_state a 400 3.50
+  git config -f "$GIT_CONFIG_GLOBAL" tabstatus.color.stalled '#112233'
+  git config -f "$GIT_CONFIG_GLOBAL" tabstatus.stall-minutes 5
+  run_shim <<< "$(stall_payload)"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|proj · stalled 6 min: install.sh --all|--dot-color|#112233|--text-color|#112233|--background-tasks|0" ]
+
+  git config -f "$GIT_CONFIG_GLOBAL" tabstatus.color.stalled 'red'
+  run --separate-stderr sh "$SHIM" <<< "$(stall_payload)"
+  grep -qx '#ff5f5f' "$BATS_TEST_TMPDIR/argv"
+  [[ $stderr == *"tabstatus.color.stalled"* ]]
+}
+
+@test "stalled: a missing lsof is unknown, never stalled" {
+  age_file a 7200
+  rm "$STUB/lsof"
+  # PATH of just the tools the shim runs, so no lsof anywhere (Linux has it in /usr/bin).
+  local t tools="$BATS_TEST_TMPDIR/tools"
+  mkdir -p "$tools"
+  for t in git dirname readlink cat; do ln -s "$(command -v $t)" "$tools/$t"; done
+  ln -s "$(python3 -c 'import sys; print(sys.executable)')" "$tools/python3"
+  PATH="$STUB:$tools" run /bin/sh "$SHIM" <<< "$(stall_payload)"
+  [ "$status" -eq 0 ]
+  grep -qx 'idle' "$BATS_TEST_TMPDIR/argv"
+  [ ! -e "$TASKS_FILE" ]
+}
+
+@test "stalled: the record is pruned to the payload's tasks, and SessionStart and SessionEnd delete it" {
+  age_file a 7200
+  task_state a 300 3.50
+  printf 'gone\t1.0\t1.00\t1\n' >> "$TASKS_FILE"
+  run_shim <<< "$(stall_payload)"
+  [ "$(cut -f1 "$TASKS_FILE")" = "a" ]
+  local ev
+  for ev in SessionStart SessionEnd; do
+    printf 'a\t1.0\t1.00\t1\n' > "$TASKS_FILE"
+    run_shim <<< "{\"hook_event_name\":\"$ev\",\"session_id\":\"s1\"}"
+    [ ! -e "$TASKS_FILE" ]
+  done
+}
+
+@test "explain: a quiet shell task shows its holder, CPU and verdict, and writes nothing" {
+  age_file a 7200
+  task_state a 965 3.50
+  local before; before=$(cat "$TASKS_FILE")
+  run sh "$SHIM" explain <<< "$(stall_payload)"
+  [[ $output == *"task a local_bash quiet age=7200 holder=4242 cpu=3.50 stalled=yes"*"install.sh --all"* ]]
+  [[ $output == *"action=rewrite+stalled"* ]]
+  [ "$(cat "$TASKS_FILE")" = "$before" ]
+  : > "$BATS_TEST_TMPDIR/lsof.out"
+  run sh "$SHIM" explain <<< "$(stall_payload)"
+  [[ $output == *"holder=none cpu=- stalled=yes"* ]]
   [ ! -e "$BATS_TEST_TMPDIR/calls" ]
   [ ! -e "$BATS_TEST_TMPDIR/fed" ]
 }

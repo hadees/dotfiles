@@ -1575,6 +1575,18 @@ closing question is cut off. The paint follows cc-status's and outranks the
 quiet-task one; a Stop with something active stays working, and
 SubagentStop never fires it.
 
+A quiet **shell** task is **stalled** when nothing holds its output file open
+any more, or when it was first seen quiet `tabstatus.stall-minutes` (git
+config, default 15) ago and its holders' whole process tree has used under a
+second of CPU since, the file untouched — a wedged download, not a silent
+compile. It is measured without root: `lsof -t` names the holders, one `ps
+-axo pid,ppid,time` (visible for every user) sums the tree's CPU, and
+`<session_id>.tasks` beside the seats file keeps each task's last mtime, CPU
+and first-seen-quiet time between Stops. With nothing active a stalled task
+paints `waiting` in red (`tabstatus.color.stalled`, default `#ff5f5f`),
+outranking the question and quiet paints; agent tasks are never probed, and a
+missing `lsof` means unknown, never stalled.
+
 Wiring is the load-bearing part. The shim is **named** `cc-status`, in a
 directory off `PATH`, and its hook command is the bare absolute path with
 the home directory expanded: iTerm2 3.7.3's health check accepts a hook
