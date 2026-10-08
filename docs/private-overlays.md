@@ -491,6 +491,48 @@ profile's settings source as an additional `PreToolUse` matcher, keeping
 its `exit 2` branch intact — that branch is what makes a missing
 `~/bin/denyguard` block Bash instead of silently allowing it.
 
+### Session Status wiring — every profile's `settings.json`
+
+iTerm2's Session Status rows come from its `cc-status` binary, which its
+onboarding wires into a profile's hook events; the public
+`dot_local/libexec/cc-status-shim/` shim takes that slot so a stale
+background task stops pinning a tab at "working" (see "Session Status rows
+come from Claude Code hooks" in CLAUDE.md). The shim is identity-free; only
+the *file* that names it is private, because each profile's `settings.json`
+is overlay-owned. Do not paste `cc-status settings`'s output by hand — it
+bakes in whatever `$HOME` was when it ran. Write the command as a template
+rule in the settings source, with the home directory from chezmoi:
+
+```
+{{ .chezmoi.homeDir }}/.local/libexec/cc-status-shim/cc-status
+```
+
+iTerm2 3.7.3's health check tests the literal string with `isExecutableFile`
+and wants it to end in `/cc-status`, so `~`, `$HOME`, a `[ -x … ] || true`
+guard or any other name makes the app report its integration broken (and a
+Reinstall append a raw cc-status beside yours). The rule that works is
+stat-gated: render the shim's bare path when that file exists, iTerm2's own
+`~/.config/iterm2/cc-status` path (expanded the same way) when only the
+integration does, and the guarded `[ -x … ] && exec … || true` form
+otherwise, so a box with neither never errors per event. Apply it to the ten
+events iTerm2 wires — `SessionStart`, `SessionEnd`, `UserPromptSubmit`,
+`PreToolUse`, `PostToolUse`, `PermissionRequest`, `Notification`, `Stop`,
+`StopFailure`, `SubagentStop` — **and add `SubagentStart`**, which iTerm2
+does not wire and the shim's seat state file relies on; without it seats are
+never recorded and a Stop over a background seat paints amber or orange
+rather than its colour. `cc-status settings` still prints the event list and
+the reasoning, and is the reference for what belongs there. iTerm2 >
+Reinstall rewrites the entries back to the raw binary and Uninstall strips
+them; `dotfiles` restores them, so re-apply after either.
+
+`claude-doctor`'s `tabstatus:` line, run inside a repo of each profile, is
+the check: `shim on 11/11 events, raw cc-status on 0, none on 0` with the
+shim path printed (not `MISSING`). `raw cc-status on 1` is an event the rule
+missed; iTerm2's "Claude Code Integration Looks Broken" alert means a
+command that is not the bare expanded path, or a shim file that is not
+executable. Note that 3.7.3 reads only `~/.claude/settings.json` for its
+health check, so a profile elsewhere is judged by the doctor, not the alert.
+
 ### Secrets — `~/.extra` from `private_dot_extra.tmpl` (personal overlay)
 
 Never a value, only a 1Password reference; chezmoi resolves it at apply time
