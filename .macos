@@ -33,6 +33,40 @@ else
 	echo "Skipping computer name configuration (COMPUTER_NAME not set)."
 fi
 
+# Touch ID for sudo. /etc/pam.d/sudo_local is Apple's own hook for this: it
+# survives OS updates where /etc/pam.d/sudo does not, and the template beside
+# it ships with the pam_tid line commented out. Created from the template when
+# missing, appended to when present without the line, left alone otherwise.
+if ! grep -Eqs '^auth[[:space:]]+sufficient[[:space:]]+pam_tid\.so' /etc/pam.d/sudo_local; then
+	if [[ -f /etc/pam.d/sudo_local ]]; then
+		printf 'auth       sufficient     pam_tid.so\n' | sudo tee -a /etc/pam.d/sudo_local >/dev/null
+	elif [[ -f /etc/pam.d/sudo_local.template ]]; then
+		sed 's/^#auth/auth/' /etc/pam.d/sudo_local.template | sudo tee /etc/pam.d/sudo_local >/dev/null
+	else
+		echo "Skipping Touch ID for sudo (no /etc/pam.d/sudo_local.template on this macOS)."
+	fi
+fi
+
+# One touch for everything. sudo caches a tty-less authorisation per parent
+# process, so a tool that runs sudo once per step from fresh processes
+# (Ansible's local connection, say) raises a Touch ID prompt for every step —
+# measured at ten in one run. A global timestamp makes one touch cover every
+# sudo on the machine. The timeout is taste, not part of the fix: `global`
+# alone cures the per-process prompts; export SUDO_TIMESTAMP_TIMEOUT (minutes)
+# to override the 60 here. The file is validated by visudo BEFORE it is
+# installed, at the 0440 sudo expects, so a bad file never reaches sudoers.d.
+if ! sudo grep -qs 'timestamp_type=global' /etc/sudoers.d/timestamp \
+	|| [[ "$(stat -f %Lp /etc/sudoers.d/timestamp 2>/dev/null)" != 440 ]]; then
+	sudoers_tmp="$(mktemp)"
+	printf 'Defaults timestamp_type=global\nDefaults timestamp_timeout=%s\n' "${SUDO_TIMESTAMP_TIMEOUT:-60}" > "$sudoers_tmp"
+	if visudo -cf "$sudoers_tmp" >/dev/null 2>&1; then
+		sudo install -m 0440 -o root -g wheel "$sudoers_tmp" /etc/sudoers.d/timestamp
+	else
+		echo "Skipping the global sudo timestamp: visudo rejected the generated file."
+	fi
+	rm -f "$sudoers_tmp"
+fi
+
 # Disable the sound effects on boot (Apple Silicon)
 sudo nvram StartupMute=%01
 

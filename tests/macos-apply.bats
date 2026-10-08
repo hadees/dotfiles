@@ -30,3 +30,21 @@ setup() {
 @test "highlight color is set" {
   [ "$(defaults read NSGlobalDomain AppleHighlightColor)" = "0.764700 0.976500 0.568600" ]
 }
+
+@test "Touch ID for sudo is enabled in sudo_local" {
+  grep -Eq '^auth[[:space:]]+sufficient[[:space:]]+pam_tid\.so' /etc/pam.d/sudo_local
+}
+
+@test "the global sudo timestamp is in effect and its file parses" {
+  sudo -n visudo -cf /etc/sudoers.d/timestamp
+  sudo -n -l | grep -q 'timestamp_type=global'
+}
+
+@test ".macos is idempotent for the sudo settings" {
+  cd "$BATS_TEST_DIRNAME/.."
+  ./.macos > "$BATS_TEST_TMPDIR/macos2.log" 2>&1
+  # Anchored: the template's commented-out line also says pam_tid.so.
+  [ "$(grep -Ec '^auth[[:space:]]+sufficient[[:space:]]+pam_tid\.so' /etc/pam.d/sudo_local)" = 1 ]
+  [ "$(sudo -n grep -c 'timestamp_type' /etc/sudoers.d/timestamp)" = 1 ]
+  [ "$(stat -f %Lp /etc/sudoers.d/timestamp)" = 440 ]
+}
