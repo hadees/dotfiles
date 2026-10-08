@@ -220,6 +220,10 @@ make_verifiable_app() {
   sed -n 's/^sdef //p' "$manifest" > "$APP/Contents/Resources/iTerm2.sdef"
   while read -r u; do : > "$APP/Contents/Resources/utilities/$u"; done \
     < <(sed -n 's/^util //p' "$manifest")
+  # utilstr facts are strings inside a named utility; a text file stands in
+  # for the binary, one recorded string per line.
+  while read -r u s; do printf '%s\n' "$s" >> "$APP/Contents/Resources/utilities/$u"; done \
+    < <(sed -n 's/^utilstr //p' "$manifest")
   # it2tip carries the app's own feature tour; the manifest records how many
   # entries it has, so the fake needs exactly that many.
   local n
@@ -241,7 +245,7 @@ make_verifiable_app() {
   [[ "$output" == *"— matches"* ]]
   [[ "$output" == *"OK - every recorded fact still holds"* ]]
   # Each class of fact was actually exercised, not silently skipped.
-  for class in sdef binstr util info; do
+  for class in sdef binstr util utilstr info; do
     [[ "$output" == *"$class:"*"/"*" verified"* ]]
   done
 }
@@ -256,6 +260,9 @@ binstr KeptKey
 binstr RemovedKey
 util it2kept
 util it2removed
+util it2strs
+utilstr it2strs KeptUtilString
+utilstr it2strs RemovedUtilString
 tipcount 4
 info SUFeedURLForFinal https://example.invalid/kept
 EOF
@@ -266,7 +273,7 @@ EOF
   head -2 "$APP/Contents/Resources/utilities/it2tip" > "$APP/it2tip.short"
   mv "$APP/it2tip.short" "$APP/Contents/Resources/utilities/it2tip"
   sed -i.bak '/removed/d;/Removed/d' "$APP/Contents/MacOS/iTerm2" \
-    "$APP/Contents/Resources/iTerm2.sdef"
+    "$APP/Contents/Resources/iTerm2.sdef" "$APP/Contents/Resources/utilities/it2strs"
   write_info_plist "$APP" 9.9.9 "SUFeedURLForFinal https://example.invalid/moved"
 
   run bash "$SKILL/scripts/verify.sh" --manifest "$M"
@@ -279,6 +286,8 @@ EOF
   # there reports a missing package as a broken verifier.
   if command -v strings > /dev/null 2>&1; then
     [[ "$output" == *"binstr: RemovedKey"* ]]
+    [[ "$output" == *"utilstr: it2strs: RemovedUtilString"* ]]
+    [[ "$output" != *"KeptUtilString"* ]]
   fi
   [[ "$output" == *"util: it2removed"* ]]
   [[ "$output" == *"tipcount: it2tip lists 2 features, recorded as 4"* ]]

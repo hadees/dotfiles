@@ -143,6 +143,22 @@ while IFS= read -r line || [ -n "$line" ]; do
         record util fail "$rest"
       fi
       ;;
+    utilstr)
+      # A string inside one bundled utility — what cc-status reads from a
+      # hook payload, what it passes to it2. The utilities are small, so
+      # strings(1) runs per fact rather than once like the main executable.
+      name=${rest%% *}; want=${rest#* }
+      if ! command -v strings >/dev/null 2>&1; then
+        record utilstr skip
+      # Not grep -q: under pipefail its early exit hands strings(1) a
+      # SIGPIPE on any binary big enough to still be printing, and the
+      # pipeline fails on a fact that is present.
+      elif [ -r "$utils/$name" ] && strings -a "$utils/$name" 2>/dev/null | grep -xF -- "$want" >/dev/null; then
+        record utilstr ok
+      else
+        record utilstr fail "$name: $want"
+      fi
+      ;;
     info)
       key=${rest%% *}; want=${rest#* }
       got=$(plist_get "$key")
@@ -185,7 +201,7 @@ else
   say "stamp:   $stamp — INSTALLED IS $installed"
 fi
 
-for class in sdef binstr util info tipcount; do
+for class in sdef binstr util utilstr info tipcount; do
   n=${total[$class]:-0}
   [ "$n" -eq 0 ] && continue
   s=${skipped[$class]:-0}

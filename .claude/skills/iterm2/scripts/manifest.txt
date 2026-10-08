@@ -175,3 +175,37 @@ info SUFeedURLForTesting https://iterm2.com/appcasts/testing_modern.xml
 # --- Separate bundles since 3.5 ---------------------------------------
 bundle iTermAI.app
 bundle iTermBrowserPlugin.app
+
+# --- Claude Code integration (3.7) -------------------------------------
+# iTerm2 3.7 ships cc-status, a hook binary that turns Claude Code hook
+# payloads into Session Status rows, and it2, the CLI it drives. Both are
+# undocumented on iterm2.com; bin/cc-status-shim sits in front of cc-status
+# and depends on exactly these facts: the payload keys cc-status reads, the
+# it2 flag it stores the task count under, the detail text and colours it
+# paints, and the app's own symlink upkeep. Swift keeps strings of 15 bytes
+# or fewer inline, so short literals (--status, --detail, set-status) are
+# not findable here; everything below is 16 bytes or longer, or a colour.
+util cc-status
+util it2
+utilstr cc-status background_tasks
+utilstr cc-status notification_type
+utilstr cc-status permission_prompt
+utilstr cc-status last_assistant_message
+utilstr cc-status --background-tasks
+utilstr cc-status 1 background task running
+utilstr cc-status #00d75f
+utilstr cc-status #5f87ff
+utilstr cc-status #888888
+utilstr cc-status #ff9500
+utilstr it2 --background-tasks
+utilstr it2 ITERM_SESSION_ID
+binstr ccStatusSymlinkIsHealthy
+binstr ensureCCStatusSymlink
+binstr utilities/cc-status
+binstr com.iterm2.set-status
+binstr Toolbelt.Session Status
+binstr * `status=TEXT` 
+binstr * `indicator=COLOR` 
+binstr * `status-color=COLOR` 
+binstr * `detail=TEXT` 
+binstr  Sets optional detail text shown below the status (wraps up to 3 lines).

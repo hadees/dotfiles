@@ -181,6 +181,26 @@ employer-specific — profile-specific memory belongs in that profile's own
 
 ## Talking to other Claude Code sessions
 
+- **A repo you cannot see is a session you can talk to.** When I name a
+  repo, codebase, or directory this session has no access to, I already
+  know that. I am asking you to find the Claude Code session running
+  there (`ListAgents`, then `postbox list_agents` / `postbox name <dir>`)
+  and put the question or task to it — not to tell me you lack access.
+  Say you lack access only when no session is reachable there either.
+- **You are the proxy for seats that cannot message.** `plan-fable` and
+  the other subagents have no `SendMessage` or postbox tools. When I say
+  something must reach plan-fable, or plan-fable needs an answer from
+  another session, you carry it: put the inbound message in the brief
+  (or `SendMessage` to the running agent), and relay its questions and
+  answers to the other session yourself. Do not report that the agent
+  cannot reach them.
+- When I say "postbox" I mean session-to-session messaging in general,
+  whichever transport applies. Pick the route by the rules below (native
+  `SendMessage` first, mail only where it cannot reach) — do not switch to
+  mail because I used the word, and do not correct the term. While it
+  works, keep the transport out of your replies: tell me what was sent
+  and what came back, not which tool carried it. Surface the mechanics
+  only when a message could not be delivered.
 - To reach ONE other session, look first with `ListAgents` and use
   `SendMessage` if it is listed — that is the native path and always the
   first choice. Sessions in this same profile are listed there.
