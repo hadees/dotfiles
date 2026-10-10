@@ -509,6 +509,34 @@ in another account's history and resume *nothing* instead of failing.
 a repo resolving somewhere its origin does not explain should say why — and
 `routes` marks the pinned cell with `*` like the other routers.
 
+**A second session in the same directory is asked about, not refused.** Two
+sessions in one directory are two writers on one tree, and a fresh prompt
+gives no sign the first is there. `claude()` therefore reads the registry
+every profile keeps of its live sessions — `<config dir>/sessions/<pid>.json`,
+removed on exit (observed layout, not an interface; postbox reads the same
+files) — through `claude_sessions_here`, which checks **every** mapped profile
+plus the directory this launch resolved to (a literal `CLAUDE_PROFILE` or
+per-repo pin can sit outside every mapping), since the tree is shared
+whichever login is running in it. A hit lists each
+session (name, pid, status, profile) and asks `Start another here anyway?
+[y/N]`. Only a launch somebody is sitting at is asked: no terminal on stdin or
+stderr, `-p`/`--print`, a help or version flag, or a first argument shaped like
+a subcommand (`claude mcp …` — by shape, one bare lowercase word, because a
+list of the CLI's subcommands would go stale; the price is that a one-word
+prompt, `claude fix`, is not asked either) passes untouched, so hooks, the
+postbox courier and anything piped never block on a question nobody can
+answer. It fails open, and it matches the directory exactly: a session started
+in a subdirectory of the same checkout is not seen. Running several sessions
+in one checkout on purpose is a workflow, not a mistake, so `git config
+claude.second-session-check false` turns the question off — policy in
+machine-local git config, like the push gates. `claude-doctor`'s `running:`
+line lists the sessions the wrapper would find here — not whether a given
+launch would be asked, which also depends on how it is invoked — and says
+when the check is off. Testing the prompt
+needs a pseudo-terminal, and the two obvious tools both fail on macOS — zsh's
+`zpty` returns short reads, and `pty.spawn` before Python 3.10 never returns
+once the child exits — so `tests/claude-profiles.bats` forks one by hand.
+
 **Each profile must be logged in once** with `claude auth login`; credentials
 live in the macOS Keychain and cannot be copied between profiles — verified,
 copying `.claude.json` does not carry a session.
