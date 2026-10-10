@@ -13,6 +13,11 @@
 # tests/chezmoi.bats guards that the file renders at all.
 
 setup() {
+  # python3 is resolved to its real interpreter before HOME is sandboxed, and
+  # re-exposed under a stub on PATH below: an asdf shim (as on this machine)
+  # resolves relative to $HOME and exits 126 the moment that is overridden.
+  REAL_PYTHON3=''
+  REAL_PYTHON3="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null)" || REAL_PYTHON3=''
   export HOME="$BATS_TEST_TMPDIR/home"
   mkdir -p "$HOME"
   export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig"
@@ -41,6 +46,10 @@ setup() {
   printf '#!/bin/sh\necho "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR-UNSET}"\n' \
     > "$BATS_TEST_TMPDIR/bin/claude"
   chmod +x "$BATS_TEST_TMPDIR/bin/claude"
+  if [ -n "$REAL_PYTHON3" ]; then
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$REAL_PYTHON3" > "$BATS_TEST_TMPDIR/bin/python3"
+    chmod +x "$BATS_TEST_TMPDIR/bin/python3"
+  fi
   export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
 
   DOTFUNCTIONS="$BATS_TEST_DIRNAME/../dot_functions"
@@ -160,14 +169,8 @@ claude_in() {
 
 @test "claude-doctor: names the deny guard's rule count and fail-closed wiring" {
   repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
-  # denyguard itself needs a real python3: an asdf shim (as on this
-  # machine) resolves relative to $HOME and breaks under the sandboxed one
-  # these tests already use, which has nothing to do with the doctor line
-  # under test.
-  command -v python3 >/dev/null || skip "python3 not installed"
-  REAL_PYTHON3="$(python3 -c 'import sys; print(sys.executable)')"
-  printf '#!/bin/sh\nexec "%s" "$@"\n' "$REAL_PYTHON3" > "$BATS_TEST_TMPDIR/bin/python3"
-  chmod +x "$BATS_TEST_TMPDIR/bin/python3"
+  # denyguard itself needs a real python3 (see setup).
+  [ -n "$REAL_PYTHON3" ] || skip "python3 not installed"
   ln -s "$BATS_TEST_DIRNAME/../bin/executable_denyguard" "$BATS_TEST_TMPDIR/bin/denyguard"
 
   mkdir -p "$HOME/.claude-personal"
