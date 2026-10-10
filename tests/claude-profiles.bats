@@ -13,6 +13,11 @@
 # tests/chezmoi.bats guards that the file renders at all.
 
 setup() {
+  # python3 is resolved to its real interpreter before HOME is sandboxed, and
+  # re-exposed under a stub on PATH below: an asdf shim (as on this machine)
+  # resolves relative to $HOME and exits 126 the moment that is overridden.
+  REAL_PYTHON3=''
+  REAL_PYTHON3="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null)" || REAL_PYTHON3=''
   export HOME="$BATS_TEST_TMPDIR/home"
   mkdir -p "$HOME"
   export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig"
@@ -41,6 +46,10 @@ setup() {
   printf '#!/bin/sh\necho "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR-UNSET}"\n' \
     > "$BATS_TEST_TMPDIR/bin/claude"
   chmod +x "$BATS_TEST_TMPDIR/bin/claude"
+  if [ -n "$REAL_PYTHON3" ]; then
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$REAL_PYTHON3" > "$BATS_TEST_TMPDIR/bin/python3"
+    chmod +x "$BATS_TEST_TMPDIR/bin/python3"
+  fi
   export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
 
   DOTFUNCTIONS="$BATS_TEST_DIRNAME/../dot_functions"
@@ -147,7 +156,7 @@ claude_in() {
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: claude: function"* ]]
-  [[ "$output" == *"defined: ok (6 helpers)"* ]]
+  [[ "$output" == *"defined: ok (7 helpers)"* ]]
   [[ "$output" == *"binary:  $BATS_TEST_TMPDIR/bin/claude"* ]]
   [[ "$output" == *"account: personal-account"* ]]
   [[ "$output" == *"launch:  $HOME/.claude-personal"* ]]
@@ -160,14 +169,8 @@ claude_in() {
 
 @test "claude-doctor: names the deny guard's rule count and fail-closed wiring" {
   repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
-  # denyguard itself needs a real python3: an asdf shim (as on this
-  # machine) resolves relative to $HOME and breaks under the sandboxed one
-  # these tests already use, which has nothing to do with the doctor line
-  # under test.
-  command -v python3 >/dev/null || skip "python3 not installed"
-  REAL_PYTHON3="$(python3 -c 'import sys; print(sys.executable)')"
-  printf '#!/bin/sh\nexec "%s" "$@"\n' "$REAL_PYTHON3" > "$BATS_TEST_TMPDIR/bin/python3"
-  chmod +x "$BATS_TEST_TMPDIR/bin/python3"
+  # denyguard itself needs a real python3 (see setup).
+  [ -n "$REAL_PYTHON3" ] || skip "python3 not installed"
   ln -s "$BATS_TEST_DIRNAME/../bin/executable_denyguard" "$BATS_TEST_TMPDIR/bin/denyguard"
 
   mkdir -p "$HOME/.claude-personal"
@@ -739,4 +742,146 @@ NO_OPENAS_PATH="$BATS_TEST_TMPDIR/bin:/usr/bin:/bin"
   [[ "$output" == *"browser: <no claude.~/.claude.browser pin — links open in the system default browser>"* ]]
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; BROWSER=firefox claude-doctor"
   [[ "$output" == *"browser: <no claude.~/.claude.browser pin — links open in BROWSER=firefox>"* ]]
+}
+
+# --- a second session in the same directory ---------------------------------
+#
+# claude() asks before launching where a session is already live. The registry
+# it reads is `<profile dir>/sessions/<pid>.json`; these fixtures write that
+# file with a pid that is certainly alive (this bats process) or certainly not
+# (a reaped child).
+
+# make_session <profile dir> <pid> <cwd> [name]
+make_session() {
+  mkdir -p "$1/sessions"
+  printf '{"pid":%s,"sessionId":"fixture","cwd":"%s","kind":"interactive","name":"%s","status":"idle"}\n' \
+    "$2" "$3" "${4:-fixture-session}" > "$1/sessions/$2.json"
+}
+
+# Run `claude "$@"` in $PTY_DIR on a pseudo-terminal — the question is only
+# asked of a launch somebody is sitting at — and answer it with $PTY_ANSWER,
+# typed ahead so a launch that asks nothing simply leaves it unread. A
+# hand-rolled fork-and-read rather than the obvious tools: zsh's zpty returns
+# short reads on macOS, and pty.spawn before Python 3.10 never returns there
+# once the child exits.
+pty_claude() {
+  [ -n "$REAL_PYTHON3" ] || skip "python3 not installed"
+  printf "source '%s'; cd '%s'; claude %s; print rc=\$?\n" "$DOTFUNCTIONS" "$PTY_DIR" "$*" \
+    > "$BATS_TEST_TMPDIR/pty-inner.zsh"
+  run python3 -c '
+import os, pty, sys
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp("zsh", ["zsh", sys.argv[1]])
+os.write(fd, sys.argv[2].encode())
+while True:
+    try:
+        data = os.read(fd, 4096)
+    except OSError:
+        break
+    if not data:
+        break
+    sys.stdout.buffer.write(data)
+os.waitpid(pid, 0)
+' "$BATS_TEST_TMPDIR/pty-inner.zsh" "$PTY_ANSWER"
+}
+
+@test "sessions: lists a live session in this directory, in any mapped profile" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  true & dead=$!
+  wait "$dead"
+  make_session "$HOME/.claude-personal" "$$" "$repo" in-this-dir
+  make_session "$HOME/.claude-personal" "$dead" "$repo" exited
+  make_session "$HOME/.claude" "$PPID" "$BATS_TEST_TMPDIR" elsewhere
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude_sessions_here"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$$	$HOME/.claude-personal	in-this-dir	idle" ]
+  # The other profile's session is found from its own directory too.
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$BATS_TEST_TMPDIR'; claude_sessions_here"
+  [ "$output" = "$PPID	$HOME/.claude	elsewhere	idle" ]
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"running: 1 in this directory (pid $$) — claude asks before starting another"* ]]
+}
+
+@test "sessions: nothing live here prints nothing, and the doctor says so" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude_sessions_here"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"running: <no session in this directory>"* ]]
+}
+
+@test "sessions: found with no profile mapped at all, and in a literal CLAUDE_PROFILE directory" {
+  # A public-only clone has no claude.profile.* mapping: the default
+  # directory is still looked in, and so is a directory only this launch names.
+  git config --file "$GIT_CONFIG_GLOBAL" --unset claude.profile.work-account
+  git config --file "$GIT_CONFIG_GLOBAL" --unset claude.profile.personal-account
+  repo=$(make_repo 'git@github.com:someone-else/some-repo.git')
+  make_session "$HOME/.claude" "$$" "$repo" default-dir
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude_sessions_here"
+  [ "$output" = "$$	$HOME/.claude	default-dir	idle" ]
+  rm -r "$HOME/.claude/sessions"
+  make_session "$BATS_TEST_TMPDIR/custom-profile" "$$" "$repo" literal-dir
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude_sessions_here"
+  [ -z "$output" ]
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; CLAUDE_PROFILE='$BATS_TEST_TMPDIR/custom-profile' claude-doctor"
+  [[ "$output" == *"running: 1 in this directory (pid $$) — claude asks before starting another"* ]]
+  export CLAUDE_PROFILE="$BATS_TEST_TMPDIR/custom-profile"
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" == *"literal-dir  pid $$  idle  (custom-profile)"* ]]
+  [[ "$output" == *"rc=1"* ]]
+}
+
+@test "claude: a launch with no terminal is never asked, session or not" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  make_session "$HOME/.claude-personal" "$$" "$repo"
+  claude_in "$repo"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=$HOME/.claude-personal" ]
+}
+
+@test "claude: warns about a live session here, and declining launches nothing" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  make_session "$HOME/.claude-personal" "$$" "$repo" in-this-dir
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" == *"claude: already running in $repo:"* ]]
+  [[ "$output" == *"in-this-dir  pid $$  idle  (.claude-personal)"* ]]
+  [[ "$output" == *"rc=1"* ]]
+  [[ "$output" != *"CLAUDE_CONFIG_DIR="* ]]
+}
+
+@test "claude: answering y gets past the warning and launches" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  make_session "$HOME/.claude-personal" "$$" "$repo"
+  PTY_DIR=$repo PTY_ANSWER=y pty_claude
+  [[ "$output" == *"claude: already running in $repo:"* ]]
+  [[ "$output" == *"CLAUDE_CONFIG_DIR=$HOME/.claude-personal"* ]]
+  [[ "$output" == *"rc=0"* ]]
+}
+
+@test "claude: claude.second-session-check false turns the question off, and the doctor says so" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  make_session "$HOME/.claude-personal" "$$" "$repo"
+  git config --file "$GIT_CONFIG_GLOBAL" claude.second-session-check false
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" != *"already running"* ]]
+  [[ "$output" == *"CLAUDE_CONFIG_DIR=$HOME/.claude-personal"* ]]
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"running: 1 in this directory (pid $$) — claude.second-session-check is false, so claude does not ask"* ]]
+}
+
+@test "claude: a subcommand, print mode or a version flag is not a second session" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  make_session "$HOME/.claude-personal" "$$" "$repo"
+  for args in 'mcp list' '-p hello' '--version' '--model sonnet --print hello'; do
+    PTY_DIR=$repo PTY_ANSWER=n pty_claude $args
+    [[ "$output" != *"already running"* ]]
+    [[ "$output" == *"CLAUDE_CONFIG_DIR=$HOME/.claude-personal"* ]]
+  done
+  # No session here: an ordinary launch is not asked either.
+  rm -r "$HOME/.claude-personal/sessions"
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" != *"already running"* ]]
+  [[ "$output" == *"rc=0"* ]]
 }

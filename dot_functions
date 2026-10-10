@@ -349,8 +349,32 @@ function bin_trace() {
 # or a literal directory. With no mapping at all, this is plain `claude` on the
 # default ~/.claude config dir.
 function claude() {
-	local dir alias opener;
+	local dir alias opener here line;
+	local -a sess;
 	dir="$(claude_profile_dir)" || dir='';
+	# A second session in a directory that already has one puts two writers
+	# on the same tree, and nothing about a fresh prompt says the first is
+	# there. So say so, and ask — a warning with a way past it, never a
+	# refusal. Only a launch somebody is sitting at is asked: no terminal,
+	# print mode, a version/help flag, or a first argument shaped like a
+	# subcommand (`claude mcp …` — the shape, because a list of them would go
+	# stale) all pass untouched, so hooks, pipes and headless callers never
+	# block on a question nobody can answer. A helper that fails or finds
+	# nothing launches as before. Running several sessions in one checkout
+	# on purpose is a workflow, not a mistake: `git config
+	# claude.second-session-check false` turns the question off.
+	if [[ -t 0 && -t 2 && ! $1 =~ '^[a-z][a-z-]*$' ]] && (( ! ${argv[(I)(-p|--print|-h|--help|-v|--version)]} )) && [[ "$(command git config --get claude.second-session-check 2>/dev/null)" != false ]]; then
+		here="$(claude_sessions_here $dir 2>/dev/null)";
+		if [[ -n $here ]]; then
+			print -ru2 -- "claude: already running in $PWD:";
+			for line in ${(f)here}; do
+				sess=("${(@ps:\t:)line}");
+				print -ru2 -- "  ${sess[3]}  pid ${sess[1]}  ${sess[4]}  (${sess[2]:t})";
+			done;
+			read -q '?Start another here anyway? [y/N] ' || { print -u2; return 1; };
+			print -u2;
+		fi;
+	fi;
 	(
 		# The default profile must run with CLAUDE_CONFIG_DIR UNSET, not set
 		# to its own path — setting the variable at all switches Claude Code
@@ -417,6 +441,39 @@ function claude() {
 		export PONYTAIL_SUBAGENT_MATCHER="${PONYTAIL_SUBAGENT_MATCHER:-^(work-|unstick-)}";
 		exec command claude "$@";
 	)
+}
+
+# The live Claude Code sessions whose cwd is this directory, across every
+# profile — a second writer in the tree is the problem whichever login it
+# runs under. One line each: "<pid>\t<profile dir>\t<name>\t<status>". Read
+# from the registry each profile keeps in `<config dir>/sessions/<pid>.json`
+# and clears on exit (observed layout, not a documented interface; postbox
+# reads the same files). Arguments are further profile directories to look in:
+# the one this launch resolved to, which a literal CLAUDE_PROFILE or per-repo
+# pin can put outside every mapping. Shared by claude() and claude-doctor.
+function claude_sessions_here() {
+	emulate -L zsh;
+	local here=${PWD:A} d f json pid name state;
+	local -aU dirs;
+	dirs=("$HOME/.claude" $CLAUDE_CONFIG_DIR $@ ${(f)"$(command git config --get-regexp '^claude\.profile\.' 2>/dev/null | command cut -d' ' -f2-)"});
+	dirs=(${dirs/#\~/$HOME});
+	for d in $dirs; do
+		for f in $d/sessions/<->.json(N); do
+			# ponytail: regex over the JSON text, since this runs on every
+			# launch and a parser costs a process. A cwd holding a JSON
+			# escape (a quote, a backslash, non-ASCII) is not matched, so
+			# that session goes unreported; parse properly if it ever bites.
+			json="$(<$f)" 2>/dev/null || continue;
+			[[ $json =~ '"cwd"[[:space:]]*:[[:space:]]*"([^"]*)"' && ${match[1]:A} == $here ]] || continue;
+			[[ $json =~ '"pid"[[:space:]]*:[[:space:]]*([0-9]+)' ]] || continue;
+			pid=$match[1];
+			kill -0 $pid 2>/dev/null || continue;
+			name=${here:t} state=-;
+			[[ $json =~ '"name"[[:space:]]*:[[:space:]]*"([^"]*)"' ]] && name=$match[1];
+			[[ $json =~ '"status"[[:space:]]*:[[:space:]]*"([^"]*)"' ]] && state=$match[1];
+			print -r -- "$pid"$'\t'"$d"$'\t'"$name"$'\t'"$state";
+		done;
+	done;
 }
 
 # Can a link opened from this shell land in a browser window somebody is
@@ -573,7 +630,7 @@ function claude-as() {
 function claude-doctor() {
 	local origin acct map dir cred email slug pin;
 	print -r -- "wrapper: $(whence -w claude)";
-	print -r -- "defined: $(defined_trace claude_profile_dir claude_browser_alias claude_browser_can_open gh_account_for_cwd git_origin_slug bin_trace)";
+	print -r -- "defined: $(defined_trace claude_profile_dir claude_sessions_here claude_browser_alias claude_browser_can_open gh_account_for_cwd git_origin_slug bin_trace)";
 	print -r -- "binary:  $(bin="$(whence -p claude)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH')";
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
@@ -605,6 +662,19 @@ function claude-doctor() {
 	else
 		dir="$HOME/.claude"; bare=1;
 		print -r -- "launch:  $dir (bare claude fallback)";
+	fi;
+	# What claude() would ask about before launching here: sessions already
+	# live in this directory, in any profile.
+	local -a running;
+	running=(${(f)"$(claude_sessions_here $dir 2>/dev/null)"});
+	if (( ${#running} )); then
+		if [[ "$(command git config --get claude.second-session-check 2>/dev/null)" == false ]]; then
+			print -r -- "running: ${#running} in this directory (pid ${(j:, :)running%%$'\t'*}) — claude.second-session-check is false, so claude does not ask";
+		else
+			print -r -- "running: ${#running} in this directory (pid ${(j:, :)running%%$'\t'*}) — claude asks before starting another";
+		fi;
+	else
+		print -r -- "running: <no session in this directory>";
 	fi;
 	if [[ $dir == "$HOME/.claude" ]]; then
 		# The default profile authenticates via the shared Keychain entry and
