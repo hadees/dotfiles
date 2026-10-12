@@ -280,7 +280,7 @@ workset_fn() { # subcommand...
 @test "hook start: prints the brief and notes when WORKSET is set, nothing otherwise" {
   mk_repo octo-alpha
   git config --file "$GIT_CONFIG_GLOBAL" --add workset.demo.member '~/code/octo-alpha'
-  git config --file "$GIT_CONFIG_GLOBAL" --add workset.demo.note 'grovel lands first'
+  git config --file "$GIT_CONFIG_GLOBAL" --add workset.demo.note 'octo-alpha lands first'
   "$WS" checkout demo feat/probe >/dev/null
 
   run "$WS" hook start <<< '{}'
@@ -290,7 +290,7 @@ workset_fn() { # subcommand...
   [[ "$output" == *"demo on feat/probe"* ]]
   [[ "$output" == *"primary"* ]]
   [[ "$output" == *"feat-probe -> "*"octo-alpha"* ]]
-  [[ "$output" == *"grovel lands first"* ]]
+  [[ "$output" == *"octo-alpha lands first"* ]]
 }
 
 @test "settings: prints valid-looking JSON with the fail-open guard, never denyguard's fail-closed one" {
