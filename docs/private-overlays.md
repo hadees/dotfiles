@@ -425,6 +425,24 @@ the next boot (`sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs
 sometimes works without one, varying by macOS release). The symlink dangles
 harmlessly while nothing is mounted.
 
+### Remote MCP servers — a bearer-token server per profile
+
+```gitconfig
+[remote-mcp "<server>"]
+	url     = https://<host>/mcp           # the server's MCP endpoint
+	token   = ~/.claude-<name> <1Password secret reference>   # repeatable
+	tailnet = <tailnet-name>               # optional; a tailnet installed with `tailnet install`
+	health  = /<path>                      # optional; `remote-mcp check` relays it verbatim
+```
+
+`<server>` is the name sessions call it by (`mcp__<server>__*`), so pick the
+role it plays rather than the project that implements it. Each overlay pins
+only its own profiles: the section composes across overlays, and a profile
+with no `token` line is simply not connected. The reference is passed to
+`op read` untouched — see the onepassword skill for its form. Then, once per
+machine, `remote-mcp connect`; `remote-mcp status` shows every profile's
+state and `remote-mcp check <server>` asks the server for real.
+
 ### Composed files — `~/.ssh/config` and `~/.config/git/allowed_signers`
 
 Both mix identities *inside one file*, so neither can live whole anywhere:

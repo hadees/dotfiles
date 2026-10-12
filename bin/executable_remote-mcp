@@ -1,0 +1,547 @@
+#!/bin/sh
+# remote-mcp — register a remote, bearer-token MCP server in Claude Code
+# profiles, and carry it across a tailnet when that is where it lives.
+#
+# `claude mcp add` covers a public server with a static header. It does not
+# cover the server you run yourself: one whose token must not sit in a config
+# file, and which is only reachable on a tailnet the Tailscale app may not be
+# on right now. This fills those two gaps and nothing else.
+#
+# The token never lands on disk. Each profile's entry names this script as
+# its `headersHelper`; Claude Code runs it before every connection with
+# CLAUDE_CODE_MCP_SERVER_NAME (which server) and CLAUDE_CONFIG_DIR (which
+# profile; unset means the default directory) in its environment, and it
+# answers with a token read from 1Password at that moment. Measured on Claude
+# Code 2.1.296: the helper may carry arguments, `claude mcp add-json` keeps
+# the field (`claude mcp add` has no flag for it), and the helper gets about
+# ten seconds — a 1Password approval left unanswered past that sends the
+# request with no Authorization header at all, and the server says 401.
+#
+# The tailnet half exists because of a second measurement: Claude Code's MCP
+# client does honour HTTPS_PROXY, but only for the whole process — the API
+# connection went through it too, and every command the session runs would
+# inherit it. So a server with `tailnet` set gets a forwarder of its own
+# instead: a plain-HTTP listener on loopback that relays each request over
+# TLS, through that tailnet's userspace daemon (bin/tailnet), to the real
+# name. The client is registered against the loopback URL; the certificate
+# and the Host header the far side sees are the real ones. The forwarder
+# holds no secret, answers only loopback Host names, and refuses anything
+# carrying an Origin header — a web page can reach loopback, and has no
+# business here. `headers` starts it when it is not answering, so nothing is
+# installed and nothing runs until a session wants the server.
+#
+# That hop is plain HTTP on loopback, and the forwarder is recognised by a
+# line anyone could answer, so this assumes what the tailnet daemons' own
+# unauthenticated loopback proxies already assume: a single-user machine. On
+# a host other people log in to, another user who took the port first would
+# be handed the token — do not pin a `tailnet` server there as it stands.
+#
+# Nothing here names a server. Everything comes from machine-local git
+# config, which the private overlays supply (see CLAUDE.md):
+#
+#   [remote-mcp "<server>"]          # the name sessions use it by — it is
+#                                    # the tool prefix, mcp__<server>__*
+#     url     = https://host/mcp     # required
+#     token   = <profile-dir> <1Password secret reference>
+#                                    # repeatable, one per profile; a profile
+#                                    # with no pin is not connected
+#     tailnet = <name>               # optional: relay through this tailnet
+#     port    = <n>                  # optional: the forwarder's loopback
+#                                    # port (else picked at connect, recorded)
+#     health  = <path>               # optional: a path `check` fetches and
+#                                    # relays verbatim
+#
+# Usage:
+#   remote-mcp connect [server...]     add each configured server to every
+#                                      profile it has a token pin for (user
+#                                      scope); re-adds an entry gone stale
+#   remote-mcp disconnect [server...]  remove them, and stop the forwarder
+#   remote-mcp status                  servers, routes, forwarders, profiles —
+#                                      reads only; no token, no network
+#   remote-mcp check <server> [profile-dir]
+#                                      read that profile's token and ask the
+#                                      server (and its health path) for real
+#   remote-mcp headers                 the Claude Code headers helper
+#   remote-mcp forward <server>        run a server's forwarder in the
+#                                      foreground
+#   remote-mcp dir                     the state directory
+set -u
+
+die() { printf 'remote-mcp: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'remote-mcp: %s\n' "$*" >&2; }
+usage() { sed -n '/^# Usage:/,/^set -u/{ /^set -u/d; s/^# \{0,1\}//p; }' "$0" >&2; exit 2; }
+
+STATE=${REMOTE_MCP_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/remote-mcp}
+HOST=127.0.0.1
+PORT_BASE=8780
+TAB=$(printf '\t')
+
+self_path() { # absolute path to this script — it is written into each profile's config
+  case $0 in
+    /*) printf '%s\n' "$0";;
+    */*) printf '%s/%s\n' "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)" "$(basename -- "$0")";;
+    *) command -v -- "$0" || printf '%s\n' "$0";;
+  esac
+}
+
+# --- configuration -----------------------------------------------------------
+
+# Only the user's own config is read, never the repo's the session happens
+# to stand in: these keys decide where a token is sent and which secret is
+# read, and a checkout's .git/config is not the place either is decided.
+# --includes because the overlays' files are included from ~/.gitconfig.
+gitc() { git config --global --includes "$@" 2>/dev/null; }
+
+cfg() { gitc --get "remote-mcp.$1.$2"; } # server key
+
+valid_name() {
+  case ${1-} in ''|*[!A-Za-z0-9_-]*) return 1;; esac
+}
+
+# Every configured server. A name git accepts but this does not is warned
+# about, never silently dropped.
+servers() {
+  gitc --name-only --get-regexp '^remote-mcp\..*\.url$' | while IFS= read -r k; do
+    s=${k#remote-mcp.}; s=${s%.url}
+    if valid_name "$s"; then printf '%s\n' "$s"; else warn "ignoring server '$s' (letters, digits, - and _)"; fi
+  done
+}
+
+need_python() { command -v python3 >/dev/null 2>&1 || die 'python3 not found on PATH'; }
+
+need_server() {
+  valid_name "${1-}" || die "invalid server name '${1-}' (letters, digits, - and _)"
+  [ -n "$(cfg "$1" url)" ] || die "$1: not configured (remote-mcp.$1.url)"
+}
+
+# A server's token pins, one "profile-dir<TAB>reference" per line.
+pins() { # server
+  gitc --get-all "remote-mcp.$1.token" | while IFS= read -r line; do
+    d=${line%% *}; ref=${line#* }
+    if [ "$d" = "$line" ] || [ -z "$ref" ]; then
+      warn "$1: ignoring a token pin that is not '<profile-dir> <reference>'"
+      continue
+    fi
+    case $d in "~") d=$HOME;; "~/"*) d="$HOME/${d#\~/}";; esac
+    printf '%s\t%s\n' "${d%/}" "$ref"
+  done
+}
+
+ref_for() { # server profile-dir
+  pins "$1" | awk -F'\t' -v d="$2" '$1 == d { print $2; exit }'
+}
+
+# The profile a session runs under: CLAUDE_CONFIG_DIR, and the default
+# directory when the wrapper left it unset.
+profile_dir() { d=${CLAUDE_CONFIG_DIR:-$HOME/.claude}; printf '%s\n' "${d%/}"; }
+
+url_origin() { s=${1%%://*}; r=${1#*://}; printf '%s://%s\n' "$s" "${r%%/*}"; }
+url_path() { r=${1#*://}; case $r in */*) printf '/%s\n' "${r#*/}";; *) printf '/\n';; esac; }
+
+# --- the forwarder -------------------------------------------------------------
+
+port_of() { # server -> the pinned port, else the recorded one, else nothing
+  p=$(cfg "$1" port)
+  [ -n "$p" ] || p=$(cat "$STATE/$1/port" 2>/dev/null)
+  printf '%s\n' "$p"
+}
+
+port_in_use() { # port -> 0 if another server recorded it or something listens
+  for f in "$STATE"/*/port; do
+    [ -f "$f" ] && [ "$(cat "$f")" = "$1" ] && return 0
+  done
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1 && return 0
+  fi
+  return 1
+}
+
+# No fixed default: a port chosen because it was free on one machine is a
+# constant waiting to collide on another. First free from the base, recorded,
+# reused — the URL each profile is registered against has to stay put.
+allocate_port() { # server
+  p=$(port_of "$1")
+  if [ -z "$p" ]; then
+    p=$PORT_BASE
+    while port_in_use "$p"; do p=$((p + 1)); done
+    mkdir -p "$STATE/$1" && chmod 700 "$STATE" && printf '%s\n' "$p" > "$STATE/$1/port" \
+      || die "$1: cannot record a port under $STATE"
+  fi
+  case $p in *[!0-9]*) die "$1: port must be a number";; esac
+}
+
+# The URL a profile is registered against: the real one, or the forwarder's.
+client_origin() { # server
+  if [ -n "$(cfg "$1" tailnet)" ]; then
+    printf 'http://%s:%s\n' "$HOST" "$(port_of "$1")"
+  else
+    url_origin "$(cfg "$1" url)"
+  fi
+}
+client_url() { printf '%s%s\n' "$(client_origin "$1")" "$(url_path "$(cfg "$1" url)")"; }
+
+# What a forwarder serving the CURRENT config says about itself. Comparing
+# this with what the port answers is how a stale forwarder (the URL or the
+# tailnet changed under it) and a stranger on the port are both told apart
+# from the right one. `tailnet port` dies with its own remediation line when
+# the tailnet is not installed; that message is the diagnosis, so it is let
+# through.
+forwarder_want() { # server
+  tp=$(tailnet port "$(cfg "$1" tailnet)") || return 1
+  printf '%s %s %s:%s\n' "$1" "$(url_origin "$(cfg "$1" url)")" "$HOST" "$tp"
+}
+
+# What the listener on a port says about itself: the identity line, then its
+# pid. Nothing when nothing answers, or when what answers is not a forwarder.
+forwarder_says() { # port
+  python3 - "$HOST" "$1" <<'PY' 2>/dev/null
+import sys, urllib.request
+try:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open("http://%s:%s/.remote-mcp" % (sys.argv[1], sys.argv[2]), timeout=1) as r:
+        sys.stdout.write(r.read(500).decode())
+except Exception:
+    pass
+PY
+}
+forwarder_id() { forwarder_says "$1" | sed -n 1p; }
+
+# The pid signalled is the one the listener on this server's port reports for
+# itself, never a number read back from a file: a pid file outlives its
+# process and the number is handed out again. (Asking `ps` what a pid is
+# would do too, but not every box has one — a minimal container does not.)
+# It waits for the port to go quiet, since the replacement binds the same one.
+stop_forwarder() { # server
+  sp=$(port_of "$1")
+  if [ -n "$sp" ]; then
+    pid=$(forwarder_says "$sp" | sed -n 2p)
+    case $pid in ''|*[!0-9]*) ;; *)
+      kill "$pid" 2>/dev/null
+      i=0
+      while [ "$i" -lt 20 ] && [ -n "$(forwarder_says "$sp")" ]; do sleep 0.1; i=$((i + 1)); done;;
+    esac
+  fi
+  rm -f "$STATE/$1/pid"
+}
+
+ensure_forwarder() { # server -> returns once a forwarder for the current config answers
+  [ -n "$(cfg "$1" tailnet)" ] || return 0
+  need_python
+  port=$(port_of "$1")
+  [ -n "$port" ] || die "$1: no forwarder port recorded (run: remote-mcp connect $1)"
+  want=$(forwarder_want "$1") || exit 1
+  have=$(forwarder_id "$port")
+  [ "$have" = "$want" ] && return 0
+  [ -z "$have" ] || stop_forwarder "$1"
+  mkdir -p "$STATE/$1" || die "$1: cannot write under $STATE"
+  # Every stream redirected: the caller is a headers helper whose stdout
+  # Claude Code reads to EOF, and a child holding that pipe would hang it.
+  nohup "$(self_path)" forward "$1" >> "$STATE/$1/forward.log" 2>&1 </dev/null &
+  i=0
+  while [ "$i" -lt 30 ]; do
+    [ "$(forwarder_id "$port")" = "$want" ] && return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  die "$1: the forwarder did not come up on $HOST:$port (see $STATE/$1/forward.log)"
+}
+
+cmd_forward() {
+  need_server "${1-}"
+  [ -n "$(cfg "$1" tailnet)" ] || die "$1: no tailnet configured — clients reach its URL directly"
+  case $(cfg "$1" url) in https://*) ;; *) die "$1: a forwarded server needs an https URL";; esac
+  port=$(port_of "$1")
+  [ -n "$port" ] || die "$1: no forwarder port recorded (run: remote-mcp connect $1)"
+  want=$(forwarder_want "$1") || exit 1
+  mkdir -p "$STATE/$1" || die "$1: cannot write under $STATE"
+  exec python3 - "$HOST" "$port" "$(url_origin "$(cfg "$1" url)")" "${want##* }" "$want" "$STATE/$1/pid" <<'PY'
+import http.client, os, sys, urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+host, port, ident, pidfile = sys.argv[1], int(sys.argv[2]), sys.argv[5], sys.argv[6]
+upstream = urllib.parse.urlsplit(sys.argv[3])
+proxy_host, proxy_port = sys.argv[4].rsplit(":", 1)
+HOP = {"connection", "keep-alive", "proxy-connection", "transfer-encoding", "te",
+       "upgrade", "host", "content-length"}
+LOCAL = {"%s:%d" % (host, port), "localhost:%d" % port}
+
+
+class Relay(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass
+
+    def relay(self):
+        if self.headers.get("Origin") or self.headers.get("Host") not in LOCAL:
+            self.send_error(403, "loopback clients only")
+            return
+        if self.path == "/.remote-mcp":
+            body = ("%s\n%d\n" % (ident, os.getpid())).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.headers.get("Transfer-Encoding"):
+            self.send_error(411, "send a Content-Length")
+            return
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        # TLS is negotiated with the real name through the daemon's CONNECT
+        # proxy, so the certificate is verified against it, not loopback.
+        up = http.client.HTTPSConnection(proxy_host, int(proxy_port), timeout=700)
+        up.set_tunnel(upstream.hostname, upstream.port or 443)
+        try:
+            up.request(self.command, self.path, body or None,
+                       {k: v for k, v in self.headers.items() if k.lower() not in HOP})
+            resp = up.getresponse()
+        except Exception as exc:
+            up.close()
+            self.send_error(502, "upstream: %s" % type(exc).__name__)
+            return
+        self.send_response_only(resp.status, resp.reason)
+        for k, v in resp.getheaders():
+            if k.lower() not in HOP:
+                self.send_header(k, v)
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            # read1, flushed per chunk: a long-polled answer and its
+            # keep-alives reach the client as they arrive.
+            while chunk := resp.read1(65536):
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except Exception:
+            pass
+        finally:
+            up.close()
+
+    do_GET = do_POST = do_DELETE = do_HEAD = relay
+
+
+# Started detached by a helper: hold none of the descriptors it was handed,
+# or whoever is reading one of them waits for this process instead.
+os.closerange(3, 1024)
+server = ThreadingHTTPServer((host, port), Relay)
+try:
+    os.setsid()  # outlive the helper that started us; fails harmlessly in a terminal
+except OSError:
+    pass
+with open(pidfile, "w") as fh:
+    fh.write("%d\n" % os.getpid())
+server.serve_forever()
+PY
+}
+
+# --- the headers helper --------------------------------------------------------
+
+# Config is checked before anything is touched: a profile with no pin never
+# starts a forwarder and never calls op, which can raise a prompt.
+read_token() { # server profile-dir -> the bearer token
+  ref=$(ref_for "$1" "$2")
+  [ -n "$ref" ] || die "$1: no token pinned for $2 (remote-mcp.$1.token)"
+  command -v op >/dev/null 2>&1 || die "$1: the 1Password CLI (op) is not on PATH"
+  t=$(op read --no-newline "$ref" </dev/null) || die "$1: op read failed for the token pinned to $2"
+  case $t in ''|*[!A-Za-z0-9._~+/=-]*) die "$1: the token is empty or is not a bearer token";; esac
+  printf '%s\n' "$t"
+}
+
+cmd_headers() {
+  s=${CLAUDE_CODE_MCP_SERVER_NAME-}
+  [ -n "$s" ] || die 'headers: CLAUDE_CODE_MCP_SERVER_NAME is not set — this is the Claude Code headers helper'
+  need_server "$s"
+  d=$(profile_dir)
+  [ -n "$(ref_for "$s" "$d")" ] || die "$s: no token pinned for $d (remote-mcp.$s.token)"
+  ensure_forwarder "$s"
+  t=$(read_token "$s" "$d") || exit 1
+  printf '{"Authorization": "Bearer %s"}\n' "$t"
+}
+
+# --- Claude Code profiles ------------------------------------------------------
+
+# The DEFAULT directory is addressed by unsetting CLAUDE_CONFIG_DIR, and its
+# user-scope config is the file in $HOME — see the same pair in bin/postbox
+# for why.
+is_default_dir() { [ "$1" = "$HOME/.claude" ]; }
+config_of() { if is_default_dir "$1"; then printf '%s\n' "$HOME/.claude.json"; else printf '%s\n' "$1/.claude.json"; fi; }
+as_profile() { # profile-dir cmd...
+  d=$1; shift
+  if is_default_dir "$d"; then env -u CLAUDE_CONFIG_DIR "$@"; else CLAUDE_CONFIG_DIR=$d "$@"; fi
+}
+
+helper_line() { printf '%s headers\n' "$(self_path)"; }
+
+# absent | current | stale — stale is an entry for another URL or helper,
+# which is what a moved port, a tailnet added later or a moved script leaves.
+entry_state() { # profile-dir server
+  python3 - "$(config_of "$1")" "$2" "$(client_url "$2")" "$(helper_line)" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        entry = (json.load(fh).get("mcpServers") or {}).get(sys.argv[2])
+except Exception:
+    entry = None
+if entry is None:
+    print("absent")
+elif (entry.get("url"), entry.get("headersHelper")) == (sys.argv[3], sys.argv[4]):
+    print("current")
+else:
+    print("stale")
+PY
+}
+
+entry_json() { # server
+  python3 -c 'import json, sys; print(json.dumps({"type": "http", "url": sys.argv[1], "headersHelper": sys.argv[2]}))' \
+    "$(client_url "$1")" "$(helper_line)"
+}
+
+each_server() { # fn [server...]
+  fn=$1; shift
+  [ $# -gt 0 ] || set -- $(servers)
+  [ $# -gt 0 ] || { printf 'remote-mcp: no servers configured (remote-mcp.<server>.url)\n'; return 0; }
+  need_python # every profile's entry is read as JSON
+  for s in "$@"; do need_server "$s"; "$fn" "$s"; done
+}
+
+need_claude() { command -v claude >/dev/null 2>&1 || die 'claude not found on PATH'; }
+
+connect_one() {
+  s=$1
+  need_claude
+  if [ -n "$(cfg "$s" tailnet)" ]; then
+    case $(cfg "$s" url) in https://*) ;; *) die "$s: a forwarded server needs an https URL";; esac
+    forwarder_want "$s" >/dev/null || exit 1
+    allocate_port "$s"
+  fi
+  [ -n "$(pins "$s")" ] || { warn "$s: no token pins (remote-mcp.$s.token) — nothing to connect"; return 0; }
+  json=$(entry_json "$s")
+  # </dev/null: these run inside a `while read` over the pins, and a child
+  # that reads stdin would eat the rest of that list.
+  pins "$s" | while IFS=$TAB read -r d _; do
+    [ -d "$d" ] || { warn "$s: $d is not a directory — skipped"; continue; }
+    case $(entry_state "$d" "$s") in
+      current) printf 'remote-mcp: %s: %s: already connected\n' "$s" "$d"; continue;;
+      stale) as_profile "$d" claude mcp remove --scope user "$s" </dev/null >/dev/null 2>&1;;
+    esac
+    # add-json, not add: `claude mcp add` has no flag for a headers helper.
+    # The entry is read back because the field surviving is the whole point.
+    if as_profile "$d" claude mcp add-json --scope user "$s" "$json" </dev/null >/dev/null 2>&1 \
+        && [ "$(entry_state "$d" "$s")" = current ]; then
+      printf 'remote-mcp: %s: %s: connected (%s)\n' "$s" "$d" "$(client_url "$s")"
+    else
+      warn "$s: $d: claude mcp add-json failed, or did not keep the headers helper"
+    fi
+  done
+}
+
+disconnect_one() {
+  s=$1
+  need_claude
+  pins "$s" | while IFS=$TAB read -r d _; do
+    [ "$(entry_state "$d" "$s")" != absent ] || continue
+    as_profile "$d" claude mcp remove --scope user "$s" </dev/null >/dev/null 2>&1 \
+      && printf 'remote-mcp: %s: %s: disconnected\n' "$s" "$d" || warn "$s: $d: claude mcp remove failed"
+  done
+  stop_forwarder "$s"
+}
+
+cmd_connect() { each_server connect_one "$@"; }
+cmd_disconnect() { each_server disconnect_one "$@"; }
+
+# --- status and check ----------------------------------------------------------
+
+status_one() {
+  s=$1
+  printf '%s  %s\n' "$s" "$(cfg "$s" url)"
+  tn=$(cfg "$s" tailnet)
+  if [ -z "$tn" ]; then
+    printf '  route:   direct\n'
+  else
+    port=$(port_of "$s")
+    if [ -z "$port" ]; then
+      fw='no port yet — run: remote-mcp connect'
+    elif ! want=$(forwarder_want "$s" 2>&1); then
+      fw=$want
+    elif [ "$(forwarder_id "$port")" = "$want" ]; then
+      fw="forwarder running on $HOST:$port"
+    else
+      fw="forwarder not running on $HOST:$port (a session starts it)"
+    fi
+    printf '  route:   tailnet %s — %s\n' "$tn" "$fw"
+  fi
+  h=$(cfg "$s" health); [ -z "$h" ] || printf '  health:  %s\n' "$h"
+  [ -n "$(pins "$s")" ] || printf '  profiles: none pinned (remote-mcp.%s.token)\n' "$s"
+  pins "$s" | while IFS=$TAB read -r d _; do
+    if [ ! -d "$d" ]; then st='no such directory'
+    else
+      case $(entry_state "$d" "$s") in
+        current) st=connected;;
+        stale) st='stale entry — run: remote-mcp connect';;
+        *) st='not connected — run: remote-mcp connect';;
+      esac
+    fi
+    printf '  %s: %s\n' "$d" "$st"
+  done
+}
+
+cmd_status() {
+  each_server status_one
+}
+
+# One request as a profile would make it, reported as what came back and
+# interpreted only where HTTP itself is unambiguous. The server's own health
+# vocabulary is relayed verbatim, never translated: it is the server's.
+probe() { # label url token
+  body=$(mktemp) || die 'mktemp failed'
+  code=$(printf 'Authorization: Bearer %s\n' "$3" \
+    | curl -sS -m 20 --noproxy "$HOST" -H @- -H 'Accept: application/json, text/event-stream' \
+        -o "$body" -w '%{http_code}' "$2" 2>/dev/null)
+  rc=$?
+  case $rc in
+    0) case $code in
+         401) note=' unauthorized';;
+         403) note=' forbidden';;
+         404) note=' not found';;
+         502) note=' bad gateway — the forwarder could not reach the far side';;
+         *) note='';;
+       esac
+       printf '  %s http %s%s\n' "$1" "$code" "$note"
+       [ "$1" != 'health:' ] || [ ! -s "$body" ] || printf '           %s\n' "$(head -c 400 "$body" | head -n 1)";;
+    6) printf '  %s unresolvable\n' "$1";;
+    7) printf '  %s unreachable\n' "$1";;
+    *) printf '  %s no response (curl exit %s)\n' "$1" "$rc";;
+  esac
+  rm -f "$body"
+}
+
+cmd_check() {
+  need_server "${1-}"
+  s=$1
+  d=${2:-$(profile_dir)}
+  case $d in "~") d=$HOME;; "~/"*) d="$HOME/${d#\~/}";; esac
+  d=${d%/}
+  command -v curl >/dev/null 2>&1 || die 'curl not found on PATH'
+  [ -n "$(ref_for "$s" "$d")" ] || die "$s: no token pinned for $d (remote-mcp.$s.token)"
+  ensure_forwarder "$s"
+  t=$(read_token "$s" "$d") || exit 1
+  printf '%s as %s\n' "$s" "$d"
+  probe 'mcp:   ' "$(client_url "$s")" "$t"
+  h=$(cfg "$s" health)
+  [ -z "$h" ] || probe 'health:' "$(client_origin "$s")$h" "$t"
+}
+
+# --- main ----------------------------------------------------------------------
+
+[ $# -ge 1 ] || usage
+sub=$1; shift
+case $sub in
+  connect)     cmd_connect "$@";;
+  disconnect)  cmd_disconnect "$@";;
+  status)      cmd_status;;
+  check)       [ $# -ge 1 ] || usage; cmd_check "$@";;
+  headers)     cmd_headers;;
+  forward)     [ $# -eq 1 ] || usage; cmd_forward "$1";;
+  dir)         printf '%s\n' "$STATE";;
+  *)           usage;;
+esac

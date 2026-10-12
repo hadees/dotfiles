@@ -850,6 +850,32 @@ function postbox-doctor() {
 	print -r -- "cwd:     $PWD";
 }
 
+# remote-mcp registers a remote, bearer-token MCP server in each Claude Code
+# profile pinned for it, and relays one that lives on a tailnet through a
+# loopback forwarder. It is a script, not a wrapper, so nothing routes; what
+# can silently be wrong is a profile whose entry was never added or went
+# stale (a moved port, a tailnet added later), a tailnet that is not
+# installed, and a forwarder that is not answering. `remote-mcp status`
+# reports those from config and loopback alone — no token is read and nothing
+# is contacted, so this is safe in `doctor`; `remote-mcp check <server>` is
+# the one that asks the server for real. With no server configured it is one
+# line.
+function remote-mcp-doctor() {
+	emulate -L zsh;
+	print -r -- "wrapper: <none — remote-mcp is a script, not a shell wrapper>";
+	print -r -- "defined: <none — this doctor calls no helpers>";
+	if (( $+commands[remote-mcp] )); then
+		print -r -- "script:  ${commands[remote-mcp]}";
+		if [[ ${commands[remote-mcp]} != "$HOME/bin/remote-mcp" ]]; then
+			print -r -- "         WARNING: that is not ~/bin/remote-mcp — another package owns the name on PATH";
+		fi;
+	else
+		print -r -- "script:  NOT FOUND — ~/bin/remote-mcp is not on PATH (chezmoi apply)";
+		return 0;
+	fi;
+	command remote-mcp status 2>&1 | sed 's/^/  /';
+}
+
 # The profile a working set's session runs under, and whether every member
 # is even readable from it — the two questions `workset open` (below) must
 # answer before it launches anything, extracted so workset-doctor and the
@@ -2988,7 +3014,7 @@ function doctor() {
 	local d;
 	print -r -- "shell:   $(shell_trace)";
 	print -r -- "";
-	for d in git gh claude wrangler hermes tailnet worktabs postbox workset onepassword iterm2; do
+	for d in git gh claude wrangler hermes tailnet worktabs postbox remote-mcp workset onepassword iterm2; do
 		print -r -- "== $d-doctor";
 		"$d-doctor";
 		print -r -- "";
