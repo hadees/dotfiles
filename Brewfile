@@ -156,12 +156,11 @@ cask 'caffeine'
 cask 'calibre'
 cask 'carbon-copy-cloner'
 cask 'ccmenu'
-cask 'chromedriver'
 cask 'claude' # Anthropic Claude desktop app
 cask 'codex' # OpenAI Codex desktop app
 cask 'comfy' # Node-based UI for Stable Diffusion / local AI image generation
 cask 'daisydisk'
-cask 'deluge'
+cask 'hadees/tap/deluge' # BitTorrent client
 cask 'displaylink' # DisplayLink USB graphics driver
 cask 'docker-desktop' # Docker Desktop
 cask 'dropbox'
@@ -182,17 +181,15 @@ cask 'finicky' # URL router set as the default browser: routes links to the righ
 cask 'google-chrome'
 cask 'google-drive'
 cask 'gpg-suite'
-cask 'hakuneko' # Manga and anime downloader
+cask 'hadees/tap/hakuneko' # Manga and anime downloader
 cask 'handbrake-app'
 cask 'hazel'
 cask 'hermes-desktop' # Hermes Agent — open-source desktop AI agent
-cask 'huggingchat' # Chat client for models on Hugging Face
 cask 'imageoptim'
 cask 'inkscape'
 cask 'istat-menus'
 cask 'iterm2' # Terminal emulator with tabs, splits, and an AppleScript/Python scripting API
 cask 'itermai' # Generative AI features for iTerm2
-cask 'jdiskreport' # Disk usage visualizer
 cask 'jollysfastvnc' # VNC/ARD client with built-in SSH tunneling
 cask 'kaleidoscope'
 cask 'keyboardcleantool' # Blocks all keyboard/Touch Bar input while cleaning
@@ -206,25 +203,16 @@ cask 'moom'
 cask 'namechanger'
 cask 'neardrop' # AirDrop-like sharing with nearby Android and Windows devices (needs one-time: brew trust grishka/grishka)
 cask 'ngrok'
-cask 'nzbvortex'
 cask 'obsidian' # Knowledge base on top of a local folder of Markdown files
 cask 'openaudible' # Audible audiobook manager and converter
 cask 'openscad@snapshot' # Programmable solid 3D CAD modeller (development snapshot build)
 cask 'opera'
 cask 'plex' # Plex media player
 cask 'postico'
-cask 'avifquicklook'
-cask 'ipynb-quicklook'
 cask 'provisionql'
-cask 'qlcolorcode'
 cask 'qlmarkdown'
-cask 'qlprettypatch'
-cask 'qlstephen'
-cask 'qlzipinfo'
 cask 'quickjson'
-cask 'quicklook-csv'
 cask 'quicklook-video'
-cask 'quicklookase'
 cask 'raspberry-pi-imager' # Flash operating system images to microSD cards
 cask 'shimo'
 cask 'simple-comic'
@@ -245,7 +233,7 @@ cask 'vagrant'
 cask 'virtualbox'
 cask 'visual-studio-code'
 cask 'vlc'
-cask 'webpquicklook'
+cask 'hadees/tap/xpra' # Screen and application forwarding for remote X11 apps; installs the xpra command
 cask 'xquartz'
 cask 'xscreensaver'
 cask 'zoom'
