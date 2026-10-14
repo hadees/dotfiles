@@ -209,6 +209,7 @@ cask 'ngrok'
 cask 'nzbvortex'
 cask 'obsidian' # Knowledge base on top of a local folder of Markdown files
 cask 'openaudible' # Audible audiobook manager and converter
+cask 'openscad@snapshot' # Programmable solid 3D CAD modeller (development snapshot build)
 cask 'opera'
 cask 'plex' # Plex media player
 cask 'postico'
