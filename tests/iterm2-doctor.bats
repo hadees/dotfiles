@@ -88,6 +88,8 @@ doctor_stamp() {
   # get pasted into issues.
   while IFS= read -r line; do
     [ -n "$line" ] || continue
+    # The one label longer than the column ("cc-status:" is ten characters).
+    [[ "$line" == cc-status:\ * ]] && continue
     [[ "$line" =~ ^[a-z]+:\ +[^\ ] ]]
     [[ "${line:0:9}" =~ ^[a-z]+:\ *$ ]]
     [[ "${line:9:1}" != " " ]]
@@ -172,6 +174,33 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"plugins: none installed"* ]]
   [[ "$output" == *"integ:   not installed"* ]]
+}
+
+@test "iterm2-doctor: cc-status line reads the symlink without running it" {
+  make_app "$(doctor_stamp)"
+  # A machine with iTerm2's experimental PATH setting on has a real it2 here.
+  PATH=$(IFS=:; for d in $PATH; do [ -x "$d/it2" ] || printf '%s:' "$d"; done)
+  doctor
+  [[ "$output" == *"cc-status: ~/.config/iterm2/cc-status (absent); it2: absent"* ]]
+
+  # A symlink to a binary that is not there is called out, not hidden.
+  mkdir -p "$HOME/.config/iterm2" "$BATS_TEST_TMPDIR/real"
+  ln -s "$BATS_TEST_TMPDIR/real/cc-status" "$HOME/.config/iterm2/cc-status"
+  doctor
+  [[ "$output" == *"cc-status: ~/.config/iterm2/cc-status -> $BATS_TEST_TMPDIR/real/cc-status (DANGLING); it2: absent"* ]]
+
+  # Present and executable, it2 beside it; the stub would leave a marker if run.
+  printf '#!/bin/sh\ntouch "%s/ran"\n' "$BATS_TEST_TMPDIR" | tee "$BATS_TEST_TMPDIR/real/cc-status" > "$BATS_TEST_TMPDIR/real/it2"
+  chmod +x "$BATS_TEST_TMPDIR/real/cc-status" "$BATS_TEST_TMPDIR/real/it2"
+  doctor
+  [[ "$output" == *"cc-status: ~/.config/iterm2/cc-status -> $BATS_TEST_TMPDIR/real/cc-status (executable); it2: beside it"* ]]
+
+  # No it2 beside it, but one on PATH.
+  rm "$BATS_TEST_TMPDIR/real/it2"
+  cp "$STUB/defaults" "$STUB/it2"; chmod +x "$STUB/it2"
+  doctor
+  [[ "$output" == *"(executable); it2: PATH"* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/ran" ]
 }
 
 # --- the stamp is the whole point, so it may not drift ---------------------
