@@ -349,21 +349,24 @@ function bin_trace() {
 # or a literal directory. With no mapping at all, this is plain `claude` on the
 # default ~/.claude config dir.
 function claude() {
-	local dir alias opener here line;
+	local dir alias opener here line attended label tn;
 	local -a sess;
 	dir="$(claude_profile_dir)" || dir='';
+	# An attended launch: somebody is sitting at it. No terminal, print
+	# mode, a version/help flag, or a first argument shaped like a
+	# subcommand (`claude mcp …` — the shape, because a list of them would go
+	# stale) is not one. Both the second-session question and the tab title
+	# below are asked of attended launches only.
+	if [[ -t 0 && -t 2 && ! $1 =~ '^[a-z][a-z-]*$' ]] && (( ! ${argv[(I)(-p|--print|-h|--help|-v|--version)]} )); then attended=1; fi;
 	# A second session in a directory that already has one puts two writers
 	# on the same tree, and nothing about a fresh prompt says the first is
 	# there. So say so, and ask — a warning with a way past it, never a
-	# refusal. Only a launch somebody is sitting at is asked: no terminal,
-	# print mode, a version/help flag, or a first argument shaped like a
-	# subcommand (`claude mcp …` — the shape, because a list of them would go
-	# stale) all pass untouched, so hooks, pipes and headless callers never
-	# block on a question nobody can answer. A helper that fails or finds
-	# nothing launches as before. Running several sessions in one checkout
-	# on purpose is a workflow, not a mistake: `git config
-	# claude.second-session-check false` turns the question off.
-	if [[ -t 0 && -t 2 && ! $1 =~ '^[a-z][a-z-]*$' ]] && (( ! ${argv[(I)(-p|--print|-h|--help|-v|--version)]} )) && [[ "$(command git config --get claude.second-session-check 2>/dev/null)" != false ]]; then
+	# refusal. Only an attended launch is asked, so hooks, pipes and
+	# headless callers never block on a question nobody can answer. A helper
+	# that fails or finds nothing launches as before. Running several
+	# sessions in one checkout on purpose is a workflow, not a mistake: `git
+	# config claude.second-session-check false` turns the question off.
+	if [[ -n $attended ]] && [[ "$(command git config --get claude.second-session-check 2>/dev/null)" != false ]]; then
 		here="$(claude_sessions_here $dir 2>/dev/null)";
 		if [[ -n $here ]]; then
 			print -ru2 -- "claude: already running in $PWD:";
@@ -429,6 +432,26 @@ function claude() {
 		# PONYTAIL_SUBAGENT_MATCHER scopes the ponytail plugin's ruleset, when
 		# that plugin is installed, to the seats that write code — a read-only
 		# scout has nothing to keep small.
+		# CLAUDE_CODE_DISABLE_TERMINAL_TITLE keeps Claude Code from titling
+		# the tab itself. iTerm2's Session Status row is named by the
+		# session's name, which an OSC 0 title sets; Claude Code writes its
+		# rename/AI/haiku title there and clears it on exit, so a row reads
+		# as a conversation topic, not a repo. With the variable set it
+		# writes nothing, and the one title the wrapper writes below stands
+		# for the whole session until precmd restores the path at the next
+		# prompt. The docs say it also skips the request that generates an
+		# AI session title (so /resume rows may show a summary instead) and
+		# turns off the OSC 7501 status reports; the cc-status hooks keep
+		# painting the row either way. Claude Code reads it as a raw string,
+		# so `0` and `false` would still disable — those spellings, and the
+		# empty string, are normalised to unset, which is how one launch gets
+		# Claude's own titles back. If they are back, the tab is Claude's
+		# and no title is written. The title goes to fd 2 and only for an
+		# attended launch: a `-p` run or a pipe must never receive escape
+		# bytes. A working set (WORKSET) is N repos, so the set names the tab;
+		# worktabs' group, when there is one, prefixes it as precmd does. No
+		# label, no write: an empty title would make iTerm2 show its profile
+		# name.
 		# These live here and not in each profile's settings.json because each
 		# of those files is owned by that profile's private overlay, and a
 		# default meant for every profile would have to be repeated in each
@@ -439,6 +462,14 @@ function claude() {
 		export CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL="${CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL:-1h}";
 		export CLAUDE_CODE_PROMPT_CACHE_TTL="${CLAUDE_CODE_PROMPT_CACHE_TTL:-1h}";
 		export PONYTAIL_SUBAGENT_MATCHER="${PONYTAIL_SUBAGENT_MATCHER:-^(work-|unstick-)}";
+		case ${CLAUDE_CODE_DISABLE_TERMINAL_TITLE-unset} in
+			unset) export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1;;
+			''|0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff]) unset CLAUDE_CODE_DISABLE_TERMINAL_TITLE;;
+		esac;
+		if [[ -n $attended && -n ${CLAUDE_CODE_DISABLE_TERMINAL_TITLE-} && $TERM != dumb ]] && tn="$(whence -p tabname)"; then
+			label=${WORKSET:-$("$tn" 2>/dev/null)};
+			[[ -n $label ]] && print -rn -- $'\e]0;'"${WORKTABS_GROUP:+[$WORKTABS_GROUP] }$label"$'\a' >&2;
+		fi;
 		exec command claude "$@";
 	)
 }
