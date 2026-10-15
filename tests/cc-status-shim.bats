@@ -303,7 +303,7 @@ PY
   run_shim <<< "$(seat_payload PreToolUse plan-fable '"tool_name":"Bash"')"
   [ "$status" -eq 0 ]
   [ ! -e "$BATS_TEST_TMPDIR/fed" ]
-  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|working|--detail|proj · plan-fable: Bash|--dot-color|#d787ff|--text-color|#d787ff" ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|working|--detail|plan-fable: Bash|--dot-color|#d787ff|--text-color|#d787ff" ]
 }
 
 @test "seat: every default colour, and a PostToolUse, paint the same way" {
@@ -311,7 +311,7 @@ PY
   for pair in unstick-fable:#ff5faf review-fable:#af87ff work-sonnet:#00afaf scout-haiku:#87af5f; do
     seat=${pair%%:*} col=${pair#*:}
     run_shim <<< "$(seat_payload PostToolUse "$seat" '"tool_name":"Edit"')"
-    [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|working|--detail|proj · $seat: Edit|--dot-color|$col|--text-color|$col" ]
+    [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|working|--detail|$seat: Edit|--dot-color|$col|--text-color|$col" ]
   done
 }
 
@@ -353,7 +353,7 @@ PY
   [ "$status" -eq 0 ]
   [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
   [ "$(cat "$SEATS_FILE")" = "$(printf 'ag1\twork-sonnet')" ]
-  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|working|--detail|proj · work-sonnet running|--dot-color|#00afaf|--text-color|#00afaf" ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|working|--detail|work-sonnet running|--dot-color|#00afaf|--text-color|#00afaf" ]
   run_shim <<< "$p"   # a repeat does not duplicate
   [ "$(wc -l < "$SEATS_FILE")" -eq 1 ]
 }
@@ -396,7 +396,7 @@ PY
   [ "$status" -eq 0 ]
   [ "$(fed_tasks | grep -c '"ag1"')" -eq 1 ]
   [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
-  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|working|--detail|proj · plan-fable running · 1 background task running|--dot-color|#d787ff|--text-color|#d787ff|--background-tasks|1" ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|working|--detail|plan-fable running · 1 background task running|--dot-color|#d787ff|--text-color|#d787ff|--background-tasks|1" ]
 }
 
 @test "seat: two live seats name both, in the first one's colour, counting every active task" {
@@ -406,7 +406,7 @@ PY
   mkdir -p "$(dirname "$SEATS_FILE")"
   printf 'ag1\twork-sonnet\nag2\tplan-fable\n' > "$SEATS_FILE"
   run_shim <<< "$(payload Stop '[{"task_id":"ag1"},{"task_id":"ag2"},{"task_id":"sh","task_type":"local_bash"}]' '"cwd":"/work/proj","session_id":"s1"')"
-  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|working|--detail|proj · work-sonnet, plan-fable running · 3 background tasks running|--dot-color|#00afaf|--text-color|#00afaf|--background-tasks|3" ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|working|--detail|work-sonnet, plan-fable running · 3 background tasks running|--dot-color|#00afaf|--text-color|#00afaf|--background-tasks|3" ]
 }
 
 @test "seat: a seat in the state file that is not among the active tasks paints nothing" {
@@ -422,7 +422,7 @@ PY
   mkdir -p "$(dirname "$SEATS_FILE")"
   printf 'ag1\tplan-fable\n' > "$SEATS_FILE"
   run_shim <<< "$(payload Stop '[{"task_id":"ag1","task_type":"local_agent","description":"stuck"}]' '"cwd":"/work/proj","session_id":"s1"')"
-  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|idle|--detail|proj · idle · 1 quiet background task, quiet 120 min: stuck|--dot-color|#af8700|--text-color|#888888|--background-tasks|0" ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|idle|--detail|idle · 1 quiet background task, quiet 120 min: stuck|--dot-color|#af8700|--text-color|#888888|--background-tasks|0" ]
 }
 
 @test "seat: a state file older than a day is ignored and removed" {
@@ -441,10 +441,11 @@ PY
   [ -z "$(find "$BATS_TEST_TMPDIR" -name '*.seats')" ]
 }
 
-@test "repo: the quiet-task detail starts with the cwd's basename" {
+@test "repo: the detail never repeats the cwd's basename; the row name carries it" {
   age_file a 7200
   run_shim <<< "$(payload Stop '[{"task_id":"a","description":"tail -F build.log"}]' '"cwd":"/work/proj/"')"
-  grep -qx 'proj · idle · 1 quiet background task, quiet 120 min: tail -F build.log' "$BATS_TEST_TMPDIR/argv"
+  grep -qx 'idle · 1 quiet background task, quiet 120 min: tail -F build.log' "$BATS_TEST_TMPDIR/argv"
+  ! grep -q '^proj' "$BATS_TEST_TMPDIR/argv"
 }
 
 @test "explain: a seat event names the seat, its colour and the live state, and writes nothing" {
@@ -470,12 +471,12 @@ question_payload() { payload Stop "${2:-[]}" "\"cwd\":\"/work/proj\",\"last_assi
   [ "$status" -eq 0 ]
   [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
   [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
-  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|proj · Which branch should I use?|--dot-color|#ffd75f|--text-color|#ffd75f|--background-tasks|0" ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|Which branch should I use?|--dot-color|#ffd75f|--text-color|#ffd75f|--background-tasks|0" ]
 }
 
 @test "question: StopFailure is handled like Stop, and a full-width question mark counts" {
   run_shim <<< "$(payload StopFailure '[]' '"cwd":"/work/proj","last_assistant_message":"どちらにしますか？"')"
-  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|proj · どちらにしますか？|--dot-color|#ffd75f|--text-color|#ffd75f|--background-tasks|0" ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|どちらにしますか？|--dot-color|#ffd75f|--text-color|#ffd75f|--background-tasks|0" ]
 }
 
 @test "question: a message ending in a statement paints nothing, even with a question earlier" {
@@ -497,12 +498,12 @@ question_payload() { payload Stop "${2:-[]}" "\"cwd\":\"/work/proj\",\"last_assi
   run_shim <<< "$(question_payload 'Which branch?' '[{"task_id":"a","task_type":"local_bash","description":"stuck"}]')"
   [ "$(fed_tasks)" = "[]" ]
   [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
-  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|proj · Which branch?|--dot-color|#ffd75f|--text-color|#ffd75f|--background-tasks|0" ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|Which branch?|--dot-color|#ffd75f|--text-color|#ffd75f|--background-tasks|0" ]
 }
 
 @test "question: leading bullets, quotes and spaces, and trailing spaces, are stripped" {
   run_shim <<< "$(question_payload 'Fine.\n\n> - is this right?  \n\n')"
-  grep -qx 'proj · is this right?' "$BATS_TEST_TMPDIR/argv"
+  grep -qx 'is this right?' "$BATS_TEST_TMPDIR/argv"
 }
 
 @test "question: a long question is cut like any other detail" {
@@ -522,7 +523,7 @@ question_payload() { payload Stop "${2:-[]}" "\"cwd\":\"/work/proj\",\"last_assi
 @test "question: tabstatus.color.question overrides the colour; a bad value falls back with a note" {
   git config -f "$GIT_CONFIG_GLOBAL" tabstatus.color.question '#112233'
   run_shim <<< "$(question_payload 'Which branch?')"
-  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|proj · Which branch?|--dot-color|#112233|--text-color|#112233|--background-tasks|0" ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|Which branch?|--dot-color|#112233|--text-color|#112233|--background-tasks|0" ]
 
   git config -f "$GIT_CONFIG_GLOBAL" tabstatus.color.question 'yellow'
   run --separate-stderr sh "$SHIM" <<< "$(question_payload 'Which branch?')"
@@ -551,7 +552,7 @@ question_payload() { payload Stop "${2:-[]}" "\"cwd\":\"/work/proj\",\"last_assi
   age_file a 7200
   run_shim <<< "$(stall_payload)"
   [ "$status" -eq 0 ]
-  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|idle|--detail|proj · idle · 1 quiet background task, quiet 120 min: install.sh --all|--dot-color|#af8700|--text-color|#888888|--background-tasks|0" ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|idle|--detail|idle · 1 quiet background task, quiet 120 min: install.sh --all|--dot-color|#af8700|--text-color|#888888|--background-tasks|0" ]
   [ "$(paste -sd'|' "$BATS_TEST_TMPDIR/lsof_argv")" = "-t|--|$SESS/tasks/a.output" ]
   [ "$(paste -sd'|' "$BATS_TEST_TMPDIR/ps_argv")" = "-axo|pid,ppid,time" ]
   [ "$(wc -l < "$TASKS_FILE")" -eq 1 ]
@@ -562,7 +563,7 @@ question_payload() { payload Stop "${2:-[]}" "\"cwd\":\"/work/proj\",\"last_assi
   age_file a 7200
   task_state a 965 3.50
   run_shim <<< "$(stall_payload)"
-  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|proj · stalled 16 min: install.sh --all|--dot-color|#ff5f5f|--text-color|#ff5f5f|--background-tasks|0" ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|stalled 16 min: install.sh --all|--dot-color|#ff5f5f|--text-color|#ff5f5f|--background-tasks|0" ]
   [ "$(fed_tasks)" = "[]" ]
 }
 
@@ -571,10 +572,10 @@ question_payload() { payload Stop "${2:-[]}" "\"cwd\":\"/work/proj\",\"last_assi
   task_state a 965 3.50
   set_cpu 1.00 7.50
   run_shim <<< "$(stall_payload)"
-  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|idle|--detail|proj · idle · 1 quiet background task, quiet 120 min: install.sh --all (cpu busy)|--dot-color|#af8700|--text-color|#888888|--background-tasks|0" ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|idle|--detail|idle · 1 quiet background task, quiet 120 min: install.sh --all (cpu busy)|--dot-color|#af8700|--text-color|#888888|--background-tasks|0" ]
   [ "$(cut -f3 "$TASKS_FILE")" = "8.50" ]
   run_shim <<< "$(stall_payload)"   # nothing moved since, but the clock restarted a moment ago
-  grep -qx 'proj · idle · 1 quiet background task, quiet 120 min: install.sh --all' "$BATS_TEST_TMPDIR/argv"
+  grep -qx 'idle · 1 quiet background task, quiet 120 min: install.sh --all' "$BATS_TEST_TMPDIR/argv"
 }
 
 @test "stalled: quiet for less than stall-minutes is not stalled, and the record keeps its first sighting" {
@@ -598,7 +599,7 @@ question_payload() { payload Stop "${2:-[]}" "\"cwd\":\"/work/proj\",\"last_assi
   age_file a 7200
   : > "$BATS_TEST_TMPDIR/lsof.out"
   run_shim <<< "$(stall_payload)"
-  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|proj · stalled 120 min: install.sh --all|--dot-color|#ff5f5f|--text-color|#ff5f5f|--background-tasks|0" ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|stalled 120 min: install.sh --all|--dot-color|#ff5f5f|--text-color|#ff5f5f|--background-tasks|0" ]
   [ ! -e "$BATS_TEST_TMPDIR/ps_argv" ]
 }
 
@@ -617,7 +618,7 @@ question_payload() { payload Stop "${2:-[]}" "\"cwd\":\"/work/proj\",\"last_assi
   age_file a 7200
   : > "$BATS_TEST_TMPDIR/lsof.out"
   run_shim <<< "$(stall_payload '"last_assistant_message":"Which branch?"')"
-  grep -qx 'proj · stalled 120 min: install.sh --all' "$BATS_TEST_TMPDIR/argv"
+  grep -qx 'stalled 120 min: install.sh --all' "$BATS_TEST_TMPDIR/argv"
   grep -qx 'waiting' "$BATS_TEST_TMPDIR/argv"
 }
 
@@ -635,7 +636,7 @@ question_payload() { payload Stop "${2:-[]}" "\"cwd\":\"/work/proj\",\"last_assi
   git config -f "$GIT_CONFIG_GLOBAL" tabstatus.color.stalled '#112233'
   git config -f "$GIT_CONFIG_GLOBAL" tabstatus.stall-minutes 5
   run_shim <<< "$(stall_payload)"
-  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|proj · stalled 6 min: install.sh --all|--dot-color|#112233|--text-color|#112233|--background-tasks|0" ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|stalled 6 min: install.sh --all|--dot-color|#112233|--text-color|#112233|--background-tasks|0" ]
 
   git config -f "$GIT_CONFIG_GLOBAL" tabstatus.color.stalled 'red'
   run --separate-stderr sh "$SHIM" <<< "$(stall_payload)"
