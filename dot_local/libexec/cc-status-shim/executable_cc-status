@@ -39,9 +39,10 @@
 # ${XDG_STATE_HOME:-~/.local/state}/tabstatus/<session_id>.seats, so a Stop
 # over a still-running background seat paints that seat's colour rather than
 # amber or orange; SessionStart and SessionEnd delete the file and one older
-# than a day is ignored. Every detail the shim writes starts with the repo
-# (basename of the payload's cwd): the row name is the tab title, often a task
-# title, not the repo.
+# than a day is ignored. The row name is the session's tab title; the claude
+# wrapper titles it with the repo (tabname), so the detail carries only the
+# status. A session launched without the wrapper keeps Claude's own title as its
+# row name, and its detail no longer names the repo.
 #
 # A turn that ends by asking the operator something is not idle: on Stop and
 # StopFailure, with nothing active, a last_assistant_message whose last
@@ -230,7 +231,6 @@ except (ValueError, AttributeError):
 tasks, aid, agent_type = payload.get("background_tasks"), payload.get("agent_id"), payload.get("agent_type")
 seat_col = seat_color(agent_type)
 seat = agent_type if seat_col else None
-repo = os.path.basename(str(payload.get("cwd") or "").rstrip("/"))
 
 # Seat state: one "<agent_id>\t<agent_type>" line per running seat of a session.
 ID = re.compile(r"[A-Za-z0-9_-]+")
@@ -273,7 +273,7 @@ elif event == "SubagentStop" and aid:
 
 def paint(status, detail, dot, text, count=None):
     # The full field set every time, whatever cc-status did or failed to do.
-    d = " ".join((f"{repo} · {detail}" if repo else detail).split())
+    d = " ".join(detail.split())
     if len(d) > 180:
         d = d[:180] + "…"
     argv = [it2, "set-status", "--session", sid, "--status", status, "--detail", d,

@@ -1660,9 +1660,9 @@ Notification through, since waiting outranks a colour. Running seats are
 tracked in `${XDG_STATE_HOME:-~/.local/state}/tabstatus/<session_id>.seats`
 — written on SubagentStart, pruned on SubagentStop, deleted on
 SessionStart/SessionEnd, ignored past a day — so a Stop over a still-running
-background seat repaints its colour, not orange. Every detail the shim
-writes starts with the repo (the payload cwd's basename), because the row
-name is the tab title, often a task title.
+background seat repaints its colour, not orange. The detail carries
+only the status: the row name is the tab title, which the `claude` wrapper
+sets to the repo (see the title paragraph below).
 
 A turn that **ends by asking the operator a question** paints `waiting` in
 yellow (`tabstatus.color.question`, default `#ffd75f`) with the question as
