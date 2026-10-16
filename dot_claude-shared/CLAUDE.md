@@ -352,7 +352,7 @@ employer-specific — profile-specific memory belongs in that profile's own
   by hand or by `/model`, `/effort`, `/config` lasts only until the next apply
   — make the change in the overlay source and apply it. Cross-profile defaults
   go in the wrapper instead, because an overlay can only speak for one profile.
-- **The wrapper exports four defaults**, each overridable per launch:
+- **The wrapper exports five defaults**, each overridable per launch:
   `CLAUDE_CODE_SUBAGENT_MODEL=sonnet`; `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=1h`
   and `CLAUDE_CODE_PROMPT_CACHE_TTL=1h` (subagents default to a five-minute
   cache, and a session on usage credits drops the main conversation to five
@@ -367,6 +367,9 @@ employer-specific — profile-specific memory belongs in that profile's own
   quote: it is not this machine, this model, or this work, and by the rule
   above nothing here is a saving until `/usage` moves. It injects itself into
   matching subagents, so its rules are never pasted into a definition.
+  The fifth, `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, stops Claude's own tab
+  titles so the cc-status shim's repo name stands; set it to `''`, `0`, `false`,
+  `no` or `off` for one launch to get them back.
 - **Cache discipline.** Documented invalidators: switching model, changing
   effort (except Fable 5.1 on a subscription or API key, where effort changes
   keep the cache), fast mode, MCP connect or disconnect, plugin enable or
