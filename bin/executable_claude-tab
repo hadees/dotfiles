@@ -153,7 +153,93 @@ label_of() {
   fi
 }
 
+# --- iTerm2 ------------------------------------------------------------------
+
+as_string() { printf '%s' "${1-}" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+# Read-only: window id, tty and name of every iTerm2 session. `index of t`
+# is not read — it fails coercion inside `repeat with` (-1700).
+tabs_script() {
+  cat <<'APPLESCRIPT'
+set out to ""
+tell application "iTerm2"
+  repeat with w in windows
+    repeat with t in tabs of w
+      repeat with s in sessions of t
+        set out to out & (id of w) & tab & (tty of s) & tab & (name of s) & linefeed
+      end repeat
+    end repeat
+  end repeat
+end tell
+return out
+APPLESCRIPT
+}
+
+# Session, then tab, then window, then the app: `select` on a session makes it
+# the tab's active pane, on a tab is selectTabViewItemWithIdentifier:, on a
+# window is setCurrentTerminal: (makeKeyAndOrderFront: when it is not key) —
+# PTYTab+Scripting.m, iTermWindowScriptingImpl.m — and `activate` (Standard
+# Suite) brings iTerm2 itself forward. Only iTerm2 is addressed, so the one
+# Automation grant is Alfred -> iTerm2.
+focus_script() {
+  cat <<APPLESCRIPT
+tell application "iTerm2"
+  repeat with w in windows
+    repeat with t in tabs of w
+      repeat with s in sessions of t
+        if (tty of s) is "$(as_string "$1")" then
+          select s
+          select t
+          select w
+          activate
+          return "ok"
+        end if
+      end repeat
+    end repeat
+  end repeat
+end tell
+return ""
+APPLESCRIPT
+}
+
+run_script() { # applescript on stdin
+  s=$(cat)
+  i=0
+  while : ; do
+    if out=$(printf '%s\n' "$s" | osascript - 2>&1); then
+      [ -n "$out" ] && printf '%s\n' "$out"
+      return 0
+    fi
+    i=$((i + 1))
+    [ "$i" -ge 3 ] && break
+    sleep 1
+  done
+  printf '%s\n' "$out" >&2
+  return 1
+}
+
 # --- commands ----------------------------------------------------------------
+
+cmd_tabs() {
+  { [ "$(os)" = Darwin ] && proc_running iTerm2; } || return 0
+  out=$(tabs_script | osascript - 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  [ -z "$out" ] || printf '%s\n' "$out"
+}
+
+cmd_focus() {
+  need_macos focus
+  case ${1-} in ''|*[!0-9]*) usage;; esac
+  pid=$1
+  need_python
+  registry_rows | awk -F'\t' -v p="$pid" '$1 == p { f = 1 } END { exit !f }' ||
+    die "no live session with pid $pid"
+  tty=$(tty_table "$pid" | cut -f2)
+  { [ -n "$tty" ] && [ "$tty" != - ]; } || die "pid $pid has no terminal (headless)"
+  proc_running iTerm2 || die "iTerm2 is not running"
+  out=$(focus_script "$tty" | run_script) ||
+    die "osascript could not drive iTerm2 — if macOS asked for Automation permission and was denied, grant it in System Settings > Privacy & Security > Automation"
+  [ "$out" = ok ] || die "pid $pid is on $tty, which is not an iTerm2 tab"
+}
 
 cmd_list() {
   need_python
@@ -165,13 +251,32 @@ cmd_list() {
   fi
   # shellcheck disable=SC2046
   ttys=$(tty_table $(printf '%s\n' "$rows" | cut -f1))
+  # One listing per call, not per row; "unknown" when there is none to join.
+  tabs='' listed=0
+  if [ "$(os)" = Darwin ] && proc_running iTerm2; then
+    tabs=$(cmd_tabs 2>/dev/null) && listed=1
+  fi
   printf '%s\n' "$rows" | while IFS=$TAB read -r pid profile name status cwd; do
     tty=$(printf '%s\n' "$ttys" | awk -F'\t' -v p="$pid" '$1 == p { print $2; exit }')
     [ -n "$tty" ] || tty=-
-    where=unknown; [ "$tty" != - ] || where=headless
+    where=unknown win=- title=-
+    if [ "$tty" = - ]; then
+      where=headless
+    elif [ "$listed" = 1 ]; then
+      where=other
+      hit=$(printf '%s\n' "$tabs" | awk -F'\t' -v t="$tty" '$2 == t { print; exit }')
+      if [ -n "$hit" ]; then
+        where=iterm2
+        IFS=$TAB read -r win _ title <<EOF_HIT
+$hit
+EOF_HIT
+        title=$(printf '%s' "${title-}" | tr '\t' ' ')
+        [ -n "$title" ] || title=-
+      fi
+    fi
     lp=$(label_of "$cwd")
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t-\t%s\n' \
-      "$pid" "$profile" "${lp%"$TAB"*}" "${lp##*"$TAB"}" "$status" "$name" "$tty" "$where" "$cwd"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$pid" "$profile" "${lp%"$TAB"*}" "${lp##*"$TAB"}" "$status" "$name" "$tty" "$where" "$win" "$title" "$cwd"
   done | LC_ALL=C sort -t"$TAB" -k3,3 -k1,1n
 }
 
@@ -182,7 +287,9 @@ cmd=$1
 shift
 case $cmd in
   list)      cmd_list;;
-  tabs|focus|alfred|alfred-install|status) die "$cmd is not built yet";;
+  tabs)      cmd_tabs;;
+  focus)     cmd_focus "$@";;
+  alfred|alfred-install|status) die "$cmd is not built yet";;
   -h|--help|help) usage;;
   *)         die "unknown command '$cmd' (claude-tab help)";;
 esac

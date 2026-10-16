@@ -59,6 +59,24 @@ for id in $(printf '%s' "$ids" | tr ',' ' '); do
 done
 exit 0
 STUB
+  # osascript: logs its arguments, keeps the script it was fed, and answers by
+  # which script it was (the listing, or the focus). FAKE_OSA_FAIL is the
+  # Automation-denied failure.
+  export OSA_LOG="$BATS_TEST_TMPDIR/osa-log" OSA_SCRIPT="$BATS_TEST_TMPDIR/osa-script"
+  : > "$OSA_LOG"
+  cat > "$BIN/osascript" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$OSA_LOG"
+cat > "$OSA_SCRIPT"
+if [ -n "${FAKE_OSA_FAIL:-}" ]; then
+  echo "execution error: Not authorised to send Apple events to iTerm2. (-1743)" >&2
+  exit 1
+fi
+if grep -q 'return out' "$OSA_SCRIPT"; then printf '%s\n' "${FAKE_TABS:-}"
+elif grep -q 'select w' "$OSA_SCRIPT"; then printf '%s\n' "${FAKE_FOCUS-ok}"
+fi
+exit 0
+STUB
   chmod +x "$BIN"/*
   export PATH="$BIN:$PATH"
 }
@@ -207,7 +225,7 @@ $p3 503 ??
 503 504 ??
 504 1 ??
 EOF_TABLE
-  run sh "$CT" list
+  FAKE_PROCS="" run sh "$CT" list
   [ "$status" -eq 0 ]
   [ "$(printf '%s\n' "$output" | awk -F'\t' -v p="$p1" '$1 == p { print $7 "|" $8 }')" = "/dev/ttys003|unknown" ]
   [ "$(printf '%s\n' "$output" | awk -F'\t' -v p="$p2" '$1 == p { print $7 "|" $8 }')" = "/dev/ttys004|unknown" ]
@@ -225,6 +243,111 @@ EOF_TABLE
   [ "$(col 1 | head -2 | tr '\n' ' ')" = "$(printf '%s\n%s\n' "$pa1" "$pa2" | sort -n | tr '\n' ' ')" ]
   run sh -n "$CT"
   [ "$status" -eq 0 ]
+}
+
+@test "tabs prints iTerm2's sessions; nothing when iTerm2 is not running or off macOS" {
+  export FAKE_TABS=$'42\t/dev/ttys003\talpha\n43\t/dev/ttys004\t✳ Some topic (claude)'
+  run sh "$CT" tabs
+  [ "$status" -eq 0 ]
+  [ "$output" = "$FAKE_TABS" ]
+  FAKE_PROCS="" run sh "$CT" tabs
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  : > "$OSA_LOG"
+  FAKE_OS=Linux run sh "$CT" tabs
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ ! -s "$OSA_LOG" ]
+}
+
+@test "tabs reports a denied Automation grant" {
+  FAKE_OSA_FAIL=1 run --separate-stderr sh "$CT" tabs
+  [ "$status" -eq 1 ]
+  [[ "$stderr" == *"-1743"* ]]
+}
+
+@test "list joins on tty: iterm2, other, unknown; one listing for all rows" {
+  a=$(make_repo alpha)
+  live_pid; p1=$LIVE; make_session "$HOME/.claude" "$p1" "$a"
+  live_pid; p2=$LIVE; make_session "$HOME/.claude" "$p2" "$a"
+  live_pid; p3=$LIVE; make_session "$HOME/.claude" "$p3" "$a"
+  cat > "$PS_TABLE" <<EOF_TABLE
+$p1 500 ttys003
+$p2 501 ttys009
+$p3 502 ??
+502 1 ??
+EOF_TABLE
+  export FAKE_TABS=$'42\t/dev/ttys003\t✳ Some topic (claude)'
+  run sh "$CT" list
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | awk -F'\t' -v p="$p1" '$1 == p { print $8 "|" $9 "|" $10 }')" = "iterm2|42|✳ Some topic (claude)" ]
+  [ "$(printf '%s\n' "$output" | awk -F'\t' -v p="$p2" '$1 == p { print $8 "|" $9 "|" $10 }')" = "other|-|-" ]
+  [ "$(printf '%s\n' "$output" | awk -F'\t' -v p="$p3" '$1 == p { print $8 }')" = headless ]
+  [ "$(wc -l < "$OSA_LOG" | tr -d ' ')" -eq 1 ]
+  FAKE_PROCS="" run sh "$CT" list
+  [ "$(printf '%s\n' "$output" | awk -F'\t' -v p="$p1" '$1 == p { print $8 }')" = unknown ]
+  FAKE_OSA_FAIL=1 run sh "$CT" list
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | awk -F'\t' -v p="$p1" '$1 == p { print $8 }')" = unknown ]
+}
+
+# focus_session <tty> : one live session on that tty; sets PID.
+focus_session() {
+  a=$(make_repo alpha)
+  live_pid; PID=$LIVE
+  make_session "$HOME/.claude" "$PID" "$a"
+  printf '%s 500 %s\n' "$PID" "${1#/dev/}" > "$PS_TABLE"
+}
+
+@test "focus selects the session, tab and window, then activates" {
+  focus_session /dev/ttys003
+  run sh "$CT" focus "$PID"
+  [ "$status" -eq 0 ]
+  grep -q 'is "/dev/ttys003"' "$OSA_SCRIPT"
+  grep -q 'select s' "$OSA_SCRIPT"
+  grep -q 'select t' "$OSA_SCRIPT"
+  grep -q 'select w' "$OSA_SCRIPT"
+  grep -q 'activate' "$OSA_SCRIPT"
+}
+
+@test "focus failures name the cause and exit 1; misuse exits 2" {
+  focus_session /dev/ttys003
+  run --separate-stderr sh "$CT" focus "$(dead_pid)"
+  [ "$status" -eq 1 ]
+  [[ "$stderr" == "claude-tab: no live session with pid "* ]]
+
+  : > "$PS_TABLE"
+  run --separate-stderr sh "$CT" focus "$PID"
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "claude-tab: pid $PID has no terminal (headless)" ]
+
+  printf '%s 500 ttys003\n' "$PID" > "$PS_TABLE"
+  FAKE_FOCUS="" run --separate-stderr sh "$CT" focus "$PID"
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "claude-tab: pid $PID is on /dev/ttys003, which is not an iTerm2 tab" ]
+
+  FAKE_PROCS="" run --separate-stderr sh "$CT" focus "$PID"
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "claude-tab: iTerm2 is not running" ]
+
+  : > "$OSA_LOG"
+  FAKE_OSA_FAIL=1 run --separate-stderr sh "$CT" focus "$PID"
+  [ "$status" -eq 1 ]
+  [[ "$stderr" == *"claude-tab: osascript could not drive iTerm2 — if macOS asked for Automation permission and was denied, grant it in System Settings > Privacy & Security > Automation" ]]
+  [ "$(wc -l < "$OSA_LOG" | tr -d ' ')" -eq 3 ]
+
+  run sh "$CT" focus
+  [ "$status" -eq 2 ]
+  FAKE_OS=Linux run sh "$CT" focus "$PID"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"needs macOS"* ]]
+}
+
+@test "focus escapes the tty into the AppleScript" {
+  focus_session '/dev/ttys"3'
+  run sh "$CT" focus "$PID"
+  [ "$status" -eq 0 ]
+  grep -qF 'is "/dev/ttys\"3"' "$OSA_SCRIPT"
 }
 
 @test "unbuilt and unknown commands fail; no command is a usage error" {
