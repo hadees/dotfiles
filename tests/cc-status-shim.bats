@@ -5,7 +5,9 @@
 # one directory, the way iTerm2 ships them side by side: cc-status records
 # the payload it was fed, it2 records its argv. No real iTerm2 is touched.
 # lsof and ps are stubbed there too (and that directory put on PATH): they print
-# lsof.out and ps.out, fixtures a test overwrites, and record their argv.
+# lsof.out and ps.out, fixtures a test overwrites, and record their argv. So is
+# tabname: proj for a cwd ending in /proj, proj@feat-x for /feat-x, else nothing
+# and exit 1. it2 also appends every argv to argv_all, one call per block.
 
 bats_require_minimum_version 1.5.0
 
@@ -13,10 +15,20 @@ setup() {
   STUB="$BATS_TEST_TMPDIR/utilities"
   mkdir -p "$STUB"
   printf '#!/bin/sh\ncat > "%s/fed"\n' "$BATS_TEST_TMPDIR" > "$STUB/cc-status"
-  printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/argv"\necho x >> "%s/calls"\n' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$STUB/it2"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/argv"\nprintf "%%s\\n" "$@" >> "%s/argv_all"\necho x >> "%s/calls"\n' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$STUB/it2"
+  cat > "$STUB/tabname" <<'SH'
+#!/bin/sh
+echo "$1" >> "$(dirname "$0")/../tabname_argv"
+case $1 in
+  */feat-x) echo proj@feat-x ;;
+  */proj) echo proj ;;
+  *) exit 1 ;;
+esac
+SH
   printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/lsof_argv"\ncat "%s/lsof.out"\n' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$STUB/lsof"
   printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/ps_argv"\ncat "%s/ps.out"\n' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$STUB/ps"
-  chmod +x "$STUB/cc-status" "$STUB/it2" "$STUB/lsof" "$STUB/ps"
+  chmod +x "$STUB/cc-status" "$STUB/it2" "$STUB/lsof" "$STUB/ps" "$STUB/tabname"
+  unset WORKSET WORKTABS_GROUP
   export PATH="$STUB:$PATH"
   # By default one shell (4242) holds every output file, with a child: 3.5 s of CPU in all.
   echo 4242 > "$BATS_TEST_TMPDIR/lsof.out"
@@ -68,6 +80,12 @@ it2_argv() { paste -sd'|' "$BATS_TEST_TMPDIR/argv"; }
 fed_tasks() { python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["background_tasks"],sort_keys=True))' "$BATS_TEST_TMPDIR/fed"; }
 
 run_shim() { run sh "$SHIM"; }
+
+# rename_only: the cwd's Stop renamed the session and painted nothing.
+rename_only() {
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
+  [ "$(it2_argv)" = "session|set-name|proj|--session|ABC-123" ]
+}
 
 @test "shim: a non-Stop event passes through byte for byte and never calls it2" {
   local p='{"hook_event_name":"PreToolUse","tool_name":"Bash","background_tasks":[{"task_id":"t1"}]}'
@@ -395,7 +413,7 @@ PY
   run_shim <<< "$(payload Stop '[{"task_id":"ag1","task_type":"local_agent"}]' '"cwd":"/work/proj","session_id":"s1"')"
   [ "$status" -eq 0 ]
   [ "$(fed_tasks | grep -c '"ag1"')" -eq 1 ]
-  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 2 ]
   [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|working|--detail|plan-fable running · 1 background task running|--dot-color|#d787ff|--text-color|#d787ff|--background-tasks|1" ]
 }
 
@@ -414,7 +432,7 @@ PY
   mkdir -p "$(dirname "$SEATS_FILE")"
   printf 'gone\tplan-fable\n' > "$SEATS_FILE"
   run_shim <<< "$(payload Stop '[{"task_id":"sh","task_type":"local_bash"}]' '"cwd":"/work/proj","session_id":"s1"')"
-  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  rename_only
 }
 
 @test "seat: a quiet seat is not painted as running; the amber idle wins" {
@@ -431,7 +449,7 @@ PY
   printf 'ag1\tplan-fable\n' > "$SEATS_FILE"
   python3 -c 'import os,sys,time; t=time.time()-25*3600; os.utime(sys.argv[1],(t,t))' "$SEATS_FILE"
   run_shim <<< "$(payload Stop '[{"task_id":"ag1","task_type":"local_agent"}]' '"cwd":"/work/proj","session_id":"s1"')"
-  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  rename_only
   [ ! -e "$SEATS_FILE" ]
 }
 
@@ -470,7 +488,7 @@ question_payload() { payload Stop "${2:-[]}" "\"cwd\":\"/work/proj\",\"last_assi
   run_shim <<< "$p"
   [ "$status" -eq 0 ]
   [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
-  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 2 ]
   [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|Which branch should I use?|--dot-color|#ffd75f|--text-color|#ffd75f|--background-tasks|0" ]
 }
 
@@ -483,21 +501,21 @@ question_payload() { payload Stop "${2:-[]}" "\"cwd\":\"/work/proj\",\"last_assi
   local p; p=$(question_payload 'Is it ok?\n\nYes, it is.')
   run_shim <<< "$p"
   [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
-  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  rename_only
 }
 
 @test "question: with an active task the shim paints nothing and cc-status keeps the row working" {
   age_file a 5
   run_shim <<< "$(question_payload 'Which branch?' '[{"task_id":"a","task_type":"local_bash"}]')"
   [ "$(fed_tasks | grep -c '"a"')" -eq 1 ]
-  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  rename_only
 }
 
 @test "question: beside only a quiet task the question paint wins over the amber idle" {
   age_file a 7200
   run_shim <<< "$(question_payload 'Which branch?' '[{"task_id":"a","task_type":"local_bash","description":"stuck"}]')"
   [ "$(fed_tasks)" = "[]" ]
-  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 2 ]
   [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|Which branch?|--dot-color|#ffd75f|--text-color|#ffd75f|--background-tasks|0" ]
 }
 
@@ -535,7 +553,7 @@ question_payload() { payload Stop "${2:-[]}" "\"cwd\":\"/work/proj\",\"last_assi
   local p; p=$(question_payload 'All done.')
   run_shim <<< "$p"
   [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
-  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  rename_only
 }
 
 @test "explain: prints question=yes with the extracted line, or question=no" {
@@ -685,4 +703,131 @@ question_payload() { payload Stop "${2:-[]}" "\"cwd\":\"/work/proj\",\"last_assi
   [[ $output == *"holder=none cpu=- stalled=yes"* ]]
   [ ! -e "$BATS_TEST_TMPDIR/calls" ]
   [ ! -e "$BATS_TEST_TMPDIR/fed" ]
+}
+
+# named_payload <event> [cwd] [extra-json-members]: a hook with a session id and a cwd, no tasks.
+named_payload() { printf '{"hook_event_name":"%s","session_id":"s1","cwd":"%s"%s}' "$1" "${2:-/work/proj}" "${3:+,$3}"; }
+NAMED_FILE() { printf '%s/tabstatus/s1.named' "$XDG_STATE_HOME"; }
+
+@test "rename: the first UserPromptSubmit names the session after the repo and writes the marker" {
+  local p; p=$(named_payload UserPromptSubmit)
+  run_shim <<< "$p"
+  [ "$status" -eq 0 ]
+  [ "$(it2_argv)" = "session|set-name|proj|--session|ABC-123" ]
+  [ -e "$(NAMED_FILE)" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
+}
+
+@test "rename: a second UserPromptSubmit does nothing" {
+  local p; p=$(named_payload UserPromptSubmit)
+  run_shim <<< "$p"
+  rm "$BATS_TEST_TMPDIR/calls" "$BATS_TEST_TMPDIR/fed" "$BATS_TEST_TMPDIR/tabname_argv"
+  run_shim <<< "$p"
+  [ "$status" -eq 0 ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  [ ! -e "$BATS_TEST_TMPDIR/tabname_argv" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
+}
+
+@test "rename: Stop renames after cc-status and before the paint, so the paint is the last it2 call" {
+  age_file a 7200
+  run_shim <<< "$(stall_payload)"
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 2 ]
+  [ "$(it2_argv | cut -d'|' -f1)" = "set-status" ]
+  [ "$(grep -cx 'set-name' "$BATS_TEST_TMPDIR/argv_all")" -eq 1 ]
+  [ "$(head -3 "$BATS_TEST_TMPDIR/argv_all" | paste -sd'|' -)" = "session|set-name|proj" ]
+}
+
+@test "rename: a plain Stop with no tasks and no question still renames" {
+  run_shim <<< "$(named_payload Stop)"
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
+  [ "$(it2_argv)" = "session|set-name|proj|--session|ABC-123" ]
+  [ ! -e "$(NAMED_FILE)" ]
+}
+
+@test "rename: WORKSET names the set and WORKTABS_GROUP prefixes it" {
+  export WORKSET=myset WORKTABS_GROUP=personal
+  run_shim <<< "$(named_payload Stop)"
+  [ "$(it2_argv)" = "session|set-name|[personal] myset|--session|ABC-123" ]
+  unset WORKSET
+  run_shim <<< "$(named_payload Stop)"
+  [ "$(it2_argv)" = "session|set-name|[personal] proj|--session|ABC-123" ]
+}
+
+@test "rename: a worktree cwd gets the worktree label" {
+  run_shim <<< "$(named_payload Stop /work/proj/.claude/worktrees/feat-x)"
+  [ "$(it2_argv)" = "session|set-name|proj@feat-x|--session|ABC-123" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/tabname_argv")" = "/work/proj/.claude/worktrees/feat-x" ]
+}
+
+@test "rename: outside a repo, without tabname, or without it2 nothing is renamed" {
+  local p; p=$(named_payload Stop /elsewhere)
+  run_shim <<< "$p"
+  [ "$status" -eq 0 ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
+
+  p=$(named_payload Stop)
+  rm "$STUB/tabname" "$BATS_TEST_TMPDIR/fed"
+  PATH="$STUB:/usr/bin:/bin" run sh "$SHIM" <<< "$p"
+  [ "$status" -eq 0 ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
+
+  rm "$STUB/it2" "$BATS_TEST_TMPDIR/fed"
+  PATH="/usr/bin:/bin" run sh "$SHIM" <<< "$p"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
+}
+
+@test "rename: control characters are stripped and the title is cut at 80" {
+  export WORKSET=$'a\tb'
+  run_shim <<< "$(named_payload Stop)"
+  [ "$(it2_argv)" = "session|set-name|ab|--session|ABC-123" ]
+  export WORKSET=$(printf 'x%.0s' $(seq 120))
+  run_shim <<< "$(named_payload Stop)"
+  [ "$(sed -n 3p "$BATS_TEST_TMPDIR/argv" | wc -c)" -eq 81 ]
+  export WORKSET=$'\t\n'
+  run_shim <<< "$(named_payload Stop)"
+  [ "$(it2_argv)" = "session|set-name|proj|--session|ABC-123" ]
+}
+
+@test "rename: SubagentStop and in-seat events never rename" {
+  run_shim <<< "$(payload SubagentStop '[{"task_id":"a"}]' '"cwd":"/work/proj","session_id":"s1","agent_id":"zz"')"
+  run_shim <<< "$(seat_payload PreToolUse plan-fable '"tool_name":"Bash"')"
+  run_shim <<< "$(seat_payload Stop plan-fable)"
+  run_shim <<< "$(seat_payload UserPromptSubmit plan-fable)"
+  [ ! -e "$BATS_TEST_TMPDIR/tabname_argv" ]
+  ! grep -qx 'set-name' "$BATS_TEST_TMPDIR/argv_all"
+}
+
+@test "rename: SessionStart and SessionEnd delete the marker and never rename" {
+  local ev
+  for ev in SessionStart SessionEnd; do
+    mkdir -p "$(dirname "$(NAMED_FILE)")"
+    : > "$(NAMED_FILE)"
+    run_shim <<< "$(named_payload "$ev")"
+    [ ! -e "$(NAMED_FILE)" ]
+  done
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
+@test "explain: prints name= and rename= with the reason" {
+  run sh "$SHIM" explain <<< "$(named_payload Stop)"
+  [[ $output == *"name=proj"* && $output == *"rename=yes"* ]]
+  run sh "$SHIM" explain <<< "$(named_payload PreToolUse)"
+  [[ $output == *"name=none"* && $output == *"rename=no (event)"* ]]
+  mkdir -p "$(dirname "$(NAMED_FILE)")"
+  : > "$(NAMED_FILE)"
+  run sh "$SHIM" explain <<< "$(named_payload UserPromptSubmit)"
+  [[ $output == *"rename=no (already named)"* ]]
+  run sh "$SHIM" explain <<< "$(named_payload Stop /elsewhere)"
+  [[ $output == *"name=none"* && $output == *"rename=no (not a repo)"* ]]
+  rm "$(NAMED_FILE)"
+  run sh "$SHIM" explain <<< "$(named_payload UserPromptSubmit)"
+  [[ $output == *"rename=yes"* ]]
+  [ ! -e "$(NAMED_FILE)" ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
 }
