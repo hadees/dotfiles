@@ -1,0 +1,188 @@
+#!/bin/sh
+# claude-tab — list the live Claude Code sessions across every profile and
+# bring the chosen one's iTerm2 tab forward (the Alfred workflow's two calls).
+#
+# The sessions come from the registry every Claude profile keeps of its live
+# ones, `<config dir>/sessions/<pid>.json` — an observed layout, not a
+# documented interface; `claude_sessions_here` in .functions and `postbox`
+# read the same files. A session's terminal is the controlling tty of its
+# claude process, read with `ps`; iTerm2 is asked once which of its sessions
+# own which tty, and the join is on that.
+#
+# The label is whatever `~/bin/tabname <cwd>` prints, so this list, the tab
+# title and the Session Status row are one string and cannot drift. It is
+# called by absolute path: Alfred runs scripts with a PATH that excludes
+# ~/bin.
+#
+# Usage: claude-tab <command> [args]
+#   list                     one row per live session, tab-separated: pid,
+#                            profile, label, place, status, name, tty, where,
+#                            window, title, cwd ("-" for empty)
+#   tabs                     iTerm2's sessions: window, tty, title
+#   focus <pid>              bring that session's iTerm2 tab forward
+#   alfred                   Script Filter JSON for the Alfred workflow
+#   alfred-install [dir]     build the Alfred workflow and hand it to Alfred
+#   status                   what this script can see right now
+set -u
+
+TAB=$(printf '\t')
+TABNAME=${CLAUDE_TAB_TABNAME:-$HOME/bin/tabname}
+
+die() { printf 'claude-tab: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'claude-tab: %s\n' "$*" >&2; }
+usage() { sed -n '/^# Usage:/,/^set -u/{ /^set -u/d; s/^# \{0,1\}//p; }' "$0" >&2; exit 2; }
+
+os() { uname -s 2>/dev/null; }
+need_macos() {
+  [ "$(os)" = Darwin ] || { warn "$1 needs macOS — iTerm2 runs nowhere else"; exit 2; }
+}
+need_python() { command -v python3 >/dev/null 2>&1 || die "python3 is required"; }
+
+# `ps` rather than pgrep: pgrep reports nothing for processes in the caller's
+# own session under some sandboxes (Claude Code's Bash tool is one — it cannot
+# see the very iTerm2 it is running inside).
+proc_running() {
+  ps -Ao ucomm= 2>/dev/null |
+    awk -v n="$1" '{ sub(/[ \t]+$/, "", $0); if ($0 == n) f = 1 } END { exit !f }'
+}
+
+# --- profiles and the registry -----------------------------------------------
+
+# Every Claude profile directory that exists, one per line.
+profile_dirs() {
+  { printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+    printf '%s\n' "$HOME/.claude"
+    git config --get-regexp '^claude\.profile\.' 2>/dev/null | cut -d' ' -f2-
+  } | while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        case $d in "~/"*) d="$HOME/${d#\~/}" ;; esac
+        [ -d "$d" ] && printf '%s\n' "$d"
+      done | awk '!seen[$0]++'
+}
+
+profile_label() {
+  case $(basename "$1") in
+    .claude) printf 'default\n' ;;
+    .claude-*) b=$(basename "$1"); printf '%s\n' "${b#.claude-}" ;;
+    *) basename "$1" ;;
+  esac
+}
+
+# Live records of every profile: pid, profile, name, status, cwd.
+registry_rows() {
+  profile_dirs | while IFS= read -r d; do
+    [ -d "$d/sessions" ] || continue
+    python3 - "$d" "$(profile_label "$d")" <<'REG'
+import glob, json, os, re, sys
+d, profile = sys.argv[1:3]
+def field(v):
+    s = re.sub(r"[\t\r\n]", " ", str(v)).strip()
+    return s if s else "-"
+for f in sorted(glob.glob(os.path.join(d, "sessions", "*.json"))):
+    if not re.fullmatch(r"\d+\.json", os.path.basename(f)):
+        continue
+    try:
+        with open(f) as fh:
+            r = json.load(fh)
+        pid = r["pid"]
+        if type(pid) is not int or pid <= 0:
+            continue
+        os.kill(pid, 0)
+    except PermissionError:
+        pass  # alive, just not ours
+    except Exception:
+        continue
+    print("\t".join(field(x) for x in (pid, profile, r.get("name"), r.get("status"), r.get("cwd"))))
+REG
+  done
+}
+
+# --- pid -> tty --------------------------------------------------------------
+
+# "/dev/<tty>" for a ps tty column, nothing for "no terminal" (macOS "??",
+# Linux "?").
+real_tty() {
+  case ${1-} in ''|'?'|'??') ;; *) printf '/dev/%s\n' "$1" ;; esac
+}
+
+# The first real tty up the parent chain from pid $1, "-" if there is none.
+# Read, never `set -- $line`: an unquoted "??" is a glob.
+walk_tty() {
+  p=$1 hops=0
+  while [ "$hops" -lt 8 ] && [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null; do
+    read -r pp tt <<EOF_PS
+$(ps -o ppid=,tty= -p "$p" 2>/dev/null)
+EOF_PS
+    t=$(real_tty "${tt-}")
+    [ -z "$t" ] || { printf '%s\n' "$t"; return; }
+    p=${pp-}
+    hops=$((hops + 1))
+  done
+  printf -- '-\n'
+}
+
+# pid, tty for the pids given. A claude process holds its tty itself; the
+# parent walk is the fallback for one that does not.
+tty_table() {
+  [ $# -gt 0 ] || return 0
+  ids=$(printf '%s,' "$@")
+  ps -o pid=,ppid=,tty= -p "${ids%,}" 2>/dev/null | while read -r pid ppid tty; do
+    [ -n "$pid" ] || continue
+    t=$(real_tty "${tty-}")
+    [ -n "$t" ] || t=$(walk_tty "${ppid-}")
+    printf '%s\t%s\n' "$pid" "$t"
+  done
+}
+
+# --- the label ---------------------------------------------------------------
+
+# label <TAB> place for a directory: "-" at the toplevel, "subdir=<rel>" below
+# it, "nogit" when tabname declines (not a work tree, or the directory is
+# gone), "nolabel" when there is no tabname to ask.
+label_of() {
+  if [ "$have_tabname" != 1 ]; then
+    printf '%s\t%s\n' "$(basename "$1")" nolabel
+  elif l=$("$TABNAME" "$1" 2>/dev/null) && [ -n "$l" ]; then
+    pre=$(git -C "$1" rev-parse --show-prefix 2>/dev/null)
+    case $pre in
+      '') printf '%s\t-\n' "$l" ;;
+      *) printf '%s\tsubdir=%s\n' "$l" "${pre%/}" ;;
+    esac
+  else
+    printf '%s\tnogit\n' "$(basename "$1")"
+  fi
+}
+
+# --- commands ----------------------------------------------------------------
+
+cmd_list() {
+  need_python
+  rows=$(registry_rows)
+  [ -n "$rows" ] || return 0
+  if [ -x "$TABNAME" ]; then have_tabname=1; else
+    have_tabname=0
+    warn "tabname not found at $TABNAME — labels fall back to directory names (chezmoi apply)"
+  fi
+  # shellcheck disable=SC2046
+  ttys=$(tty_table $(printf '%s\n' "$rows" | cut -f1))
+  printf '%s\n' "$rows" | while IFS=$TAB read -r pid profile name status cwd; do
+    tty=$(printf '%s\n' "$ttys" | awk -F'\t' -v p="$pid" '$1 == p { print $2; exit }')
+    [ -n "$tty" ] || tty=-
+    where=unknown; [ "$tty" != - ] || where=headless
+    lp=$(label_of "$cwd")
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t-\t%s\n' \
+      "$pid" "$profile" "${lp%"$TAB"*}" "${lp##*"$TAB"}" "$status" "$name" "$tty" "$where" "$cwd"
+  done | LC_ALL=C sort -t"$TAB" -k3,3 -k1,1n
+}
+
+# --- dispatch ----------------------------------------------------------------
+
+[ $# -ge 1 ] || usage
+cmd=$1
+shift
+case $cmd in
+  list)      cmd_list;;
+  tabs|focus|alfred|alfred-install|status) die "$cmd is not built yet";;
+  -h|--help|help) usage;;
+  *)         die "unknown command '$cmd' (claude-tab help)";;
+esac
