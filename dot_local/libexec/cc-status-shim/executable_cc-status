@@ -50,12 +50,13 @@
 # --session <id>`, the same KEY_NAME override the workgroup wrote, held in
 # memory by iTerm2 — nothing is written to its prefs. It runs on the first
 # UserPromptSubmit of a session (marked by <session_id>.named beside the seats
-# file) and on every Stop and StopFailure, just before the paint, so a later
+# file, written whether or not a rename happened) and on every Stop and
+# StopFailure, just before the paint, so a later
 # rename by iTerm2 heals at the end of the turn. Never on SessionStart: that
 # fires before the workgroup's entry may have, and a rename landing first would
 # be captured as the "original" title the workgroup restores on exit. The title
-# is cut at 80 characters and control characters are dropped; no tabname, no
-# cwd or no repo means no rename.
+# is cut at 80 characters and control characters are dropped. $WORKSET needs
+# no tabname; without it, no tabname, no cwd or no repo means no rename.
 #
 # A turn that ends by asking the operator something is not idle: on Stop and
 # StopFailure, with nothing active, a last_assistant_message whose last
@@ -83,9 +84,9 @@
 # paints; CPU that moved shows as "(cpu busy)" in the quiet paint. No lsof, or
 # a failed probe, means unknown, never stalled.
 #
-# Cost: python3 runs on every Stop and StopFailure (the rename needs it) and on
-# the first UserPromptSubmit of a session, so once per turn end; the other
-# events still cost only the sh gate. A rename adds one tabname and one it2
+# Cost: python3 runs on every Stop and StopFailure (the rename needs it) and
+# once per session on UserPromptSubmit (the marker is written whether or not a
+# rename happened); the other events still cost only the sh gate. A rename adds one tabname and one it2
 # start at the end of the turn. lsof and one ps run only on a Stop that has at
 # least one quiet shell task.
 #
@@ -449,15 +450,16 @@ def session_title():
         return None, "no session id"
     if not it2:
         return None, "no it2"
-    tn = shutil.which("tabname") or os.path.join(os.path.expanduser("~"), "bin", "tabname")
-    if not os.access(tn, os.X_OK):
-        return None, "no tabname"
-    cwd = payload.get("cwd")
-    out = run_out([tn, cwd]) if isinstance(cwd, str) and cwd else None
     clean = lambda v: re.sub(r"[\x00-\x1f\x7f]", "", v or "").strip()
-    name = clean(os.environ.get("WORKSET")) or clean(out)
+    name = clean(os.environ.get("WORKSET"))   # a set names the row; no tabname needed
     if not name:
-        return None, "not a repo"
+        tn = shutil.which("tabname") or os.path.join(os.path.expanduser("~"), "bin", "tabname")
+        if not os.access(tn, os.X_OK):
+            return None, "no tabname"
+        cwd = payload.get("cwd")
+        name = clean(run_out([tn, cwd]) if isinstance(cwd, str) and cwd else None)
+        if not name:
+            return None, "not a repo"
     group = clean(os.environ.get("WORKTABS_GROUP"))
     return ((f"[{group}] " if group else "") + name)[:80], ""
 
@@ -485,6 +487,7 @@ if explain:
     title, why = session_title()
     print(f"name={title or 'none'}")
     print(f"rename={'yes' if title else 'no'} ({why or 'ok'})")
+    print(f"marker={'present' if nf and os.path.exists(nf) else 'none'}")
     print(f"cc-status={real or 'absent'}")
     print(f"it2={it2 or 'absent'}")
     sys.exit(0)
@@ -510,14 +513,15 @@ else:
 
 # Before the paints, so the last it2 call of a turn end is still the paint.
 title, _ = session_title()
+# The first prompt is marked whatever the outcome, so python starts once per session for it.
+if event == "UserPromptSubmit" and nf and not seat:
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        open(nf, "w").close()
+    except OSError:
+        pass
 if title:
     call([it2, "session", "set-name", title, "--session", sid], silent=True)
-    if event == "UserPromptSubmit" and nf:
-        try:
-            os.makedirs(state_dir, exist_ok=True)
-            open(nf, "w").close()
-        except OSError:
-            pass
 if event == "SubagentStart" and seat:
     paint("working", f"{seat} running", seat_col, seat_col)
 if paint_stalled:

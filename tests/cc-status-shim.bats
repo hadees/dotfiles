@@ -763,6 +763,7 @@ NAMED_FILE() { printf '%s/tabstatus/s1.named' "$XDG_STATE_HOME"; }
 }
 
 @test "rename: outside a repo, without tabname, or without it2 nothing is renamed" {
+  # Stop: nothing renamed, the payload still fed to cc-status.
   local p; p=$(named_payload Stop /elsewhere)
   run_shim <<< "$p"
   [ "$status" -eq 0 ]
@@ -780,6 +781,53 @@ NAMED_FILE() { printf '%s/tabstatus/s1.named' "$XDG_STATE_HOME"; }
   PATH="/usr/bin:/bin" run sh "$SHIM" <<< "$p"
   [ "$status" -eq 0 ]
   [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
+}
+
+@test "rename: the first UserPromptSubmit is marked whatever the outcome, and the second skips python" {
+  # not a repo
+  local p; p=$(named_payload UserPromptSubmit /elsewhere)
+  run_shim <<< "$p"
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  [ -e "$(NAMED_FILE)" ]
+  rm "$BATS_TEST_TMPDIR/tabname_argv" "$BATS_TEST_TMPDIR/fed"
+  run_shim <<< "$p"
+  [ ! -e "$BATS_TEST_TMPDIR/tabname_argv" ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
+
+  # no tabname
+  rm "$(NAMED_FILE)" "$STUB/tabname" "$BATS_TEST_TMPDIR/fed"
+  p=$(named_payload UserPromptSubmit)
+  PATH="$STUB:/usr/bin:/bin" run sh "$SHIM" <<< "$p"
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  [ -e "$(NAMED_FILE)" ]
+  rm "$BATS_TEST_TMPDIR/fed"
+  PATH="$STUB:/usr/bin:/bin" run sh "$SHIM" <<< "$p"
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
+
+  # no it2: the sh gate passes the payload through before python starts, so there is no marker to write
+  rm "$(NAMED_FILE)" "$STUB/it2" "$BATS_TEST_TMPDIR/fed"
+  PATH="/usr/bin:/bin" run sh "$SHIM" <<< "$p"
+  [ "$status" -eq 0 ]
+  [ ! -e "$(NAMED_FILE)" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
+}
+
+@test "rename: WORKSET renames without tabname" {
+  export WORKSET=myset
+  rm "$STUB/tabname"
+  PATH="$STUB:/usr/bin:/bin" run sh "$SHIM" <<< "$(named_payload UserPromptSubmit)"
+  [ "$status" -eq 0 ]
+  [ "$(it2_argv)" = "session|set-name|myset|--session|ABC-123" ]
+  [ -e "$(NAMED_FILE)" ]
+}
+
+@test "rename: WORKSET renames outside a repo" {
+  export WORKSET=myset
+  run_shim <<< "$(named_payload UserPromptSubmit /nowhere)"
+  [ "$(it2_argv)" = "session|set-name|myset|--session|ABC-123" ]
+  [ ! -e "$BATS_TEST_TMPDIR/tabname_argv" ]
 }
 
 @test "rename: control characters are stripped and the title is cut at 80" {
@@ -816,13 +864,13 @@ NAMED_FILE() { printf '%s/tabstatus/s1.named' "$XDG_STATE_HOME"; }
 
 @test "explain: prints name= and rename= with the reason" {
   run sh "$SHIM" explain <<< "$(named_payload Stop)"
-  [[ $output == *"name=proj"* && $output == *"rename=yes"* ]]
+  [[ $output == *"name=proj"* && $output == *"rename=yes"* && $output == *"marker=none"* ]]
   run sh "$SHIM" explain <<< "$(named_payload PreToolUse)"
   [[ $output == *"name=none"* && $output == *"rename=no (event)"* ]]
   mkdir -p "$(dirname "$(NAMED_FILE)")"
   : > "$(NAMED_FILE)"
   run sh "$SHIM" explain <<< "$(named_payload UserPromptSubmit)"
-  [[ $output == *"rename=no (already named)"* ]]
+  [[ $output == *"rename=no (already named)"* && $output == *"marker=present"* ]]
   run sh "$SHIM" explain <<< "$(named_payload Stop /elsewhere)"
   [[ $output == *"name=none"* && $output == *"rename=no (not a repo)"* ]]
   rm "$(NAMED_FILE)"
@@ -830,4 +878,14 @@ NAMED_FILE() { printf '%s/tabstatus/s1.named' "$XDG_STATE_HOME"; }
   [[ $output == *"rename=yes"* ]]
   [ ! -e "$(NAMED_FILE)" ]
   [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
+@test "explain: marker= is none before the first prompt (explain never writes) and present after a real run" {
+  local p; p=$(named_payload UserPromptSubmit)
+  run sh "$SHIM" explain <<< "$p"
+  [[ $output == *"marker=none"* ]]
+  [ ! -e "$(NAMED_FILE)" ]
+  run_shim <<< "$p"
+  run sh "$SHIM" explain <<< "$p"
+  [[ $output == *"marker=present"* && $output == *"rename=no (already named)"* ]]
 }
