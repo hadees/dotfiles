@@ -1712,22 +1712,27 @@ default is ASCII because the toolbelt renders rows in iTerm2's UI font
 unless proven otherwise. Set a glyph only after checking it in both the Session
 Status tool and the tab bar. Tests: `tests/tabname.bats`.
 
-The `claude()` wrapper writes no title; it only exports
-`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` (`''`, `0`, `false`, `no` and `off` are
-normalised to unset, since Claude Code reads the variable as a raw string and
-would treat `0` as disabling), so Claude Code's own OSC 0 titles — its
-`/rename`-or-`-n` title, an AI title, a small-model title, and an empty one on
-exit — never displace the repo between a title change and the next Stop.
-Without the export, outside a workgroup (another machine, integration not
-installed), those titles would name the row. Two documented costs: the docs say
-the variable also skips the request that generates an AI session title, so
-`/resume` rows may show a summary or first prompt instead (the binary gates that
-skip behind a feature flag, so it may not happen), and it turns off Claude
-Code's OSC 7501 status reports, which the hooks make redundant. Open `/resume`
-after a week and drop the export if it hurts; the Stop rename converges every
-turn either way. A session not launched through the wrapper (bare `command
-claude`, Claude Desktop, an editor terminal) is still renamed by the shim, but
-Claude's own titles may displace the name until the next Stop.
+The `claude()` wrapper writes no title. Where `git config claude.terminal-title
+false` is set (machine-local, from the overlay that owns the Mac whose rows the
+shim names; default unset, so a public-only clone or a Linux box is untouched)
+it exports `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` (`''`, `0`, `false`, `no` and
+`off` are normalised to unset under the gate, since Claude Code reads the
+variable as a raw string and would treat `0` as disabling; outside the gate a
+caller's value passes through untouched), so Claude Code's own OSC 0 titles —
+its `/rename`-or-`-n` title, an AI title, a small-model title, and an empty one
+on exit — never displace the repo between a title change and the next Stop. It
+is gated rather than a default because it costs every machine and pays only
+where the shim, iTerm2 3.7.5+ and the integration are all present. Two
+documented costs: the docs say the variable also skips the request that
+generates an AI session title, so `/resume` rows may show a summary or first
+prompt instead (the binary gates that skip behind a feature flag, so it may not
+happen), and it turns off Claude Code's OSC 7501 status reports, which the hooks
+make redundant. Open `/resume` after a week and drop the config line if it
+hurts; the Stop rename converges every turn either way. `claude-doctor`'s
+`titles:` line shows the key and the variable. A session not launched through
+the wrapper (bare `command claude`, Claude Desktop, an editor terminal) is
+still renamed by the shim, but Claude's own titles may displace the name until
+the next Stop.
 
 A turn that **ends by asking the operator a question** paints `waiting` in
 yellow (`tabstatus.color.question`, default `#ffd75f`) with the question as
