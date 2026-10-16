@@ -1661,8 +1661,69 @@ tracked in `${XDG_STATE_HOME:-~/.local/state}/tabstatus/<session_id>.seats`
 — written on SubagentStart, pruned on SubagentStop, deleted on
 SessionStart/SessionEnd, ignored past a day — so a Stop over a still-running
 background seat repaints its colour, not orange. The detail carries
-only the status: the row name is the tab title, which the `claude` wrapper
-sets to the repo (see the title paragraph below).
+only the status: the row name carries the repo (next paragraph).
+
+**The row's name is the session's name, and the shim sets it.** The Session
+Status tool labels a row with `session.name` (iTerm2's `ToolStatus.swift`),
+which the tab shows too. On iTerm2 3.7.5+ the Claude Code integration's
+onboarding leaves a `builtin.claudeCode` workgroup (root session displayName
+"Chat", peer "Diff") and, on every profile, an Enter Workgroup trigger that
+fires when a job named `claude` starts. Entering renames the leader session to
+the root's displayName through a `KEY_NAME` override — that is why every row
+read `Chat (claude)`. The `(claude)` is the Job component of iTerm2's job-only
+default title (these profiles set no `Title Components`) and is not touched
+here. The workgroup's exit trigger restores the shell's own title when
+`claude` quits.
+
+So the shim renames the session back: `it2 session set-name` with `[<group>] `
+(`WORKTABS_GROUP`, when set) and then `$WORKSET` (a working set is N repos, so
+the set names the row) else `tabname` of the payload's `cwd`, on a session's
+first UserPromptSubmit (marked by an empty `<session_id>.named` beside the seats
+file, deleted on SessionStart/SessionEnd) and on every Stop and StopFailure, so
+a later rename by iTerm2 heals at the end of the turn. It runs after the
+cc-status call and before the paints, which keeps a paint the last `it2` call of
+a turn end. Never on SessionStart: that fires before the job-start trigger may
+have, and a rename landing first would be captured as the "original" title the
+workgroup restores on exit. The title has control characters dropped and is cut
+at 80 characters; no `tabname`, no `cwd`, or a directory outside a repo means no
+rename, never an empty one (iTerm2 would show its profile name). `set-name` is
+a session-specific in-memory override: **no pref in
+`com.googlecode.iterm2.plist` is part of this mechanism** — the plist's
+uncommitted Workgroups blob and triggers are iTerm2's own, left alone, and
+clearing the root's displayName in Settings was rejected because iTerm2 would
+save that into the tracked plist. `cc-status explain` prints `name=` and
+`rename=yes|no (<reason>)`. A tab already stuck on `Chat (-zsh)` is fixed once
+by hand: `it2 session set-name "$(tabname)"` in it, or Session > Edit Session.
+The tab bar reads `<repo> (claude)` during a session; the conversation topic no
+longer appears there.
+
+`bin/tabname [dir]` (`~/bin/tabname`) is the label: the git toplevel's name, or
+for a linked worktree the repo, an `@`, then the worktree name, so the worktrees
+under `.claude/worktrees/` stay told apart. Outside a work tree it prints
+nothing and exits 1 — never 0 with empty output. It is a script so the shim and
+any other tab labeller (an Alfred switcher) share one answer. The worktree
+format is `git config tabname.worktree-format '{repo} <glyph>{worktree}'`; the
+default is ASCII because the toolbelt renders rows in iTerm2's UI font
+(`NSFont.it_toolbelt()`), where a Nerd Font private-use glyph is a tofu box
+unless proven otherwise. Set a glyph only after checking it in both the Session
+Status tool and the tab bar. Tests: `tests/tabname.bats`.
+
+The `claude()` wrapper writes no title; it only exports
+`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` (`''`, `0`, `false`, `no` and `off` are
+normalised to unset, since Claude Code reads the variable as a raw string and
+would treat `0` as disabling), so Claude Code's own OSC 0 titles — its
+`/rename`-or-`-n` title, an AI title, a small-model title, and an empty one on
+exit — never displace the repo between a title change and the next Stop.
+Without the export, outside a workgroup (another machine, integration not
+installed), those titles would name the row. Two documented costs: the docs say
+the variable also skips the request that generates an AI session title, so
+`/resume` rows may show a summary or first prompt instead (the binary gates that
+skip behind a feature flag, so it may not happen), and it turns off Claude
+Code's OSC 7501 status reports, which the hooks make redundant. Open `/resume`
+after a week and drop the export if it hurts; the Stop rename converges every
+turn either way. A session not launched through the wrapper (bare `command
+claude`, Claude Desktop, an editor terminal) is still renamed by the shim, but
+Claude's own titles may displace the name until the next Stop.
 
 A turn that **ends by asking the operator a question** paints `waiting` in
 yellow (`tabstatus.color.question`, default `#ffd75f`) with the question as
@@ -1711,11 +1772,11 @@ and exits 0 at once without the binary, which beats a hook entry that
 errors on every event.
 
 Pass-through events cost one `sh`, a `cat`, two `case` matches and a pipe
-into cc-status; a Stop with background tasks, or whose final message contains a `?` (most
-Stops), adds one `python3` (~30 ms), a
-`stat` per task, one `git config --get-regexp`, and an extra `it2` call only
-when nothing is active; an in-seat tool call makes one `it2` call instead of
-cc-status's. It fails open to stock behaviour everywhere (no binary, `it2`,
+into cc-status; every Stop and StopFailure, and a session's first
+UserPromptSubmit, adds one `python3` (~30 ms), a `tabname` and an `it2` start
+for the rename (after the turn), a `stat` per task, one `git config
+--get-regexp`, and a paint `it2` call only when nothing is active; an in-seat
+tool call makes one `it2` call instead of cc-status's. It fails open to stock behaviour everywhere (no binary, `it2`,
 python3 or session id, bad JSON, `it2` past five seconds) and never exits
 non-zero: the row is cosmetic and must never cost a turn. It cannot see task
 types that keep no output file (`monitor`, `in_process_teammate`,

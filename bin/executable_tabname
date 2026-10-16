@@ -10,7 +10,7 @@
 # title would otherwise blank it.
 #
 # A script rather than a zsh function because more than one caller wants the
-# same answer: the claude() wrapper titling its tab, and any other tab or
+# same answer: the cc-status shim naming a session, and any other tab or
 # session labeller (an Alfred switcher) that runs it as ~/bin/tabname <dir>.
 #
 # "Worktree" means a linked one, made by `git worktree add`. A submodule is not
