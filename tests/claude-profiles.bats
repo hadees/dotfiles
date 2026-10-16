@@ -31,7 +31,8 @@ setup() {
   # be inherited rather than applied.
   unset CLAUDE_PROFILE CLAUDE_CONFIG_DIR BROWSER OPEN_AS_ALIAS SSH_CONNECTION \
     CLAUDE_CODE_SUBAGENT_MODEL CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL \
-    CLAUDE_CODE_PROMPT_CACHE_TTL PONYTAIL_SUBAGENT_MATCHER
+    CLAUDE_CODE_PROMPT_CACHE_TTL PONYTAIL_SUBAGENT_MATCHER \
+    CLAUDE_CODE_DISABLE_TERMINAL_TITLE
 
   # Fixture pins: one "work" org and one "personal" owner, mapped to two
   # accounts; work maps to the default dir, personal to a separate profile.
@@ -165,6 +166,16 @@ claude_in() {
   # dropped functions before): named, before any line that depends on it.
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; unfunction claude_profile_dir; claude-doctor 2>/dev/null"
   [[ "$output" == *"defined: MISSING claude_profile_dir — a shell snapshot or partial source dropped them; source ~/.functions again"* ]]
+}
+
+@test "claude-doctor: titles line reports the claude.terminal-title gate" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"titles:  claude.terminal-title=unset"* ]]
+  git config --file "$GIT_CONFIG_GLOBAL" claude.terminal-title false
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"titles:  claude.terminal-title=false"* ]]
+  [[ "$output" == *"off (the shim names the row)"* ]]
 }
 
 @test "claude-doctor: names the deny guard's rule count and fail-closed wiring" {
@@ -323,6 +334,57 @@ PY
   run zsh -c "source '$DOTFUNCTIONS'; CLAUDE_CODE_SUBAGENT_MODEL=opus claude"
   [ "$status" -eq 0 ]
   [ "$output" = "SUBAGENT=opus" ]
+}
+
+@test "claude: Claude Code's own titles are left alone by default" {
+  printf '#!/bin/sh\necho "TITLE=${CLAUDE_CODE_DISABLE_TERMINAL_TITLE-UNSET}"\n' \
+    > "$BATS_TEST_TMPDIR/bin/claude"
+  run zsh -c "source '$DOTFUNCTIONS'; claude"
+  [ "$status" -eq 0 ]
+  [ "$output" = "TITLE=UNSET" ]
+}
+
+@test "claude: an explicit value passes through untouched when the gate is off" {
+  printf '#!/bin/sh\necho "TITLE=${CLAUDE_CODE_DISABLE_TERMINAL_TITLE-UNSET}"\n' \
+    > "$BATS_TEST_TMPDIR/bin/claude"
+  run zsh -c "source '$DOTFUNCTIONS'; CLAUDE_CODE_DISABLE_TERMINAL_TITLE=0 claude"
+  [ "$status" -eq 0 ]
+  [ "$output" = "TITLE=0" ]
+  run zsh -c "source '$DOTFUNCTIONS'; CLAUDE_CODE_DISABLE_TERMINAL_TITLE=yes claude"
+  [ "$status" -eq 0 ]
+  [ "$output" = "TITLE=yes" ]
+}
+
+@test "claude: claude.terminal-title false turns Claude's titles off" {
+  printf '#!/bin/sh\necho "TITLE=${CLAUDE_CODE_DISABLE_TERMINAL_TITLE-UNSET}"\n' \
+    > "$BATS_TEST_TMPDIR/bin/claude"
+  git config --file "$GIT_CONFIG_GLOBAL" claude.terminal-title false
+  run zsh -c "source '$DOTFUNCTIONS'; claude"
+  [ "$status" -eq 0 ]
+  [ "$output" = "TITLE=1" ]
+}
+
+@test "claude: under the gate an empty, 0, false, no or off value gives one launch Claude's titles back" {
+  # Claude Code reads the variable as a raw string, so any non-empty value
+  # disables titles; under the gate the wrapper turns the off-spellings into
+  # unset.
+  printf '#!/bin/sh\necho "TITLE=${CLAUDE_CODE_DISABLE_TERMINAL_TITLE-UNSET}"\n' \
+    > "$BATS_TEST_TMPDIR/bin/claude"
+  git config --file "$GIT_CONFIG_GLOBAL" claude.terminal-title false
+  for v in '' 0 false No OFF; do
+    run zsh -c "source '$DOTFUNCTIONS'; CLAUDE_CODE_DISABLE_TERMINAL_TITLE='$v' claude"
+    [ "$status" -eq 0 ]
+    [ "$output" = "TITLE=UNSET" ]
+  done
+}
+
+@test "claude: under the gate any other set value is kept" {
+  printf '#!/bin/sh\necho "TITLE=${CLAUDE_CODE_DISABLE_TERMINAL_TITLE-UNSET}"\n' \
+    > "$BATS_TEST_TMPDIR/bin/claude"
+  git config --file "$GIT_CONFIG_GLOBAL" claude.terminal-title false
+  run zsh -c "source '$DOTFUNCTIONS'; CLAUDE_CODE_DISABLE_TERMINAL_TITLE=yes claude"
+  [ "$status" -eq 0 ]
+  [ "$output" = "TITLE=yes" ]
 }
 
 @test "claude: CLAUDE_PROFILE typo warns on stderr and falls back to the default profile" {

@@ -39,9 +39,24 @@
 # ${XDG_STATE_HOME:-~/.local/state}/tabstatus/<session_id>.seats, so a Stop
 # over a still-running background seat paints that seat's colour rather than
 # amber or orange; SessionStart and SessionEnd delete the file and one older
-# than a day is ignored. Every detail the shim writes starts with the repo
-# (basename of the payload's cwd): the row name is the tab title, often a task
-# title, not the repo.
+# than a day is ignored. The row name carries the repo (see below), so the
+# detail carries only the status.
+#
+# The row name is the session's name, and on iTerm2 3.7.5+ the Claude Code
+# integration's Enter Workgroup trigger renames the session to the workgroup
+# root's displayName ("Chat") when the job `claude` starts, so every row would
+# read "Chat (claude)". The shim renames it back to the repo: `it2 session
+# set-name "[<WORKTABS_GROUP>] <WORKSET or tabname of the payload's cwd>"
+# --session <id>`, the same KEY_NAME override the workgroup wrote, held in
+# memory by iTerm2 — nothing is written to its prefs. It runs on the first
+# UserPromptSubmit of a session (marked by <session_id>.named beside the seats
+# file, written whether or not a rename happened) and on every Stop and
+# StopFailure, just before the paint, so a later
+# rename by iTerm2 heals at the end of the turn. Never on SessionStart: that
+# fires before the workgroup's entry may have, and a rename landing first would
+# be captured as the "original" title the workgroup restores on exit. The title
+# is cut at 80 characters and control characters are dropped. $WORKSET needs
+# no tabname; without it, no tabname, no cwd or no repo means no rename.
 #
 # A turn that ends by asking the operator something is not idle: on Stop and
 # StopFailure, with nothing active, a last_assistant_message whose last
@@ -69,10 +84,11 @@
 # paints; CPU that moved shows as "(cpu busy)" in the quiet paint. No lsof, or
 # a failed probe, means unknown, never stalled.
 #
-# Cost: python3 now runs on every Stop whose message contains a ? as well as
-# on those with background tasks, so on most Stops; the other events still
-# cost only the sh gate. lsof and one ps run only on a Stop that has at least
-# one quiet shell task.
+# Cost: python3 runs on every Stop and StopFailure (the rename needs it) and
+# once per session on UserPromptSubmit (the marker is written whether or not a
+# rename happened); the other events still cost only the sh gate. A rename adds one tabname and one it2
+# start at the end of the turn. lsof and one ps run only on a Stop that has at
+# least one quiet shell task.
 #
 #   cc-status             hook mode: payload on stdin, exit 0 always
 #   cc-status explain     payload on stdin; print the decision, call nothing
@@ -139,21 +155,27 @@ payload=$(cat)
 pass() { printf '%s' "$payload" | "$real"; exit 0; }
 
 # Cheap gate before paying for python3: Claude Code emits compact JSON. Only
-# turn-ending events with background tasks (or, on Stop and StopFailure, a
-# final message containing a ?), session start/end (the seat state file) and
-# hooks fired inside a seat need the decision; the rest pass through.
+# turn-ending events (Stop and StopFailure always: the rename; SubagentStop only
+# with background tasks), a session's first UserPromptSubmit (no .named marker
+# yet), session start/end (the seat state file) and hooks fired inside a seat
+# need the decision; the rest pass through.
 # A seat is an agent_type with a default colour (keep in step with SEATS below)
 # or a tabstatus.color.<agent_type> setting.
 if [ "$mode" != explain ]; then
   go=
   case $payload in
-    *'"hook_event_name":"Stop"'*|*'"hook_event_name":"StopFailure"'*|*'"hook_event_name":"SubagentStop"'*)
-      case $payload in
-        *'"background_tasks":[{'*) go=1 ;;
-        *'"hook_event_name":"SubagentStop"'*) ;;
-        *'"last_assistant_message":"'*'?'*|*'"last_assistant_message":"'*'？'*) go=1 ;;
-      esac ;;
+    *'"hook_event_name":"Stop"'*|*'"hook_event_name":"StopFailure"'*) go=1 ;;
+    *'"hook_event_name":"SubagentStop"'*)
+      case $payload in *'"background_tasks":[{'*) go=1 ;; esac ;;
     *'"hook_event_name":"SessionStart"'*|*'"hook_event_name":"SessionEnd"'*) go=1 ;;
+    *'"hook_event_name":"UserPromptSubmit"'*)
+      # Named already? A session id that is not a plain token lets python decide.
+      go=1
+      case $payload in
+        *'"session_id":"'*)
+          nid=${payload#*'"session_id":"'}; nid=${nid%%'"'*}
+          [ -e "${XDG_STATE_HOME:-$HOME/.local/state}/tabstatus/$nid.named" ] && go= ;;
+      esac ;;
   esac
   case $payload in
     *'"agent_type":"'*)
@@ -172,7 +194,7 @@ fi
 # The script goes in via -c so stdin stays free for the payload: `python3 -`
 # with a heredoc would make the heredoc the stdin and the payload vanish.
 py=$(cat <<'PY'
-import functools, json, os, re, subprocess, sys, time
+import functools, json, os, re, shutil, subprocess, sys, time
 
 mode, real, it2, sid = sys.argv[1:5]
 explain = mode == "explain"
@@ -230,7 +252,6 @@ except (ValueError, AttributeError):
 tasks, aid, agent_type = payload.get("background_tasks"), payload.get("agent_id"), payload.get("agent_type")
 seat_col = seat_color(agent_type)
 seat = agent_type if seat_col else None
-repo = os.path.basename(str(payload.get("cwd") or "").rstrip("/"))
 
 # Seat state: one "<agent_id>\t<agent_type>" line per running seat of a session.
 ID = re.compile(r"[A-Za-z0-9_-]+")
@@ -238,6 +259,7 @@ pid = payload.get("session_id")
 state_dir = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "tabstatus")
 sf = os.path.join(state_dir, pid + ".seats") if isinstance(pid, str) and ID.fullmatch(pid) else None
 tf = sf[:-len(".seats")] + ".tasks" if sf else None
+nf = sf[:-len(".seats")] + ".named" if sf else None
 
 def seats_read():
     try:
@@ -273,7 +295,7 @@ elif event == "SubagentStop" and aid:
 
 def paint(status, detail, dot, text, count=None):
     # The full field set every time, whatever cc-status did or failed to do.
-    d = " ".join((f"{repo} · {detail}" if repo else detail).split())
+    d = " ".join(detail.split())
     if len(d) > 180:
         d = d[:180] + "…"
     argv = [it2, "set-status", "--session", sid, "--status", status, "--detail", d,
@@ -418,6 +440,29 @@ if event in ("Stop", "StopFailure") and not active and isinstance(msg, str):
     if q.endswith(("?", "？")):
         question = q
 
+# The session's name: "[<group>] <WORKSET or tabname of cwd>", or None with the reason it is not renamed.
+def session_title():
+    if seat or event not in ("UserPromptSubmit", "Stop", "StopFailure"):
+        return None, "event"
+    if event == "UserPromptSubmit" and nf and os.path.exists(nf):
+        return None, "already named"
+    if not sid:
+        return None, "no session id"
+    if not it2:
+        return None, "no it2"
+    clean = lambda v: re.sub(r"[\x00-\x1f\x7f]", "", v or "").strip()
+    name = clean(os.environ.get("WORKSET"))   # a set names the row; no tabname needed
+    if not name:
+        tn = shutil.which("tabname") or os.path.join(os.path.expanduser("~"), "bin", "tabname")
+        if not os.access(tn, os.X_OK):
+            return None, "no tabname"
+        cwd = payload.get("cwd")
+        name = clean(run_out([tn, cwd]) if isinstance(cwd, str) and cwd else None)
+        if not name:
+            return None, "not a repo"
+    group = clean(os.environ.get("WORKTABS_GROUP"))
+    return ((f"[{group}] " if group else "") + name)[:80], ""
+
 # A running seat among the active tasks: the row stays that seat's colour, not the parent's.
 ids = {t.get("task_id") for t in active if isinstance(t, dict)}
 busy = [t for a, t in live if a in ids and seat_color(t)]
@@ -439,6 +484,10 @@ if explain:
     print(f"seat={seat or 'none'} colour={seat_col or 'none'} state={len(live)}")
     print(f"question={'yes ' + question if question else 'no'}")
     print(f"action={action}")
+    title, why = session_title()
+    print(f"name={title or 'none'}")
+    print(f"rename={'yes' if title else 'no'} ({why or 'ok'})")
+    print(f"marker={'present' if nf and os.path.exists(nf) else 'none'}")
     print(f"cc-status={real or 'absent'}")
     print(f"it2={it2 or 'absent'}")
     sys.exit(0)
@@ -447,6 +496,10 @@ if live != before or event in ("SessionStart", "SessionEnd"):
     seats_write(live)
     if event in ("SessionStart", "SessionEnd"):
         tasks_write({})
+        try:
+            os.remove(nf)
+        except (OSError, TypeError):
+            pass
 if in_seat_tool:
     tool = payload.get("tool_name")
     paint("working", f"{seat}: {tool}" if tool else seat, seat_col, seat_col)
@@ -457,6 +510,18 @@ if fed is None:
 else:
     payload["background_tasks"] = fed
     call([real], json.dumps(payload).encode(), 10)
+
+# Before the paints, so the last it2 call of a turn end is still the paint.
+title, _ = session_title()
+# The first prompt is marked whatever the outcome, so python starts once per session for it.
+if event == "UserPromptSubmit" and nf and not seat:
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        open(nf, "w").close()
+    except OSError:
+        pass
+if title:
+    call([it2, "session", "set-name", title, "--session", sid], silent=True)
 if event == "SubagentStart" and seat:
     paint("working", f"{seat} running", seat_col, seat_col)
 if paint_stalled:

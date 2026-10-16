@@ -551,6 +551,22 @@ command that is not the bare expanded path, or a shim file that is not
 executable. Note that 3.7.3 reads only `~/.claude/settings.json` for its
 health check, so a profile elsewhere is judged by the doctor, not the alert.
 
+A machine that wires the shim also stops Claude Code's own OSC 0 tab titles
+from displacing the name the shim sets, with one line in its gitconfig
+(`~/.gitconfig.local` from the overlay that owns the Mac, inside a darwin
+guard — a Linux box has no iTerm2 and must not get it):
+
+```gitconfig
+[claude]
+	terminal-title = false
+```
+
+`claude()` then exports `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`; unset, it
+leaves Claude's titles alone, which is why a public-only clone is unchanged.
+Land the overlay line first (`dotfiles`), then this repo's change: until both
+are in, the row shows Claude's titles between Stops at worst, and the shim's
+Stop rename still converges. `claude-doctor`'s `titles:` line shows the value.
+
 ### Secrets — `~/.extra` from `private_dot_extra.tmpl` (personal overlay)
 
 Never a value, only a 1Password reference; chezmoi resolves it at apply time
