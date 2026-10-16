@@ -1690,10 +1690,12 @@ at 80 characters. `$WORKSET` needs no `tabname`; without it, no `tabname`, no `c
 or a directory outside a repo means no rename, never an empty one (iTerm2 would
 show its profile name). `set-name` is
 a session-specific in-memory override: **no pref in
-`com.googlecode.iterm2.plist` is part of this mechanism** — the plist's
-uncommitted Workgroups blob and triggers are iTerm2's own, left alone, and
-clearing the root's displayName in Settings was rejected because iTerm2 would
-save that into the tracked plist. `cc-status explain` prints `name=` and
+`com.googlecode.iterm2.plist` is part of this mechanism** — iTerm2's Claude
+Code onboarding writes its workgroup (a `Workgroups` entry, `builtin.claudeCode`)
+and the Enter/Exit Workgroup triggers into that plist itself, as it does every
+other preference; that is iTerm2 saving, not part of this mechanism, and
+clearing the root's displayName in Settings was rejected because it would be a
+preference edit in the tracked plist. `cc-status explain` prints `name=` and
 `rename=yes|no (<reason>)` and `marker=present|none`. A tab already stuck on `Chat (-zsh)` is fixed once
 by hand: `it2 session set-name "$(tabname)"` in it, or Session > Edit Session.
 The tab bar reads `<repo> (claude)` during a session; the conversation topic no
