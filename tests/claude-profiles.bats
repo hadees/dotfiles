@@ -32,9 +32,7 @@ setup() {
   unset CLAUDE_PROFILE CLAUDE_CONFIG_DIR BROWSER OPEN_AS_ALIAS SSH_CONNECTION \
     CLAUDE_CODE_SUBAGENT_MODEL CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL \
     CLAUDE_CODE_PROMPT_CACHE_TTL PONYTAIL_SUBAGENT_MATCHER \
-    CLAUDE_CODE_DISABLE_TERMINAL_TITLE WORKTABS_GROUP WORKSET
-  # The title write is skipped for TERM=dumb, which CI shells may carry.
-  export TERM=xterm
+    CLAUDE_CODE_DISABLE_TERMINAL_TITLE
 
   # Fixture pins: one "work" org and one "personal" owner, mapped to two
   # accounts; work maps to the default dir, personal to a separate profile.
@@ -49,8 +47,6 @@ setup() {
   printf '#!/bin/sh\necho "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR-UNSET}"\n' \
     > "$BATS_TEST_TMPDIR/bin/claude"
   chmod +x "$BATS_TEST_TMPDIR/bin/claude"
-  # The real label script, so the title the wrapper writes is the real one.
-  ln -s "$BATS_TEST_DIRNAME/../bin/executable_tabname" "$BATS_TEST_TMPDIR/bin/tabname"
   if [ -n "$REAL_PYTHON3" ]; then
     printf '#!/bin/sh\nexec "%s" "$@"\n' "$REAL_PYTHON3" > "$BATS_TEST_TMPDIR/bin/python3"
     chmod +x "$BATS_TEST_TMPDIR/bin/python3"
@@ -838,14 +834,13 @@ make_session() {
 
 # Run `claude "$@"` in $PTY_DIR on a pseudo-terminal — the question is only
 # asked of a launch somebody is sitting at — and answer it with $PTY_ANSWER,
-# typed ahead so a launch that asks nothing simply leaves it unread. PTY_ENV
-# is an optional `NAME=value` prefix for the launch. A
+# typed ahead so a launch that asks nothing simply leaves it unread. A
 # hand-rolled fork-and-read rather than the obvious tools: zsh's zpty returns
 # short reads on macOS, and pty.spawn before Python 3.10 never returns there
 # once the child exits.
 pty_claude() {
   [ -n "$REAL_PYTHON3" ] || skip "python3 not installed"
-  printf "source '%s'; cd '%s'; %s claude %s; print rc=\$?\n" "$DOTFUNCTIONS" "$PTY_DIR" "${PTY_ENV-}" "$*" \
+  printf "source '%s'; cd '%s'; claude %s; print rc=\$?\n" "$DOTFUNCTIONS" "$PTY_DIR" "$*" \
     > "$BATS_TEST_TMPDIR/pty-inner.zsh"
   run python3 -c '
 import os, pty, sys
@@ -962,42 +957,5 @@ os.waitpid(pid, 0)
   rm -r "$HOME/.claude-personal/sessions"
   PTY_DIR=$repo PTY_ANSWER=n pty_claude
   [[ "$output" != *"already running"* ]]
-  [[ "$output" == *"rc=0"* ]]
-}
-
-@test "claude: an attended launch titles the tab with the repo before exec" {
-  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
-  PTY_DIR=$repo PTY_ANSWER=n pty_claude
-  [[ "$output" == *$'\e]0;repo\a'* ]]
-  [[ "$output" == *"rc=0"* ]]
-}
-
-@test "claude: a workspace group prefixes the title and a working set names it" {
-  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
-  PTY_ENV='WORKTABS_GROUP=personal' PTY_DIR=$repo PTY_ANSWER=n pty_claude
-  [[ "$output" == *$'\e]0;[personal] repo\a'* ]]
-  PTY_ENV='WORKSET=myset' PTY_DIR=$repo PTY_ANSWER=n pty_claude
-  [[ "$output" == *$'\e]0;myset\a'* ]]
-  PTY_ENV='WORKTABS_GROUP=personal WORKSET=myset' PTY_DIR=$repo PTY_ANSWER=n pty_claude
-  [[ "$output" == *$'\e]0;[personal] myset\a'* ]]
-}
-
-@test "claude: a linked worktree is titled repo@worktree" {
-  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
-  git -C "$repo" -c user.name=octo -c user.email=octo@example.invalid commit -q --allow-empty -m init
-  git -C "$repo" worktree add -q "$repo/.claude/worktrees/feat-x" -b feat-x
-  PTY_DIR=$repo/.claude/worktrees/feat-x PTY_ANSWER=n pty_claude
-  [[ "$output" == *$'\e]0;repo@feat-x\a'* ]]
-}
-
-@test "claude: no title for -p, with Claude's titles left on, or outside a repo" {
-  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
-  PTY_DIR=$repo PTY_ANSWER=n pty_claude -p hello
-  [[ "$output" != *$'\e]0;'* ]]
-  PTY_ENV='CLAUDE_CODE_DISABLE_TERMINAL_TITLE=' PTY_DIR=$repo PTY_ANSWER=n pty_claude
-  [[ "$output" != *$'\e]0;'* ]]
-  mkdir "$BATS_TEST_TMPDIR/plain"
-  PTY_DIR=$BATS_TEST_TMPDIR/plain PTY_ANSWER=n pty_claude
-  [[ "$output" != *$'\e]0;'* ]]
   [[ "$output" == *"rc=0"* ]]
 }
