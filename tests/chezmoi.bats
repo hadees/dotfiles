@@ -57,6 +57,7 @@ teardown() {
   [ -f "$TMPHOME/.aliases" ]
   [ -f "$TMPHOME/.functions" ]
   [ -x "$TMPHOME/bin/has-glyphs" ]
+  [ -x "$TMPHOME/bin/tabname" ]
   # Rendered shell files parse
   zsh -n "$TMPHOME/.zshrc"
   zsh -n "$TMPHOME/.aliases"

@@ -1,0 +1,60 @@
+#!/bin/sh
+# tabname — the label a terminal tab or session row shows for a directory.
+#
+#   tabname [dir]      print the label for dir (default .), one line
+#
+# The git toplevel's name; for a linked worktree "<repo>@<worktree>", so the
+# several worktrees of one repo stay told apart. Outside a git work tree
+# (not a repo, inside a .git directory, no git) it prints nothing and exits 1
+# — never 0 with empty output, since a caller that writes the label as a
+# title would otherwise blank it.
+#
+# A script rather than a zsh function because more than one caller wants the
+# same answer: the cc-status shim naming a session, and any other tab or
+# session labeller (an Alfred switcher) that runs it as ~/bin/tabname <dir>.
+#
+# "Worktree" means a linked one, made by `git worktree add`. A submodule is not
+# one: its git dir sits under <super>/.git/modules/, and it is labelled by its
+# own toplevel like any repo.
+#
+# The worktree format is machine-local policy: `git config
+# tabname.worktree-format '{repo} <glyph>{worktree}'` (repo-local or global).
+# The default is ASCII on purpose — a private-use glyph is a tofu box in any
+# surface that does not render with a patched font.
+set -u
+
+dir="${1:-.}"
+
+out=$(git -C "$dir" rev-parse --path-format=absolute --show-toplevel --git-common-dir 2>/dev/null) || exit 1
+{
+	IFS= read -r top
+	IFS= read -r common
+} <<EOF_PATHS
+$out
+EOF_PATHS
+[ -n "$top" ] && [ -n "$common" ] || exit 1
+
+label=${top##*/}
+parent=${common%/*}
+if [ "${common##*/}" = .git ] && [ "$parent" != "$top" ]; then
+	repo=${parent##*/}
+	worktree=${top##*/}
+	fmt=$(git -C "$dir" config --get tabname.worktree-format 2>/dev/null) || fmt=
+	[ -n "$fmt" ] || fmt='{repo}@{worktree}'
+	# Substitute with case/${#}, not sed or awk: a directory name may hold the
+	# replacement metacharacters (& | \) those would interpret.
+	label=
+	while [ -n "$fmt" ]; do
+		case $fmt in
+			'{repo}'*) label=$label$repo; fmt=${fmt#'{repo}'} ;;
+			'{worktree}'*) label=$label$worktree; fmt=${fmt#'{worktree}'} ;;
+			*) rest=${fmt#?}; label=$label${fmt%"$rest"}; fmt=$rest ;;
+		esac
+	done
+fi
+
+# A control character in a name must not end or corrupt the OSC the caller
+# wraps this in.
+label=$(printf '%s' "$label" | tr -d '\000-\037\177')
+[ -n "$label" ] || exit 1
+printf '%s\n' "$label"
