@@ -29,7 +29,7 @@ Settings > General > Settings:
   prompted when you quit iTerm2 if you'd like to save changes to the folder."
 - **Save changes to folder when iTerm2 quits.**
 
-The backing keys, both present in the 3.6.11 binary:
+The backing keys, present in the 3.6.11 and 3.7.6 binaries:
 
 ```
 LoadPrefsFromCustomFolder   bool
@@ -37,22 +37,40 @@ PrefsCustomFolder           string (a tilde path is accepted, e.g. ~/code/dotfil
 ```
 
 iTerm2 writes `com.googlecode.iterm2.plist` into that folder, which makes the
-folder trackable in git. Two things make that work in practice:
+folder trackable in git.
+
+**Since 3.7 the folder can carry data files too** — snippets, global notes and
+session-icon customisations. iTerm2 asks once whether to sync them, and asks
+which copy wins on a conflict; the answer is machine-local
+(`NoSyncSyncDataFilesWithCustomFolder`). Say no when the folder is a public
+repo: notes and snippets are exactly the kind of content that names clients
+and hosts.
+
+Two things make a tracked plist work in practice:
 
 ### The `NoSync*` convention
 
 Keys whose names begin with `NoSync` are **machine-local state, excluded from
 the custom prefs folder**. Verified on this machine: the live domain carries
-26 `NoSync*` keys — `NoSyncInstallationId`, `NoSyncLastOSVersion`,
-`NoSyncBFPRecents`, `NoSyncCommandHistoryHasEverBeenUsed` and so on — and the
-copy written to the custom folder carries **zero**. That is what stops a
+60 `NoSync*` keys on 3.7.6 (26 on 3.6.11) — `NoSyncInstallationId`,
+`NoSyncLastOSVersion`, `NoSyncBFPRecents`, the 3.7 `NoSyncCompanion*` relay
+state and so on — and the copy written to the custom folder carries **zero**. That is what stops a
 shared prefs folder churning on every machine that opens it.
 
 ### Secrets are not in the plist
 
-The AI provider API key goes to the **Keychain**. See
-`references/ai-plugin.md`; this is the property that makes a git-tracked prefs
-folder safe, and it is worth re-checking rather than assuming after an update.
+The AI provider API keys go to the **Keychain**, one per provider since 3.7,
+as does the Companion app's pairing identity. See `references/ai-plugin.md`;
+this is the property that makes a git-tracked prefs folder safe, and it is
+worth re-checking rather than assuming after an update.
+
+**One exception arrived in 3.7**: custom HTTP headers for a manually
+configured AI model are "stored unencrypted in iTerm2's preferences"
+(`AICustomHeaders`, gated by `AICustomHeadersEnabled`). A
+gateway token put in a header therefore lands in the plist, and from there
+in the custom folder. Never configure one on a machine whose prefs folder is
+tracked; `plutil -p <folder>/com.googlecode.iterm2.plist | grep AICustomHeaders`
+is the check.
 
 **None of `LoadPrefsFromCustomFolder`, `PrefsCustomFolder`, or the `NoSync`
 convention appears anywhere on iterm2.com** — not in the preferences
@@ -92,13 +110,15 @@ Both are right — 20 is the copy/paste ring, 200 the command history.
 
 Adjacent and easily confused: **Settings > General > Experimental** holds
 exactly two options, *Enable support for right-to-left scripts* and *Use SSH
-integration for ssh: URLs* (`references/ssh.md`). There is no general
-"enable experimental features" switch.
+integration for ssh: URLs* (`references/ssh.md`) — still both in 3.7.6, read
+off `PreferencePanel.nib`. Right-to-left support is **on by default since
+3.7.0**; this is where to turn it off. There is no general "enable
+experimental features" switch.
 
 ## Startup and restoration — measured, not recalled
 
 Two behaviours that are easy to state wrongly from memory, both measured on
-3.6.11:
+3.6.11 and not re-measured on 3.7.6:
 
 **iTerm2 opens one window of its own at every launch.** Not a restored window
 — a new one. Suppress it with:
@@ -109,9 +129,11 @@ OpenArrangementAtStartup     bool   open the saved arrangement instead
 AlwaysOpenWindowAtStartup    bool   the neighbouring key; open one even when told not to
 ```
 
-All three are in the 3.6.11 binary.
+All three are in the 3.6.11 and 3.7.6 binaries.
 
-**Without a saved arrangement, iTerm2 restores nothing across a quit.** Two
+**Without a saved arrangement, iTerm2 restored nothing across a quit** on
+3.6.11 — not re-measured on 3.7.6, whose notes list a run of restoration
+fixes but no change of policy. Two
 windows — one with a user variable set on its session, one plain — were both
 gone after quit and relaunch, replaced by a single fresh window. Session
 contents, variables, layout: none of it survives. Anything you want back has
@@ -148,6 +170,21 @@ the result into the user-defaults `SUFeedURL` that Sparkle actually reads. So
 `SUFeedURL` in the user domain is an output, not a setting. Full detail in
 `references/releases.md`.
 
+## Two of the same
+
+3.7.5 warns when a second copy of iTerm2 starts with the same settings, since
+the two could overwrite each other's prefs and saved windows. Deliberate
+multiple instances use `-suite com.iterm2.<id>`, each with its own
+application-support directory (`references/python-api.md`).
+
+## Suppressed alerts
+
+Answering a dialog with *Remember my selection* suppresses it. 3.7 lists every
+suppressed alert under **iTerm2 > Suppressed Alerts**, where any can be
+un-suppressed; the old *View > Always Show Alerts with Remembered Selections*
+is a checkbox there now. With a custom folder and *Save changes:
+Automatically*, a suppression survives relaunch.
+
 ## Export / import
 
 Settings > General offers **Export All Settings and Data**, whose contents are
@@ -161,7 +198,10 @@ the closest thing to an official statement of what iTerm2 keeps and where:
   dynamic profiles, and more)
 - Python API scripts
 
-## Docs vs. the binary (3.6.11)
+3.7 adds **Erase All Settings and Data** beside it, in Settings > General >
+Settings.
+
+## Docs vs. the binary (3.6.11, re-checked on 3.7.6)
 
 | Claim | Reality |
 | --- | --- |

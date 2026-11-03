@@ -10,15 +10,17 @@ tab as Triggers — and most need shell integration to know anything at all.
 /Applications/iTerm.app/Contents/Resources/utilities/it2tip
 ```
 
-`it2tip` is a Python script holding the app's whole feature tour, one entry
-per feature with a title, a body, and often the menu path and shortcut.
-**123 entries in 3.6.11.** It is first-party, it grows with the app, and it
-is documented nowhere on iterm2.com.
+`it2tip` is a Python script holding the app's feature tour, one entry per
+feature with a title, a body, and often the menu path and shortcut. **123
+entries** — the same 123 titles in 3.6.11 and 3.7.6. It is first-party and
+documented nowhere on iterm2.com.
 
-`manifest.txt` records that count, because it is the **only check in this
-skill that can notice a feature being added** — every other verb asks whether
-a name still exists. When `verify.sh` says the count changed, run `it2tip`
-and read what is new. Quotations marked *(it2tip)* below come from it.
+It does **not** grow with the app. 3.7 added Session Status, Workgroups,
+floating panes, the Cockpit and a Companion app, and the tour mentions none
+of them. `manifest.txt` still records the count, but a count that holds says
+nothing; diffing the bundle against the previous release's is what notices
+an addition (SKILL.md, *Refreshing this skill*). Quotations marked *(it2tip)*
+below come from it.
 
 ## Automatic Profile Switching
 
@@ -62,6 +64,12 @@ job as a fourth — one of its own contradictions.)
 **Since 3.6 the job part matches the full command line, not just the
 executable name.** That is confirmed from the other side: the switcher's
 internal entry point is `setHostname:username:path:job:commandLine:`.
+
+**Since 3.7.0 "the job" is the tty-attached foreground job.** Helpers piped
+from it — an MCP server that `claude` spawned, a `caffeinate` — no longer count,
+so a rule keyed on a helper's name stops firing. The raw deepest process is
+still readable as the `deepestJob` variable. The same change applies to job
+names in titles and session icons.
 
 ### Precedence is a score, not a first match
 
@@ -215,8 +223,15 @@ feed it: `OSC 1337 ; CurrentDir=…` and, since 3.4, an OSC 8 hyperlink with a
 `file:` scheme and a `#` fragment — `file:///tmp/file.txt#123` opens at that
 line.
 
+3.7 changes: JetBrains IDEs open again (through the IDE's CLI launcher), Xcode
+opens when the developer directory is the Command Line Tools (3.7.4), paths
+containing spaces or `&` reach TextMate, BBEdit and MacVim intact, `$` counts
+as part of a URL, a context-menu *Copy URL* and a *copy link address*
+pointer action exist, and Smart Selection shows an action's URL on hover.
+
 Nearly all of its guessing is tunable from **Settings > Advanced**. The
-complete set in 3.6.11, verbatim from the binary:
+complete set as of 3.6.11, verbatim from the binary (3.7 adds
+`urlHandlerCommand`, see `references/ssh.md`):
 
 ```
 Characters never considered part of a URL.
@@ -264,7 +279,8 @@ Toolbelt section. It is documented only as a subtree of the Menu Items page.
   for windows created from that profile.
 - **No default keyboard shortcut** is documented for the toolbelt or any tool.
 
-The eleven tools in 3.6.11 (confirmed against the app's own class names):
+The twelve tools in 3.7.6 (confirmed against the app's `Toolbelt.Tool.*`
+identifiers; 3.6.11 had the first eleven):
 
 | Tool | What it is | Needs Shell Integration |
 | --- | --- | --- |
@@ -272,13 +288,22 @@ The eleven tools in 3.6.11 (confirmed against the app's own class names):
 | Captured Output | Lines caught by a **Capture Output trigger**; see below | **yes** |
 | Codecierge | AI assistant that follows a goal; see `references/ai-plugin.md` | no (needs the AI plugin) |
 | Command History | Recent commands; bold = current session; double-click enters it, option-double-click emits a `cd` to where it last ran | **yes** |
-| Jobs | Running jobs in the session, and lets you signal them | no |
+| Jobs | Running jobs in the session, and lets you signal them. 3.7: hover shows the full command, Space opens details (pid, start time, cwd, environment, open files and connections), right-click *Notify on Termination* | no |
 | Named Marks | Jump to saved locations in history (and to saved spots on a page in browser sessions) | no |
 | Notes | Freeform scratchpad, persists across restarts in `~/Library/Application Support/iTerm2/notes.rtfd` | no |
 | Paste History | Recently pasted strings | no |
 | Profiles | Click to open a window/tab/pane with that profile | no |
 | Recent Directories | Sorted by "frecency"; double-click types the path, option-double-click emits `cd`; right-click stars one to pin it to the bottom | **yes** |
 | Snippets | Frequently used text strings | no |
+| Session Status | 3.7: every session's status across all tabs; see `references/session-status.md` | no |
+
+**Clippings** (3.7, ⌥⇧⌘G) look like a tool but are a separate side panel,
+not part of the toolbelt; see `references/session-status.md`.
+
+To open a tool from a script, select its menu item through the Python API —
+identifiers `Show Toolbelt` and `Toolbelt.<Tool Name>`
+(`references/python-api.md`). Nothing in `it2` or the AppleScript dictionary
+does it.
 
 Command history and recent directories are stored **per username+hostname**,
 and persist across restarts only when Settings > General > Magic > *Save
@@ -305,7 +330,7 @@ trigger's capture groups substituted, e.g. opening an editor at the line. It
 requires shell integration, because capture is scoped to one command's output
 and iTerm2 has to know where that starts and ends.
 
-## Docs vs. the binary (3.6.11)
+## Docs vs. the binary (3.6.11, re-checked on 3.7.6)
 
 | Claim | Reality |
 | --- | --- |
@@ -317,4 +342,4 @@ and iTerm2 has to know where that starts and ends.
 | The Toolbelt is documented | `documentation-toolbelt.html` is a 404 and the index has no entry; it lives inside the Menu Items page. |
 | Menu path for the toolbelt | Two pages say `Toolbelt > …`, the Menu Items page says `View > Toolbelt > …`. The latter is right. |
 | Smart Selection and Semantic History use the same substitutions | They do not. `\1` is a capture group in one and the filename in the other. |
-| `it2tip` | 123 features enumerated by the app itself, documented nowhere on the site. |
+| `it2tip` | 123 features enumerated by the app itself, documented nowhere on the site — and not updated for anything 3.7 added. |

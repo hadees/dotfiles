@@ -20,11 +20,11 @@
 # it when the reference stops claiming it. A fact nobody documents is noise;
 # a claim nothing checks is the failure mode this skill exists to prevent.
 
-version 3.6.11
+version 3.7.6
 
 # --- AppleScript dictionary -------------------------------------------
 # The sdef ships in the bundle and is the dictionary Script Editor shows.
-# Present in full in 3.6.11 despite the documentation calling the
+# Present in full in 3.7.6 despite the documentation calling the
 # AppleScript API deprecated. See references/applescript.md.
 sdef <suite name="Standard Suite"
 sdef <suite name="iTerm2 Suite"
@@ -54,6 +54,7 @@ sdef <command name="invoke API expression"
 sdef <command name="reveal hotkey window"
 sdef <command name="hide hotkey window"
 sdef <command name="toggle hotkey window"
+sdef <command name="create floating pane"
 # Properties the reference files name explicitly, with their four-char codes.
 sdef name="profile name" code="Pfnm"
 sdef name="hotkey window profile" code="hkwp"
@@ -62,6 +63,9 @@ sdef name="alternate identifier" code="Twid"
 sdef name="answerback string" code="Answ"
 sdef name="unique ID" code="Uniq"
 sdef name="tty" code="Stty"
+# 3.7: request cookie can mint a reusable cookie, announced in one session.
+sdef name="reusable" code="Reus"
+sdef name="session id" code="Rsid"
 
 # --- Dynamic Profile keys ---------------------------------------------
 # See references/dynamic-profiles.md.
@@ -78,6 +82,10 @@ binstr Dynamic Profile Parent Name
 binstr Dynamic Profile Parent GUID
 binstr Dynamic Profile Filename
 binstr Rewritable
+# 3.7 stopped tagging dynamic profiles "Dynamic" by default; this advanced
+# setting brings the tag back.
+binstr addDynamicTagToDynamicProfiles
+binstr NoSyncMigratedDynamicProfileTagToFlag
 
 # --- Profile keys behind the interactive features ----------------------
 # See references/workflow.md. These are the keys a Dynamic Profile would
@@ -94,12 +102,20 @@ binstr Default Toolbelt Width
 binstr Open Toolbelt
 binstr Codecierge
 binstr Named Marks
+binstr Toolbelt.Tool.SessionStatus
+binstr deepestJob
 
 # --- SSH Integration ---------------------------------------------------
 # See references/ssh.md.
 binstr sshIntegrationLevel
 binstr sshURLsSupportPath
-binstr Terminal: Command to run when handling an ssh:// URL.
+# The advanced setting that runs a command for an ssh:// URL. Its key is
+# sshSchemePath; sshURLsSupportPath is the separate "SSH URLs respect the
+# path" setting. Before 3.7 the description carried a "Terminal: " prefix.
+binstr sshSchemePath
+binstr Command to run when handling an ssh:// URL.
+binstr SshIntegrationForURLs
+binstr urlHandlerCommand
 
 # --- Preference keys ---------------------------------------------------
 # See references/preferences.md.
@@ -115,6 +131,9 @@ binstr AiModel
 binstr aiProxyUserDefaultsKey
 binstr llmPlatformUserDefaultsKey
 binstr NoSyncMoveOpenAIAPIKeyIntoKeychain
+# 3.7: snippets, notes and session icons can sync with the custom folder too.
+binstr NoSyncSyncDataFilesWithCustomFolder
+binstr Erase All Settings and Data
 
 # --- Python API --------------------------------------------------------
 # The cookie the app injects, the header the client sends back, the bundled
@@ -126,6 +145,8 @@ binstr x-iterm2-cookie
 binstr iterm2env
 binstr disable-automation-auth
 binstr 61DF88DC-3423-4823-B725-22570E01C027
+# 3.7: opt-in uv-provisioned runtime (Settings > Advanced).
+binstr pythonRuntimeUsesUV
 
 # --- Escape-code names the reference files use -------------------------
 binstr SetUserVar
@@ -133,8 +154,16 @@ binstr SetBadgeFormat
 
 # --- The security claim the AI section rests on ------------------------
 # If this sentence ever leaves the binary, re-check where the key is
-# stored before trusting references/ai-plugin.md.
-binstr Enter the API key for your AI provider. The key will be stored securely in the Keychain.
+# stored before trusting references/ai-plugin.md. 3.6.11 said "Enter the API
+# key for your AI provider. The key will be stored securely in the Keychain."
+# 3.7 reworded it when keys went per provider.
+binstr Keys are stored securely in the macOS Keychain.
+# 3.7 permission names in AI Chat (were Type for You / View History).
+binstr Control Terminal
+binstr View Contents
+# ...and the 3.7 exception: custom AI headers live in the prefs, unencrypted.
+binstr AICustomHeaders
+binstr AICustomHeadersEnabled
 
 # --- Bundled utilities -------------------------------------------------
 # See references/shell-integration.md. Shell integration installs copies of
@@ -171,6 +200,8 @@ tipcount 123
 # SUFeedURL that Sparkle actually reads.
 info SUFeedURLForFinal https://iterm2.com/appcasts/final_modern.xml
 info SUFeedURLForTesting https://iterm2.com/appcasts/testing_modern.xml
+# 3.7 raised the floor from 12.4.
+info LSMinimumSystemVersion 13.0
 
 # --- Separate bundles since 3.5 ---------------------------------------
 bundle iTermAI.app
@@ -197,8 +228,15 @@ utilstr cc-status #00d75f
 utilstr cc-status #5f87ff
 utilstr cc-status #888888
 utilstr cc-status #ff9500
-utilstr it2 --background-tasks
+# it2 is Swift ArgumentParser: its flags are derived from property names
+# (_backgroundTasks), so "--background-tasks" is not a literal in 3.7.6.
+# Check the help text that documents the flag instead.
+utilstr it2 Number of background tasks still running (stored in memory for later get-background-tasks queries).
+utilstr it2 Print the background-task count last stored via set-status --background-tasks.
+utilstr cc-status --background-tasks-delta
+utilstr cc-status --agent
 utilstr it2 ITERM_SESSION_ID
+utilstr it2 Authentication failed. Ensure iTerm2 Python API is enabled: Settings > General > Magic > Enable Python API
 binstr ccStatusSymlinkIsHealthy
 binstr ensureCCStatusSymlink
 binstr utilities/cc-status
@@ -209,3 +247,22 @@ binstr * `indicator=COLOR`
 binstr * `status-color=COLOR` 
 binstr * `detail=TEXT` 
 binstr  Sets optional detail text shown below the status (wraps up to 3 lines).
+
+# --- Session Status, Workgroups, floating panes (3.7) -------------------
+# See references/session-status.md.
+binstr **Control Sequence (OSC 21337):** Programs can set tab status directly:
+binstr **Program Status Protocol (OSC 7501):** A program can report that it is idle, working, waiting on you, done, or failed, and can report on several tasks at once. A session with more than one lists up to four of them, most urgent first, under its own row.
+binstr Set Tab Status
+binstr Set Profile Setting
+binstr Enter Workgroup
+binstr Workgroups
+binstr New Floating Pane
+binstr NoSyncClaudeCodeConfigDirPath
+binstr EnableCompanionPairing
+binstr ShowSessionStatusInTabSubtitle
+binstr Auto Send Clippings When Idle
+binstr workingSessionCount
+binstr waitingSessionCount
+binstr ToolStatus.HelpMarkdown
+binstr Claude Code Integration Setup
+binstr com.googlecode.iterm2.iTermCompanion

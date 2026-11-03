@@ -15,9 +15,18 @@ design, stated on the plugin page:
 
 The terminal binary cannot make those requests. The plugin is the only thing
 that can, and it is optional. Install it by unzipping into `/Applications`;
-you never run it, iTerm2 finds it.
+you never run it, iTerm2 finds it. 3.7's first-run wizard installs it for you,
+together with the new **Companion** plugin (`com.googlecode.iterm2.iTermCompanion`,
+the iPhone app's bridge; `references/session-status.md`), behind one password
+prompt.
 
-Installed here:
+Read the guarantee narrowly: it is about terminal content reaching an AI
+provider. The app itself still talks to iterm2.com — Sparkle updates, the
+Python runtime and (3.7) the uv manifest, and an opt-in refresh of the
+built-in model list.
+
+Installed here (unchanged by the 3.7.6 update; the Companion plugin is not
+installed):
 
 ```
 /Applications/iTermAI.app             iTerm2 AI Plugin 1.1   (Homebrew cask: itermai)
@@ -45,7 +54,7 @@ Magic pane (a common mix-up; see `references/preferences.md`).
 | Consent | "You must consent to AI features before they can be used. This is a **secure user default which requires you to enter an administrator password to change**." |
 | API Key | "users must provide their own API keys. Unlike most settings (which are saved in user defaults), the AI key is **stored in the keychain** to prevent unauthorized access." |
 | Always use the recommended model from … | "automatically use the most current model from the selected provider. If disabled, click Configure AI Model Manually to tweak values yourself." |
-| Timeout | "The maximum time to wait for a response to an AI query." |
+| Timeout | "The maximum time to wait for a response to an AI query." Since 3.7.5 an **idle** timeout — the longest gap between bytes — defaulting to 20 minutes (30 s in 3.6.11, 5 min in 3.7.0). |
 
 **AI > General > Configure AI Model Manually** — Model ("sent in the API
 request"), Token Limit ("the maximum number of tokens in the context and in a
@@ -73,18 +82,21 @@ no function calling", "…with ReadOnlyTerminal", "…with ReadOnlyTerminalBrows
 provider named anywhere is OpenAI, and only as a feature-support qualifier —
 even though the settings clearly have a provider popup. That is a real gap.
 
-The binary answers it. Endpoints and identifiers present in 3.6.11:
+The binary and the 3.7 release notes answer it. First-class providers in
+3.7.6: **OpenAI, Anthropic, Gemini, DeepSeek and Ollama** (Ollama since 3.7.5:
+it lists local models and reads each one's context window and capabilities
+from the server; the API type once called `Llama` is now `Ollama`). Endpoints
+in the binary include `api.openai.com`, `api.anthropic.com`,
+`generativelanguage.googleapis.com`, `api.deepseek.com` and `openrouter.ai`.
+**Apple Intelligence** appears as an on-device option, used by default for
+the AI command safety check. The manual model editor has presets for
+OpenAI-compatible gateways (OpenRouter, z.ai, Qwen, MiniMax), a *Test
+Connection* button, models served over plain HTTP on the LAN, and per-model
+custom headers.
 
-```
-https://api.openai.com/v1/responses          (this machine's AitermURL)
-https://api.anthropic.com/v1/messages        anthropic-version header
-https://api.deepseek.com/v1/chat/completions deepseek-reasoner
-```
-
-plus `Azure`, `Gemini`, `Llama` and `Custom` as selectable values. So a
-non-OpenAI provider or a local proxy is configured by turning off *Always use
-the recommended model from*, opening **Configure AI Model Manually**, and
-setting Model / Token Limit / URL / API / Features by hand.
+So a provider without a preset, or a local proxy, is configured by turning
+off *Always use the recommended model from*, opening **Configure AI Model
+Manually**, and setting Model / Token Limit / URL / API / Features by hand.
 
 ## The features
 
@@ -124,8 +136,8 @@ The categories, with what each actually exposes:
 | --- | --- |
 | Check Terminal State | current directory, shell, current/last command and its exit status, terminal size, the host you are SSHed to, current username |
 | Run Commands | executes commands on your behalf |
-| Type for You | sends keystrokes to the terminal |
-| View History | your command history in the linked session |
+| Control Terminal | sends keystrokes, and restarts the session (*Type for You* before 3.7) |
+| View Contents | what the linked session holds, history included (*View History* before 3.7) |
 | View Manpages | man pages — **including the remote host's, under SSH Integration** |
 | Write to Clipboard | the pasteboard |
 | Write to filesystem | files |
@@ -144,30 +156,54 @@ privacy sentence on the site:
 Corresponding strings in the binary: "AI can Check Terminal State", "AI can
 Act in Web Browser", "AI Chats can view or control this session."
 
-## Where the key goes — the part that matters here
+## Where the keys go — the part that matters here
 
-The binary states it outright:
+The binary states it outright. In 3.6.11:
 
 > Enter the API key for your AI provider. The key will be stored securely in
 > the Keychain.
 
-It also carries a `NoSyncMoveOpenAIAPIKeyIntoKeychain` migration, from when
-the key was *not* in the Keychain — the `NoSync` prefix marking it as
+In 3.7.6, where the settings show one key per provider:
+
+> Keys are stored securely in the macOS Keychain.
+
+3.7 changed *how*, not *where*:
+
+- **One key per provider**, as separate Keychain items named `OpenAI API Key
+  for iTerm2`, `Anthropic API Key for iTerm2`, `Gemini …`, `DeepSeek …`,
+  `Llama …`, `Apple Intelligence …`. "Claude is not sent a key saved for
+  another AI service." A model's key choice is *Automatic*, the provider's
+  key, a model-specific key, or none; since 3.7.6 *Automatic* sends a
+  provider's key only to that provider's own servers (it could send an OpenAI
+  key to an OpenRouter or Azure gateway before).
+- **An entitlement-scoped Keychain group** (the data-protection keychain),
+  migrated from the login keychain with one extra prompt on upgrade, falling
+  back to the login keychain on an unsigned build.
+- Opening Settings no longer reads the Keychain, and debug logs and the AI
+  wire log redact keys.
+
+The binary also carries a `NoSyncMoveOpenAIAPIKeyIntoKeychain` migration, from
+when the key was *not* in the Keychain — the `NoSync` prefix marking it as
 machine-local state that never reaches a custom prefs folder.
+
+**The 3.7 exception: custom HTTP headers.** Header values in the manual model
+editor are "stored unencrypted in iTerm2's preferences" (`AICustomHeaders`).
+A gateway token sent as a header lands in the plist.
 
 **Why this matters here.** This machine sets `LoadPrefsFromCustomFolder` with
 `PrefsCustomFolder` pointing at a git repository, so
 `com.googlecode.iterm2.plist` is a tracked file in a public repo. That is
-safe *only* because the key is in the Keychain. Verified against the tracked
-copy: it holds AI settings and nothing credential-shaped.
+safe *only* because the keys are in the Keychain and no custom header is
+set. Verified against the live plist in the custom folder on 3.7.6: it holds
+AI settings and nothing credential-shaped, and no `AICustomHeaders`.
 
 ```
-AiModel                       "gpt-5.5"
-AitermURL                     "https://api.openai.com/v1/responses"
-AITermAPI                     2
-AiMaxTokens                   1050000
-AiResponseMaxTokens           128000
-AIVectorStore                 0
+AiModel                       (a model name; a value, not a fact about iTerm2)
+AitermURL                     (the provider endpoint; likewise a value)
+AITermAPI                     (an integer selecting the API dialect)
+AIVendor                      (an integer selecting the provider)
+AI Safety Check               true
+AiMaxTokens, AiResponseMaxTokens, AIVectorStore
 AIFeatureStreamingResponses   AIFeatureFunctionCalling
 AIFeatureHostedWebSearch      AIFeatureHostedFileSearch
 AIFeatureHostedCodeInterpeter (sic - the typo is in the key name)
@@ -178,9 +214,10 @@ Related keys in the binary: `AiModel`, `aiProxyUserDefaultsKey`,
 
 So the check before trusting a git-tracked prefs folder after an update is:
 does that sentence still appear in the binary (`scripts/verify.sh` checks
-exactly that), and does the tracked plist still contain nothing
-credential-shaped? The first is automated; the second is a one-line grep,
-worth doing after any AI-related release note.
+exactly that, and caught the 3.7 rewording), and does the tracked plist
+still contain nothing credential-shaped and no `AICustomHeaders`? The first
+is automated; the second is a one-line grep, worth doing after any
+AI-related release note.
 
 The model name is a settings *value*, not a fact about iTerm2, so it is
 deliberately absent from the manifest — it changes when you change it, and
@@ -208,13 +245,14 @@ any telemetry claim, and any statement of what the AI plugin itself logs.
   `browserdb-*.sqlite` alongside. Same split-bundle pattern, same "installed
   but not enabled" failure mode.
 
-## Docs vs. the binary (3.6.11)
+## Docs vs. the binary (3.6.11, re-checked on 3.7.6)
 
 | Claim | Reality |
 | --- | --- |
 | Generative AI is an iTerm2 feature | A separate signed bundle since 3.5, and deliberately so: the terminal binary cannot make network requests. |
 | The AI key is a preference | It is a Keychain item. Only model, endpoint and feature toggles are in the plist. |
-| The docs say which providers are supported | They name only OpenAI. The binary carries endpoints for OpenAI, Anthropic and DeepSeek plus Azure/Gemini/Llama/Custom selections. |
+| The docs say which providers are supported | They name only OpenAI. 3.7.6 has OpenAI, Anthropic, Gemini, DeepSeek and Ollama as first-class providers, Apple Intelligence on-device, and presets for OpenAI-compatible gateways. |
+| The AI key never touches the plist | True of keys. Since 3.7, custom header values do (`AICustomHeaders`), unencrypted. |
 | The model selector appears when "Always use the recommended model from" is enabled | The AI Chat page says enabled, the settings page implies disabled. They contradict each other; try it. |
 | Key names are typo-free | `AIFeatureHostedCodeInterpeter` is spelled that way in the binary. Match it exactly. |
 | AI settings live in the Magic pane | They are their own sections under Settings > General. Magic is the Python API and performance pane. |

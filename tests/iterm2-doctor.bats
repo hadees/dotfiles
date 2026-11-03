@@ -219,7 +219,7 @@ EOF
   [ -x "$SKILL/scripts/verify.sh" ]
   [ -f "$SKILL/scripts/manifest.txt" ]
   for f in applescript python-api dynamic-profiles preferences \
-           shell-integration workflow ssh ai-plugin releases; do
+           shell-integration workflow ssh ai-plugin releases session-status; do
     [ -f "$SKILL/references/$f.md" ]
     grep -qF "references/$f.md" "$SKILL/SKILL.md"
   done

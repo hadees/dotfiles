@@ -9,7 +9,7 @@ how to find out what that means.
 <https://iterm2.com/downloads.html>
 
 It is the **complete changelog** — 95 stable versions back to 2.1.1 and 272
-beta builds, each with its full release notes in a collapsed block plus a
+beta builds when first counted (at 3.6.11), each with its full release notes in a collapsed block plus a
 PGP-signed SHA-256 of the zip. Expand the entries between the stamp and the
 installed version.
 
@@ -18,7 +18,8 @@ Do not go looking anywhere else first:
 - **GitHub publishes no releases.** `gnachman/iTerm2` has an empty releases
   list.
 - **There is no CHANGELOG file** in the repo. The only version-shaped file at
-  the root is `version.txt`, containing the build template `3.7.%(extra)s`.
+  the root is `version.txt`, containing the build template `3.7.%(extra)s`
+  (unchanged with 3.7 stable).
 - **<https://iterm2.com/news.html> is stale** — its most recent entry is the
   3.5 release in May 2024. It carries major releases and security advisories
   only, and has not been touched for the 3.6 line. Absence of news there is
@@ -36,9 +37,14 @@ Releases*, *Test Releases*, *Older Stable Releases*, *Older Test Releases*,
 
 | Channel | Site's wording | Zip | Appcast |
 | --- | --- | --- | --- |
-| Stable | "update rarely but have no serious bugs" | `/downloads/stable/iTerm2-3_6_11.zip` | `appcasts/final_modern.xml` |
-| Beta ("Test Releases") | "update many times a year and are occasionally unstable" | `/downloads/beta/iTerm2-3_7_0beta11.zip` | `appcasts/testing_modern.xml` |
-| Nightly | "made at midnight Pacific time on days where a change was committed" | `/downloads/nightly/iTerm2-3_7_20260823-nightly.zip` | `appcasts/nightly_modern.xml` |
+| Stable | "update rarely but have no serious bugs" | `/downloads/stable/iTerm2-3_7_6.zip` | `appcasts/final_modern.xml` |
+| Beta ("Test Releases") | "update many times a year and are occasionally unstable" | `/downloads/beta/iTerm2-3_7_7beta1.zip` | `appcasts/testing_modern.xml` |
+| Nightly | "made at midnight Pacific time on days where a change was committed" | `/downloads/nightly/iTerm2-3_7_20261018-nightly.zip` | `appcasts/nightly_modern.xml` |
+
+The appcasts are **not** histories. On 2026-10-19 `final_modern.xml` held two
+items — the last 3.6 (3.6.11) and the newest 3.7 (3.7.6) — `testing_modern.xml`
+one (3.7.7beta1), and `nightly_modern.xml` three spanning 2020 to yesterday.
+Items run **oldest first**.
 
 The project's word for beta is **"test release"** — which is why the
 preference key is `CheckTestRelease` and the feed is `testing_modern.xml`.
@@ -53,7 +59,7 @@ Homebrew has all three, mutually `conflicts_with`, all installing to the same
 `/Applications/iTerm.app`:
 
 ```
-iterm2           stable, depends_on macos: :monterey, auto_updates true
+iterm2           stable, depends_on macos: :ventura,  auto_updates true   (was :monterey through 3.6.11)
 iterm2@beta      depends_on macos: :ventura,          auto_updates true
 iterm2@nightly   depends_on macos: :ventura,          no auto_updates
 ```
@@ -68,23 +74,34 @@ with a header-match strategy.
 
 | Shape | Channel | Example |
 | --- | --- | --- |
-| `MAJOR.MINOR.PATCH` | stable | `3.6.11` |
-| `MAJOR.MINOR.0betaN` | beta | `3.7.0beta11` |
-| `MAJOR.MINOR.YYYYMMDD-nightly` | nightly | `3.7.20260823-nightly` |
+| `MAJOR.MINOR.PATCH` | stable | `3.7.6` |
+| `MAJOR.MINOR.PATCHbetaN` | beta | `3.7.0beta11`, `3.7.7beta1` |
+| `MAJOR.MINOR.YYYYMMDD-nightly` | nightly | `3.7.20261018-nightly` |
 
 `CFBundleShortVersionString` and `CFBundleVersion` are the same string; there
 is no separate build number.
 
-**The beta line is always one minor ahead of stable.** While 3.6.x is stable,
-betas are 3.7.0betaN — exactly as 3.5.0betaN ran alongside stable 3.4.x. So a
-`3.7.x` on a machine means the beta channel, *not* a newer stable, and the
-skill stamp comparison should be read with that in mind.
+**A beta is numbered for the release it leads to.** Before a minor ships,
+that is the next minor — 3.7.0beta1 through beta12 ran from April to
+September 2026 alongside stable 3.6.x, as 3.5.0betaN ran alongside 3.4.x.
+Once it ships, betas target the next patch: 3.7.1beta1, 3.7.4beta1,
+3.7.7beta1 (after stable 3.7.6). So the word `beta` in the string is the
+only reliable tell. An earlier version of this file said "a 3.7.x means the
+beta channel"; that stopped being true when 3.7.0 went stable (listed
+2026-09-08 — its own changelog heading says "built June 8").
+
+Stable 3.7 shipped seven times in six weeks (3.7.0 to 3.7.6). One was a
+mistake: 3.7.5 "was accidentally built without the bug fixes" listed under
+3.7.6, which followed the next day. A short-lived point release can be
+missing what its notes promise.
 
 Zip filenames underscore the dots (`3.6.11` becomes `iTerm2-3_6_11.zip`), and
 the nightly cask drops the `-nightly` suffix (`3_7_20260823`).
 
-Minimum macOS has diverged per channel: stable 3.6.11 wants 12.4+
-(`LSMinimumSystemVersion`), beta and nightly want 13+.
+Minimum macOS is **13** on every channel since 3.7.0 (`LSMinimumSystemVersion`
+13.0, checked by `verify.sh`); 3.6.11 wanted 12.4. That is why the stable
+appcast still carries 3.6.11: it is the last build a macOS 12 machine can
+take.
 
 ## Diffing two versions
 
@@ -94,8 +111,12 @@ stray `vv3.4.0beta13` aside).
 
 - Nightly to nightly works:
   `https://github.com/gnachman/iTerm2/compare/v20260801-nightly...v20260823-nightly`
-- Stable to stable, e.g. 3.6.3 to 3.6.11, has no tag pair. Use the per-release
-  notes on downloads.html, or date-bounded commits on `master`.
+- Stable to stable, e.g. 3.6.11 to 3.7.6, has no tag pair. Use the per-release
+  notes on downloads.html, date-bounded commits on `master` — or diff the two
+  **bundles**, which is the only way to see what the notes leave out (3.7's
+  notes mention no AppleScript or preference-key change, and there were
+  both). The zips stay downloadable at their `/downloads/stable/` URLs; the
+  procedure is in SKILL.md, *Refreshing this skill*.
 - Per-version branches (`3.0.x`, `3.1.1`, `3.3.1`) exist but stop long before
   3.4.
 
@@ -106,10 +127,11 @@ beta>"), `appcasts/nightly_changes.txt`. `appcasts/canary_changes.txt` is dead,
 frozen at 1.0.0 from 2012.
 
 Cheapest "is anything newer" probe is the appcast the app itself would use —
-one small XML, read the `sparkle:version` attribute on the `<enclosure>`:
+one small XML, read the `sparkle:version` attributes. Take the **last** one:
+items run oldest first, and `head -1` on the stable feed answers 3.6.11.
 
 ```bash
-curl -s https://iterm2.com/appcasts/final_modern.xml | grep -o 'sparkle:version="[^"]*"' | head -1
+curl -s https://iterm2.com/appcasts/final_modern.xml | grep -o 'sparkle:version="[^"]*"' | tail -1
 ```
 
 ## Where the project actually lives
@@ -157,8 +179,9 @@ Consequences worth remembering:
 ## Why the Homebrew version disagrees with the app
 
 `auto_updates true` on the cask means Homebrew installs it once and Sparkle
-takes over. On this machine the Caskroom directory says **3.6.3** while the
-bundle says **3.6.11**. Homebrew is not wrong — it is recording what it
+takes over. On this machine the Caskroom directory said **3.6.3** while the
+bundle said **3.6.11**, and now says **3.7.3** while the bundle says
+**3.7.6**. Homebrew is not wrong — it is recording what it
 installed — but it is the wrong thing to ask.
 
 Always:
