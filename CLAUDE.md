@@ -852,8 +852,12 @@ preference into a tracked file behind you.
 
 Commands mirror `tailnet`'s shape: `list`, `groups`, `plan` (the decision
 table, tab-separated), `script` (the AppleScript `start` would run — a dry
-run), `start [name|group…]`, `alfred`, `install`, `uninstall`, `status`,
-`dir`. A selector names either one entry or a whole group.
+run), `start [name|group…]`, `new <name>` (one more tab for one entry
+whether or not it is open — a second chat in the same project; the same
+script as `start` with its skip switched off, so the tab lands in the
+group's window and `start` still counts the entry as open), `alfred`,
+`install`, `uninstall`, `status`, `dir`. A selector names either one entry
+or a whole group; `new` takes exactly one entry.
 `list`/`groups`/`plan`/`script`/`alfred` are pure text and work anywhere; the
 acting commands refuse off macOS, and `.chezmoiignore` does not deploy the
 script there. Nothing configured is ever silently ignored — a name git accepts
