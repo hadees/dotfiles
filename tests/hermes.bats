@@ -351,3 +351,48 @@ hermes_in() {
   [[ "$output" == *"profile: fixture-home (mapped via hermes.profile.personal-account)"* ]]
   [[ "$output" == *"config:  $HOME/.hermes/profiles/fixture-home/config.yaml"* ]]
 }
+
+@test "hermes.worktree=true adds --worktree inside a repo and nowhere else" {
+  repo=$(make_repo)
+  git config --file "$GIT_CONFIG_GLOBAL" hermes.worktree true
+  hermes_in "$repo" chat
+  [ "$status" -eq 0 ]
+  [ "$output" = "ARGS=--worktree chat" ]
+  # Not a work tree: the flag would be an error, so it is not added.
+  hermes_in "$BATS_TEST_TMPDIR" chat
+  [ "$status" -eq 0 ]
+  [ "$output" = "ARGS=chat" ]
+}
+
+@test "hermes.worktree: an explicit -w or --worktree is never doubled" {
+  repo=$(make_repo)
+  git config --file "$GIT_CONFIG_GLOBAL" hermes.worktree true
+  hermes_in "$repo" -w chat
+  [ "$output" = "ARGS=-w chat" ]
+  hermes_in "$repo" chat --worktree
+  [ "$output" = "ARGS=chat --worktree" ]
+}
+
+@test "hermes.worktree: a repo's own false outranks the machine-wide true, and the flag follows the profile" {
+  repo=$(make_repo hardened)
+  make_profile hardened openrouter 'https://example.invalid/api/v1'
+  git config --file "$GIT_CONFIG_GLOBAL" hermes.worktree true
+  hermes_in "$repo" chat
+  [ "$output" = "ARGS=-p hardened --worktree chat" ]
+  git -C "$repo" config hermes.worktree false
+  hermes_in "$repo" chat
+  [ "$output" = "ARGS=-p hardened chat" ]
+}
+
+@test "hermes-doctor reports the worktree setting for a repo, a non-repo, and off" {
+  repo=$(make_repo)
+  git config --file "$GIT_CONFIG_GLOBAL" hermes.worktree true
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; hermes-doctor"
+  # The toplevel is git's resolved path (a symlinked tmpdir differs from $repo).
+  [[ "$output" == *"worktree: on — chats run in $(git -C "$repo" rev-parse --show-toplevel)/.worktrees/hermes-<id> (hermes.worktree)"* ]]
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$BATS_TEST_TMPDIR'; hermes-doctor"
+  [[ "$output" == *"worktree: on, but this is not a git work tree"* ]]
+  git config --file "$GIT_CONFIG_GLOBAL" --unset hermes.worktree
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; hermes-doctor"
+  [[ "$output" == *"worktree: off"* ]]
+}

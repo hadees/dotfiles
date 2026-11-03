@@ -1204,7 +1204,7 @@ function hermes_ensure_ollama() {
 }
 function hermes() {
 	emulate -L zsh;
-	local launcher pin model mapped='' acct a uprofile='' uflag='' umodel=0 eff='';
+	local launcher pin model mapped='' acct a uprofile='' uflag='' umodel=0 uwt=0 eff='';
 	local -a args inject;
 	launcher="$(command git config --get hermes.launcher 2>/dev/null)";
 	if [[ -n $launcher ]]; then
@@ -1232,6 +1232,7 @@ function hermes() {
 				[[ -z $uflag ]] && { uprofile=${a#--profile=}; uflag='--profile'; } ;;
 			-m|--model) umodel=1; (( i++ )) ;;
 			--model=*) umodel=1 ;;
+			-w|--worktree) uwt=1 ;;
 		esac;
 		(( i++ ));
 	done;
@@ -1252,6 +1253,17 @@ function hermes() {
 	[[ -n $pin && -z $uflag ]] && inject+=(-p "$pin");
 	[[ -n $mapped && -z $uflag ]] && inject+=(-p "$mapped");
 	[[ -n $model ]] && (( ! umodel )) && inject+=(--model "$model");
+	# `hermes.worktree = true` (machine-local; a repo's own config can say
+	# false) makes every chat run in a throwaway `git worktree` of the repo
+	# (<repo>/.worktrees/hermes-<id>, hermes' own layout), so the agent never
+	# edits a checkout somebody is sitting in. Only inside a work tree — the
+	# flag is an error elsewhere — and never doubled. Non-chat subcommands
+	# accept the flag and ignore it (measured on 0.19), so no parsing of
+	# which subcommand this is.
+	if (( ! uwt )) && [[ "$(command git config --get hermes.worktree 2>/dev/null)" == (true|yes|on|1) ]] \
+		&& command git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+		inject+=(--worktree);
+	fi;
 	[[ -n $uprofile ]] && eff=$uprofile;
 	[[ -z $eff ]] && eff=$pin;
 	[[ -z $eff ]] && eff=$mapped;
@@ -1266,7 +1278,7 @@ function hermes() {
 # path and the model keys come from the same helpers the wrapper calls, so
 # doctor and wrapper cannot drift. Mirrors gh-/claude-/wrangler-doctor.
 function hermes-doctor() {
-	local pin model launcher eff src cfg provider base hostport bin acct mapped;
+	local pin model launcher eff src cfg provider base hostport bin acct mapped wt;
 	print -r -- "wrapper: $(whence -w hermes)";
 	print -r -- "defined: $(defined_trace hermes_profile gh_account_for_cwd git_origin_slug hermes_cfg_path hermes_model_get hermes_ensure_ollama bin_trace)";
 	print -r -- "binary:  $(bin="$(whence -p hermes)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH')";
@@ -1282,6 +1294,16 @@ function hermes-doctor() {
 	print -r -- "mapping: ${mapped:-<none>}${mapped:+ (hermes.profile.$acct)}";
 	model="$(command git config --get hermes.model 2>/dev/null)";
 	[[ -n $model ]] && print -r -- "model:   $model (hermes.model — appended as --model; an explicit -m/--model outranks it)";
+	wt="$(command git config --get hermes.worktree 2>/dev/null)";
+	if [[ $wt == (true|yes|on|1) ]]; then
+		if command git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+			print -r -- "worktree: on — chats run in $(command git rev-parse --show-toplevel 2>/dev/null)/.worktrees/hermes-<id> (hermes.worktree)";
+		else
+			print -r -- "worktree: on, but this is not a git work tree — the wrapper adds nothing here (hermes.worktree)";
+		fi;
+	else
+		print -r -- "worktree: off (hermes.worktree unset or false — chats edit the checkout in place)";
+	fi;
 	eff="$(hermes_profile)" || eff='';
 	cfg="$(hermes_cfg_path "$eff")";
 	if [[ -n $pin ]]; then

@@ -642,7 +642,9 @@ npx", not "pin <side-company> to its profile").
    `wrangler.profile.<account>` (or a `wrangler.<owner>/<repo>.profile` pin
    for a one-off repo); `hermes.profile.<account>` if that account has a
    Hermes profile (a repo-level `hermes.profile` pin in one checkout's
-   `.git/config` outranks it); `tailnet.profile.<account>` if that account has a
+   `.git/config` outranks it), and `hermes.worktree = true` if that machine's
+   Hermes chats should run in throwaway worktrees instead of the live
+   checkout; `tailnet.profile.<account>` if that account has a
    tailnet; `tailnet-mount.<name>.*` if that tailnet serves a directory
    worth mounting; a `workspace.<name>.dir` for each of that account's
    projects you want reopened after a restart; Finicky rules.

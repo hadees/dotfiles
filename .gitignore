@@ -30,3 +30,5 @@ scratch.*
 # Machine-local secrets rendered from .extra.tmpl by `op inject`.
 # The template (.extra.tmpl) IS tracked; the rendered output never is.
 .extra
+# hermes --worktree puts its throwaway worktrees here (hardcoded path)
+.worktrees/
