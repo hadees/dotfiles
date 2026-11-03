@@ -1189,6 +1189,22 @@ the bypass for both. The retired `hermes.launcher` pin is refused with its
 migration printed, never silently ignored. `routes` marks a pin that
 outranks a mapping with `*`, like its other columns.
 
+**`hermes.worktree = true` keeps the agent out of every live checkout.**
+With it set (machine-local; a repo's own `.git/config` can say `false`),
+the wrapper adds hermes' own `--worktree` flag to every invocation made
+inside a git work tree, so each chat runs in a throwaway worktree,
+`<repo>/.worktrees/hermes-<id>` on branch `hermes/hermes-<id>`, removed at
+exit unless it holds unpushed commits (hermes prunes leftovers older than a
+day). That is hermes' hardcoded layout, not this repo's
+`.claude/worktrees/` convention — there is no setting for the path — and
+hermes appends `.worktrees/` to the repo's `.gitignore` the first time, so
+this repo carries that line already. Measured on 0.19: the flag is an
+error outside a work tree, so the wrapper adds it only inside one, and
+non-chat subcommands (`mcp`, `profile`, …) accept and ignore it, so the
+wrapper does not have to know which subcommand it is looking at. An
+explicit `-w`/`--worktree` is never doubled. `hermes-doctor` has a
+`worktree:` line.
+
 Hermes never starts a model server — it only speaks HTTP to the profile's
 `model.base_url` (auto-starting the server was `ollama launch`'s only real
 job). So the wrapper reads the effective profile's `config.yaml` and, only
