@@ -353,6 +353,63 @@ ws() { run sh "$WS" "$@"; }
   [[ "$output" == *"opened a"* ]]
 }
 
+# --- new --------------------------------------------------------------------
+
+@test "new: opens one more tab for an entry that is already open" {
+  entry a dir "$PROJ/one"; entry a window grp
+  FAKE_MARKS="a" FAKE_OPENED="a" ws new a
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"opened another a -> window grp"* ]]
+  # The script it ran has the idempotency skip switched off…
+  grep -q '^set forceOpen to true$' "$OSA_SCRIPT"
+  grep -q 'if forceOpen or n is not in openMarks then' "$OSA_SCRIPT"
+  # …and only this entry in its plan.
+  [ "$(grep -c 'set end of thePlan' "$OSA_SCRIPT")" -eq 1 ]
+}
+
+@test "new: start keeps its skip — the same condition reads false there" {
+  entry a dir "$PROJ/one"
+  ws script a
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"set forceOpen to false"* ]]
+}
+
+@test "new: one entry only — a group name, a missing dir and a disabled entry are refused" {
+  entry a dir "$PROJ/one"; entry a window grp
+  entry gone dir "$PROJ/nope"
+  entry off dir "$PROJ/two"; entry off disabled true
+  ws new grp
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"'grp' is a group"* ]]
+  ws new gone
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"is not a directory"* ]]
+  ws new off
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"'off' is disabled"* ]]
+  ws new
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"usage: worktabs new <entry>"* ]]
+  ws new a b
+  [ "$status" -ne 0 ]
+  # Nothing above may have driven iTerm2.
+  [ ! -s "$OSA_LOG" ]
+}
+
+@test "new: iTerm2 opening nothing is an error, not a quiet success" {
+  entry a dir "$PROJ/one"
+  FAKE_OPENED="" ws new a
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"opened nothing for 'a'"* ]]
+}
+
+@test "new: refuses off macOS like the other acting commands" {
+  entry a dir "$PROJ/one"
+  FAKE_OS=Linux ws new a
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"macOS"* ]]
+}
+
 # --- Alfred -----------------------------------------------------------------
 
 @test "alfred: emits one item per group with a stable order" {

@@ -32,7 +32,9 @@
 # Re-running is safe. Each tab is tagged with an iTerm2 user variable
 # (user.workspaceSession) and `start` skips an entry whose tag is already on
 # screen, adding only what is missing — to that group's existing window when it
-# can find one.
+# can find one. `new <name>` is the deliberate exception: one more tab for one
+# entry whether or not it is open — a second chat in the same project — tagged
+# like the rest so `start` keeps treating the entry as open.
 #
 # Tabs are also *created with* a dedicated iTerm2 profile ("Workspace", a
 # dynamic profile inheriting Default that `install` writes). The tag says which
@@ -66,6 +68,7 @@
 #                            directory, command
 #   script [name|group...]   the AppleScript `start` would run — a dry run
 #   start [name|group...]    open the windows and tabs (idempotent)
+#   new <name>               one more tab for one entry, open or not
 #   alfred [query]           Script Filter JSON for the Alfred workflow
 #   alfred-install [dir]     build the Alfred workflow and hand it to Alfred
 #   install                  write the iTerm2 dynamic profile (and clear an
@@ -240,7 +243,8 @@ as_string() { printf '%s' "${1-}" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 # `first window whose id is …`), and nothing here ever closes anything. Both
 # rules matter: `repeat with w in windows` hands out references by index, so a
 # reference kept across a close points at a different window afterwards.
-gen_script() {
+gen_script() { # [force] — force opens every row even when its tag is on screen
+  case ${1-} in force) printf 'set forceOpen to true\n';; *) printf 'set forceOpen to false\n';; esac
   printf 'set thePlan to {}\n'
   while IFS='	' read -r win name state title dir cmd; do
     [ "$state" = ok ] || continue
@@ -297,7 +301,7 @@ tell application "iTerm2"
 		set n to item 2 of p
 		set ttl to item 3 of p
 		set c to item 4 of p
-		if n is not in openMarks then
+		if forceOpen or n is not in openMarks then
 			set widx to 0
 			repeat with i from 1 to count of groupNames
 				if item i of groupNames is g then set widx to i
@@ -520,6 +524,33 @@ cmd_start() {
   done
 }
 
+# One more tab for one entry, open or not — a second chat in the same
+# project. The same script as `start` with its skip switched off, so the tab
+# lands in the group's existing window, carries the profile and both marks,
+# and `start` afterwards still sees the entry as open. One entry, never a
+# group: duplicating a whole window is not something anyone asks for by
+# accident, so it is not something this does by accident either.
+cmd_new() {
+  need_macos new
+  [ $# -eq 1 ] || die "usage: worktabs new <entry>"
+  rows=$(cmd_plan "$1") || exit 1
+  row=$(printf '%s\n' "$rows" | awk -F'\t' -v n="$1" '$2 == n')
+  [ -n "$row" ] || die "'$1' is a group — new opens one entry at a time (worktabs list)"
+  state=$(printf '%s\n' "$row" | cut -f3)
+  dir=$(printf '%s\n' "$row" | cut -f5)
+  case $state in
+    ok) ;;
+    no-dir) die "'$1': ${dir:-no workspace.$1.dir} is not a directory";;
+    *) die "'$1' is $state";;
+  esac
+  ensure_iterm
+  out=$(printf '%s\n' "$row" | gen_script force | run_script) ||
+    die "osascript could not drive iTerm2 — if macOS asked for Automation permission and was denied, grant it in System Settings > Privacy & Security > Automation"
+  opened=$(printf '%s\n' "$out" | sed '1d' | tr -d '[:space:]')
+  [ -n "$opened" ] || die "iTerm2 opened nothing for '$1'"
+  printf 'worktabs: opened another %s -> window %s\n' "$1" "$(printf '%s\n' "$row" | cut -f1)"
+}
+
 # A *dynamic* profile: a plain JSON file iTerm2 reloads on write, with no
 # restart and no click through its preferences. It inherits rather than copies
 # — "Dynamic Profile Parent Name" makes it Default plus a tag, so
@@ -653,6 +684,7 @@ case $cmd in
   plan)      cmd_plan "$@";;
   script)    cmd_script "$@";;
   start)     cmd_start "$@";;
+  new)       cmd_new "$@";;
   alfred)    cmd_alfred "$@";;
   alfred-install) cmd_alfred_install "$@";;
   install)   cmd_install;;
