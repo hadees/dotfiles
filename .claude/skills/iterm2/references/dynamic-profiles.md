@@ -58,7 +58,7 @@ discover a key name for a setting you can see: Settings > Profiles > select
 the profile > **Other Actions** > **Save Profile as JSON**, and read the key
 out of the result. That beats guessing.
 
-## Keys confirmed present in the 3.6.11 binary
+## Keys confirmed present in the 3.6.11 and 3.7.6 binaries
 
 ```
 Guid                          Name                     Tags
@@ -109,17 +109,27 @@ So the file is authoritative and the UI is a dead end — *unless* you opt in:
 ```
 
 which "means iTerm2 can make changes to the file on disk to reflect changes
-made in the settings UI." `Rewritable` is present in the 3.6.11 binary. Do not
+made in the settings UI." `Rewritable` is present in the 3.6.11 and 3.7.6
+binaries. Do not
 set it on a generated file: the next generation run will clobber whatever the
 UI wrote.
 
 ## Tags
 
-Every dynamic profile automatically gets the tag **`Dynamic`**. A `Tags` array
-key also works and is present in the binary, but is undocumented — the
-documentation page's only sentence about tags has the word "tag" missing from
-it entirely ("The *Dynamic* will automatically be added to all Dynamic
-Profiles").
+**Through 3.6.11** every dynamic profile automatically got the tag
+**`Dynamic`**. **Since 3.7.0 it does not**: whether a profile is dynamic is an
+internal flag (*Is Dynamic Profile*; the one-time migration is recorded as
+`NoSyncMigratedDynamicProfileTagToFlag`), and the tag comes back only with
+the advanced setting *Add a 'Dynamic' tag to dynamic profiles.* (key
+`addDynamicTagToDynamicProfiles`). Measured on 3.7.6 with the setting unset:
+this machine's `Workspace` dynamic profile reports exactly the tags its file
+gives it, and no `Dynamic`. Anything that found dynamic profiles by that tag
+needs the setting, or another marker.
+
+A `Tags` array key works and is present in the binary, but is undocumented —
+the documentation page's only sentence about tags has the word "tag" missing
+from it entirely ("The *Dynamic* will automatically be added to all Dynamic
+Profiles"), and since 3.7 that sentence is false by default anyway.
 
 ## Badges
 
@@ -164,11 +174,20 @@ foreground.
 defining the `{#…}` form. The braces-first form is the one that matches the
 definition.)
 
-## Docs vs. the binary (3.6.11)
+## 3.7 robustness
+
+Hand-written files fail softer since 3.7: a value of an unexpected type (a
+`null`, a `Keyboard Map` that is not an object) is now ignored or reported
+rather than crashing the app (3.7.4), as is a trigger with no regex — easy to
+write by hand now that event triggers exist (3.7.5). Legacy dynamic profiles
+left behind in user defaults are migrated out (3.7.0). The whole-folder,
+one-bad-file-stops-everything reload is unchanged.
+
+## Docs vs. the binary (3.6.11, re-checked on 3.7.6)
 
 | Claim | Reality |
 | --- | --- |
-| Tags | The page's only tag sentence is missing the word "tag". A `Tags` key exists in the binary but is undocumented. |
+| Tags | The page's only tag sentence is missing the word "tag", and since 3.7 the automatic `Dynamic` tag is off by default. A `Tags` key exists in the binary but is undocumented. |
 | Highlight colour syntax | The page defines `{#rrggbb,#rrggbb}` then exemplifies `#{ff0000,}`. |
 | The page's ssh example JSON | Has trailing commas. Property-list parsers may accept it; `jq` and `plutil -lint` will not. |
 | "Files ... formatted as Apple Property Lists" vs. everyone calling them JSON | Both are right; JSON is one plist encoding. XML and binary plists work too. |

@@ -58,12 +58,27 @@ environment), and AppleScript files. Update the runtime from Scripts > Manage
 
 Two gotchas the docs call out: **unset `PYTHONPATH`** before running a script,
 and a Homebrew `pip3 install iterm2` is an explicitly sanctioned alternative
-to the bundled runtime.
+to the bundled runtime. For a one-off from a terminal, `uv run --no-project
+--with iterm2 python -` works with no runtime installed at all.
 
-`iterm2env` is present as a string in the 3.6.11 binary; the directory itself
-only appears once the Python API has been used, so its absence under
-`~/Library/Application Support/iTerm2/` means "never run a script", not
-"broken install".
+`iterm2env` is still the runtime's name in 3.7.6; the directory itself only
+appears once the runtime has been installed (Scripts > Manage > Install
+Python Runtime), so its absence under `~/Library/Application Support/iTerm2/`
+means "never installed", not "broken install". Anything that probes for it
+must check *before* talking to iTerm2, or iTerm2 offers to download it in a
+dialog.
+
+**3.7 can provision scripts with uv instead.** Advanced setting *Use uv to
+provision the Python runtime for API scripts?* (key `pythonRuntimeUsesUV`,
+off by default): "iTerm2 uses uv to download Python and build per-script
+environments instead of the bundled Python runtime. Scripts already
+provisioned continue to run regardless of this setting; it only affects
+creating, importing, and migrating scripts." uv itself is downloaded from a
+signed manifest at `https://iterm2.com/downloads/uv/manifest.json`, and
+`CheckForUpdatedUv` in the prefs records the last check. 3.7 also stopped
+needing Rosetta for scripts (Intel-only runtimes are replaced by Apple
+Silicon builds), and the Script Console keeps only the 200 most recent
+finished scripts and connections — `it2` connects once per command.
 
 ## Enabling it, and the auth model
 
@@ -93,7 +108,24 @@ How access is granted, from the 3.4+ page:
   re-enable it in Settings.
 
 All five of `ITERM2_COOKIE`, `ITERM2_KEY`, `x-iterm2-cookie`,
-`disable-automation-auth` and that magic string are in the 3.6.11 binary.
+`disable-automation-auth` and that magic string are in the 3.6.11 and 3.7.6
+binaries.
+
+**The client library makes that request for you.** With no `ITERM2_COOKIE`
+in the environment, `iterm2/auth.py` (package 2.30) runs `osascript` with
+`request cookie and key for app named "<script>"` — which is why a script
+started from a terminal just works. It is still AppleScript underneath, so
+the caller's Automation grant still applies. It honours `IT2_APP_PATH` to pick
+one iTerm2 when several builds run (3.7 can set that variable in new
+sessions, an advanced setting off by default) and `IT2_SUITE` for the
+`disable-automation-auth` check. 3.7 also lets a cookie be **reusable**
+(`request cookie reusable true`, see `references/applescript.md`).
+
+**Several instances (3.7).** iTerm2 can run as more than one instance, each
+launched with `-suite com.iterm2.<id>` and given its own application-support
+directory. The API server takes an advisory lock on its socket directory, so a
+second instance sharing one refuses to start its API server, and a script
+launched from an instance's Scripts menu connects to that instance.
 
 **Superseded, but still linked from the current page**: the GitLab wiki
 describing iTerm2 3.3 says the API listens on **TCP port 1912** on 127.0.0.1.
@@ -167,6 +199,33 @@ returns**, and running several monitors at once needs each wrapped in its own
 `asyncio.create_task` — otherwise control never leaves the first one. And
 always catch exceptions inside an async task; Python swallows them silently.
 
+## Main menu items
+
+`iterm2.MainMenu.async_select_menu_item(connection, identifier)` clicks a menu
+item, and `async_get_menu_item_state` reads its check mark first — needed
+because selecting a toggle flips it. The identifier is the item's title, or
+`Parent.Title` where titles repeat: `Show Toolbelt`, `Toolbelt.Session
+Status`, `Floating Panes.Dock Floating Pane`. This is the scriptable route to
+anything with a menu item and no API of its own, such as the toolbelt: no
+`it2` subcommand and no AppleScript command opens it. Measured on 3.7.6: both
+calls work from a script run in a Claude Code Bash tool inside iTerm2.
+
+## New in 3.7
+
+From the 3.7.0–3.7.6 release notes (the package documents them; the app
+binary has nothing to check, so they are not in the manifest):
+
+- `App.async_apply_layout` reshapes one or more tabs atomically: swap panes,
+  rearrange the split tree, move sessions across tabs and windows.
+- Sessions can be moved to new tabs or windows, and URLs loaded in browser
+  sessions (the Open URL call gained a per-domain allowlist).
+- `GetPromptResponse.excluded_subranges` lists cells inside a command that
+  the shell marked as non-input with `OSC 133;A;k=s|c|r` (PS2 prefixes, right
+  prompts). Always empty on `PromptMonitor.PROMPT` notifications.
+- `CellStyle.url` is populated for OSC 8 hyperlinks (3.7.3).
+- The API server bounds its inbound buffer and disconnects ping-flooding
+  clients.
+
 ## LocalWriteOnlyProfile
 
 The way to restyle one session without editing the profile every other
@@ -220,13 +279,13 @@ iterm2.VariableMonitor(connection, scope, name, identifier)
 # identifier: "all" or "active" for SESSION/WINDOW; None for APP
 ```
 
-## Docs vs. the binary (3.6.11)
+## Docs vs. the binary (3.6.11, re-checked on 3.7.6)
 
 | Claim | Reality |
 | --- | --- |
 | `EnableAPIServer` | Real key in the binary, documented nowhere on iterm2.com. Unsupported. |
 | Wiki: API on TCP port 1912 | Superseded in 3.4.0 by a unix domain socket. The current page still links that wiki without qualification. |
 | running.html: "Any folder having an `itermenv` folder" | Typo for `iterm2env`; every other mention spells it correctly. |
-| Wiki: "In the future, the Python API will perform the cookie request automatically" | Has not happened; 3.4+ still requires the AppleScript request. |
+| Wiki: "In the future, the Python API will perform the cookie request automatically" | The *client library* does it (it shells out to `osascript`); the app still requires the AppleScript request, so the Automation grant still applies. |
 | hooks.html sample shebang `#!/usr/bin/env python3.7` | Dated; use `python3`. |
 | `iterm2` package pins its dependencies | It does not, and it declares no `requires_python`. |

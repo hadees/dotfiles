@@ -1546,7 +1546,8 @@ it is a **version-stamped, machine-checkable record** of one release —
 AppleScript dictionary, Python API and its cookie/socket auth model, Dynamic
 Profiles, shell integration and the `it2*` utilities, triggers, badges, status
 bar, hotkey windows, `tmux -CC`, Automatic Profile Switching, Smart Selection
-and Semantic History, the Toolbelt, SSH Integration and `ssh://` URLs,
+and Semantic History, the Toolbelt, the 3.7 Session Status / Claude Code
+integration / Workgroups layer, SSH Integration and `ssh://` URLs,
 preferences and startup behaviour, the AI plugin and its permission model, and
 how the project ships releases. Every claim was read off the installed bundle
 rather than recalled, and the mechanically checkable part of it — sdef
@@ -1555,19 +1556,25 @@ bundled utilities, updater `Info.plist` keys — is one fact per line in
 `scripts/manifest.txt`. `scripts/verify.sh` re-reads all of it from the bundle
 and exits non-zero on any drift.
 
-One entry in that manifest is a different shape from the rest and is the most
-useful: `tipcount`. iTerm2 ships `Contents/Resources/utilities/it2tip`, a
-Python script holding the app's own feature tour — 123 entries in 3.6.11, each
-with a menu path, documented nowhere on iterm2.com. Every other check asks
-whether a name still *exists*, so they are all blind to a feature being
-**added**; counting that list is the one tripwire that is not. When it trips,
-run `it2tip` and read what is new.
+Every check asks whether a name still *exists*, so the manifest is blind to a
+feature being **added**. The `tipcount` entry was meant to cover that —
+iTerm2 ships `Contents/Resources/utilities/it2tip`, a Python script holding
+the app's own feature tour, 123 entries with menu paths — but it does not:
+3.7 added Session Status, Workgroups, floating panes and a Companion app, and
+the tour kept the same 123 titles. What notices an addition is **diffing the
+bundle against the stamped release's** (download the old zip, never run it,
+`comm` the two executables' `strings`, `diff` the `.sdef`s); `SKILL.md`'s
+refresh procedure spells it out, and `verify.sh --app <old bundle>` should
+then fail on exactly the facts recorded as new. The 3.6.11 → 3.7.6 refresh
+also showed the release notes are silent on the AppleScript dictionary and
+preference keys, both of which changed.
 
 Three consequences shape the code here:
 
 - **The version is read off the bundle, never from Homebrew.** `auto_updates
   true` on the cask means brew installs once and Sparkle takes over; on this
-  machine the Caskroom says 3.6.3 while the app says 3.6.11. The house rule
+  machine the Caskroom said 3.6.3 while the app said 3.6.11, and says 3.7.3
+  while the app says 3.7.6. The house rule
   (`defaults read /Applications/iTerm.app/Contents/Info
   CFBundleShortVersionString` — read the version, never execute the thing) is
   not a stylistic preference here, it is the only correct answer.

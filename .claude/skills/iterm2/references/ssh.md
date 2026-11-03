@@ -67,6 +67,15 @@ session. No Python 3 on the remote means you stop at level 1.
 - AI `View Manpages` can read the *remote* host's man pages, and the remote
   OS configuration is exposed so generated commands suit it.
 
+3.7 changes to SSH Integration, from the release notes: the ssh command is run
+through your **login shell** (so `PATH` and a custom `SSH_AUTH_SOCK` apply —
+the fix for "Permission denied (publickey)" with the SSH command type); the
+`it2` CLI works on the remote host, its requests routed back through the
+conductor behind a per-session permission prompt that names the host
+(**Shell > ssh > Remote host can control iTerm2** toggles it); uploads are
+about three times faster (3.7.5); and a dropped connection ends the session
+instead of hanging it (3.7.5).
+
 The documented drawbacks: connecting takes longer, many features need Python
 3 remotely, there is added typing latency that is noticeable on a slow link,
 and the remote-side script uses CPU (mostly polling the job list).
@@ -74,11 +83,13 @@ and the remote-side script uses CPU (mostly polling the job list).
 ## How `it2ssh` actually works
 
 Read straight out of `/Applications/iTerm.app/Contents/Resources/utilities/it2ssh`
-(189 lines of bash, worth reading when something misbehaves):
+(193 lines of bash in 3.7.6, worth reading when something misbehaves):
 
 1. It fetches a **token from a unix socket** — the first that answers of
    `~/.config/iterm2/sockets/secrets`, `~/.iterm2/sockets/secrets`,
-   `~/.iterm2-1/sockets/secrets`. Off macOS the token is the literal `none`.
+   `~/.iterm2-1/sockets/secrets`, preceded since 3.7 by
+   `~/.config/$IT2_SUITE/sockets/secrets` when `IT2_SUITE` names a second
+   iTerm2 instance. Off macOS the token is the literal `none`.
 2. It base64-encodes your full local environment and the ssh arguments, and
    emits three escape sequences:
    `OSC 1337 ; Env=report=all:<base64 env>`,
@@ -106,7 +117,7 @@ Facts that follow from that, and that matter in practice:
 - **It creates `~/.ssh/controlmasters/` on every run.** `CONTROL_PATH` is
   assigned right after and then never used anywhere in the script — a dead
   variable that still leaves a directory behind. Verified: exactly one
-  occurrence in the 3.6.11 copy.
+  occurrence in the 3.6.11 copy, and still one in 3.7.6.
 - `TERM=screen*` gets a tmux passthrough wrapper (`\033Ptmux;`) around every
   escape sequence, so it works inside tmux.
 - Version skew is loud, not silent: "Out-of-date version of it2ssh detected.
@@ -116,7 +127,8 @@ Facts that follow from that, and that matter in practice:
 ## `ssh://` URLs
 
 The bundle **declares** the scheme, so macOS can offer iTerm2 as a handler.
-The full `CFBundleURLTypes` scheme list in 3.6.11, read off `Info.plist`:
+The full `CFBundleURLTypes` scheme list, read off `Info.plist` — identical in
+3.6.11 and 3.7.6:
 
 ```
 ftp  gemini  gopher  http  https  mailto  news  nntp
@@ -139,15 +151,30 @@ configure it. Three separate mechanisms, easily confused:
    `$$RES$$` (everything after the scheme).
 2. **Settings > General > Experimental > "Use SSH integration for ssh: URLs"**
    — "If enabled, use SSH integration when opening an SSH URL." Note the pane:
-   *Experimental*, not AI and not Profiles. The internal flag is
-   `_sshIntegrationForURLs`.
+   *Experimental*, not AI and not Profiles. The preference key is
+   `SshIntegrationForURLs` (`_sshIntegrationForURLs` internally); still there
+   in 3.7.6.
 3. **Smart Selection** already recognises `ssh` among its default URI schemes
    (`references/workflow.md`), which is what makes an `ssh://` string in the
    terminal clickable in the first place.
 
-There is also an advanced setting, verbatim from the binary — "Terminal:
-Command to run when handling an `ssh://` URL." (key `sshURLsSupportPath`),
-under Settings > Advanced.
+There are also two advanced settings under Settings > Advanced, both present
+in 3.6.11 and 3.7.6:
+
+- "Command to run when handling an `ssh://` URL." — key **`sshSchemePath`**.
+  (Before 3.7 the description read "Terminal: Command to run…"; an earlier
+  version of this file paired it with the wrong key.) Since 3.7.0 iTerm2 finds
+  `ssh` through your login shell's `PATH`, so Homebrew's ssh is used for
+  `ssh://` URLs and Bonjour host profiles; a changed `sshSchemePath` still
+  wins.
+- "SSH URLs respect the path." — key `sshURLsSupportPath`: the URL's path
+  becomes a working directory, via `ssh -t "cd $$PATH$$; exec \$SHELL -l"`.
+
+Since 3.7.0 a web link the system hands to iTerm2 opens in its built-in web
+browser unless a profile is bound to that scheme, and the new
+`urlHandlerCommand` advanced setting can route URLs to a command instead
+(`/bin/sh -c` with `\(url)` and `\(background)`, output to the Script
+Console).
 
 Practical consequence on this machine: link routing sends everything to
 Finicky, but Finicky routes to browsers. An `ssh://` link is handled by
@@ -164,7 +191,7 @@ determines what actually runs.
 | The same on a host you cannot or should not modify | SSH Integration (`it2ssh`, or a profile with Command = SSH) |
 | Just a terminal on a remote host | Plain `ssh` — and on this machine that is the wrapped `ssh`, which does the tailnet routing `it2ssh` skips |
 
-## Docs vs. the binary (3.6.11)
+## Docs vs. the binary (3.6.11, re-checked on 3.7.6)
 
 | Claim | Reality |
 | --- | --- |

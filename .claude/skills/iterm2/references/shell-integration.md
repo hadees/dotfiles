@@ -35,6 +35,11 @@ Four ways in:
    ^\w+@[\w.]+:([^%]+)%     Report Directory     \1
    ```
 
+3.7.5 tells a local terminal from a remote one by **machine identity**, not
+hostname, so drag-and-drop paths and "is this local" logic work over a VPN or
+Tailscale — but only after reinstalling shell integration (iTerm2 > Install
+Shell Integration), since the scripts carry the new report.
+
 Under `sudo -s`, source it explicitly:
 `test $(whoami) == root && source "$HOME/.iterm2_shell_integration.bash"`.
 
@@ -95,20 +100,42 @@ aliases at the bottom of `$HOME/.iterm2_shell_integration.$SHELL`. Most work
 without shell integration. Source:
 <https://github.com/gnachman/iTerm2-shell-integration/tree/main/utilities>
 
-**Seventeen** ship inside the 3.6.11 bundle, at
+**Nineteen** ship inside the 3.7.6 bundle, at
 `/Applications/iTerm.app/Contents/Resources/utilities/` — the authoritative
 list, and each is checked by `scripts/verify.sh`:
 
 ```
-imgcat   imgls    it2api        it2attention  it2cat   it2check
-it2copy  it2dl    it2getvar     it2git        it2profile
-it2setcolor       it2setkeylabel  it2ssh      it2tip   it2ul
+cc-status  imgcat   imgls    it2      it2api        it2attention  it2cat
+it2check   it2copy  it2dl    it2getvar     it2git   it2profile
+it2setcolor         it2setkeylabel  it2ssh      it2tip   it2ul
 it2universion
 ```
 
-**Eleven of those are documented**; `it2api`, `it2cat`, `it2git`,
-`it2profile`, `it2ssh` and `it2tip` appear nowhere on iterm2.com. They exist
-and they work; they are just unsupported surface.
+3.7 added `it2` and `cc-status`, both compiled Swift rather than scripts (see
+below and `references/session-status.md`). Of the seventeen 3.6.11 scripts
+only three changed: `it2check` drains its reply with a timed read under
+bash 4+, `it2git` gained line and file counts, and `it2ssh` looks for a
+second instance's socket (`IT2_SUITE`).
+
+**Eleven are documented**; `it2api`, `it2cat`, `it2git`, `it2profile`,
+`it2ssh` and `it2tip` appear nowhere on iterm2.com, and `it2` and
+`cc-status` only in the release notes. They exist and they work; they are
+just unsupported surface.
+
+### `it2`, the 3.7 CLI
+
+"iTerm2 CLI - Control iTerm2 from the command line." Shell integration puts it
+on `PATH`, and it works on hosts reached through SSH Integration. It talks to
+the Python API (one connection per command), so the API must be enabled.
+Subcommand groups: `app`, `window`, `tab`, `session`, `profile`, `monitor`,
+`auth`, `notify` (push to a paired Companion phone), plus shortcuts (`ls`,
+`new`, `newtab`, `run`, `send`, `clear`) and `alias`/`load` from its own
+config file (`it2 config-path`). `it2 <group> --help` lists the verbs; the
+`session` group is the big one — `list` (`--format '<interpolated string>'`
+since 3.7.5), `send`, `run`, `read`, `capture`, `split`, `focus`,
+`set-name`, `get-var`/`set-var`, `set-color`, and the status verbs in
+`references/session-status.md`. What it cannot do: open the toolbelt or pick
+a toolbelt tool.
 
 | Command | What it does |
 | --- | --- |
@@ -156,7 +183,27 @@ ShellIntegrationVersion=[Pn];[Ps]   (the one-argument form is deprecated)
 
 Plus the FinalTerm semantic prompt codes shell integration actually emits:
 `OSC 133 ; A ST` prompt, `; B` command start, `; C` command executed,
-`; D ; [Ps] ST` command finished with exit status.
+`; D ; [Ps] ST` command finished with exit status. 3.7 extends them: an
+`aid=` parameter nests prompts (shell integration inside a nested shell), and
+`A;k=s|c|r` marks secondary, continuation and right prompts so they are not
+counted as typed input.
+
+3.7 additions to `OSC 1337`, all new strings in the binary:
+
+```
+Button=type=custom;code=N;icon=…    an in-terminal button (SF Symbol icon)
+UpdateBlock=id=…;action=fold|unfold fold or unfold a block
+SetProfileProperty=<name>=<base64 JSON>[;…]   change a profile key at runtime
+SetWindowFrame=x;y;w;h              (3.7.5)  ReportWindowFrame  ReportScreenFrames
+SetColors=badge=i:3                 (3.7.5) palette indexes as colours
+```
+
+And two new OSC numbers, both for status: `OSC 21337` (one status per
+session) and `OSC 7501` (the Program Status Protocol, several tasks per
+program). Both are in `references/session-status.md`. Outside the OSC space,
+3.7 also speaks DECSET 2031 / DSR 996–997 (light/dark detection), dual-mode
+SGR colours (`CSI 38:12:…`), double-width and double-height lines, and the
+Kitty drag-and-drop protocol.
 
 `SetBadgeFormat` is missing from the escape-codes page; it is documented only
 on the badges page.
@@ -201,6 +248,21 @@ Prompt Detected, Report Directory, Report User & Host, Ring Bell, Run Command,
 Run Coprocess, Run Silent Coprocess, Send Text, Set Mark, Set Named Mark, Set
 Title, Set User Variable, Show Alert, Stop Processing Triggers.
 
+3.7 adds **Set Tab Status**, **Set Profile Setting** (3.7.5), and the
+workgroup actions (**Enter Workgroup** and its exit, each with a browser
+variant: classes `EnterWorkgroupTrigger`, `ExitWorkgroupTrigger`,
+`EnterWorkgroupBrowserTrigger`, `ExitWorkgroupBrowserTrigger`). It also
+changes what a trigger can be:
+
+- **Event triggers** fire on an event rather than on output — session end, a
+  hostname change, Job Started / Job Ended, a session variable changing to a
+  value matching a regex.
+- A trigger can be given a **job**, and is then active only while that job
+  runs.
+- Triggers export and import as `.it2triggers` files.
+- The regex defines what counts as a word character, and NULs are matched as
+  spaces.
+
 Parameter substitutions (Run Command, Run Coprocess, Post Notification, Send
 Text, Show Alert): `\0` whole match, `\1`–`\9` capture groups, `\a` BEL, `\b`
 backspace, `\e` ESC, `\n` newline, `\r` carriage return, `\t` tab, `\xNN` hex.
@@ -230,6 +292,13 @@ Per-component: background and text colour, **Priority** (default 5; lowest
 priority is dropped first when space runs out), Compression Resistance (tight
 packing only, "acts like a spring constant"), Size Multiple (stable
 positioning only), minimum and maximum width in points.
+
+3.7 additions: an optional separator line between the status bar and the
+terminal, a *Copy* item on every component's menu, a proxy icon on Current
+Directory (3.7.5), and in an Interpolated String component an undefined
+variable shows as `[undef: x]` — write `\(x?)` to treat it as empty.
+Interpolated strings can do arithmetic and comparisons since 3.7.0, and
+colour and checkbox settings can be bound to expressions.
 
 Two layout algorithms: *Tight Packing* — springs, drop lowest priority first,
 highest density "at the cost of their jumping around whenever a value
@@ -310,11 +379,16 @@ buffer to the local clipboard.
 **No minimum tmux version is stated anywhere in the docs**; 3.2 is the only
 version mentioned and only for pausing.
 
-## Docs vs. the binary (3.6.11)
+3.7 leans on newer tmux for its additions: bracketed-paste and per-pane
+`modifyOtherKeys` state restored on attach (tmux 3.5+), floating panes (3.7+,
+moving them 3.8+), and tmux encoding keys itself (3.9+). Session Status rows
+appear for Claude Code in tmux-integration panes, never in plain tmux.
+
+## Docs vs. the binary (3.6.11, re-checked on 3.7.6)
 
 | Claim | Reality |
 | --- | --- |
-| The utilities page lists the utilities | It documents 11; the bundle ships 17. `it2api`, `it2cat`, `it2git`, `it2profile`, `it2ssh`, `it2tip` are undocumented. |
+| The utilities page lists the utilities | It documents 11; the bundle ships 19. `it2api`, `it2cat`, `it2git`, `it2profile`, `it2ssh`, `it2tip` are undocumented, and `it2` and `cc-status` appear only in release notes. |
 | `it2ul` "specifies the directory to place downloaded files" | It uploads. Wrong verb on the page. |
 | The `it2dl` usage block | Stranded at the bottom of the page under the wrong heading. |
 | Triggers: `\r` is "A linefeed character" | It is a carriage return. |

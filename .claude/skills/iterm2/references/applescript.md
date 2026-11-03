@@ -1,7 +1,7 @@
 # AppleScript
 
 Verified against `/Applications/iTerm.app/Contents/Resources/iTerm2.sdef` in
-iTerm2 3.6.11. That file is the dictionary Script Editor shows; read it
+iTerm2 3.7.6 (first written against 3.6.11). That file is the dictionary Script Editor shows; read it
 directly rather than trusting any prose about it, including this page.
 
 Official page: <https://iterm2.com/documentation-scripting.html>
@@ -14,9 +14,11 @@ replacement for the AppleScript API that preceded it". The page body itself
 carries no warning and still opens "iTerm2 has sophisticated AppleScript
 support".
 
-The 3.6.11 dictionary contains **25 commands** in the iTerm2 suite plus the
-Standard Suite, and **four classes** (`application`, `window`, `tab`,
-`session`). Nothing is missing. The only things the sdef marks deprecated are
+The 3.7.6 dictionary contains **23 commands** in the iTerm2 suite (22 in
+3.6.11, which this file once miscounted as 25) plus six in the Standard
+Suite, and **four classes** (`application`, `window`, `tab`, `session`).
+Nothing is missing, and 3.7 even added to it: `create floating pane`, and two
+parameters on `request cookie`. The only things the sdef marks deprecated are
 four window properties — `position`, `origin`, `size`, `frame` — each
 annotated "Deprecated; use bounds instead."
 
@@ -81,11 +83,14 @@ tell application "iTerm2"
         split vertically with default profile
         split vertically with same profile
         split horizontally with profile "Work" command "tail -f log"
+        create floating pane with profile "Work" command "htop"   -- 3.7.5+
     end tell
 end tell
 ```
 
-Every one of these returns a reference to what it made. `command` overrides
+Every one of these returns a reference to what it made. A floating pane
+floats over the tab's split layout instead of taking a slot in it (see
+`references/session-status.md`). `command` overrides
 the profile's command, which by default is `login`.
 
 Also present: `write`, `select`, `close`, `reveal/hide/toggle hotkey window`,
@@ -174,6 +179,7 @@ outside program to reach the Python API at all:
 tell application "iTerm2"
     request cookie                                  -- 128-bit auth cookie
     request cookie and key for app named "my tool"  -- name shown in the console
+    request cookie reusable true session id "w0t0p0:…"   -- 3.7+
     launch API script named "thing.py"
     launch API script named "thing.py" arguments {"--flag", "value"}
     invoke API expression "my_function(x: 1)"
@@ -184,6 +190,12 @@ end tell
 ITERM2_COOKIE=$(osascript -e 'tell application "iTerm2" to request cookie') ./myscript.py
 ```
 
+3.7 added the last form: `reusable` asks for a cookie good for more than one
+connection — iTerm2 shows an announcement offering durations — and
+`session id` (an `ITERM_SESSION_ID`) picks the session that announcement
+appears in. That is what lets a CLI like `it2` connect once per command
+without a fresh prompt each time.
+
 `invoke API expression` returns a string representation of the result where
 one is available; the sdef notes "Function calls' return values are not
 available."
@@ -191,7 +203,7 @@ available."
 Requiring AppleScript here is deliberate: it forces the caller through
 macOS's Automation permission prompt. See `references/python-api.md`.
 
-## Docs vs. the binary (3.6.11)
+## Docs vs. the binary (3.6.11, re-checked on 3.7.6)
 
 | Claim | Reality |
 | --- | --- |
@@ -200,3 +212,4 @@ macOS's Automation permission prompt. See `references/python-api.md`.
 | Variables are "described in Badges" | The badges page no longer lists variables. The list lives at documentation-variables.html. |
 | User scripts live in `~/Library/Application Support/iTerm/Scripts` | Stale `iTerm` spelling; everything else in the app uses `iTerm2`. Both paths are honoured for `AutoLaunch.scpt`. |
 | The Tab section lists `sessions` twice, with an orphaned sentence | Editing bug on the docs page; harmless. |
+| The 3.7 release notes list no dictionary change | 3.7 added `create floating pane` and `request cookie`'s `reusable` and `session id`. Diff the `.sdef` between releases; the notes will not tell you. |

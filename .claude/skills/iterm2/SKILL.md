@@ -6,12 +6,14 @@ description: >-
   API and its auth model, Dynamic Profiles, shell integration and the it2*
   utilities, triggers, badges, the status bar, hotkey windows, tmux -CC,
   Automatic Profile Switching, Smart Selection and Semantic History, the
-  Toolbelt, SSH Integration and ssh:// URLs, preferences and startup
+  Toolbelt, Session Status and the Claude Code integration, Workgroups and
+  floating panes, SSH Integration and ssh:// URLs, preferences and startup
   behaviour, the AI plugin and its permission model, and how the project ships
   releases. Use this skill whenever a task touches iTerm2 in any way: driving
   it from a script (AppleScript or Python), creating or editing profiles,
   writing an AutoLaunch script, setting a badge or a trigger or a status-bar
-  component, making cmd-click or quad-click do something, switching profiles
+  component, showing or setting a session's status (the Session Status pane,
+  OSC 21337/7501, the it2 CLI, cc-status hooks), making cmd-click or quad-click do something, switching profiles
   by host, changing preferences or the custom prefs folder, debugging why a
   window did or did not appear at startup, wondering what a new iTerm2 version
   changed, or answering "can iTerm2 do X" at all. Reach for it even when the
@@ -28,7 +30,8 @@ its executable, its `utilities` directory — and the mechanically checkable
 part of that is listed in `scripts/manifest.txt` so a later version cannot
 quietly falsify it.
 
-**Written against iTerm2 3.6.11.** That number is the load-bearing fact here.
+**Written against iTerm2 3.7.6.** (First written against 3.6.11.) That
+number is the load-bearing fact here.
 iTerm2 updates itself through Sparkle without asking, so a description of it
 decays on its own; the version stamp is what turns that decay into something
 you can see.
@@ -69,7 +72,8 @@ version comparison still matters more than the check count.
 | `references/dynamic-profiles.md` | Creating profiles from a file; the plist format, required keys, inheritance, hot reload, badges |
 | `references/preferences.md` | The prefs plist, the custom prefs folder, `NoSync*`, startup and window-restoration behaviour |
 | `references/shell-integration.md` | Marks, prompt navigation, the `it2*` utilities, escape codes, badges, triggers, the status bar, hotkey windows, `tmux -CC` |
-| `references/workflow.md` | Automatic Profile Switching, Smart Selection, Semantic History and cmd-click, the Toolbelt — and `it2tip`, the app's own list of its 123 features |
+| `references/workflow.md` | Automatic Profile Switching, Smart Selection, Semantic History and cmd-click, the Toolbelt — and `it2tip`, the app's own feature tour |
+| `references/session-status.md` | The 3.7 status layer: the Session Status toolbelt tool, OSC 21337 and OSC 7501, `it2 session set-status`, `cc-status` and the Claude Code integration, Workgroups, the Cockpit, floating panes, the Companion app |
 | `references/ssh.md` | SSH Integration (the 3.5+ feature, not shell integration), `it2ssh` and how it really works, `ssh://` URL handling |
 | `references/ai-plugin.md` | The separate AI plugin, AI Chat and its tri-state permission model, which providers work, where the API key lives and why that matters when the prefs folder is a git repo |
 | `references/releases.md` | Channels, version-number shapes, appcasts, finding what changed between two versions |
@@ -86,8 +90,9 @@ mistakes that survive being confidently stated.
 1. **The AppleScript API is deprecated and complete at the same time.** The
    documentation index labels it "Deprecated" and the Python tutorial calls
    itself "a replacement for the AppleScript API that preceded it" — but
-   nothing has been removed. `iTerm2.sdef` in 3.6.11 ships 25 commands and
-   four classes, all functional. Deprecated means "no longer receiving
+   nothing has been removed. `iTerm2.sdef` in 3.7.6 ships 23 commands in the
+   iTerm2 suite (3.7 added `create floating pane`) plus the Standard Suite,
+   and four classes, all functional. Deprecated means "no longer receiving
    improvements", not "gone". Prefer Python for anything new; do not tell
    someone their working AppleScript is broken.
 
@@ -98,7 +103,8 @@ mistakes that survive being confidently stated.
    `if x as text is ""`.
 
 3. **iTerm2 opens one window of its own at every launch, and restores
-   nothing without a saved arrangement.** Measured on 3.6.11: a window with a
+   nothing without a saved arrangement.** Measured on 3.6.11, not re-measured
+   on 3.7.6 (whose notes list restoration fixes, no change of policy): a window with a
    user variable set and a plain window were both gone after a quit and
    relaunch, replaced by one fresh window. `OpenNoWindowsAtStartup` suppresses
    the automatic window; `OpenArrangementAtStartup` and
@@ -106,9 +112,12 @@ mistakes that survive being confidently stated.
    creates a window therefore usually wants that pref set, or it races the
    app's own.
 
-4. **The AI API key is in the Keychain, not in the prefs plist.** The binary
-   says so — "The key will be stored securely in the Keychain" — and carries a
-   `NoSyncMoveOpenAIAPIKeyIntoKeychain` migration from when it wasn't. This is
+4. **The AI API keys are in the Keychain, not in the prefs plist.** The binary
+   says so — "Keys are stored securely in the macOS Keychain" since 3.7, which
+   keeps one key per provider — and carries a
+   `NoSyncMoveOpenAIAPIKeyIntoKeychain` migration from when it wasn't. Custom
+   AI HTTP header *values* are the exception: 3.7 stores those unencrypted in
+   the prefs. This is
    what makes it safe to track a prefs folder in git; see
    `references/ai-plugin.md` before assuming it stays true.
 
@@ -116,7 +125,8 @@ mistakes that survive being confidently stated.
    `LoadPrefsFromCustomFolder`, `PrefsCustomFolder`, the `NoSync*` convention
    and `EnableAPIServer` appear nowhere on iterm2.com — not even on its
    hidden-settings page. Neither do `it2ssh`, `it2api`, `it2cat`, `it2git`,
-   `it2profile` or `it2tip`, and there is no Toolbelt page or SSH Integration
+   `it2profile` or `it2tip`, nor 3.7's `it2` CLI and `cc-status` beyond a
+   line in the release notes, and there is no Toolbelt page or SSH Integration
    page at all. These are real, working things; they are simply unsupported
    and free to change in a point release. Say that when recommending one.
 
@@ -127,10 +137,13 @@ mistakes that survive being confidently stated.
    line number. Conflating them produces a rule that silently does the wrong
    thing. See `references/workflow.md`.
 
-7. **The app ships its own feature list, and it is the best answer to "what
-   can this version do".** `Contents/Resources/utilities/it2tip` — 123
-   entries in 3.6.11, each with a menu path. `verify.sh` counts them, which
-   makes it the one check here that can notice a feature being *added*.
+7. **The app ships its own feature tour, and it does not keep up.**
+   `Contents/Resources/utilities/it2tip` lists 123 features, each with a menu
+   path — the same 123 titles in 3.6.11 and 3.7.6, although 3.7 added
+   Session Status, Workgroups, floating panes, the Cockpit and a Companion
+   app. `verify.sh` still counts them, but a count that holds proves nothing.
+   What does notice an addition is diffing the bundle against the previous
+   release's (see *Refreshing this skill*).
 
 ## Where the documentation and the binary disagree
 
@@ -138,7 +151,7 @@ When they conflict, **the binary wins** — it is what runs. Recording the
 disagreement is half the value of this skill, because a reader who checks
 only the docs will believe the wrong thing with a citation to back it up.
 Each reference file has a "Docs vs. the binary" section; the disagreements
-found while writing this against 3.6.11 are listed there rather than
+found while writing this against 3.6.11 and 3.7.6 are listed there rather than
 duplicated here.
 
 ## Rules for touching a running iTerm2
@@ -154,9 +167,11 @@ Almost everything worth knowing can be read off disk. Prefer that:
 - **Preferences**: `defaults read com.googlecode.iterm2 <key>`.
 - **Feature list**: run `Contents/Resources/utilities/it2tip`, or read it as a
   file — it is a Python script with the whole tour in a literal list.
-- **The bundled utilities themselves** are readable shell and Python. When
-  `it2ssh` or `it2ul` misbehaves, the script is the documentation; six of the
-  seventeen have no other.
+- **The bundled utilities themselves** are mostly readable shell and Python.
+  When `it2ssh` or `it2ul` misbehaves, the script is the documentation; six of
+  those seventeen have no other. The two 3.7 additions, `it2` and
+  `cc-status`, are compiled Swift: read them with `it2 --help` and
+  `strings -a`.
 
 If you must script a live iTerm2, remember you are inside someone's working
 session: creating windows, splitting panes, and `write text` all land in
@@ -169,11 +184,21 @@ When `verify.sh` reports drift, the update is one motion:
 
 1. Read the release notes at <https://iterm2.com/downloads.html> for every
    version between the stamp and the installed one.
-2. Re-read the primary sources for whatever changed — the `.sdef`, the
+2. **Diff the bundle against the stamped release's.** Download the old zip
+   into a scratch directory (`https://iterm2.com/downloads/stable/iTerm2-3_7_6.zip`,
+   dots as underscores), never run it, and compare: `diff` the two `.sdef`
+   files, the `utilities` listings and the `it2tip` titles; `comm` the sorted
+   `strings -a` of the two executables, then filter the additions for
+   `NoSync*`, `AdvancedSetting.*`, `Toolbelt.*` and `*Trigger` class names.
+   The release notes say nothing about the dictionary or about preference
+   keys; this is the only way to see those. `verify.sh --app <old bundle>`
+   with the new manifest should then fail on exactly the facts you labelled
+   as new.
+3. Re-read the primary sources for whatever changed — the `.sdef`, the
    binary's strings, <https://iterm2.com/documentation.html> — and correct the
    reference files. Verify against the app, not against the docs.
-3. Add or remove `manifest.txt` lines to match what the references now claim.
-4. Update **three** stamps to the new version: the `version` line in
+4. Add or remove `manifest.txt` lines to match what the references now claim.
+5. Update **three** stamps to the new version: the `version` line in
    `manifest.txt`, the "Written against" line above, and the `stamp` local in
    `iterm2-doctor` in `dot_functions`. `tests/iterm2-doctor.bats` fails if
    they disagree, which is deliberate — the doctor is deployed to machines
