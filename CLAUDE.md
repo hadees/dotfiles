@@ -1152,23 +1152,38 @@ wrapper. Consequences:
   read before any `emulate`, so a pasted transcript says which shell it
   came from.
 
-### Hermes (per-repo agent profiles)
+### Hermes (agent profiles)
 
 The Hermes harness (NousResearch/hermes-agent) keeps per-agent state in
 profiles (`hermes profile create <name>` — each its own HERMES_HOME with its
 own config, approval rules, memory, and .env keys). The `hermes()` wrapper
-in `.functions` routes by machine-local per-repo pins: `git config
-hermes.profile <name>` injects `-p <name>`; optional `git config
-hermes.model <model>` appends `--model <model>` (hermes CLI args outrank
-config — same profile/memory/keys, different LLM; full isolation is a
-profile per purpose, whose own config/.env carry that provider). In a
-pinned repo an explicit `-p`/`--profile` naming a *different* profile is a
-loud error, never an override (same stance as claude-as/wrangler; it was
-never a working override anyway — hermes honours the first `-p` and the
-leftover flag dies as an argparse usage error); the pinned name itself is a
-no-op, `command hermes` is the bypass, unpinned directories pass through
-untouched. The retired `hermes.launcher` pin is refused with its migration
-printed, never silently ignored.
+in `.functions` picks the profile the way `claude()` and `wrangler()` pick
+theirs, by machine-local git config the overlays supply: an explicit
+`-p`/`--profile` first; else the per-repo pin `git config hermes.profile
+<name>` (set in that repo's `.git/config` — a hardened profile for one
+checkout); else the cwd's account — origin owner through the credential
+pins — mapped by `hermes.profile.<account>`, so every repo of an account
+runs that account's profile with no per-repo change; else passthrough to
+hermes' own resolution. Whatever wins is injected as `-p <name>`. The two
+keys are a section key and a `[hermes "profile"]` subsection entry and
+never shadow each other. Optional `git config hermes.model <model>` appends
+`--model <model>` (hermes CLI args outrank config — same
+profile/memory/keys, different LLM; full isolation is a profile per
+purpose, whose own config/.env carry that provider).
+
+A pin and a mapping differ in what they refuse. In a pinned repo an
+explicit `-p`/`--profile` naming a *different* profile is a loud error,
+never an override (same stance as claude-as/wrangler; it was never a
+working override anyway — hermes honours the first `-p` and the leftover
+flag dies as an argparse usage error); the pinned name itself is a no-op.
+Under a mapping an explicit `-p` is simply honoured — the mapping is a
+default, the pin a statement — but a mapped profile nobody has created on
+this machine is refused with the `hermes profile create` line, as
+`wrangler()` refuses an uncreated mapped login: hermes' sticky default would
+otherwise run with another identity's keys and memory. `command hermes` is
+the bypass for both. The retired `hermes.launcher` pin is refused with its
+migration printed, never silently ignored. `routes` marks a pin that
+outranks a mapping with `*`, like its other columns.
 
 Hermes never starts a model server — it only speaks HTTP to the profile's
 `model.base_url` (auto-starting the server was `ollama launch`'s only real
@@ -1178,8 +1193,9 @@ port and starts `ollama serve` disowned with a bounded readiness wait when
 nothing answers; a cloud profile (Anthropic/OpenAI/OpenRouter) or a
 LAN/WireGuard ollama never waits on or spawns anything, and every failure
 warns and falls open — hermes prints the real connection error.
-`hermes-doctor` traces all of it for the cwd (pins, effective profile and
-its config via the same helpers the wrapper calls — the two cannot drift —
+`hermes-doctor` traces all of it for the cwd (pin, account, mapping, the
+effective profile and its source, and its config, via the same
+`hermes_profile`/`hermes_cfg_path` helpers the wrapper and `routes` call — the three cannot drift —
 and, for a local-ollama profile, whether the server answers) without
 starting anything; `doctor` includes it. Tests: `tests/hermes.bats` (stub
 hermes/ollama/curl; fixture profile names only).
