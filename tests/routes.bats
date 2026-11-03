@@ -152,15 +152,35 @@ row_for() {
   [[ "$output" == *"! mapped but not created on this machine"* ]]
 }
 
-@test "hermes: a per-repo pin is reported, and marked when its profile is absent" {
+@test "hermes: a per-repo pin is starred, and marked when its profile is absent" {
   make_repo agent-repo octo-personal/agent-repo hermes.profile fixture-agent
   make_repo other-agent octo-personal/other-agent hermes.profile missing-agent
   mkdir -p "$HOME/.hermes/profiles/fixture-agent"
   : > "$HOME/.hermes/profiles/fixture-agent/config.yaml"
   routes
   [ "$status" -eq 0 ]
-  [[ "$(row_for agent-repo)" == *" fixture-agent "* ]]
-  [[ "$(row_for other-agent)" == *" missing-agent! "* ]]
+  [[ "$(row_for agent-repo)" == *" fixture-agent* "* ]]
+  [[ "$(row_for other-agent)" == *" missing-agent*! "* ]]
+}
+
+@test "hermes: the account mapping fills the column; a pin outranks it" {
+  gc hermes.profile.personal-account fixture-home
+  make_repo personal-thing octo-personal/personal-thing
+  make_repo agent-repo octo-personal/agent-repo hermes.profile fixture-agent
+  make_repo work-thing octo-work-org/work-thing
+  mkdir -p "$HOME/.hermes/profiles/fixture-home" "$HOME/.hermes/profiles/fixture-agent"
+  : > "$HOME/.hermes/profiles/fixture-home/config.yaml"
+  : > "$HOME/.hermes/profiles/fixture-agent/config.yaml"
+  routes
+  [ "$status" -eq 0 ]
+  [[ "$(row_for personal-thing)" == *" fixture-home "* ]]
+  [[ "$(row_for agent-repo)" == *" fixture-agent* "* ]]
+  # The work account has no mapping: its cell stays empty, not starred.
+  [[ "$(row_for work-thing)" == "work-thing work-account .claude work-cf work-net - "* ]]
+  # Mapped but never created on this machine.
+  rm -r "$HOME/.hermes/profiles/fixture-home"
+  routes
+  [[ "$(row_for personal-thing)" == *" fixture-home! "* ]]
 }
 
 @test "columns: one nothing uses is dropped from the table and named in the footer" {

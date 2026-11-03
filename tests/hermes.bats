@@ -74,6 +74,18 @@ make_profile() {
   } > "$dir/config.yaml"
 }
 
+# A repo of a fixture owner whose account is mapped to profile $1 via
+# hermes.profile.<account> — the account route, as opposed to make_repo's
+# per-repo pin. Fixture owner, account and profile names only.
+make_mapped_repo() {
+  local repo
+  repo=$(make_repo)
+  git -C "$repo" remote add origin https://github.com/octo-personal/thing.git
+  git config --file "$GIT_CONFIG_GLOBAL" credential.https://github.com/octo-personal.username personal-account
+  git config --file "$GIT_CONFIG_GLOBAL" hermes.profile.personal-account "$1"
+  echo "$repo"
+}
+
 hermes_in() {
   local dir="$1"; shift
   run zsh -c "source '$DOTFUNCTIONS'; cd '$dir'; hermes $*"
@@ -281,4 +293,61 @@ hermes_in() {
   [ "$status" -eq 0 ]
   [ "$output" = "ARGS=-p hardened chat" ]
   grep -q 'serve' "$BATS_TEST_TMPDIR/ollama.log"
+}
+
+@test "account mapping injects -p for an unpinned repo of a mapped owner" {
+  repo=$(make_mapped_repo fixture-home)
+  make_profile fixture-home openrouter 'https://example.invalid/api/v1'
+  hermes_in "$repo" chat
+  [ "$status" -eq 0 ]
+  [ "$output" = "ARGS=-p fixture-home chat" ]
+}
+
+@test "a per-repo pin outranks the account mapping" {
+  repo=$(make_mapped_repo fixture-home)
+  git -C "$repo" config hermes.profile hardened
+  make_profile hardened openrouter 'https://example.invalid/api/v1'
+  hermes_in "$repo" chat
+  [ "$status" -eq 0 ]
+  [ "$output" = "ARGS=-p hardened chat" ]
+}
+
+@test "an explicit -p under an account mapping is honoured, not refused" {
+  repo=$(make_mapped_repo fixture-home)
+  make_profile other openrouter 'https://example.invalid/api/v1'
+  hermes_in "$repo" -p other chat
+  [ "$status" -eq 0 ]
+  [ "$output" = "ARGS=-p other chat" ]
+}
+
+@test "the two hermes.profile keys do not shadow each other" {
+  # `hermes.profile` (the pin) and `hermes.profile.<account>` (the mapping)
+  # are a section key and a subsection entry; a mapping alone is not a pin.
+  repo=$(make_mapped_repo fixture-home)
+  make_profile fixture-home openrouter 'https://example.invalid/api/v1'
+  run git -C "$repo" config --get hermes.profile
+  [ "$status" -ne 0 ]
+  hermes_in "$repo" -p other chat
+  [ "$status" -eq 0 ]
+}
+
+@test "a mapped profile that is not created here refuses and never launches" {
+  repo=$(make_mapped_repo fixture-home)
+  hermes_in "$repo" chat
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"account personal-account maps to profile 'fixture-home' (hermes.profile.personal-account) but it is not created here"* ]]
+  [[ "$output" == *"hermes profile create fixture-home"* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/hermes-invoked" ]
+}
+
+@test "hermes-doctor reports the account mapping as the profile source" {
+  repo=$(make_mapped_repo fixture-home)
+  make_profile fixture-home openrouter 'https://example.invalid/api/v1'
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; hermes-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pin:     <none"* ]]
+  [[ "$output" == *"account: personal-account"* ]]
+  [[ "$output" == *"mapping: fixture-home (hermes.profile.personal-account)"* ]]
+  [[ "$output" == *"profile: fixture-home (mapped via hermes.profile.personal-account)"* ]]
+  [[ "$output" == *"config:  $HOME/.hermes/profiles/fixture-home/config.yaml"* ]]
 }
