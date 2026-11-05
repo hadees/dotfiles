@@ -611,6 +611,46 @@ repo() { # dir — a fixture repo with one commit on main
   [[ "$output" == *"none configured"* ]]
 }
 
+@test "status: lists each entry's worktrees with branch, open only where a tab stands in it" {
+  repo "$PROJ/one"; entry a dir "$PROJ/one"; entry a window grp
+  entry b dir "$PROJ/two"
+  FAKE_OPENED=$'a\na' ws new a feat/x fix/y
+  mkdir -p "$PROJ/one/.claude/worktrees/stray"
+  FAKE_MARKS=$'a\t'"$PROJ/one/.claude/worktrees/feat-x"$'\na\t' ws status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"worktrees:"* ]]
+  [[ "$output" == *"a "*"feat-x "*"feat/x [open]"* ]]
+  [[ "$output" == *"a "*"fix-y "*"fix/y [closed]"* ]]
+  [[ "$output" == *"a "*"stray "*"(not a worktree)"* ]]
+  # The entry itself is open (first field), and the listing removed nothing.
+  [[ "$output" == *"grp"*"a"*"[open]"* ]]
+  [ -d "$PROJ/one/.claude/worktrees/stray" ]
+  # Entry b has no worktrees directory: only its table row.
+  [ "$(printf '%s\n' "$output" | grep -c '^  b ')" -eq 1 ]
+}
+
+@test "status: no worktrees directory means no worktrees block" {
+  repo "$PROJ/one"; entry a dir "$PROJ/one"
+  ws status
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"worktrees:"* ]]
+}
+
+@test "new branches: the worktree path is set on the session; plain new and start leave it unset" {
+  repo "$PROJ/one"; entry a dir "$PROJ/one"
+  FAKE_OPENED=a ws new a feat/x
+  grep -q 'user.workspaceWorktree' "$OSA_SCRIPT"
+  grep -q "set end of thePlan to {\"a\", \"a\", \"a @feat-x\", .*, \".*/.claude/worktrees/feat-x\"}" "$OSA_SCRIPT"
+  FAKE_OPENED=a ws new a
+  [ "$(grep -c 'worktrees/' "$OSA_SCRIPT")" -eq 0 ]
+}
+
+@test "groups: a mark with a worktree path still counts its entry open" {
+  entry a dir "$PROJ/one"; entry a window grp
+  FAKE_MARKS=$'a\t/some/worktree' ws groups
+  [ "$output" = $'grp\t1\t1' ]
+}
+
 # --- portability ------------------------------------------------------------
 
 @test "read-only commands work off macOS; the ones that drive iTerm2 refuse" {

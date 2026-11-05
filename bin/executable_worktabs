@@ -94,6 +94,7 @@ WORKTABS_STATE=${WORKTABS_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/worktabs}
 # The rename exists to free the name on PATH, which none of these occupy.
 MARK=user.workspaceSession          # iTerm2 session variable: the entry name
 MARK_WINDOW=user.workspaceWindow    # …and its group
+MARK_WORKTREE=user.workspaceWorktree # …and, for `new <entry> <branch>`, its worktree
 # Every tab this opens is created *with* this profile, so ownership is set by
 # the same command that creates the session rather than a step after it. The
 # marks above still carry identity — a profile name is one string and
@@ -248,10 +249,12 @@ as_string() { printf '%s' "${1-}" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 gen_script() { # [force] — force opens every row even when its tag is on screen
   case ${1-} in force) printf 'set forceOpen to true\n';; *) printf 'set forceOpen to false\n';; esac
   printf 'set thePlan to {}\n'
-  while IFS='	' read -r win name state title dir cmd; do
+  while IFS='	' read -r win name state title dir cmd wt; do
     [ "$state" = ok ] || continue
-    printf 'set end of thePlan to {"%s", "%s", "%s", "%s"}\n' \
-      "$(as_string "$win")" "$(as_string "$name")" "$(as_string "$title")" "$(as_string "$cmd")"
+    # A fifth item, the worktree the tab stands in, only when the row has one.
+    printf 'set end of thePlan to {"%s", "%s", "%s", "%s"%s}\n' \
+      "$(as_string "$win")" "$(as_string "$name")" "$(as_string "$title")" "$(as_string "$cmd")" \
+      "${wt:+, \"$(as_string "$wt")\"}"
   done
   cat <<APPLESCRIPT
 tell application "iTerm2"
@@ -303,6 +306,8 @@ tell application "iTerm2"
 		set n to item 2 of p
 		set ttl to item 3 of p
 		set c to item 4 of p
+		set wtp to ""
+		if (count of p) > 4 then set wtp to item 5 of p
 		if forceOpen or n is not in openMarks then
 			set widx to 0
 			repeat with i from 1 to count of groupNames
@@ -332,6 +337,7 @@ tell application "iTerm2"
 			tell current session of theTab
 				set variable named "$MARK" to n
 				set variable named "$MARK_WINDOW" to g
+				if wtp is not "" then set variable named "$MARK_WORKTREE" to wtp
 				write text c
 			end tell
 			try
@@ -347,7 +353,8 @@ end tell
 APPLESCRIPT
 }
 
-# The entry names iTerm2 currently has tagged, one per line.
+# The entries iTerm2 currently has tagged, one per line: the entry name, a tab,
+# and the worktree path the tab was opened in (empty for a plain tab).
 open_marks_script() {
   cat <<APPLESCRIPT
 set out to ""
@@ -359,7 +366,12 @@ tell application "iTerm2"
 					try
 						set v to (variable named "$MARK")
 						if v is not missing value and (v as text) is not "" then
-							set out to out & (v as text) & linefeed
+							set wtv to ""
+							try
+								set x to (variable named "$MARK_WORKTREE")
+								if x is not missing value then set wtv to (x as text)
+							end try
+							set out to out & (v as text) & tab & wtv & linefeed
 						end if
 					end try
 				end tell
@@ -443,7 +455,7 @@ cmd_script() { cmd_plan "$@" | gen_script; }
 cmd_groups() {
   rows=$(all_rows)
   [ -n "$rows" ] || return 0
-  marks=$(open_marks)
+  marks=$(open_marks | cut -f1)
   printf '%s\n' "$rows" | groups_of | while read -r g; do
     [ -n "$g" ] || continue
     total=$(printf '%s\n' "$rows" | awk -F'\t' -v g="$g" '$1 == g && $3 == "ok"' | wc -l | tr -d ' ')
@@ -641,7 +653,7 @@ $b
     for b in "$@"; do worktree_checkout "$dir" "$b" || exit 1; done
     row=$(for b in "$@"; do
       wt=$(worktree_path "$dir" "$b")
-      printf '%s\t%s\tok\t%s\t%s\t%s\n' "$win" "$entry" "$entry @$(slug_of "$b")" "$wt" "$(command_of "$entry" "$win" "$wt")"
+      printf '%s\t%s\tok\t%s\t%s\t%s\t%s\n' "$win" "$entry" "$entry @$(slug_of "$b")" "$wt" "$(command_of "$entry" "$win" "$wt")" "$wt"
     done)
   fi
   ensure_iterm
@@ -658,6 +670,30 @@ $b
     [ "$n" -gt 0 ] || break
     n=$((n - 1))
     printf 'worktabs: opened another %s @%s -> window %s\n' "$entry" "$(slug_of "$b")" "$win"
+  done
+}
+
+# entry dir marks -> one line per directory under <dir>/.claude/worktrees/:
+# its branch (or "(not a worktree)") and whether a tab was opened in it. Read
+# only; nothing is removed.
+list_worktrees() {
+  rd=$(cd "$2" && pwd -P) || return 0
+  top=$(git -C "$2" rev-parse --show-toplevel 2>/dev/null) && [ "$(cd "$top" && pwd -P)" = "$rd" ] || return 0
+  trees=$(git -C "$2" worktree list --porcelain | awk '
+    /^worktree / { p = substr($0, 10); b = "(detached)" }
+    /^branch /   { b = $2; sub("^refs/heads/", "", b) }
+    /^$/         { print p "\t" b }')
+  for p in "$2"/.claude/worktrees/*/; do
+    [ -d "$p" ] || continue
+    s=$(basename "$p")
+    b=$(printf '%s\n' "$trees" | awk -F'\t' -v w="$rd/.claude/worktrees/$s" '$1 == w { print $2; exit }')
+    if [ -z "$b" ]; then
+      printf '  %-16s %-24s (not a worktree)\n' "$1" "$s"
+    elif printf '%s\n' "$3" | awk -F'\t' -v w="$(worktree_path "$2" "$s")" '$2 == w { f = 1 } END { exit !f }'; then
+      printf '  %-16s %-24s %s [open]\n' "$1" "$s" "$b"
+    else
+      printf '  %-16s %-24s %s [closed]\n' "$1" "$s" "$b"
+    fi
   done
 }
 
@@ -741,10 +777,14 @@ cmd_status() {
   printf '%s\n' "$rows" | while IFS='	' read -r win name state title dir cmd; do
     open=
     if [ "$state" = ok ]; then
-      if printf '%s\n' "$marks" | grep -qx "$name"; then open=' [open]'; else open=' [closed]'; fi
+      if printf '%s\n' "$marks" | cut -f1 | grep -qx "$name"; then open=' [open]'; else open=' [closed]'; fi
     fi
     printf '  %-16s %-16s %-9s %s%s\n' "$win" "$name" "$state" "$dir" "$open"
   done
+  wts=$(printf '%s\n' "$rows" | while IFS='	' read -r win name state title dir cmd; do
+    [ "$state" = ok ] && list_worktrees "$name" "$dir" "$marks"
+  done)
+  [ -z "$wts" ] || printf 'worktrees:\n%s\n' "$wts"
   if [ "$(os)" = Darwin ] && ! iterm_running; then
     printf 'iterm2:   not running (start opens it)\n'
   fi
