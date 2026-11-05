@@ -227,3 +227,17 @@ shared_templates() {
     [ -f "$shared/$(basename "$t" .md).md.tmpl" ]
   done
 }
+
+@test "plan-fable's trigger and the shared memory agree on the hand-off (a big idea fleshed out in chat)" {
+  # The main conversation reads both: the description when it picks a seat,
+  # the shared memory as its standing rule. Two statements of one trigger
+  # must say the same thing — fd71d53 fixed the same disagreement for
+  # work-sonnet. One frozen phrase is the pin; the shared file is flattened
+  # the way body() flattens a definition, since prose there wraps.
+  local d shared
+  d="$(fmval "$TEMPLATES/plan-fable.md" description)"
+  grep -q 'fleshed out in chat' <<< "$d" || { echo "plan-fable: description does not name the hand-off"; false; }
+  grep -q 'by name' <<< "$d" || { echo "plan-fable: the explicit by-name route is gone"; false; }
+  shared="$(tr '\n' ' ' < "$BATS_TEST_DIRNAME/../dot_claude-shared/CLAUDE.md" | tr -s ' ')"
+  grep -q 'fleshed out in chat' <<< "$shared" || { echo "shared memory: no big-idea hand-off rule"; false; }
+}
