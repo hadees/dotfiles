@@ -973,7 +973,8 @@ Use: a plain tab, Shell > Workgroups > Claude Peers (no API, sdef or `it2`
 verb enters one), then type `claude` in Chat. **Exit hazard:** the Exit
 trigger is `leaderOnly`, so the leader's `claude` ending tears the group down
 and terminates the peers; worktrees and transcripts survive, `claude-peer run
-<branch>` then `claude --continue` resumes. The Session Status tool lists
+<branch>` then `claude --continue` resumes (a scratch peer: `cd` into its
+`peer-N` and `claude --continue`, since a dirty one is skipped, not reused). The Session Status tool lists
 buried peers, one row each, and a click swaps the peer in; keep *Merge
 workgroup statuses* **off** (on, four Claudes are one row). Rows read `[group]
 <repo>` for the leader and `<repo>@<slug>` for peers (no group prefix:

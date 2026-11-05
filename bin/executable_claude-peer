@@ -120,7 +120,8 @@ worktree_checkout() {
 # dir -> (detached)<TAB>wt<TAB>created|reused: a scratch worktree with no branch
 # of its own, detached at the base (origin/HEAD, else HEAD), at the first
 # <dir>/.claude/worktrees/peer-N that is free — unregistered, or registered,
-# still detached and clean, which is moved back to the base. A branch is the
+# present, still detached and clean, which is moved back to the base (a
+# registered one whose directory is gone is skipped; `git worktree prune`). A branch is the
 # session's to make once it knows what it is working on; a name picked here
 # would only be one more branch to delete.
 scratch_checkout() {
@@ -135,7 +136,7 @@ scratch_checkout() {
       git -C "$1" worktree add --detach "$wt" "$base" >/dev/null || die "peer-$n: git worktree add failed"
       printf '(detached)\t%s\tcreated\n' "$wt"; return 0
     fi
-    if printf '%s\n' "$trees" | grep -qx "worktree $wt" \
+    if printf '%s\n' "$trees" | grep -qx "worktree $wt" && [ -d "$wt" ] \
        && ! git -C "$wt" symbolic-ref -q HEAD >/dev/null 2>&1 \
        && [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
       git -C "$wt" checkout -q --detach "$base" 2>/dev/null || die "peer-$n: cannot move to $base"

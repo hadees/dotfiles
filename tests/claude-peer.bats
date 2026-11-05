@@ -115,7 +115,11 @@ STUB
   git -C "$REPO/.claude/worktrees/peer-2" checkout -q -b feat/mine
   run sh "$BIN" run
   [[ "$output" == *"peer-3	created"* ]]
-  [ "$(git worktree list | grep -c peer-)" -eq 3 ]
+  rm -rf "$REPO/.claude/worktrees/peer-3"
+  run sh "$BIN" run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"peer-4	created"* ]]
+  [ "$(git worktree list | grep -c peer-)" -eq 4 ]
 }
 
 @test "path prints the worktree path; plan flags a conflict and exits 1" {
