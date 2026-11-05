@@ -852,7 +852,7 @@ preference into a tracked file behind you.
 
 Commands mirror `tailnet`'s shape: `list`, `groups`, `plan` (the decision
 table, tab-separated), `script` (the AppleScript `start` would run — a dry
-run), `start [name|group…]`, `new <name>` (one more tab for one entry
+run), `start [name|group…]`, `new <entry> [branch…]` (one more tab for one entry
 whether or not it is open — a second chat in the same project; the same
 script as `start` with its skip switched off, so the tab lands in the
 group's window and `start` still counts the entry as open), `alfred`,
@@ -868,6 +868,34 @@ with which are open; `doctor` includes it. Once per machine:
 `worktabs install` — which is also what clears the old trigger. Tests:
 `tests/worktabs.bats` (stub osascript/open/ps/uname/osacompile; fixture names
 only).
+
+**`new <entry> <branch>…` gives each branch its own tab and worktree.** A second
+Claude in the same checkout is a second writer on the live tree, so each
+branch gets `<dir>/.claude/worktrees/<slug>` (`/` becomes `-`), made by the
+rules `workset checkout` follows: an existing branch is checked out, a new one
+is cut from `origin/HEAD` else `HEAD`, a branch checked out anywhere else is
+refused, and nothing is created if any branch is refused — validate, create,
+then open. The tab is the entry's row with its dir swapped for the worktree
+and is typed into the login shell like any other, so `claude` there is the
+wrapper, the cwd is the worktree (no second-session question, the worktree's
+own `CLAUDE.md`, a Diff peer that diffs the worktree), and the Claude Code
+workgroup enters per tab as it does today. The window's Session Status tool is
+then the one view over every Claude in the group (it is per window); the
+Cockpit groups by window across windows. Such a tab also carries
+`user.workspaceWorktree`, which is what lets `status` print a `worktrees:`
+block — each directory under `<dir>/.claude/worktrees/` with its branch and
+`[open]`/`[closed]`, or `(not a worktree)` — and never removes one:
+`git worktree remove` is the cleanup, as for `workset`.
+
+Why not an iTerm2 Workgroup of several Claudes: members spawn in the leader's
+working directory and are pinned there (`forceUseOldCWD: true`,
+`WorkgroupSessionSpawner.swift`, v3.7.7), so a peer running in a worktree
+would leave the one Diff peer diffing the main checkout; a custom workgroup
+exists only in the tracked plist, never reproducible from an overlay; and a
+tab already in `builtin.claudeCode` (the `claude` job trigger the `Workspace`
+profile inherits from Default puts it there) cannot switch. A workgroup peer's command does run in an
+interactive login shell (`login … ShellLauncher --launch_shell - -i -c`), so
+the `create tab … command` finding above applies to that code path only.
 
 **Three facts survive `bin/attend`**, the tab-triage script removed in favour
 of iTerm2 3.7's own per-tab Claude Code status (it painted tabs red/amber from
