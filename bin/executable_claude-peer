@@ -12,6 +12,13 @@
 # (<repo>/.claude/worktrees/<slug>), ported from bin/executable_worktabs
 # rather than called.
 #
+# A second Workgroup, not extra peers on the builtin Claude Code one: peers
+# spawn eagerly when a workgroup is entered, and the builtin is entered on
+# every claude job, so three more Claudes would start for every session.
+# `install` edits the preferences while iTerm2 is quit because iTerm2 writes
+# its preferences back at quit (and, with a custom prefs folder, replaces the
+# domain from the folder at launch); an edit made while it runs is lost.
+#
 # Usage: claude-peer <command> [args]
 #   run [branch] [-- claude args...]
 #                            make or reuse <repo>/.claude/worktrees/<slug> on
@@ -22,6 +29,11 @@
 #                            is created)
 #   plan <branch>...         branch<TAB>worktree<TAB>create|reuse|conflict:<why>
 #                            per branch, exit 1 on any conflict
+#   workgroup                print the "Claude Peers" Workgroup definition JSON
+#                            that install would write (reads the store only)
+#   install                  write that definition into iTerm2's preferences;
+#                            iTerm2 must be quit
+#   status                   store, iTerm2, workgroup and builtin state
 set -u
 
 die() { printf 'claude-peer: %s\n' "$*" >&2; exit 1; }
@@ -152,12 +164,184 @@ cmd_plan() {
   worktree_plan "$repo" "$@"
 }
 
+# --- the Workgroup ------------------------------------------------------------
+
+os() { uname -s 2>/dev/null; }
+# Exit 2 as for usage: the verb cannot be used here at all, nothing was refused.
+need_macos() { [ "$(os)" = Darwin ] || { warn "$1 needs macOS"; exit 2; }; }
+
+# `ps` rather than pgrep, as bin/executable_worktabs: pgrep cannot see
+# processes of the caller's own session under some sandboxes.
+proc_running() {
+  ps -Ao ucomm= 2>/dev/null |
+    awk -v n="$1" '{ sub(/[ \t]+$/, "", $0); if ($0 == n) f = 1 } END { exit !f }'
+}
+
+# Where iTerm2's preferences live: skind=folder spath=<plist> when it loads
+# them from a custom folder (it replaces the domain from there at launch and
+# writes back at quit), else skind=domain. CLAUDE_PEER_PREFS names a plist
+# directly.
+prefs_store() {
+  if [ -n "${CLAUDE_PEER_PREFS:-}" ]; then skind=folder; spath=$CLAUDE_PEER_PREFS; return 0; fi
+  skind=domain; spath=
+  [ "$(defaults read com.googlecode.iterm2 LoadPrefsFromCustomFolder 2>/dev/null)" = 1 ] || return 0
+  f=$(defaults read com.googlecode.iterm2 PrefsCustomFolder 2>/dev/null) || f=
+  case $f in
+    '') return 0;;
+    *://*) die "prefs load from a URL; use Settings > Arrangements > Workgroups";;
+    \~|\~/*) f=$HOME${f#\~};;
+  esac
+  skind=folder; spath=${f%/}/com.googlecode.iterm2.plist
+}
+
+# peer_py <workgroup|install|status> <folder|domain> <plist path>
+# The stdlib only: plistlib for the store, json for the Workgroups value (an
+# NSData holding a JSON array), defaults for the domain.
+peer_py() {
+  python3 -I - "$@" <<'PYEOF'
+import copy, json, plistlib, subprocess, sys
+
+GROUP, NAME, BUILTIN = "claudePeer.workgroup", "Claude Peers", "builtin.claudeCode"
+mode, kind, path = sys.argv[1:4]
+
+def fail(msg):
+    sys.exit("claude-peer: " + msg)
+
+def load(kind, path):
+    """(plist, began with bplist); raises when the store cannot be read."""
+    if kind == "folder":
+        with open(path, "rb") as f:
+            raw = f.read()
+    else:
+        raw = subprocess.run(["defaults", "export", "com.googlecode.iterm2", "-"],
+                             capture_output=True, check=True).stdout
+    return plistlib.loads(raw), raw.startswith(b"bplist")
+
+def groups_of(pl):
+    if "Workgroups" not in pl:
+        return []
+    g = json.loads(pl["Workgroups"])
+    if not isinstance(g, list):
+        raise ValueError("Workgroups is not a list")
+    return g
+
+def session(ident, name, kind, command="", items=None, parent=None):
+    s = {"uniqueIdentifier": ident, "kind": {"kind": kind}, "displayName": name,
+         "command": command, "perFileCommand": "", "urlString": "",
+         "mode": "regular", "toolbarItems": items or [{"kind": "modeSwitcher"}]}
+    if parent:
+        s["parentID"] = parent
+    return s
+
+def build(groups):
+    builtin = next((g for g in groups if g.get("uniqueIdentifier") == BUILTIN), {})
+    def pick(i):
+        return next((s for s in builtin.get("sessions", []) if s.get("uniqueIdentifier") == i), None)
+    main = session("claudePeer.main", "Chat", "root",
+                   items=[{"kind": "modeSwitcher"}, {"kind": "gitStatus"}])
+    if pick(BUILTIN + ".main"):
+        main["toolbarItems"] = copy.deepcopy(pick(BUILTIN + ".main")["toolbarItems"])
+    diff = copy.deepcopy(pick(BUILTIN + ".diff"))
+    if not diff:
+        diff = session("", "Diff", "peer", "git difftool -y -x vimdiff \\(gitBase)", [
+            {"kind": "modeSwitcher"}, {"kind": "changedFileSelector"}, {"kind": "gitBaseSelector"},
+            {"kind": "navigation",
+             "reloadShortcut": {"serialized": "0x72-0x100000-0xf"},
+             "forwardShortcut": {"serialized": "0xf703-0x340000-0x7c"},
+             "backShortcut": {"serialized": "0xf702-0x340000-0x7b"}}])
+        diff.update(mode="diff", perFileCommand="git difftool -y -x vimdiff \\(gitBase) -- \\(file)")
+    diff.update(uniqueIdentifier="claudePeer.diff", parentID="claudePeer.main")
+    chats = [session("claudePeer.chat%d" % n, "Chat %d" % n, "peer", "claude-peer run",
+                     parent="claudePeer.main") for n in (2, 3, 4)]
+    return {"uniqueIdentifier": GROUP, "name": NAME, "sessions": [main, diff] + chats}
+
+if mode == "status":
+    try:
+        pl, _ = load("domain", "")
+    except Exception as e:
+        fail("cannot read the iTerm2 preferences domain: %s" % e)
+    try:
+        groups = groups_of(pl)
+    except (ValueError, TypeError):
+        groups = None
+    mine = next((g for g in groups or [] if g.get("uniqueIdentifier") == GROUP), None)
+    if groups is None:
+        print("workgroup: unreadable (Workgroups is not JSON; install refuses until it is fixed)")
+    elif mine:
+        names = [s.get("displayName", "?") for s in mine.get("sessions", [])]
+        print("workgroup: installed (%d sessions: %s)" % (len(names), ", ".join(names)))
+    else:
+        print("workgroup: not installed — claude-peer install (with iTerm2 quit)")
+    if any(g.get("uniqueIdentifier") == BUILTIN for g in groups or []):
+        print("builtin: builtin.claudeCode present")
+    else:
+        print("builtin: builtin.claudeCode absent (the Diff would be the template)")
+elif mode == "workgroup":
+    try:
+        groups = groups_of(load(kind, path)[0])
+    except Exception:
+        groups = []   # unreadable store: the templates stand in
+    print(json.dumps(build(groups), indent=2, sort_keys=True))
+elif mode == "install":
+    try:
+        pl, was_binary = load(kind, path)
+    except Exception as e:
+        fail("cannot read the preferences: %s" % e)
+    try:
+        groups = groups_of(pl)
+    except (ValueError, TypeError) as e:
+        fail("the Workgroups value is not a JSON list (%s); nothing written" % e)
+    wg = build(groups)
+    idx = next((i for i, g in enumerate(groups) if g.get("uniqueIdentifier") == GROUP), None)
+    if idx is None:
+        groups.append(wg)
+    else:
+        groups[idx] = wg
+    pl["Workgroups"] = json.dumps(groups, separators=(",", ":")).encode("utf-8")
+    data = plistlib.dumps(pl, fmt=plistlib.FMT_BINARY if was_binary else plistlib.FMT_XML)
+    if kind == "folder":
+        with open(path, "wb") as f:
+            f.write(data)
+    else:
+        subprocess.run(["defaults", "import", "com.googlecode.iterm2", "-"], input=data, check=True)
+    print("written" if idx is None else "replaced")
+PYEOF
+}
+
+cmd_workgroup() {
+  [ $# -eq 0 ] || usage
+  prefs_store
+  peer_py workgroup "$skind" "$spath"
+}
+
+cmd_install() {
+  [ $# -eq 0 ] || usage
+  need_macos install
+  proc_running iTerm2 && die "quit iTerm2 first — it rewrites its preferences at quit and would overwrite this"
+  prefs_store
+  r=$(peer_py install "$skind" "$spath") || exit 1
+  [ "$skind" = folder ] && where=$spath || where="the com.googlecode.iterm2 domain"
+  printf 'claude-peer: workgroup "Claude Peers" (claudePeer.workgroup) %s in %s; start iTerm2, then Shell > Workgroups > Claude Peers in a plain tab\n' "$r" "$where"
+}
+
+cmd_status() {
+  [ $# -eq 0 ] || usage
+  need_macos status
+  prefs_store
+  if [ "$skind" = folder ]; then printf 'store: folder %s\n' "$spath"; else printf 'store: domain\n'; fi
+  if proc_running iTerm2; then printf 'iterm2: running\n'; else printf 'iterm2: not running (install allowed)\n'; fi
+  peer_py status "$skind" "$spath"
+}
+
 [ $# -ge 1 ] || usage
 cmd=$1; shift
 case $cmd in
   run) cmd_run "$@";;
   path) cmd_path "$@";;
   plan) cmd_plan "$@";;
+  workgroup) cmd_workgroup "$@";;
+  install) cmd_install "$@";;
+  status) cmd_status "$@";;
   -h|--help|help) usage;;
   *) warn "unknown command '$cmd'"; usage;;
 esac
