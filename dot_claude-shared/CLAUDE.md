@@ -291,8 +291,8 @@ employer-specific — profile-specific memory belongs in that profile's own
   it pays only when there is bulk to fan out — many independent pieces — and on
   one dependent chain "the coordinator's model alone at lower effort came out
   ahead in every measured case". So a feature whose steps depend on each other
-  stays here, at the pinned model and effort, unless the operator invoked
-  `plan-fable` on it (two bullets down). Delegate two things only: work
+  stays here, at the pinned model and effort, unless it has gone to
+  `plan-fable` (three bullets down). Delegate two things only: work
   whose *tool output* would be long (a subagent's output stays in its own
   context; only its short reply comes back, and the orchestrator's context is
   re-sent on every later turn), and genuinely independent, fully specified
@@ -307,29 +307,43 @@ employer-specific — profile-specific memory belongs in that profile's own
   `plan-fable` plan;
   `unstick-fable` — the escalation seat, and it owns the task it is given
   (capped at 50 turns);
-  `plan-fable` and `review-fable` — **off the normal path**: only when the
-  operator asks for one by name. Planning with Fable and implementing with
+  `plan-fable` — a big idea once the chat has shaped it (next bullet), or
+  whenever the operator asks for it by name; `review-fable` — only when the
+  operator asks for it by name. Planning with Fable and implementing with
   Sonnet is the advisor pairing Anthropic measured as "within noise of the
   frontier model alone at medium effort, at about the same cost", and the
   review seat duplicates the Codex and Gemini seats that already run.
   Use `scout-haiku` and `plan-fable` in place of the built-in Explore and Plan:
   those inherit the main conversation's model, and the wrapper's
   `CLAUDE_CODE_SUBAGENT_MODEL` does not move them (documented).
-- **Invoking `plan-fable` by name overrides the dependent-chain default.** The
-  plan is then that seat's, and `work-sonnet` builds it: read the plan here,
-  then one plan step per brief — the plan's path and step number plus what
-  earlier steps produced, never the plan pasted in — dispatched in plan
-  order, one at a time, each verified here before the next spawns. The main
-  conversation orchestrates and verifies; it builds no step itself and
-  redesigns nothing. A step that cannot land as written (a worker hands it
-  back, a gate stays red, an Unverified item proves false) goes back to
-  `plan-fable` for a revised plan, never quietly into the code; a failure
-  nobody can explain is still `unstick-fable`'s, below. Only live hands-on
-  steps with the operator — a login, an approval, their terminal — stay here.
-  Learned 2026-09-24: with the rule above alone, a session planned with
-  `plan-fable`, then built the feature itself and changed the plan on the
-  way; a skill cannot carry the fix, since it loads only when it triggers and
-  this always-loaded rule wins.
+- **A big idea is chit-chat first, and then `plan-fable`'s.** When the
+  operator floats a new tool, skill, feature or integration, do not spawn
+  the planner at once and do not design it all here: it gets
+  fleshed out in chat. Help with what the repo and memory already hold,
+  keep a running list of decided vs open, and do not ask "shall I plan it?"
+  every turn. The hand-off is theirs — they drop out of the idea, say to
+  plan it, or move on — and the brief is a refined, coherent restatement
+  (goal, what they said matters, constraints, decisions, open questions,
+  their key phrases quoted), never raw fragments: "I'm expecting you to
+  refine my words because my ideas can sometimes be disjoined." Then say in
+  a few lines what the planner will cover, and move on. A small ask (a
+  lookup, a one-line fix) is not a big idea: just do it. Building waits for
+  their go.
+- **Once `plan-fable` has it, the plan is that seat's and `work-sonnet`
+  builds it:** read the plan here, then one plan step per brief — the
+  plan's path and step number plus what earlier steps produced, never the
+  plan pasted in — dispatched in plan order, one at a time, each verified
+  here before the next spawns. The main conversation orchestrates and
+  verifies; it builds no step itself and redesigns nothing. A step that
+  cannot land as written (a worker hands it back, a gate stays red, an
+  Unverified item proves false) goes back to `plan-fable` for a revised
+  plan, never quietly into the code; a failure nobody can explain is still
+  `unstick-fable`'s, below. Only live hands-on steps with the operator — a
+  login, an approval, their terminal — stay here. Learned 2026-09-24: with
+  the rule above alone, a session planned with `plan-fable`, then built the
+  feature itself and changed the plan on the way; a skill cannot carry the
+  fix, since it loads only when it triggers and this always-loaded rule
+  wins.
 - **Escalation is a rule, not a mood.** Any one of these means stop and spawn
   `unstick-fable` with the failure verbatim and every attempt so far: the same
   failure has survived two attempts with different hypotheses; a worker has
