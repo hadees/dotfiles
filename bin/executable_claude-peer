@@ -23,8 +23,9 @@
 #   run [branch] [-- claude args...]
 #                            make or reuse <repo>/.claude/worktrees/<slug> on
 #                            <branch>, cd there, start claude through the
-#                            shell (the wrapper applies); no branch: list the
-#                            repo's peer worktrees and ask on the terminal
+#                            shell (the wrapper applies); no branch: a scratch
+#                            worktree detached at origin/HEAD (peer-N), the
+#                            branch is claude's to make
 #   path <branch>            print the worktree path for <branch> (nothing
 #                            is created)
 #   plan <branch>...         branch<TAB>worktree<TAB>create|reuse|conflict:<why>
@@ -116,6 +117,35 @@ worktree_checkout() {
   esac
 }
 
+# dir -> (detached)<TAB>wt<TAB>created|reused: a scratch worktree with no branch
+# of its own, detached at the base (origin/HEAD, else HEAD), at the first
+# <dir>/.claude/worktrees/peer-N that is free — unregistered, or registered,
+# present, still detached and clean, which is moved back to the base (a
+# registered one whose directory is gone is skipped; `git worktree prune`). A branch is the
+# session's to make once it knows what it is working on; a name picked here
+# would only be one more branch to delete.
+scratch_checkout() {
+  base=HEAD
+  git -C "$1" rev-parse --verify -q origin/HEAD >/dev/null 2>&1 && base=origin/HEAD
+  trees=$(git -C "$1" worktree list --porcelain)
+  n=1
+  while :; do
+    wt=$1/.claude/worktrees/peer-$n
+    if ! printf '%s\n' "$trees" | grep -qx "worktree $wt" && [ ! -e "$wt" ]; then
+      ensure_exclude "$1"
+      git -C "$1" worktree add --detach "$wt" "$base" >/dev/null || die "peer-$n: git worktree add failed"
+      printf '(detached)\t%s\tcreated\n' "$wt"; return 0
+    fi
+    if printf '%s\n' "$trees" | grep -qx "worktree $wt" && [ -d "$wt" ] \
+       && ! git -C "$wt" symbolic-ref -q HEAD >/dev/null 2>&1 \
+       && [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
+      git -C "$wt" checkout -q --detach "$base" 2>/dev/null || die "peer-$n: cannot move to $base"
+      printf '(detached)\t%s\treused\n' "$wt"; return 0
+    fi
+    n=$((n + 1))
+  done
+}
+
 # --- commands -----------------------------------------------------------------
 
 cmd_run() {
@@ -127,20 +157,11 @@ cmd_run() {
   fi
   repo=$(repo_root) || exit 1
   if [ -z "$b" ]; then
-    # Opened on /dev/tty, not stdin: a peer's stdin is the pane, but a script
-    # (or a test) can have it redirected, and asking nobody must fail loudly.
-    ( : < /dev/tty ) 2>/dev/null || die "no terminal to ask on; give the branch: claude-peer run <branch>"
-    printf 'claude-peer: worktrees of %s:\n' "${repo##*/}" >&2
-    git -C "$repo" worktree list --porcelain | awk -v pre="$repo/.claude/worktrees/" '
-      /^worktree / { p = substr($0, 10); br = "(detached)"; n = split(p, a, "/") }
-      /^branch /   { br = $2; sub("^refs/heads/", "", br) }
-      /^$/         { if (index(p, pre) == 1) printf "  %s  %s\n", a[n], br }' >&2
-    printf 'claude-peer: branch for this peer: ' >&2
-    read -r b < /dev/tty
-    [ -n "$b" ] || die "a branch is required"
+    out=$(scratch_checkout "$repo") || exit 1
+  else
+    valid_branch "$b"
+    out=$(worktree_checkout "$repo" "$b") || exit 1
   fi
-  valid_branch "$b"
-  out=$(worktree_checkout "$repo" "$b") || exit 1
   printf '%s\n' "$out"
   wt=$(printf '%s\n' "$out" | cut -f2)
   # `cd ""` is a silent no-op, which would start claude in the leader's checkout.
