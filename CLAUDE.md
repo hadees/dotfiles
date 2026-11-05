@@ -948,8 +948,11 @@ leader's cwd and is pinned there, so the script moves, not the shell:
 `<repo>/.claude/worktrees/<slug>` by `workset checkout`'s rules (ported from
 `worktabs`), `cd`s there and `exec`s an interactive shell running `claude`, so
 it is the `.functions` wrapper and, being a directory no other session is in,
-raises no second-session question. With no branch it lists the repo's peer
-worktrees and asks on `/dev/tty`. `path` and `plan` are the dry runs. The
+raises no second-session question. With no branch it makes (or, when clean
+and still detached, reuses) a scratch worktree `peer-N` detached at
+`origin/HEAD`: the branch is Claude's to create once it knows what it is
+working on, so no branch exists for no reason. `path` and `plan` are the dry
+runs. The
 script deploys on every machine class — those three need only git; the iTerm2
 verbs refuse off macOS.
 

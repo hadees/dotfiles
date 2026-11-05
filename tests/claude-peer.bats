@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 
 # ~/bin/claude-peer: make or reuse a worktree for a branch under
-# <repo>/.claude/worktrees/<slug>, cd into it and start claude through the
-# shell. A stub shell stands in for $SHELL so nothing starts a real claude.
+# <repo>/.claude/worktrees/<slug> (or a detached scratch one, peer-N, when no
+# branch is given), cd into it and start claude through the shell. A stub shell stands in for $SHELL so nothing starts a real claude.
 # Everything runs in a sandboxed HOME against fixture repos with invented names.
 
 setup() {
@@ -88,12 +88,34 @@ STUB
   [[ "$output" == *"not inside a non-bare git repository"* ]]
 }
 
-@test "run: no branch and no terminal is refused" {
-  if ( : < /dev/tty ) 2>/dev/null; then skip "the bats runner has a controlling terminal"; fi
+@test "run: no branch gives a detached scratch worktree at the base, no prompt" {
+  git clone -q --bare "$REPO" "$BATS_TEST_TMPDIR/remote.git"
+  git remote add origin "$BATS_TEST_TMPDIR/remote.git"
+  git fetch -q origin
+  git remote set-head origin -a >/dev/null
+  echo two >"$REPO/tracked.txt"
+  git commit -qam 'local only'
   run sh "$BIN" run </dev/null
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"no terminal to ask on"* ]]
-  [[ "$output" != *"pwd="* ]]
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"(detached)	$REPO/.claude/worktrees/peer-1	created"* ]]
+  [[ "$output" == *"pwd=$REPO/.claude/worktrees/peer-1"* ]]
+  ! git -C "$REPO/.claude/worktrees/peer-1" symbolic-ref -q HEAD
+  [ "$(git -C "$REPO/.claude/worktrees/peer-1" rev-parse HEAD)" = "$(git rev-parse origin/HEAD)" ]
+  [ "$(git branch --list | wc -l)" -eq 1 ]
+}
+
+@test "run: a clean detached peer worktree is reused, a dirty or branched one is skipped" {
+  sh "$BIN" run >/dev/null
+  run sh "$BIN" run
+  [[ "$output" == *"peer-1	reused"* ]]
+  [[ "$output" == *"pwd=$REPO/.claude/worktrees/peer-1"* ]]
+  echo dirty >"$REPO/.claude/worktrees/peer-1/tracked.txt"
+  run sh "$BIN" run
+  [[ "$output" == *"peer-2	created"* ]]
+  git -C "$REPO/.claude/worktrees/peer-2" checkout -q -b feat/mine
+  run sh "$BIN" run
+  [[ "$output" == *"peer-3	created"* ]]
+  [ "$(git worktree list | grep -c peer-)" -eq 3 ]
 }
 
 @test "path prints the worktree path; plan flags a conflict and exits 1" {
