@@ -161,17 +161,41 @@ peers into one row.
 
 Read from the v3.7.7 source (the stamp is still 3.7.6, refresh pending):
 
-- A peer's command is wrapped in an interactive login shell, so shell
-  functions apply: `PTYSession.swift:2214-2217` calls
-  `ITAddressBookMgr.commandByWrapping(inLoginShell:)`, which is
+- A peer's command (a split's or tab's too) is wrapped in an interactive login
+  shell, so shell functions apply: `PTYSession.swift:2214-2217, 2660-2690`
+  calls `ITAddressBookMgr.commandByWrapping(inLoginShell:)`, which is
   `/usr/bin/login -f[q]pl <user> <ShellLauncher> --launch_shell - -i -c
   <command>` (`ITAddressBookMgr.m:848-861`).
 - Members spawn in the leader's working directory at entry and are pinned there
-  (`forceUseOldCWD: true`, `WorkgroupSessionSpawner.swift:299-330, 400-415`),
-  so a Diff peer keeps diffing the repo the workgroup was opened on.
+  (`forceUseOldCWD: true`, `WorkgroupSessionSpawner.swift:299-330, 400-415`;
+  for peers `PTYSession.swift:2486, 2677`), so a Diff peer keeps diffing the
+  repo the workgroup was opened on.
 - The Session Status tool is per window, and *Merge workgroup statuses*
   collapses a workgroup to its visible peer (`ToolStatus.swift:58-60, 926-933,
   1043-1067`).
+- Peers spawn eagerly at entry, not on first switch: `enter` loops
+  `spawnPeer` for every peer child (`iTermWorkgroupInstance.swift:937-951`),
+  and a regular peer's command starts at once, buried until activated.
+- Peers of peers never spawn: peers are collected only for the root
+  (`iTermWorkgroupInstance.swift:907-913`) and for split/tab hosts
+  (`WorkgroupChildSpawning.swift:161-168`).
+- The git poller behind the changed-file and base selectors follows the
+  leader's PWD, wired once per instance
+  (`iTermWorkgroupInstance.swift:1080-1100`); the base selector is a free-form
+  combo box whose value is quoted into the diff command, so `main..<branch>`
+  there shows a branch's commits.
+- The only ways in are the Shell > Workgroups menu and triggers; there is no
+  sdef, `it2` or Python API verb (`WorkgroupMenu.swift:10-16`).
+- The Enter trigger does nothing in a session already in a workgroup, and the
+  Exit trigger is `leaderOnly`: the leader's job ending exits the group, a
+  peer's does not (`PTYSession.m:27008-27019, 27050-27066`).
+- Definitions live in the `Workgroups` defaults key
+  (`iTermUserDefaults.m:52`). With a custom prefs folder, launch deletes the
+  domain's syncable keys and loads the folder's plist, and quit writes it back
+  when any pref changed (`iTermRemotePreferences.m:1636-1660, 1768-1830`), so
+  an edit lands only while iTerm2 is quit.
+- A buried peer still appears in the Session Status tool, and a row click swaps
+  it in (`ToolStatus.swift:1184, 1477`, `PTYSession.m:17565-17590`).
 
 Distinct from this repo's `workset` (a set of git worktrees one Claude Code
 session spans) and `worktabs` (tabs opened by group): a workgroup is an
