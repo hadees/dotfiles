@@ -292,7 +292,7 @@ employer-specific — profile-specific memory belongs in that profile's own
   one dependent chain "the coordinator's model alone at lower effort came out
   ahead in every measured case". So a feature whose steps depend on each other
   stays here, at the pinned model and effort, unless it has gone to
-  `plan-fable` (two bullets down). Delegate two things only: work
+  `plan-fable` (three bullets down). Delegate two things only: work
   whose *tool output* would be long (a subagent's output stays in its own
   context; only its short reply comes back, and the orchestrator's context is
   re-sent on every later turn), and genuinely independent, fully specified
