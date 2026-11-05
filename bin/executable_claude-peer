@@ -1,0 +1,163 @@
+#!/bin/sh
+# claude-peer — one Claude Code instance as an iTerm2 Workgroup peer, on its
+# own worktree.
+#
+# A Workgroup peer's shell starts in the leader's working directory and is
+# pinned there (iTerm2 gives a peer no way to choose its own), so a second
+# Claude started in a peer would be a second writer on the leader's checkout.
+# The shell therefore has to move itself: `run` makes or reuses a worktree,
+# cd's into it and only then starts claude, through an interactive shell so
+# `claude` is the .functions wrapper (profile, browser pin, cache TTLs), not
+# the bare binary. The worktree rules are the ones `workset checkout` follows
+# (<repo>/.claude/worktrees/<slug>), ported from bin/executable_worktabs
+# rather than called.
+#
+# Usage: claude-peer <command> [args]
+#   run [branch] [-- claude args...]
+#                            make or reuse <repo>/.claude/worktrees/<slug> on
+#                            <branch>, cd there, start claude through the
+#                            shell (the wrapper applies); no branch: list the
+#                            repo's peer worktrees and ask on the terminal
+#   path <branch>            print the worktree path for <branch> (nothing
+#                            is created)
+#   plan <branch>...         branch<TAB>worktree<TAB>create|reuse|conflict:<why>
+#                            per branch, exit 1 on any conflict
+set -u
+
+die() { printf 'claude-peer: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'claude-peer: %s\n' "$*" >&2; }
+usage() { sed -n '/^# Usage:/,/^set -u/{ /^set -u/d; s/^# \{0,1\}//p; }' "$0" >&2; exit 2; }
+
+# The main checkout, even when the caller stands in a linked worktree of it.
+repo_root() {
+  common=$(git -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=
+  case $common in
+    */.git) printf '%s\n' "${common%/.git}";;
+    *) die "not inside a non-bare git repository";;
+  esac
+}
+
+valid_branch() { git check-ref-format --branch "$1" >/dev/null 2>&1 || die "'$1' is not a branch name"; }
+
+# --- worktrees ----------------------------------------------------------------
+# Copied in behaviour from bin/executable_worktabs (slug_of ... worktree_checkout).
+
+slug_of() { printf '%s' "${1-}" | tr '/' '-'; }
+
+worktree_path() { # dir branch -> <dir>/.claude/worktrees/<slug>
+  printf '%s/.claude/worktrees/%s\n' "$1" "$(slug_of "$2")"
+}
+
+# dir branch... -> branch<TAB>worktree<TAB>create|reuse|conflict:<reason>, one
+# line per branch; exit 1 when any is a conflict. The reason is the whole
+# human message.
+worktree_plan() {
+  d=$1; shift
+  rd=$(cd "$d" && pwd -P) || return 1
+  # path<TAB>branch of every registered worktree (empty branch: detached)
+  trees=$(git -C "$d" worktree list --porcelain | awk '
+    /^worktree / { p = substr($0, 10); b = "" }
+    /^branch /   { b = $2; sub("^refs/heads/", "", b) }
+    /^$/         { print p "\t" b }')
+  rc=0
+  for b in "$@"; do
+    wt=$(worktree_path "$d" "$b")
+    cur=$(printf '%s\n' "$trees" | awk -F'\t' -v w="$(worktree_path "$rd" "$b")" '$1 == w { print "x" $2; exit }')
+    at=$(printf '%s\n' "$trees" | awk -F'\t' -v b="$b" '$2 == b { print $1; exit }')
+    if [ -n "$cur" ]; then
+      if [ "${cur#x}" = "$b" ]; then act=reuse
+      else act="conflict:'$b': $wt exists on branch ${cur#x} — pick another name or remove it (git worktree remove)"; fi
+    elif [ -e "$wt" ]; then act="conflict:'$b': $wt exists but is not a git worktree"
+    elif [ -n "$at" ]; then act="conflict:'$b' is already checked out at $at"
+    else act=create; fi
+    case $act in conflict:*) rc=1;; esac
+    printf '%s\t%s\t%s\n' "$b" "$wt" "$act"
+  done
+  return $rc
+}
+
+ensure_exclude() { # dir
+  excl=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir)/info/exclude
+  mkdir -p "$(dirname "$excl")" 2>/dev/null
+  grep -qxF '**/.claude/worktrees/' "$excl" 2>/dev/null ||
+    printf '**/.claude/worktrees/\n' >> "$excl"
+}
+
+# dir branch -> performs create/reuse, prints branch<TAB>worktree<TAB>created|reused
+worktree_checkout() {
+  p=$(worktree_plan "$1" "$2") || true
+  wt=$(printf '%s\n' "$p" | cut -f2)
+  act=$(printf '%s\n' "$p" | cut -f3)
+  case $act in
+    create)
+      ensure_exclude "$1"
+      base=HEAD
+      git -C "$1" rev-parse --verify -q origin/HEAD >/dev/null 2>&1 && base=origin/HEAD
+      if git -C "$1" show-ref --verify -q "refs/heads/$2"; then
+        git -C "$1" worktree add "$wt" "$2" >/dev/null || die "'$2': git worktree add failed"
+      else
+        git -C "$1" worktree add -b "$2" "$wt" "$base" >/dev/null || die "'$2': git worktree add failed"
+      fi
+      printf '%s\t%s\tcreated\n' "$2" "$wt";;
+    reuse) printf '%s\t%s\treused\n' "$2" "$wt";;
+    *) die "${act#conflict:}";;
+  esac
+}
+
+# --- commands -----------------------------------------------------------------
+
+cmd_run() {
+  b=
+  if [ $# -gt 0 ] && [ "$1" != -- ]; then b=$1; shift; fi
+  if [ $# -gt 0 ]; then
+    [ "$1" = -- ] || usage
+    shift
+  fi
+  repo=$(repo_root) || exit 1
+  if [ -z "$b" ]; then
+    # Opened on /dev/tty, not stdin: a peer's stdin is the pane, but a script
+    # (or a test) can have it redirected, and asking nobody must fail loudly.
+    ( : < /dev/tty ) 2>/dev/null || die "no terminal to ask on; give the branch: claude-peer run <branch>"
+    printf 'claude-peer: worktrees of %s:\n' "${repo##*/}" >&2
+    git -C "$repo" worktree list --porcelain | awk -v pre="$repo/.claude/worktrees/" '
+      /^worktree / { p = substr($0, 10); br = "(detached)"; n = split(p, a, "/") }
+      /^branch /   { br = $2; sub("^refs/heads/", "", br) }
+      /^$/         { if (index(p, pre) == 1) printf "  %s  %s\n", a[n], br }' >&2
+    printf 'claude-peer: branch for this peer: ' >&2
+    read -r b < /dev/tty
+    [ -n "$b" ] || die "a branch is required"
+  fi
+  valid_branch "$b"
+  out=$(worktree_checkout "$repo" "$b") || exit 1
+  printf '%s\n' "$out"
+  wt=$(printf '%s\n' "$out" | cut -f2)
+  # `cd ""` is a silent no-op, which would start claude in the leader's checkout.
+  cd -- "$wt" || die "cannot enter $wt"
+  # An interactive shell, so `claude` is the .functions wrapper; it stays the
+  # parent because a function cannot be exec'd.
+  exec "${SHELL:-/bin/sh}" -i -c 'claude "$@"' claude-peer "$@"
+}
+
+cmd_path() {
+  [ $# -eq 1 ] || usage
+  valid_branch "$1"
+  repo=$(repo_root) || exit 1
+  worktree_path "$repo" "$1"
+}
+
+cmd_plan() {
+  [ $# -ge 1 ] || usage
+  for x in "$@"; do valid_branch "$x"; done
+  repo=$(repo_root) || exit 1
+  worktree_plan "$repo" "$@"
+}
+
+[ $# -ge 1 ] || usage
+cmd=$1; shift
+case $cmd in
+  run) cmd_run "$@";;
+  path) cmd_path "$@";;
+  plan) cmd_plan "$@";;
+  -h|--help|help) usage;;
+  *) warn "unknown command '$cmd'"; usage;;
+esac
