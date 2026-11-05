@@ -1,6 +1,6 @@
 ---
 name: plan-fable
-description: Only when the operator asks for it by name — for a design question where a wrong plan would be harder to undo than the pass is to run: a new subsystem, a migration seam, a schema change with downstream reach, an architecture whose failure modes are not yet named. Do NOT use it for a shape already decided, for a question answered by reading the code, or for ordinary implementation planning, which stays in the main conversation.
+description: Use it when a big idea — a new tool, skill, feature or integration — has been fleshed out in chat and the operator hands it off: says to plan it, drops out of the idea, or moves on to something else; or whenever the operator asks for it by name. Do NOT use it the moment an idea is first floated (shape it in chat first), for a small ask (a lookup, a one-line fix: just do it), for a shape already decided, or for a question answered by reading the code.
 tools: Read, Grep, Glob, Bash, WebFetch, WebSearch, Skill, mcp__fetcher__*
 model: fable
 effort: high
@@ -48,6 +48,10 @@ repository.
   around it.
 - Do not expand the brief. If the right answer is smaller than what was asked for,
   say so and hand back the smaller plan.
+- A brief may arrive with open questions. Settle the ones the repository, the
+  installed tools or research can settle, and say why; the ones only the operator
+  can answer go under Unverified with the choice the plan assumes. Do not hand the
+  brief back for them.
 - A plan is revised here, never patched by the seat building it. When a step
   comes back because it cannot land as written, read the existing report
   first and hand back a revision that says which steps change and which
