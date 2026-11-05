@@ -887,17 +887,18 @@ block — each directory under `<dir>/.claude/worktrees/` with its branch and
 `[open]`/`[closed]`, or `(not a worktree)` — and never removes one:
 `git worktree remove` is the cleanup, as for `workset`.
 
-Why not an iTerm2 Workgroup of several Claudes: members spawn in the leader's
-working directory and are pinned there (`forceUseOldCWD: true`,
-`WorkgroupSessionSpawner.swift`, v3.7.7), so a peer running in a worktree
-would leave the one Diff peer diffing the main checkout; a custom workgroup
-exists only in the tracked plist, never reproducible from an overlay; and a
-tab already in `builtin.claudeCode` (where iTerm2's Claude Code onboarding
-puts it, via an Enter Workgroup trigger on the `claude` job that it writes
-into each profile's own prefs — machine-local, not in this repo) cannot
-switch. A workgroup peer's command does run in an
-interactive login shell (`login … ShellLauncher --launch_shell - -i -c`), so
-the `create tab … command` finding above applies to that code path only.
+A tab and a Workgroup peer are two interfaces to several Claudes (the peer
+one is the subsection below). What was measured about peers (v3.7.7): members
+spawn in the leader's working directory and are pinned there
+(`forceUseOldCWD: true`; `makeWorkgroupPeer` in `PTYSession.swift` for peers,
+`WorkgroupSessionSpawner.swift` for splits and tabs); peers spawn eagerly at
+entry, not on first switch; a peer's command does run in an interactive login
+shell (`login … ShellLauncher --launch_shell - -i -c`), so the `create tab …
+command` finding above applies to that code path only; a tab already in
+`builtin.claudeCode` (where iTerm2's Claude Code onboarding puts it, via an
+Enter Workgroup trigger on the `claude` job that it writes into each profile's
+own prefs — machine-local, not in this repo) cannot switch; and the single
+Diff follows the leader's PWD.
 
 **Three facts survive `bin/attend`**, the tab-triage script removed in favour
 of iTerm2 3.7's own per-tab Claude Code status (it painted tabs red/amber from
@@ -937,6 +938,49 @@ workflow holds no logic and therefore no identity — the group names come from
 the overlay at run time. It is **not** a chezmoi target: Alfred rewrites
 `info.plist` whenever the workflow is edited in its GUI, which would show as
 permanent drift, so the repo keeps the source and `alfred-install` copies it.
+
+### Claude peers (one tab, several Claudes)
+
+`bin/claude-peer` puts more Claudes in **one** tab as iTerm2 Workgroup peers
+(the peer bar, ⌥⇧⌘1…), each on its own worktree. A peer's shell starts in the
+leader's cwd and is pinned there, so the script moves, not the shell:
+`claude-peer run [branch] [-- claude args…]` makes or reuses
+`<repo>/.claude/worktrees/<slug>` by `workset checkout`'s rules (ported from
+`worktabs`), `cd`s there and `exec`s an interactive shell running `claude`, so
+it is the `.functions` wrapper and, being a directory no other session is in,
+raises no second-session question. With no branch it lists the repo's peer
+worktrees and asks on `/dev/tty`. `path` and `plan` are the dry runs. The
+script deploys on every machine class — those three need only git; the iTerm2
+verbs refuse off macOS.
+
+The definition is a **second** Workgroup, `Claude Peers` (Chat, Diff, Chat 2-4;
+the peers' command is `claude-peer run`), never extra peers on the builtin:
+peers spawn at entry and the builtin is entered on every `claude` job.
+`claude-peer install` writes it into the `Workgroups` key (JSON in a data
+value), refuses while iTerm2 runs, and edits the custom prefs folder's plist
+when `LoadPrefsFromCustomFolder` is on, else the domain. Both are forced:
+launch replaces the domain's syncable keys from the folder
+(`iTermRemotePreferences.m:1636-1660`) and quit writes the folder back
+(`:1768-1830`), so `defaults write` or an edit while iTerm2 runs is lost. That
+plist is tracked here and rewritten by iTerm2 at every quit, so the edit is
+the same drift as any save and is not committed back. `status` prints
+`store:`, `iterm2:`, `workgroup:` and `builtin:`.
+
+Use: a plain tab, Shell > Workgroups > Claude Peers (no API, sdef or `it2`
+verb enters one), then type `claude` in Chat. **Exit hazard:** the Exit
+trigger is `leaderOnly`, so the leader's `claude` ending tears the group down
+and terminates the peers; worktrees and transcripts survive, `claude-peer run
+<branch>` then `claude --continue` resumes. The Session Status tool lists
+buried peers, one row each, and a click swaps the peer in; keep *Merge
+workgroup statuses* **off** (on, four Claudes are one row). Rows read `[group]
+<repo>` for the leader and `<repo>@<slug>` for peers (no group prefix:
+`WORKTABS_GROUP` is not inherited).
+
+**One Diff only, and it is the leader's.** Peers of peers never spawn and the
+git poller follows the leader's PWD, so a peer's uncommitted work is visible
+only from inside its Chat; its commits show by typing `main..<branch>` in the
+Diff's base selector. Tests: `tests/claude-peer.bats` (stub ps/uname/defaults,
+fixture plists; the real store is only touched by the operator's `install`).
 
 ### Postbox (sessions talking across profiles)
 
@@ -1771,6 +1815,8 @@ clearing the root's displayName in Settings was rejected because it would be a
 preference edit in the tracked plist. `cc-status explain` prints `name=` and
 `rename=yes|no (<reason>)` and `marker=present|none`. A tab already stuck on `Chat (-zsh)` is fixed once
 by hand: `it2 session set-name "$(tabname)"` in it, or Session > Edit Session.
+Workgroup peers (`claude-peer`) are never renamed by iTerm2, so their rows are
+the shim's name alone.
 `bin/claude-tab` reads the other side of the same join: `list` prints one
 row per live Claude Code session across every profile (from each profile's
 `sessions/<pid>.json` registry, the files `claude_sessions_here` reads),

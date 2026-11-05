@@ -276,6 +276,7 @@ worktabs install          # the iTerm2 dynamic profile
 worktabs status           # profile, entries, which tabs are open
 worktabs start day-job    # open one group, any time
 worktabs new <entry> feat/a feat/b fix/c   # three more Claude tabs, each on its own worktree
+claude-peer install      # the "Claude Peers" iTerm2 workgroup; quit iTerm2 first
 ```
 
 Nothing opens at iTerm2 launch: a set is opened when you ask for it, with
