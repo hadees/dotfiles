@@ -159,6 +159,20 @@ from your shell.
 The Session Status tool's *Merge workgroup statuses* collapses a workgroup's
 peers into one row.
 
+Read from the v3.7.7 source (the stamp is still 3.7.6, refresh pending):
+
+- A peer's command is wrapped in an interactive login shell, so shell
+  functions apply: `PTYSession.swift:2214-2217` calls
+  `ITAddressBookMgr.commandByWrapping(inLoginShell:)`, which is
+  `/usr/bin/login -f[q]pl <user> <ShellLauncher> --launch_shell - -i -c
+  <command>` (`ITAddressBookMgr.m:848-861`).
+- Members spawn in the leader's working directory at entry and are pinned there
+  (`forceUseOldCWD: true`, `WorkgroupSessionSpawner.swift:299-330, 400-415`),
+  so a Diff peer keeps diffing the repo the workgroup was opened on.
+- The Session Status tool is per window, and *Merge workgroup statuses*
+  collapses a workgroup to its visible peer (`ToolStatus.swift:58-60, 926-933,
+  1043-1067`).
+
 Distinct from this repo's `workset` (a set of git worktrees one Claude Code
 session spans) and `worktabs` (tabs opened by group): a workgroup is an
 iTerm2 layout around one session, and knows nothing about git worktrees.

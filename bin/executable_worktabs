@@ -68,7 +68,9 @@
 #                            directory, command
 #   script [name|group...]   the AppleScript `start` would run — a dry run
 #   start [name|group...]    open the windows and tabs (idempotent)
-#   new <name>               one more tab for one entry, open or not
+#   new <entry> [branch...]  one more tab for one entry, open or not; with
+#                            branches, one tab per branch, each in that
+#                            branch's worktree under <dir>/.claude/worktrees/
 #   alfred [query]           Script Filter JSON for the Alfred workflow
 #   alfred-install [dir]     build the Alfred workflow and hand it to Alfred
 #   install                  write the iTerm2 dynamic profile (and clear an
@@ -92,6 +94,7 @@ WORKTABS_STATE=${WORKTABS_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/worktabs}
 # The rename exists to free the name on PATH, which none of these occupy.
 MARK=user.workspaceSession          # iTerm2 session variable: the entry name
 MARK_WINDOW=user.workspaceWindow    # …and its group
+MARK_WORKTREE=user.workspaceWorktree # …and, for `new <entry> <branch>`, its worktree
 # Every tab this opens is created *with* this profile, so ownership is set by
 # the same command that creates the session rather than a step after it. The
 # marks above still carry identity — a profile name is one string and
@@ -246,10 +249,12 @@ as_string() { printf '%s' "${1-}" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 gen_script() { # [force] — force opens every row even when its tag is on screen
   case ${1-} in force) printf 'set forceOpen to true\n';; *) printf 'set forceOpen to false\n';; esac
   printf 'set thePlan to {}\n'
-  while IFS='	' read -r win name state title dir cmd; do
+  while IFS='	' read -r win name state title dir cmd wt; do
     [ "$state" = ok ] || continue
-    printf 'set end of thePlan to {"%s", "%s", "%s", "%s"}\n' \
-      "$(as_string "$win")" "$(as_string "$name")" "$(as_string "$title")" "$(as_string "$cmd")"
+    # A fifth item, the worktree the tab stands in, only when the row has one.
+    printf 'set end of thePlan to {"%s", "%s", "%s", "%s"%s}\n' \
+      "$(as_string "$win")" "$(as_string "$name")" "$(as_string "$title")" "$(as_string "$cmd")" \
+      "${wt:+, \"$(as_string "$wt")\"}"
   done
   cat <<APPLESCRIPT
 tell application "iTerm2"
@@ -301,6 +306,8 @@ tell application "iTerm2"
 		set n to item 2 of p
 		set ttl to item 3 of p
 		set c to item 4 of p
+		set wtp to ""
+		if (count of p) > 4 then set wtp to item 5 of p
 		if forceOpen or n is not in openMarks then
 			set widx to 0
 			repeat with i from 1 to count of groupNames
@@ -330,6 +337,7 @@ tell application "iTerm2"
 			tell current session of theTab
 				set variable named "$MARK" to n
 				set variable named "$MARK_WINDOW" to g
+				if wtp is not "" then set variable named "$MARK_WORKTREE" to wtp
 				write text c
 			end tell
 			try
@@ -345,7 +353,8 @@ end tell
 APPLESCRIPT
 }
 
-# The entry names iTerm2 currently has tagged, one per line.
+# The entries iTerm2 currently has tagged, one per line: the entry name, a tab,
+# and the worktree path the tab was opened in (empty for a plain tab).
 open_marks_script() {
   cat <<APPLESCRIPT
 set out to ""
@@ -357,7 +366,12 @@ tell application "iTerm2"
 					try
 						set v to (variable named "$MARK")
 						if v is not missing value and (v as text) is not "" then
-							set out to out & (v as text) & linefeed
+							set wtv to ""
+							try
+								set x to (variable named "$MARK_WORKTREE")
+								if x is not missing value then set wtv to (x as text)
+							end try
+							set out to out & (v as text) & tab & wtv & linefeed
 						end if
 					end try
 				end tell
@@ -441,7 +455,7 @@ cmd_script() { cmd_plan "$@" | gen_script; }
 cmd_groups() {
   rows=$(all_rows)
   [ -n "$rows" ] || return 0
-  marks=$(open_marks)
+  marks=$(open_marks | cut -f1)
   printf '%s\n' "$rows" | groups_of | while read -r g; do
     [ -n "$g" ] || continue
     total=$(printf '%s\n' "$rows" | awk -F'\t' -v g="$g" '$1 == g && $3 == "ok"' | wc -l | tr -d ' ')
@@ -524,31 +538,163 @@ cmd_start() {
   done
 }
 
+# --- worktrees ----------------------------------------------------------------
+# The rules `workset checkout` follows (bin/executable_workset), ported rather
+# than called: <dir>/.claude/worktrees/<slug>, an existing branch is checked
+# out, a new one is cut from origin/HEAD else HEAD, a conflict creates nothing.
+
+slug_of() { printf '%s' "${1-}" | tr '/' '-'; }
+
+worktree_path() { # dir branch -> <dir>/.claude/worktrees/<slug>
+  printf '%s/.claude/worktrees/%s\n' "$1" "$(slug_of "$2")"
+}
+
+# dir branch... -> branch<TAB>worktree<TAB>create|reuse|conflict:<reason>, one
+# line per branch; exit 1 when any is a conflict. The reason is the whole
+# human message.
+worktree_plan() {
+  d=$1; shift
+  rd=$(cd "$d" && pwd -P) || return 1
+  # path<TAB>branch of every registered worktree (empty branch: detached)
+  trees=$(git -C "$d" worktree list --porcelain | awk '
+    /^worktree / { p = substr($0, 10); b = "" }
+    /^branch /   { b = $2; sub("^refs/heads/", "", b) }
+    /^$/         { print p "\t" b }')
+  rc=0
+  for b in "$@"; do
+    wt=$(worktree_path "$d" "$b")
+    cur=$(printf '%s\n' "$trees" | awk -F'\t' -v w="$(worktree_path "$rd" "$b")" '$1 == w { print "x" $2; exit }')
+    at=$(printf '%s\n' "$trees" | awk -F'\t' -v b="$b" '$2 == b { print $1; exit }')
+    if [ -n "$cur" ]; then
+      if [ "${cur#x}" = "$b" ]; then act=reuse
+      else act="conflict:'$b': $wt exists on branch ${cur#x} — pick another name or remove it (git worktree remove)"; fi
+    elif [ -e "$wt" ]; then act="conflict:'$b': $wt exists but is not a git worktree"
+    elif [ -n "$at" ]; then act="conflict:'$b' is already checked out at $at"
+    else act=create; fi
+    case $act in conflict:*) rc=1;; esac
+    printf '%s\t%s\t%s\n' "$b" "$wt" "$act"
+  done
+  return $rc
+}
+
+ensure_exclude() { # dir
+  excl=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir)/info/exclude
+  mkdir -p "$(dirname "$excl")" 2>/dev/null
+  grep -qxF '**/.claude/worktrees/' "$excl" 2>/dev/null ||
+    printf '**/.claude/worktrees/\n' >> "$excl"
+}
+
+# dir branch -> performs create/reuse, prints branch<TAB>worktree<TAB>created|reused
+worktree_checkout() {
+  p=$(worktree_plan "$1" "$2") || true
+  wt=$(printf '%s\n' "$p" | cut -f2)
+  act=$(printf '%s\n' "$p" | cut -f3)
+  case $act in
+    create)
+      ensure_exclude "$1"
+      base=HEAD
+      git -C "$1" rev-parse --verify -q origin/HEAD >/dev/null 2>&1 && base=origin/HEAD
+      if git -C "$1" show-ref --verify -q "refs/heads/$2"; then
+        git -C "$1" worktree add "$wt" "$2" >/dev/null || die "'$2': git worktree add failed"
+      else
+        git -C "$1" worktree add -b "$2" "$wt" "$base" >/dev/null || die "'$2': git worktree add failed"
+      fi
+      printf '%s\t%s\tcreated\n' "$2" "$wt";;
+    reuse) printf '%s\t%s\treused\n' "$2" "$wt";;
+    *) die "${act#conflict:}";;
+  esac
+}
+
 # One more tab for one entry, open or not — a second chat in the same
 # project. The same script as `start` with its skip switched off, so the tab
 # lands in the group's existing window, carries the profile and both marks,
 # and `start` afterwards still sees the entry as open. One entry, never a
 # group: duplicating a whole window is not something anyone asks for by
 # accident, so it is not something this does by accident either.
+#
+# With branches, one tab per branch, each standing in that branch's worktree
+# (the row's dir swapped for it, so the typed line cd's there and the wrapper's
+# second-session question keys on a directory nobody else is in). Validate
+# first, create second, open third: nothing is created if any branch is
+# refused.
 cmd_new() {
   need_macos new
-  [ $# -eq 1 ] || die "usage: worktabs new <entry>"
-  rows=$(cmd_plan "$1") || exit 1
-  row=$(printf '%s\n' "$rows" | awk -F'\t' -v n="$1" '$2 == n')
-  [ -n "$row" ] || die "'$1' is a group — new opens one entry at a time (worktabs list)"
+  [ $# -ge 1 ] || { warn "usage: worktabs new <entry> [branch...]"; exit 2; }
+  entry=$1; shift
+  rows=$(cmd_plan "$entry") || exit 1
+  row=$(printf '%s\n' "$rows" | awk -F'\t' -v n="$entry" '$2 == n')
+  [ -n "$row" ] || die "'$entry' is a group — new opens one entry at a time (worktabs list)"
   state=$(printf '%s\n' "$row" | cut -f3)
   dir=$(printf '%s\n' "$row" | cut -f5)
   case $state in
     ok) ;;
-    no-dir) die "'$1': ${dir:-no workspace.$1.dir} is not a directory";;
-    *) die "'$1' is $state";;
+    no-dir) die "'$entry': ${dir:-no workspace.$entry.dir} is not a directory";;
+    *) die "'$entry' is $state";;
   esac
+  win=$(printf '%s\n' "$row" | cut -f1)
+  if [ $# -gt 0 ]; then
+    top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) &&
+      [ "$(cd "$top" && pwd -P)" = "$(cd "$dir" && pwd -P)" ] ||
+      die "'$entry': $dir is not the top of a git work tree — branches need a repository to make worktrees in"
+    seen='
+'
+    for b in "$@"; do
+      git check-ref-format --branch "$b" >/dev/null 2>&1 || die "'$b' is not a branch name"
+      case $seen in *"
+$b
+"*) die "'$b' given twice";; esac
+      seen="$seen$b
+"
+    done
+    plan=$(worktree_plan "$dir" "$@") || {
+      printf '%s\n' "$plan" | awk -F'\t' '$3 ~ /^conflict:/ { sub(/^conflict:/, "", $3); print "worktabs: " $3 }' >&2
+      exit 1
+    }
+    for b in "$@"; do worktree_checkout "$dir" "$b" || exit 1; done
+    row=$(for b in "$@"; do
+      wt=$(worktree_path "$dir" "$b")
+      printf '%s\t%s\tok\t%s\t%s\t%s\t%s\n' "$win" "$entry" "$entry @$(slug_of "$b")" "$wt" "$(command_of "$entry" "$win" "$wt")" "$wt"
+    done)
+  fi
   ensure_iterm
   out=$(printf '%s\n' "$row" | gen_script force | run_script) ||
     die "osascript could not drive iTerm2 — if macOS asked for Automation permission and was denied, grant it in System Settings > Privacy & Security > Automation"
   opened=$(printf '%s\n' "$out" | sed '1d' | tr -d '[:space:]')
-  [ -n "$opened" ] || die "iTerm2 opened nothing for '$1'"
-  printf 'worktabs: opened another %s -> window %s\n' "$1" "$(printf '%s\n' "$row" | cut -f1)"
+  [ -n "$opened" ] || die "iTerm2 opened nothing for '$entry'"
+  if [ $# -eq 0 ]; then
+    printf 'worktabs: opened another %s -> window %s\n' "$entry" "$win"
+    return 0
+  fi
+  n=$(printf '%s\n' "$out" | sed '1d' | grep -c .)
+  for b in "$@"; do
+    [ "$n" -gt 0 ] || break
+    n=$((n - 1))
+    printf 'worktabs: opened another %s @%s -> window %s\n' "$entry" "$(slug_of "$b")" "$win"
+  done
+}
+
+# entry dir marks -> one line per directory under <dir>/.claude/worktrees/:
+# its branch (or "(not a worktree)") and whether a tab was opened in it. Read
+# only; nothing is removed.
+list_worktrees() {
+  rd=$(cd "$2" && pwd -P) || return 0
+  top=$(git -C "$2" rev-parse --show-toplevel 2>/dev/null) && [ "$(cd "$top" && pwd -P)" = "$rd" ] || return 0
+  trees=$(git -C "$2" worktree list --porcelain | awk '
+    /^worktree / { p = substr($0, 10); b = "(detached)" }
+    /^branch /   { b = $2; sub("^refs/heads/", "", b) }
+    /^$/         { print p "\t" b }')
+  for p in "$2"/.claude/worktrees/*/; do
+    [ -d "$p" ] || continue
+    s=$(basename "$p")
+    b=$(printf '%s\n' "$trees" | awk -F'\t' -v w="$rd/.claude/worktrees/$s" '$1 == w { print $2; exit }')
+    if [ -z "$b" ]; then
+      printf '  %-16s %-24s (not a worktree)\n' "$1" "$s"
+    elif printf '%s\n' "$3" | awk -F'\t' -v w="$(worktree_path "$2" "$s")" '$2 == w { f = 1 } END { exit !f }'; then
+      printf '  %-16s %-24s %s [open]\n' "$1" "$s" "$b"
+    else
+      printf '  %-16s %-24s %s [closed]\n' "$1" "$s" "$b"
+    fi
+  done
 }
 
 # A *dynamic* profile: a plain JSON file iTerm2 reloads on write, with no
@@ -631,10 +777,14 @@ cmd_status() {
   printf '%s\n' "$rows" | while IFS='	' read -r win name state title dir cmd; do
     open=
     if [ "$state" = ok ]; then
-      if printf '%s\n' "$marks" | grep -qx "$name"; then open=' [open]'; else open=' [closed]'; fi
+      if printf '%s\n' "$marks" | cut -f1 | grep -qx "$name"; then open=' [open]'; else open=' [closed]'; fi
     fi
     printf '  %-16s %-16s %-9s %s%s\n' "$win" "$name" "$state" "$dir" "$open"
   done
+  wts=$(printf '%s\n' "$rows" | while IFS='	' read -r win name state title dir cmd; do
+    [ "$state" = ok ] && list_worktrees "$name" "$dir" "$marks"
+  done)
+  [ -z "$wts" ] || printf 'worktrees:\n%s\n' "$wts"
   if [ "$(os)" = Darwin ] && ! iterm_running; then
     printf 'iterm2:   not running (start opens it)\n'
   fi
