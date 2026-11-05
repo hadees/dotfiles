@@ -349,21 +349,23 @@ function bin_trace() {
 # or a literal directory. With no mapping at all, this is plain `claude` on the
 # default ~/.claude config dir.
 function claude() {
-	local dir alias opener here line;
+	local dir alias opener here line attended;
 	local -a sess;
 	dir="$(claude_profile_dir)" || dir='';
+	# An attended launch: somebody is sitting at it. No terminal, print
+	# mode, a version/help flag, or a first argument shaped like a
+	# subcommand (`claude mcp …` — the shape, because a list of them would go
+	# stale) is not one.
+	if [[ -t 0 && -t 2 && ! $1 =~ '^[a-z][a-z-]*$' ]] && (( ! ${argv[(I)(-p|--print|-h|--help|-v|--version)]} )); then attended=1; fi;
 	# A second session in a directory that already has one puts two writers
 	# on the same tree, and nothing about a fresh prompt says the first is
 	# there. So say so, and ask — a warning with a way past it, never a
-	# refusal. Only a launch somebody is sitting at is asked: no terminal,
-	# print mode, a version/help flag, or a first argument shaped like a
-	# subcommand (`claude mcp …` — the shape, because a list of them would go
-	# stale) all pass untouched, so hooks, pipes and headless callers never
-	# block on a question nobody can answer. A helper that fails or finds
-	# nothing launches as before. Running several sessions in one checkout
-	# on purpose is a workflow, not a mistake: `git config
-	# claude.second-session-check false` turns the question off.
-	if [[ -t 0 && -t 2 && ! $1 =~ '^[a-z][a-z-]*$' ]] && (( ! ${argv[(I)(-p|--print|-h|--help|-v|--version)]} )) && [[ "$(command git config --get claude.second-session-check 2>/dev/null)" != false ]]; then
+	# refusal. Only an attended launch is asked, so hooks, pipes and
+	# headless callers never block on a question nobody can answer. A helper
+	# that fails or finds nothing launches as before. Running several
+	# sessions in one checkout on purpose is a workflow, not a mistake: `git
+	# config claude.second-session-check false` turns the question off.
+	if [[ -n $attended ]] && [[ "$(command git config --get claude.second-session-check 2>/dev/null)" != false ]]; then
 		here="$(claude_sessions_here $dir 2>/dev/null)";
 		if [[ -n $here ]]; then
 			print -ru2 -- "claude: already running in $PWD:";
@@ -429,6 +431,21 @@ function claude() {
 		# PONYTAIL_SUBAGENT_MATCHER scopes the ponytail plugin's ruleset, when
 		# that plugin is installed, to the seats that write code — a read-only
 		# scout has nothing to keep small.
+		# CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 is not a default: it is exported
+		# only where `git config claude.terminal-title false` says so. It keeps
+		# Claude Code from writing its own OSC 0 tab title (rename/AI/haiku),
+		# which would compete with the cc-status shim's rename of the Session
+		# Status row, and that rename exists only where iTerm2 3.7.5+, its
+		# Claude Code integration's workgroup trigger and the overlay-wired
+		# hooks are all present. So it is off until machine-local config turns
+		# it on, and a public-only clone or a Linux box keeps Claude's titles.
+		# The docs say it also skips the request that generates an AI session
+		# title (so /resume rows may show a summary instead) and turns off the
+		# OSC 7501 status reports. Claude Code reads it as a raw string, so `0`
+		# and `false` would still disable: under the gate those spellings, `no`,
+		# `off` and the empty string are normalised to unset, which is how one
+		# launch gets Claude's own titles back. Outside the gate the wrapper has
+		# no opinion and a caller's value passes through untouched.
 		# These live here and not in each profile's settings.json because each
 		# of those files is owned by that profile's private overlay, and a
 		# default meant for every profile would have to be repeated in each
@@ -439,6 +456,12 @@ function claude() {
 		export CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL="${CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL:-1h}";
 		export CLAUDE_CODE_PROMPT_CACHE_TTL="${CLAUDE_CODE_PROMPT_CACHE_TTL:-1h}";
 		export PONYTAIL_SUBAGENT_MATCHER="${PONYTAIL_SUBAGENT_MATCHER:-^(work-|unstick-)}";
+		if [[ "$(command git config --get claude.terminal-title 2>/dev/null)" == false ]]; then
+			case ${CLAUDE_CODE_DISABLE_TERMINAL_TITLE-unset} in
+				unset) export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1;;
+				''|0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff]) unset CLAUDE_CODE_DISABLE_TERMINAL_TITLE;;
+			esac;
+		fi;
 		exec command claude "$@";
 	)
 }
@@ -656,6 +679,8 @@ function claude-doctor() {
 	fi;
 	print -r -- "mapping: ${map:-<none>}";
 	print -r -- "env:     CLAUDE_PROFILE=${CLAUDE_PROFILE-<unset>} CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR-<unset>} BROWSER=${BROWSER-<unset>} OPEN_AS_ALIAS=${OPEN_AS_ALIAS-<unset>}";
+	local tt="$(command git config --get claude.terminal-title 2>/dev/null)";
+	print -r -- "titles:  claude.terminal-title=${tt:-unset} — Claude Code's own tab titles $([[ $tt == false ]] && print -r 'off (the shim names the row)' || print -r on); CLAUDE_CODE_DISABLE_TERMINAL_TITLE=${CLAUDE_CODE_DISABLE_TERMINAL_TITLE-unset} in this shell";
 	local bare='';
 	if dir="$(claude_profile_dir)"; then
 		print -r -- "launch:  $dir";

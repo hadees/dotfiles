@@ -1,0 +1,291 @@
+#!/bin/sh
+# claude-tab — list the live Claude Code sessions across every profile and
+# bring the chosen one's iTerm2 tab forward.
+#
+# The sessions come from the registry every Claude profile keeps of its live
+# ones, `<config dir>/sessions/<pid>.json` — an observed layout, not a
+# documented interface; `claude_sessions_here` in .functions and `postbox`
+# read the same files. A session's terminal is the controlling tty of its
+# claude process, read with `ps`; iTerm2 is asked once which of its sessions
+# own which tty, and the join is on that.
+#
+# The label is whatever `~/bin/tabname <cwd>` prints, so this list, the tab
+# title and the Session Status row are one string and cannot drift. It is
+# called by absolute path: Alfred runs scripts with a PATH that excludes
+# ~/bin.
+#
+# Usage: claude-tab <command> [args]
+#   list                     one row per live session, tab-separated: pid,
+#                            profile, label, place, status, name, tty, where,
+#                            window, title, cwd ("-" for empty)
+#   tabs                     iTerm2's sessions: window, tty, title
+#   focus <pid>              bring that session's iTerm2 tab forward
+set -u
+
+TAB=$(printf '\t')
+TABNAME=${CLAUDE_TAB_TABNAME:-$HOME/bin/tabname}
+
+die() { printf 'claude-tab: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'claude-tab: %s\n' "$*" >&2; }
+usage() { sed -n '/^# Usage:/,/^set -u/{ /^set -u/d; s/^# \{0,1\}//p; }' "$0" >&2; exit 2; }
+
+os() { uname -s 2>/dev/null; }
+need_macos() {
+  [ "$(os)" = Darwin ] || { warn "$1 needs macOS — iTerm2 runs nowhere else"; exit 2; }
+}
+need_python() { command -v python3 >/dev/null 2>&1 || die "python3 is required"; }
+
+# `ps` rather than pgrep: pgrep reports nothing for processes in the caller's
+# own session under some sandboxes (Claude Code's Bash tool is one — it cannot
+# see the very iTerm2 it is running inside).
+proc_running() {
+  ps -Ao ucomm= 2>/dev/null |
+    awk -v n="$1" '{ sub(/[ \t]+$/, "", $0); if ($0 == n) f = 1 } END { exit !f }'
+}
+
+# --- profiles and the registry -----------------------------------------------
+
+# Every Claude profile directory that exists, one per line.
+profile_dirs() {
+  { printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+    printf '%s\n' "$HOME/.claude"
+    git config --get-regexp '^claude\.profile\.' 2>/dev/null | cut -d' ' -f2-
+  } | while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        case $d in "~/"*) d="$HOME/${d#\~/}" ;; esac
+        [ -d "$d" ] && printf '%s\n' "$d"
+      done | awk '!seen[$0]++'
+}
+
+profile_label() {
+  case $(basename "$1") in
+    .claude) printf 'default\n' ;;
+    .claude-*) b=$(basename "$1"); printf '%s\n' "${b#.claude-}" ;;
+    *) basename "$1" ;;
+  esac
+}
+
+# Live records of every profile: pid, profile, name, status, cwd.
+registry_rows() {
+  profile_dirs | while IFS= read -r d; do
+    [ -d "$d/sessions" ] || continue
+    python3 - "$d" "$(profile_label "$d")" <<'REG'
+import glob, json, os, re, sys
+d, profile = sys.argv[1:3]
+def field(v):
+    s = re.sub(r"[\t\r\n]", " ", str(v)).strip()
+    return s if s else "-"
+for f in sorted(glob.glob(os.path.join(d, "sessions", "*.json"))):
+    if not re.fullmatch(r"\d+\.json", os.path.basename(f)):
+        continue
+    try:
+        with open(f) as fh:
+            r = json.load(fh)
+        pid = r["pid"]
+        if type(pid) is not int or pid <= 0:
+            continue
+        os.kill(pid, 0)
+    except PermissionError:
+        pass  # alive, just not ours
+    except Exception:
+        continue
+    print("\t".join(field(x) for x in (pid, profile, r.get("name"), r.get("status"), r.get("cwd"))))
+REG
+  done
+}
+
+# --- pid -> tty --------------------------------------------------------------
+
+# "/dev/<tty>" for a ps tty column, nothing for "no terminal" (macOS "??",
+# Linux "?").
+real_tty() {
+  case ${1-} in ''|'?'|'??') ;; *) printf '/dev/%s\n' "$1" ;; esac
+}
+
+# The first real tty up the parent chain from pid $1, "-" if there is none.
+# Read, never `set -- $line`: an unquoted "??" is a glob.
+walk_tty() {
+  p=$1 hops=0
+  while [ "$hops" -lt 8 ] && [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null; do
+    read -r pp tt <<EOF_PS
+$(ps -o ppid=,tty= -p "$p" 2>/dev/null)
+EOF_PS
+    t=$(real_tty "${tt-}")
+    [ -z "$t" ] || { printf '%s\n' "$t"; return; }
+    p=${pp-}
+    hops=$((hops + 1))
+  done
+  printf -- '-\n'
+}
+
+# pid, tty for the pids given. A claude process holds its tty itself; the
+# parent walk is the fallback for one that does not.
+tty_table() {
+  [ $# -gt 0 ] || return 0
+  ids=$(printf '%s,' "$@")
+  ps -o pid=,ppid=,tty= -p "${ids%,}" 2>/dev/null | while read -r pid ppid tty; do
+    [ -n "$pid" ] || continue
+    t=$(real_tty "${tty-}")
+    [ -n "$t" ] || t=$(walk_tty "${ppid-}")
+    printf '%s\t%s\n' "$pid" "$t"
+  done
+}
+
+# --- the label ---------------------------------------------------------------
+
+# label <TAB> place for a directory: "-" at the toplevel, "subdir=<rel>" below
+# it, "nogit" when tabname declines (not a work tree, or the directory is
+# gone), "nolabel" when there is no tabname to ask.
+label_of() {
+  if [ "$have_tabname" != 1 ]; then
+    printf '%s\t%s\n' "$(basename "$1")" nolabel
+  elif l=$("$TABNAME" "$1" 2>/dev/null) && [ -n "$l" ]; then
+    pre=$(git -C "$1" rev-parse --show-prefix 2>/dev/null)
+    case $pre in
+      '') printf '%s\t-\n' "$l" ;;
+      *) printf '%s\tsubdir=%s\n' "$l" "${pre%/}" ;;
+    esac
+  else
+    printf '%s\tnogit\n' "$(basename "$1")"
+  fi
+}
+
+# --- iTerm2 ------------------------------------------------------------------
+
+as_string() { printf '%s' "${1-}" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+# Read-only: window id, tty and name of every iTerm2 session. `index of t`
+# is not read — it fails coercion inside `repeat with` (-1700).
+tabs_script() {
+  cat <<'APPLESCRIPT'
+set out to ""
+tell application "iTerm2"
+  repeat with w in windows
+    repeat with t in tabs of w
+      repeat with s in sessions of t
+        set out to out & (id of w) & tab & (tty of s) & tab & (name of s) & linefeed
+      end repeat
+    end repeat
+  end repeat
+end tell
+return out
+APPLESCRIPT
+}
+
+# Session, then tab, then window, then the app: `select` on a session makes it
+# the tab's active pane, on a tab is selectTabViewItemWithIdentifier:, on a
+# window is setCurrentTerminal: (makeKeyAndOrderFront: when it is not key) —
+# PTYTab+Scripting.m, iTermWindowScriptingImpl.m — and `activate` (Standard
+# Suite) brings iTerm2 itself forward. Only iTerm2 is addressed, so the one
+# Automation grant is Alfred -> iTerm2.
+focus_script() {
+  cat <<APPLESCRIPT
+tell application "iTerm2"
+  repeat with w in windows
+    repeat with t in tabs of w
+      repeat with s in sessions of t
+        if (tty of s) is "$(as_string "$1")" then
+          select s
+          select t
+          select w
+          activate
+          return "ok"
+        end if
+      end repeat
+    end repeat
+  end repeat
+end tell
+return ""
+APPLESCRIPT
+}
+
+run_script() { # applescript on stdin
+  s=$(cat)
+  i=0
+  while : ; do
+    if out=$(printf '%s\n' "$s" | osascript - 2>&1); then
+      [ -n "$out" ] && printf '%s\n' "$out"
+      return 0
+    fi
+    i=$((i + 1))
+    [ "$i" -ge 3 ] && break
+    sleep 1
+  done
+  printf '%s\n' "$out" >&2
+  return 1
+}
+
+# --- commands ----------------------------------------------------------------
+
+cmd_tabs() {
+  { [ "$(os)" = Darwin ] && proc_running iTerm2; } || return 0
+  out=$(tabs_script | osascript - 2>&1) || { printf '%s\n' "$out" >&2; return 1; }
+  [ -z "$out" ] || printf '%s\n' "$out"
+}
+
+cmd_focus() {
+  need_macos focus
+  case ${1-} in ''|*[!0-9]*) usage;; esac
+  pid=$1
+  need_python
+  registry_rows | awk -F'\t' -v p="$pid" '$1 == p { f = 1 } END { exit !f }' ||
+    die "no live session with pid $pid"
+  tty=$(tty_table "$pid" | cut -f2)
+  { [ -n "$tty" ] && [ "$tty" != - ]; } || die "pid $pid has no terminal (headless)"
+  proc_running iTerm2 || die "iTerm2 is not running"
+  out=$(focus_script "$tty" | run_script) ||
+    die "osascript could not drive iTerm2 — if macOS asked for Automation permission and was denied, grant it in System Settings > Privacy & Security > Automation"
+  [ "$out" = ok ] || die "pid $pid is on $tty, which is not an iTerm2 tab"
+}
+
+cmd_list() {
+  need_python
+  rows=$(registry_rows)
+  [ -n "$rows" ] || return 0
+  if [ -x "$TABNAME" ]; then have_tabname=1; else
+    have_tabname=0
+    warn "tabname not found at $TABNAME — labels fall back to directory names (chezmoi apply)"
+  fi
+  # shellcheck disable=SC2046
+  ttys=$(tty_table $(printf '%s\n' "$rows" | cut -f1))
+  # One listing per call, not per row; "unknown" when there is none to join.
+  tabs='' listed=0
+  if [ "$(os)" = Darwin ] && proc_running iTerm2; then
+    tabs=$(cmd_tabs 2>/dev/null) && listed=1
+  fi
+  printf '%s\n' "$rows" | while IFS=$TAB read -r pid profile name status cwd; do
+    tty=$(printf '%s\n' "$ttys" | awk -F'\t' -v p="$pid" '$1 == p { print $2; exit }')
+    [ -n "$tty" ] || tty=-
+    where=unknown win=- title=-
+    if [ "$tty" = - ]; then
+      where=headless
+    elif [ "$listed" = 1 ]; then
+      where=other
+      hit=$(printf '%s\n' "$tabs" | awk -F'\t' -v t="$tty" '$2 == t { print; exit }')
+      if [ -n "$hit" ]; then
+        where=iterm2
+        IFS=$TAB read -r win _ title <<EOF_HIT
+$hit
+EOF_HIT
+        title=$(printf '%s' "${title-}" | tr '\t' ' ')
+        [ -n "$title" ] || title=-
+      fi
+    fi
+    lp=$(label_of "$cwd")
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$pid" "$profile" "${lp%"$TAB"*}" "${lp##*"$TAB"}" "$status" "$name" "$tty" "$where" "$win" "$title" "$cwd"
+  done | LC_ALL=C sort -t"$TAB" -k3,3 -k1,1n
+}
+
+# --- dispatch ----------------------------------------------------------------
+
+[ $# -ge 1 ] || usage
+cmd=$1
+shift
+case $cmd in
+  list)      cmd_list;;
+  tabs)      cmd_tabs;;
+  focus)     cmd_focus "$@";;
+  -h|--help|help) usage;;
+  *)         die "unknown command '$cmd' (claude-tab help)";;
+esac
