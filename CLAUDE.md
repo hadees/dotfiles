@@ -949,7 +949,9 @@ leader's cwd and is pinned there, so the script moves, not the shell:
 `worktabs`), `cd`s there and `exec`s an interactive shell running `claude`, so
 it is the `.functions` wrapper and, being a directory no other session is in,
 raises no second-session question. With no branch it lists the repo's peer
-worktrees and asks on `/dev/tty`. `path` and `plan` are the dry runs.
+worktrees and asks on `/dev/tty`. `path` and `plan` are the dry runs. The
+script deploys on every machine class — those three need only git; the iTerm2
+verbs refuse off macOS.
 
 The definition is a **second** Workgroup, `Claude Peers` (Chat, Diff, Chat 2-4;
 the peers' command is `claude-peer run`), never extra peers on the builtin:
@@ -960,8 +962,9 @@ when `LoadPrefsFromCustomFolder` is on, else the domain. Both are forced:
 launch replaces the domain's syncable keys from the folder
 (`iTermRemotePreferences.m:1636-1660`) and quit writes the folder back
 (`:1768-1830`), so `defaults write` or an edit while iTerm2 runs is lost. That
-plist is the one never committed. `status` prints `store:`, `iterm2:`,
-`workgroup:` and `builtin:`.
+plist is tracked here and rewritten by iTerm2 at every quit, so the edit is
+the same drift as any save and is not committed back. `status` prints
+`store:`, `iterm2:`, `workgroup:` and `builtin:`.
 
 Use: a plain tab, Shell > Workgroups > Claude Peers (no API, sdef or `it2`
 verb enters one), then type `claude` in Chat. **Exit hazard:** the Exit
