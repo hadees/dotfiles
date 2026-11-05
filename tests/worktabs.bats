@@ -410,6 +410,95 @@ ws() { run sh "$WS" "$@"; }
   [[ "$output" == *"macOS"* ]]
 }
 
+# new <entry> branch… — one tab per branch, each in that branch's worktree.
+
+repo() { # dir — a fixture repo with one commit on main
+  git init -q "$1"
+  git -C "$1" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m init
+}
+
+@test "new branches: one worktree and one tab per branch, exclude appended once" {
+  repo "$PROJ/one"; entry a dir "$PROJ/one"; entry a window grp
+  FAKE_OPENED=$'a\na' ws new a feat/x fix/y
+  [ "$status" -eq 0 ]
+  [[ "$output" == *$'feat/x\t'*$'/.claude/worktrees/feat-x\tcreated'* ]]
+  [[ "$output" == *$'fix/y\t'*$'/.claude/worktrees/fix-y\tcreated'* ]]
+  [[ "$output" == *"opened another a @feat-x -> window grp"* ]]
+  [[ "$output" == *"opened another a @fix-y -> window grp"* ]]
+  list=$(git -C "$PROJ/one" worktree list)
+  [[ "$list" == *"/.claude/worktrees/feat-x"*"[feat/x]"* ]]
+  [[ "$list" == *"/.claude/worktrees/fix-y"*"[fix/y]"* ]]
+  [ "$(grep -cxF '**/.claude/worktrees/' "$PROJ/one/.git/info/exclude")" -eq 1 ]
+  grep -q '^set forceOpen to true$' "$OSA_SCRIPT"
+  [ "$(grep -c 'set end of thePlan' "$OSA_SCRIPT")" -eq 2 ]
+  grep 'set end of thePlan' "$OSA_SCRIPT" | grep -q "cd -- '.*/.claude/worktrees/feat-x'"
+  grep 'set end of thePlan' "$OSA_SCRIPT" | grep -q "cd -- '.*/.claude/worktrees/fix-y'"
+}
+
+@test "new branches: running it again reuses both worktrees and still opens two tabs" {
+  repo "$PROJ/one"; entry a dir "$PROJ/one"; entry a window grp
+  FAKE_OPENED=$'a\na' ws new a feat/x fix/y
+  [ "$status" -eq 0 ]
+  FAKE_OPENED=$'a\na' ws new a feat/x fix/y
+  [ "$status" -eq 0 ]
+  [[ "$output" == *$'feat/x\t'*$'\treused'* ]]
+  [[ "$output" == *$'fix/y\t'*$'\treused'* ]]
+  [[ "$output" != *created* ]]
+  [ "$(git -C "$PROJ/one" worktree list | wc -l)" -eq 3 ]
+  [ "$(grep -c 'set end of thePlan' "$OSA_SCRIPT")" -eq 2 ]
+  [ "$(grep -cxF '**/.claude/worktrees/' "$PROJ/one/.git/info/exclude")" -eq 1 ]
+}
+
+@test "new branches: a branch checked out in the main checkout is refused, nothing created" {
+  repo "$PROJ/one"; entry a dir "$PROJ/one"
+  ws new a feat/x main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"'main' is already checked out at "*"/one"* ]]
+  [ ! -e "$PROJ/one/.claude/worktrees" ]
+  [ ! -s "$OSA_LOG" ]
+}
+
+@test "new branches: other worktree on the path, a bad name and a duplicate are refused" {
+  repo "$PROJ/one"; entry a dir "$PROJ/one"
+  git -C "$PROJ/one" worktree add -q -b other "$PROJ/one/.claude/worktrees/feat-x" >/dev/null 2>&1
+  ws new a feat/x
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"exists on branch other"* ]]
+  ws new a bad..name
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"'bad..name' is not a branch name"* ]]
+  ws new a fix/y fix/y
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"'fix/y' given twice"* ]]
+  [ ! -e "$PROJ/one/.claude/worktrees/fix-y" ]
+  [ "$(git -C "$PROJ/one" worktree list | wc -l)" -eq 2 ]
+  [ ! -s "$OSA_LOG" ]
+}
+
+@test "new branches: a directory that is not a repository top is refused" {
+  entry a dir "$PROJ/two"
+  ws new a feat/x
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not the top of a git work tree"* ]]
+  [ ! -s "$OSA_LOG" ]
+}
+
+@test "new branches: the base is HEAD without origin/HEAD, origin/HEAD with one" {
+  repo "$PROJ/one"; entry a dir "$PROJ/one"
+  FAKE_OPENED=a ws new a feat/x
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$PROJ/one/.claude/worktrees/feat-x" rev-parse HEAD)" = "$(git -C "$PROJ/one" rev-parse HEAD)" ]
+  # A remote whose HEAD is behind the local one: the new branch must start there.
+  git -C "$PROJ/one" remote add origin "$PROJ/one"
+  git -C "$PROJ/one" fetch -q origin
+  git -C "$PROJ/one" remote set-head origin -a >/dev/null
+  git -C "$PROJ/one" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m later
+  FAKE_OPENED=a ws new a fix/y
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$PROJ/one/.claude/worktrees/fix-y" rev-parse HEAD)" = "$(git -C "$PROJ/one" rev-parse origin/HEAD)" ]
+  [ "$(git -C "$PROJ/one/.claude/worktrees/fix-y" rev-parse HEAD)" != "$(git -C "$PROJ/one" rev-parse HEAD)" ]
+}
+
 # --- Alfred -----------------------------------------------------------------
 
 @test "alfred: emits one item per group with a stable order" {

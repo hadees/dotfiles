@@ -68,7 +68,9 @@
 #                            directory, command
 #   script [name|group...]   the AppleScript `start` would run — a dry run
 #   start [name|group...]    open the windows and tabs (idempotent)
-#   new <name>               one more tab for one entry, open or not
+#   new <entry> [branch...]  one more tab for one entry, open or not; with
+#                            branches, one tab per branch, each in that
+#                            branch's worktree under <dir>/.claude/worktrees/
 #   alfred [query]           Script Filter JSON for the Alfred workflow
 #   alfred-install [dir]     build the Alfred workflow and hand it to Alfred
 #   install                  write the iTerm2 dynamic profile (and clear an
@@ -524,31 +526,139 @@ cmd_start() {
   done
 }
 
+# --- worktrees ----------------------------------------------------------------
+# The rules `workset checkout` follows (bin/executable_workset), ported rather
+# than called: <dir>/.claude/worktrees/<slug>, an existing branch is checked
+# out, a new one is cut from origin/HEAD else HEAD, a conflict creates nothing.
+
+slug_of() { printf '%s' "${1-}" | tr '/' '-'; }
+
+worktree_path() { # dir branch -> <dir>/.claude/worktrees/<slug>
+  printf '%s/.claude/worktrees/%s\n' "$1" "$(slug_of "$2")"
+}
+
+# dir branch... -> branch<TAB>worktree<TAB>create|reuse|conflict:<reason>, one
+# line per branch; exit 1 when any is a conflict. The reason is the whole
+# human message.
+worktree_plan() {
+  d=$1; shift
+  rd=$(cd "$d" && pwd -P) || return 1
+  # path<TAB>branch of every registered worktree (empty branch: detached)
+  trees=$(git -C "$d" worktree list --porcelain | awk '
+    /^worktree / { p = substr($0, 10); b = "" }
+    /^branch /   { b = $2; sub("^refs/heads/", "", b) }
+    /^$/         { print p "\t" b }')
+  rc=0
+  for b in "$@"; do
+    wt=$(worktree_path "$d" "$b")
+    cur=$(printf '%s\n' "$trees" | awk -F'\t' -v w="$(worktree_path "$rd" "$b")" '$1 == w { print "x" $2; exit }')
+    at=$(printf '%s\n' "$trees" | awk -F'\t' -v b="$b" '$2 == b { print $1; exit }')
+    if [ -n "$cur" ]; then
+      if [ "${cur#x}" = "$b" ]; then act=reuse
+      else act="conflict:'$b': $wt exists on branch ${cur#x} — pick another name or remove it (git worktree remove)"; fi
+    elif [ -e "$wt" ]; then act="conflict:'$b': $wt exists but is not a git worktree"
+    elif [ -n "$at" ]; then act="conflict:'$b' is already checked out at $at"
+    else act=create; fi
+    case $act in conflict:*) rc=1;; esac
+    printf '%s\t%s\t%s\n' "$b" "$wt" "$act"
+  done
+  return $rc
+}
+
+ensure_exclude() { # dir
+  excl=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir)/info/exclude
+  mkdir -p "$(dirname "$excl")" 2>/dev/null
+  grep -qxF '**/.claude/worktrees/' "$excl" 2>/dev/null ||
+    printf '**/.claude/worktrees/\n' >> "$excl"
+}
+
+# dir branch -> performs create/reuse, prints branch<TAB>worktree<TAB>created|reused
+worktree_checkout() {
+  p=$(worktree_plan "$1" "$2") || true
+  wt=$(printf '%s\n' "$p" | cut -f2)
+  act=$(printf '%s\n' "$p" | cut -f3)
+  case $act in
+    create)
+      ensure_exclude "$1"
+      base=HEAD
+      git -C "$1" rev-parse --verify -q origin/HEAD >/dev/null 2>&1 && base=origin/HEAD
+      if git -C "$1" show-ref --verify -q "refs/heads/$2"; then
+        git -C "$1" worktree add "$wt" "$2" >/dev/null || die "'$2': git worktree add failed"
+      else
+        git -C "$1" worktree add -b "$2" "$wt" "$base" >/dev/null || die "'$2': git worktree add failed"
+      fi
+      printf '%s\t%s\tcreated\n' "$2" "$wt";;
+    reuse) printf '%s\t%s\treused\n' "$2" "$wt";;
+    *) die "${act#conflict:}";;
+  esac
+}
+
 # One more tab for one entry, open or not — a second chat in the same
 # project. The same script as `start` with its skip switched off, so the tab
 # lands in the group's existing window, carries the profile and both marks,
 # and `start` afterwards still sees the entry as open. One entry, never a
 # group: duplicating a whole window is not something anyone asks for by
 # accident, so it is not something this does by accident either.
+#
+# With branches, one tab per branch, each standing in that branch's worktree
+# (the row's dir swapped for it, so the typed line cd's there and the wrapper's
+# second-session question keys on a directory nobody else is in). Validate
+# first, create second, open third: nothing is created if any branch is
+# refused.
 cmd_new() {
   need_macos new
-  [ $# -eq 1 ] || die "usage: worktabs new <entry>"
-  rows=$(cmd_plan "$1") || exit 1
-  row=$(printf '%s\n' "$rows" | awk -F'\t' -v n="$1" '$2 == n')
-  [ -n "$row" ] || die "'$1' is a group — new opens one entry at a time (worktabs list)"
+  [ $# -ge 1 ] || { warn "usage: worktabs new <entry> [branch...]"; exit 2; }
+  entry=$1; shift
+  rows=$(cmd_plan "$entry") || exit 1
+  row=$(printf '%s\n' "$rows" | awk -F'\t' -v n="$entry" '$2 == n')
+  [ -n "$row" ] || die "'$entry' is a group — new opens one entry at a time (worktabs list)"
   state=$(printf '%s\n' "$row" | cut -f3)
   dir=$(printf '%s\n' "$row" | cut -f5)
   case $state in
     ok) ;;
-    no-dir) die "'$1': ${dir:-no workspace.$1.dir} is not a directory";;
-    *) die "'$1' is $state";;
+    no-dir) die "'$entry': ${dir:-no workspace.$entry.dir} is not a directory";;
+    *) die "'$entry' is $state";;
   esac
+  win=$(printf '%s\n' "$row" | cut -f1)
+  if [ $# -gt 0 ]; then
+    top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) &&
+      [ "$(cd "$top" && pwd -P)" = "$(cd "$dir" && pwd -P)" ] ||
+      die "'$entry': $dir is not the top of a git work tree — branches need a repository to make worktrees in"
+    seen='
+'
+    for b in "$@"; do
+      git check-ref-format --branch "$b" >/dev/null 2>&1 || die "'$b' is not a branch name"
+      case $seen in *"
+$b
+"*) die "'$b' given twice";; esac
+      seen="$seen$b
+"
+    done
+    plan=$(worktree_plan "$dir" "$@") || {
+      printf '%s\n' "$plan" | awk -F'\t' '$3 ~ /^conflict:/ { sub(/^conflict:/, "", $3); print "worktabs: " $3 }' >&2
+      exit 1
+    }
+    for b in "$@"; do worktree_checkout "$dir" "$b" || exit 1; done
+    row=$(for b in "$@"; do
+      wt=$(worktree_path "$dir" "$b")
+      printf '%s\t%s\tok\t%s\t%s\t%s\n' "$win" "$entry" "$entry @$(slug_of "$b")" "$wt" "$(command_of "$entry" "$win" "$wt")"
+    done)
+  fi
   ensure_iterm
   out=$(printf '%s\n' "$row" | gen_script force | run_script) ||
     die "osascript could not drive iTerm2 — if macOS asked for Automation permission and was denied, grant it in System Settings > Privacy & Security > Automation"
   opened=$(printf '%s\n' "$out" | sed '1d' | tr -d '[:space:]')
-  [ -n "$opened" ] || die "iTerm2 opened nothing for '$1'"
-  printf 'worktabs: opened another %s -> window %s\n' "$1" "$(printf '%s\n' "$row" | cut -f1)"
+  [ -n "$opened" ] || die "iTerm2 opened nothing for '$entry'"
+  if [ $# -eq 0 ]; then
+    printf 'worktabs: opened another %s -> window %s\n' "$entry" "$win"
+    return 0
+  fi
+  n=$(printf '%s\n' "$out" | sed '1d' | grep -c .)
+  for b in "$@"; do
+    [ "$n" -gt 0 ] || break
+    n=$((n - 1))
+    printf 'worktabs: opened another %s @%s -> window %s\n' "$entry" "$(slug_of "$b")" "$win"
+  done
 }
 
 # A *dynamic* profile: a plain JSON file iTerm2 reloads on write, with no
