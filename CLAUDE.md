@@ -892,8 +892,10 @@ working directory and are pinned there (`forceUseOldCWD: true`,
 `WorkgroupSessionSpawner.swift`, v3.7.7), so a peer running in a worktree
 would leave the one Diff peer diffing the main checkout; a custom workgroup
 exists only in the tracked plist, never reproducible from an overlay; and a
-tab already in `builtin.claudeCode` (the `claude` job trigger the `Workspace`
-profile inherits from Default puts it there) cannot switch. A workgroup peer's command does run in an
+tab already in `builtin.claudeCode` (where iTerm2's Claude Code onboarding
+puts it, via an Enter Workgroup trigger on the `claude` job that it writes
+into each profile's own prefs — machine-local, not in this repo) cannot
+switch. A workgroup peer's command does run in an
 interactive login shell (`login … ShellLauncher --launch_shell - -i -c`), so
 the `create tab … command` finding above applies to that code path only.
 
