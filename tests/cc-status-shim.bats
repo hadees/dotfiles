@@ -748,12 +748,12 @@ NAMED_FILE() { printf '%s/tabstatus/s1.named' "$XDG_STATE_HOME"; }
 }
 
 @test "rename: WORKSET names the set and WORKTABS_GROUP prefixes it" {
-  export WORKSET=myset WORKTABS_GROUP=personal
+  export WORKSET=myset WORKTABS_GROUP=grp
   run_shim <<< "$(named_payload Stop)"
-  [ "$(it2_argv)" = "session|set-name|[personal] myset|--session|ABC-123" ]
+  [ "$(it2_argv)" = "session|set-name|[grp] myset|--session|ABC-123" ]
   unset WORKSET
   run_shim <<< "$(named_payload Stop)"
-  [ "$(it2_argv)" = "session|set-name|[personal] proj|--session|ABC-123" ]
+  [ "$(it2_argv)" = "session|set-name|[grp] proj|--session|ABC-123" ]
 }
 
 @test "rename: a worktree cwd gets the worktree label" {

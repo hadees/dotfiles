@@ -553,8 +553,8 @@ health check, so a profile elsewhere is judged by the doctor, not the alert.
 
 A machine that wires the shim also stops Claude Code's own OSC 0 tab titles
 from displacing the name the shim sets, with one line in its gitconfig
-(`~/.gitconfig.local` from the overlay that owns the Mac, inside a darwin
-guard — a Linux box has no iTerm2 and must not get it):
+(the overlay's `~/.gitconfig.local`, inside a `mac` machine-class guard — a
+Linux box has no iTerm2 and must not get it):
 
 ```gitconfig
 [claude]

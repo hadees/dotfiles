@@ -369,7 +369,7 @@ employer-specific — profile-specific memory belongs in that profile's own
   matching subagents, so its rules are never pasted into a definition.
   A fifth, `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, is not a default: it is
   exported only where `claude.terminal-title false` is set (machine-local,
-  overlay-supplied: the Mac whose Session Status rows the shim names), so
+  overlay-supplied, under a `mac` machine-class guard where the shim is wired), so
   Claude's own tab titles do not displace the repo name; there, set it to `''`,
   `0`, `false`, `no` or `off` for one launch to get them back.
 - **Cache discipline.** Documented invalidators: switching model, changing

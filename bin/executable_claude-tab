@@ -1,6 +1,6 @@
 #!/bin/sh
 # claude-tab — list the live Claude Code sessions across every profile and
-# bring the chosen one's iTerm2 tab forward (the Alfred workflow's two calls).
+# bring the chosen one's iTerm2 tab forward.
 #
 # The sessions come from the registry every Claude profile keeps of its live
 # ones, `<config dir>/sessions/<pid>.json` — an observed layout, not a
@@ -20,9 +20,6 @@
 #                            window, title, cwd ("-" for empty)
 #   tabs                     iTerm2's sessions: window, tty, title
 #   focus <pid>              bring that session's iTerm2 tab forward
-#   alfred                   Script Filter JSON for the Alfred workflow
-#   alfred-install [dir]     build the Alfred workflow and hand it to Alfred
-#   status                   what this script can see right now
 set -u
 
 TAB=$(printf '\t')
@@ -289,7 +286,6 @@ case $cmd in
   list)      cmd_list;;
   tabs)      cmd_tabs;;
   focus)     cmd_focus "$@";;
-  alfred|alfred-install|status) die "$cmd is not built yet";;
   -h|--help|help) usage;;
   *)         die "unknown command '$cmd' (claude-tab help)";;
 esac

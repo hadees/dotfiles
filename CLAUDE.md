@@ -1741,6 +1741,12 @@ clearing the root's displayName in Settings was rejected because it would be a
 preference edit in the tracked plist. `cc-status explain` prints `name=` and
 `rename=yes|no (<reason>)` and `marker=present|none`. A tab already stuck on `Chat (-zsh)` is fixed once
 by hand: `it2 session set-name "$(tabname)"` in it, or Session > Edit Session.
+`bin/claude-tab` reads the other side of the same join: `list` prints one
+row per live Claude Code session across every profile (from each profile's
+`sessions/<pid>.json` registry, the files `claude_sessions_here` reads),
+labelled by `tabname`, with the iTerm2 window and title its tty belongs to;
+`focus <pid>` brings that tab forward. `list` works anywhere; `tabs` and
+`focus` need macOS. Tests: `tests/claude-tab.bats`, `tests/tabname.bats`.
 The tab bar reads `<repo> (claude)` during a session; the conversation topic no
 longer appears there.
 
@@ -1756,8 +1762,9 @@ unless proven otherwise. Set a glyph only after checking it in both the Session
 Status tool and the tab bar. Tests: `tests/tabname.bats`.
 
 The `claude()` wrapper writes no title. Where `git config claude.terminal-title
-false` is set (machine-local, from the overlay that owns the Mac whose rows the
-shim names; default unset, so a public-only clone or a Linux box is untouched)
+false` is set (machine-local, overlay-supplied under a `mac` machine-class
+guard wherever the shim is wired; default unset, so a public-only clone or a
+Linux box is untouched)
 it exports `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` (`''`, `0`, `false`, `no` and
 `off` are normalised to unset under the gate, since Claude Code reads the
 variable as a raw string and would treat `0` as disabling; outside the gate a
