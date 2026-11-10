@@ -1336,6 +1336,16 @@ and, for a local-ollama profile, whether the server answers) without
 starting anything; `doctor` includes it. Tests: `tests/hermes.bats` (stub
 hermes/ollama/curl; fixture profile names only).
 
+**`hermes_peer` is what the Claude Peers Hermes session runs.** It calls
+`hermes` only where `hermes_profile` routes the directory (a pin or an
+account mapping); anywhere else it prints one line and the pane stays a plain
+shell. The gate cannot be left to the wrapper, which passes an unrouted
+directory through to Hermes' own resolution — the sticky `active_profile`
+would then run one account's profile in another account's repo. Isolation
+follows `hermes.worktree` and is not forced, and a refusal (profile mapped but
+not created, retired launcher pin) is the wrapper's own. `hermes-doctor` has a
+`peer:` line saying which of the two the cwd gets.
+
 ### Tailnets (two Tailscale networks at once)
 
 Tailscale.app holds several accounts but is *on* one tailnet at a time
