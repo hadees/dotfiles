@@ -349,20 +349,22 @@ groups() {
 # pyget <json> <python expression over g>
 pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(eval(sys.argv[2]))' "$1" "$2"; }
 
-@test "workgroup: five sessions in order, the builtin Diff copied, chat peers run claude-peer" {
+@test "workgroup: six sessions in order, the builtin Diff copied, chat peers run claude-peer, Hermes last" {
   mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist" run sh "$BIN" workgroup
   [ "$status" -eq 0 ]
   [ "$(pyget "$output" '[g["uniqueIdentifier"], g["name"]]')" = "['claudePeer.workgroup', 'Claude Peers']" ]
-  [ "$(pyget "$output" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.main', 'claudePeer.diff', 'claudePeer.chat2', 'claudePeer.chat3', 'claudePeer.chat4']" ]
+  [ "$(pyget "$output" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.main', 'claudePeer.diff', 'claudePeer.chat2', 'claudePeer.chat3', 'claudePeer.chat4', 'claudePeer.hermes']" ]
   [ "$(pyget "$output" 'g["sessions"][0]["kind"]')" = "{'kind': 'root'}" ]
   [ "$(pyget "$output" '[i["kind"] for i in g["sessions"][0]["toolbarItems"]]')" = "['modeSwitcher', 'gitStatus', 'fixtureItem']" ]
   [ "$(pyget "$output" 'g["sessions"][1]["command"]')" = 'fixture-diff \(gitBase)' ]
   [ "$(pyget "$output" 'g["sessions"][1]["parentID"]')" = "claudePeer.main" ]
   [ "$(pyget "$output" 'g["sessions"][1]["toolbarItems"][1]["reloadShortcut"]["serialized"]')" = "0x1-0x2-0x3" ]
-  [ "$(pyget "$output" '[s["command"] for s in g["sessions"][2:]]')" = "['claude-peer run', 'claude-peer run', 'claude-peer run']" ]
+  [ "$(pyget "$output" '[s["command"] for s in g["sessions"][2:5]]')" = "['claude-peer run', 'claude-peer run', 'claude-peer run']" ]
   [ "$(pyget "$output" '[s["toolbarItems"] for s in g["sessions"][2:]][0]')" = "[{'kind': 'modeSwitcher'}]" ]
-  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"][2:]]')" = "['Chat 2', 'Chat 3', 'Chat 4']" ]
+  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"][2:5]]')" = "['Chat 2', 'Chat 3', 'Chat 4']" ]
+  [ "$(pyget "$output" '[g["sessions"][5][k] for k in ("uniqueIdentifier", "displayName", "command", "parentID", "toolbarItems")]')" = "['claudePeer.hermes', 'Hermes', 'claude-peer hermes', 'claudePeer.main', [{'kind': 'modeSwitcher'}]]" ]
+  [ "$(pyget "$output" 'g["sessions"][5]["kind"]')" = "{'kind': 'peer'}" ]
 }
 
 @test "workgroup: with no builtin in the store the templates stand in" {
@@ -442,11 +444,78 @@ pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(ev
   [[ "$output" == *"iterm2: running"* ]]
   CLAUDE_PEER_PREFS="$FAKE_DOMAIN" sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (5 sessions: Chat, Review, Chat 2, Chat 3, Chat 4)"* ]]
+  [[ "$output" == *"workgroup: installed (6 sessions: Chat, Review, Chat 2, Chat 3, Chat 4, Hermes)"* ]]
   FAKE_OS=Linux run sh "$BIN" status
   [[ "$output" == *"status needs macOS"* ]]
   FAKE_OS=Linux run sh "$BIN" install
   [ "$status" -eq 2 ]
+}
+
+@test "status: a workgroup older than this version says out of date; install clears it" {
+  stubs
+  mkprefs "$BATS_TEST_TMPDIR/domain.plist"
+  export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist"
+  CLAUDE_PEER_PREFS="$FAKE_DOMAIN" sh "$BIN" install >/dev/null
+  python3 -I - "$FAKE_DOMAIN" <<'PY'
+import json, plistlib, sys
+pl = plistlib.load(open(sys.argv[1], "rb"))
+groups = json.loads(pl["Workgroups"])
+next(g for g in groups if g["uniqueIdentifier"] == "claudePeer.workgroup")["sessions"].pop()
+pl["Workgroups"] = json.dumps(groups).encode()
+plistlib.dump(pl, open(sys.argv[1], "wb"))
+PY
+  run sh "$BIN" status
+  [[ "$output" == *"workgroup: installed, out of date (5 sessions: Chat, Review, Chat 2, Chat 3, Chat 4)"* ]]
+  [[ "$output" == *"this version defines 6 (Chat, Review, Chat 2, Chat 3, Chat 4, Hermes)"* ]]
+  CLAUDE_PEER_PREFS="$FAKE_DOMAIN" sh "$BIN" install >/dev/null
+  run sh "$BIN" status
+  [[ "$output" == *"workgroup: installed (6 sessions: "* ]]
+  [[ "$output" != *"out of date"* ]]
+}
+
+# --- hermes ----------------------------------------------------------------------
+
+@test "hermes: execs an interactive shell that runs hermes_peer, with or without a repository" {
+  run sh "$BIN" hermes
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'args=-i -c '*'hermes_peer "$@"'*'exec "${SHELL:-/bin/sh}" -i'*' claude-peer' ]]
+  [[ "$output" == *"peer=unset"* ]]
+  run sh "$BIN" hermes -- --foo
+  [ "$status" -eq 0 ]
+  [[ "$output" == *' claude-peer --foo' ]]
+  mkdir "$BATS_TEST_TMPDIR/norepo"
+  cd "$BATS_TEST_TMPDIR/norepo"
+  run sh "$BIN" hermes
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"hermes_peer"* ]]
+  [ -z "$(find "$REPO/.git" -name claude-peer.claim)" ]
+}
+
+@test "hermes: a stray argument without -- is a usage error; the settle delay applies" {
+  run sh "$BIN" hermes --foo
+  [ "$status" -eq 2 ]
+  cat >"$BATS_TEST_TMPDIR/bin/sleep" <<'STUB'
+#!/bin/sh
+echo "$*" >>"$SLEEP_LOG"
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/sleep"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH" SLEEP_LOG="$BATS_TEST_TMPDIR/sleep.log"
+  CLAUDE_PEER_SETTLE=3 sh "$BIN" hermes >/dev/null
+  [ "$(cat "$SLEEP_LOG")" = 3 ]
+}
+
+@test "hermes: the snippet runs hermes_peer when defined and says so when not" {
+  # run the real snippet under sh, standing in for the login shell
+  real_sh=$(command -v sh)
+  cat >"$BATS_TEST_TMPDIR/bin/fakeshell" <<STUB
+#!/bin/sh
+[ "\${2-}" = -c ] || { echo interactive; exit 0; }
+snippet=\$3; shift 3
+exec $real_sh -c "\$snippet" "\$@"
+STUB
+  run sh "$BIN" hermes
+  [[ "$output" == *"hermes_peer is not defined in this shell; plain shell (chezmoi apply)"* ]]
+  [[ "$output" == *"interactive"* ]]
 }
 
 # --- default --------------------------------------------------------------------

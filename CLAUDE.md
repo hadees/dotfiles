@@ -956,8 +956,9 @@ runs. The
 script deploys on every machine class — those three need only git; the iTerm2
 verbs refuse off macOS.
 
-The definition is a **second** Workgroup, `Claude Peers` (Chat, Diff, Chat 2-4;
-the peers' command is `claude-peer run`), never extra peers on the builtin:
+The definition is a **second** Workgroup, `Claude Peers` (Chat, Diff, Chat 2-4,
+Hermes; the Chat peers' command is `claude-peer run`, the last one's
+`claude-peer hermes`), never extra peers on the builtin:
 peers spawn at entry and the builtin is entered on every `claude` job.
 `claude-peer install` writes it into the `Workgroups` key (JSON in a data
 value), refuses while iTerm2 runs, and edits the custom prefs folder's plist
@@ -967,14 +968,18 @@ launch replaces the domain's syncable keys from the folder
 (`:1768-1830`), so `defaults write` or an edit while iTerm2 runs is lost. That
 plist is tracked here and rewritten by iTerm2 at every quit, so the edit is
 the same drift as any save and is not committed back. `status` prints
-`store:`, `iterm2:`, `workgroup:` and `builtin:`.
+`store:`, `iterm2:`, `workgroup:` and `builtin:`. `workgroup:` compares the
+installed definition's sessions (identifier, name, command) with what
+`build()` would write now over the same store and says `installed, out of date
+(...); this version defines N (...)` when they differ: the script gained a
+session, or the builtin Diff it copies changed, since `install` last ran.
 
 `claude-peer default peers` makes it the default instead. It points every
 profile's Enter Workgroup trigger (the one iTerm2's onboarding fires on a
 `claude` job) from `builtin.claudeCode` at `claudePeer.workgroup`, so every
 claude tab enters Claude Peers. That is the eager-spawn trade above, taken on
-purpose: each claude tab starts Chat 2-4 at once, three more Claudes, each in
-its own scratch `peer-N` worktree. `default builtin` switches it back. It
+purpose: each claude tab starts Chat 2-4 and Hermes at once, three more
+Claudes, each in its own scratch `peer-N` worktree, plus the Hermes pane. `default builtin` switches it back. It
 needs iTerm2 quit, as `install` does, and moves only triggers aimed at one of
 the two workgroups. `status` prints a `default:` line that reads `builtin`,
 `peers` or `mixed`. iTerm2's own Reinstall of the integration rewrites these
@@ -1017,6 +1022,23 @@ Outside a repository a scratch peer prints one line and leaves a plain shell
 (a branch argument still dies). `status` adds `scratch: <n> peer-N worktrees
 in <repo> (<a> in use, <k> kept: dirty, on a branch or directory gone, <f>
 free)` when run inside a repository.
+
+**The Hermes peer** is a plain shell unless a Hermes profile routes the
+directory. `claude-peer hermes [-- hermes args…]` needs no repository, makes no
+worktree, writes no claim and sets no `CLAUDE_PEER_WORKTREE`; it settles
+`CLAUDE_PEER_SETTLE` seconds, then `exec`s an interactive shell that calls the
+zsh function `hermes_peer` (see the Hermes section: the gate is
+`hermes_profile`, so no account name is tested here) and then stays a shell
+whatever that did, so the pane ends at a prompt, never at iTerm2's restart
+banner. A shell without `hermes_peer` (the installed definition is newer than
+the deployed functions) says so and stays a shell. Where `hermes.worktree` is
+on, each Hermes start fetches the base branch and creates
+`<toplevel>/.worktrees/hermes-<id>` plus a branch, removed at exit unless it
+holds unpushed commits (leftovers are reaped by the next start once a day old),
+and Hermes appends `.worktrees/` to the tracked `.gitignore` of whichever
+checkout the leader stands in, once, if that line is missing (Hermes 0.19.0
+`cli.py`). The Hermes peer has no Session Status row (rows come from Claude
+Code hooks) and is not part of the leader's roll-call.
 
 **One Diff only, and it is the leader's.** Peers of peers never spawn and the
 git poller follows the leader's PWD, so a peer's uncommitted work is visible

@@ -28,6 +28,9 @@
 # `claude --version` typed in a tab also enters the workgroup, so a scratch
 # peer waits CLAUDE_PEER_SETTLE seconds (default 2) before it makes anything,
 # and outside a repository it leaves a plain shell instead of failing.
+# The sixth session, Hermes, runs `hermes` (the .functions wrapper, through
+# `hermes_peer`) only where a Hermes profile routes this directory; elsewhere it
+# is a plain shell. It needs no worktree and leaves no claim.
 # `install` edits the preferences while iTerm2 is quit because iTerm2 writes
 # its preferences back at quit (and, with a custom prefs folder, replaces the
 # domain from the folder at launch); an edit made while it runs is lost.
@@ -40,6 +43,11 @@
 #                            worktree detached at origin/HEAD (peer-N), the
 #                            branch is claude's to make; outside a repository
 #                            that form leaves a plain shell
+#   hermes [-- hermes args...]
+#                            the Hermes peer: wait CLAUDE_PEER_SETTLE, then an
+#                            interactive shell that runs hermes_peer (hermes
+#                            where a profile routes here, else a one-line
+#                            notice); no repository or worktree needed
 #   peers [--leader <dir>] [<dir>]
 #                            worktree<TAB>pid<TAB>leader per live claim in
 #                            the repository of <dir> (default $PWD), sorted;
@@ -269,6 +277,19 @@ cmd_run() {
   exec "${SHELL:-/bin/sh}" -i -c 'claude "$@"' claude-peer "$@"
 }
 
+# [-- hermes args...]. The shell function does the routing (hermes_profile is
+# zsh and lives in .functions), so this only settles, then starts a shell that
+# calls it and stays a shell whatever it did.
+cmd_hermes() {
+  if [ $# -gt 0 ]; then
+    [ "$1" = -- ] || usage
+    shift
+  fi
+  [ "${CLAUDE_PEER_SETTLE:-2}" -gt 0 ] && sleep "${CLAUDE_PEER_SETTLE:-2}"
+  HERMES_SH='if typeset -f hermes_peer >/dev/null 2>&1; then hermes_peer "$@"; else echo "claude-peer: hermes_peer is not defined in this shell; plain shell (chezmoi apply)"; fi; exec "${SHELL:-/bin/sh}" -i'
+  exec "${SHELL:-/bin/sh}" -i -c "$HERMES_SH" claude-peer "$@"
+}
+
 # [--leader <dir>] [<dir>] -> worktree<TAB>pid<TAB>leader per live claim in the
 # repository of <dir>, sorted by worktree. Silent outside a repository.
 cmd_peers() {
@@ -397,7 +418,9 @@ def build(groups):
     diff.update(uniqueIdentifier="claudePeer.diff", parentID="claudePeer.main")
     chats = [session("claudePeer.chat%d" % n, "Chat %d" % n, "peer", "claude-peer run",
                      parent="claudePeer.main") for n in (2, 3, 4)]
-    return {"uniqueIdentifier": GROUP, "name": NAME, "sessions": [main, diff] + chats}
+    hermes = session("claudePeer.hermes", "Hermes", "peer", "claude-peer hermes",
+                     parent="claudePeer.main")
+    return {"uniqueIdentifier": GROUP, "name": NAME, "sessions": [main, diff] + chats + [hermes]}
 
 def enter_triggers(pl):
     """(profile name, trigger dict) for every Enter Workgroup trigger aimed at
@@ -428,8 +451,16 @@ if mode == "status":
     if groups is None:
         print("workgroup: unreadable (Workgroups is not JSON; install refuses until it is fixed)")
     elif mine:
+        def shape(g):
+            return [(s.get("uniqueIdentifier"), s.get("displayName"), s.get("command"))
+                    for s in g.get("sessions", [])]
         names = [s.get("displayName", "?") for s in mine.get("sessions", [])]
-        print("workgroup: installed (%d sessions: %s)" % (len(names), ", ".join(names)))
+        want = [n or "?" for _, n, _ in shape(build(groups))]
+        if shape(mine) == shape(build(groups)):
+            print("workgroup: installed (%d sessions: %s)" % (len(names), ", ".join(names)))
+        else:
+            print("workgroup: installed, out of date (%d sessions: %s); this version defines %d (%s) — claude-peer install (with iTerm2 quit)"
+                  % (len(names), ", ".join(names), len(want), ", ".join(want)))
     else:
         print("workgroup: not installed — claude-peer install (with iTerm2 quit)")
     if any(g.get("uniqueIdentifier") == BUILTIN for g in groups or []):
@@ -518,7 +549,7 @@ cmd_default() {
   proc_running iTerm2 && die "quit iTerm2 first — it rewrites its preferences at quit and would overwrite this"
   prefs_store
   r=$(peer_py default "$skind" "$spath" "$1") || exit 1
-  [ "$1" = peers ] && what="Claude Peers (Chat 2-4 start with every claude tab)" || what="Claude Code"
+  [ "$1" = peers ] && what="Claude Peers (Chat 2-4 and Hermes start with every claude tab)" || what="Claude Code"
   printf 'claude-peer: a claude job now enters %s; %s\n' "$what" "$r"
 }
 
@@ -555,6 +586,7 @@ EOF
 cmd=$1; shift
 case $cmd in
   run) cmd_run "$@";;
+  hermes) cmd_hermes "$@";;
   peers) cmd_peers "$@";;
   path) cmd_path "$@";;
   plan) cmd_plan "$@";;
