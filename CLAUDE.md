@@ -993,6 +993,31 @@ workgroup statuses* **off** (on, four Claudes are one row). Rows read `[group]
 <repo>` for the leader and `<repo>@<slug>` for peers (no group prefix:
 `WORKTABS_GROUP` is not inherited).
 
+**Scratch peers are safe to start together.** With `default peers` the
+scratch path is the normal one, and Chat 2-4 start in the same instant
+(iTerm2 spawns every peer in one loop at entry), so it is built for that.
+`scratch_checkout` runs under a per-repo lock, a symlink
+`<git common dir>/claude-peer.lock` whose target is the holder's pid (`ln -s`
+is atomic; no `flock` on macOS), and a dead holder's lock is broken. Every
+`run` also writes a **claim**, `claude-peer.claim` in the worktree's own git
+directory: line 1 the pid of the `run` (`exec` keeps it, so it becomes the
+shell that parents claude), line 2 the leader's directory. A claim whose pid
+answers `kill -0` means the worktree is **in use**, and a scratch peer skips it
+as it skips a dirty one. Claims are never deleted; a dead pid is simply not
+live, and the file goes with the worktree. `claude-peer peers [--leader <dir>]
+[<dir>]` prints `worktree<TAB>pid<TAB>leader` for each live claim in the
+repository, on every OS. Residual: breaking a stale lock is not atomic, so two
+waiters racing at the instant a holder was killed can still collide; the
+claim's re-read is the backstop. The iTerm2 Enter trigger matches the job name
+only, so `claude --version` in a tab enters the group too: a scratch peer
+therefore settles `CLAUDE_PEER_SETTLE` seconds (default 2, 0 disables) before
+it makes anything, so a short job costs nothing, and runs `git worktree add`
+immune to hangup so a pane torn down mid-checkout leaves no half-made tree.
+Outside a repository a scratch peer prints one line and leaves a plain shell
+(a branch argument still dies). `status` adds `scratch: <n> peer-N worktrees
+in <repo> (<a> in use, <k> kept: dirty, on a branch or directory gone, <f>
+free)` when run inside a repository.
+
 **One Diff only, and it is the leader's.** Peers of peers never spawn and the
 git poller follows the leader's PWD, so a peer's uncommitted work is visible
 only from inside its Chat; its commits show by typing `main..<branch>` in the

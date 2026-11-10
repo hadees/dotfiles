@@ -13,13 +13,16 @@ setup() {
   export GIT_CONFIG_SYSTEM=/dev/null
   export GIT_CONFIG_NOSYSTEM=1
   export GIT_CEILING_DIRECTORIES="$BATS_TEST_TMPDIR"
+  export CLAUDE_PEER_SETTLE=0
   git config --global user.name octo
   git config --global user.email octo@example.com
   git config --global init.defaultBranch main
   cat >"$BATS_TEST_TMPDIR/bin/fakeshell" <<'STUB'
 #!/bin/sh
 echo "pwd=$PWD"
+echo "peer=${CLAUDE_PEER_WORKTREE-unset}"
 echo "args=$*"
+[ -z "${FAKE_SHELL_SLEEP-}" ] || sleep "$FAKE_SHELL_SLEEP"
 STUB
   chmod +x "$BATS_TEST_TMPDIR/bin/fakeshell"
   export SHELL="$BATS_TEST_TMPDIR/bin/fakeshell"
@@ -147,6 +150,142 @@ STUB
   sh "$BIN" run feat/b >/dev/null
   [ "$(git rev-parse feat/b)" = "$(git rev-parse origin/HEAD)" ]
   [ "$(git rev-parse feat/b)" != "$(git rev-parse HEAD)" ]
+}
+
+# --- scratch peers as the default: claim, lock, settle, soft landing, peers -------
+
+# claim_of <worktree>: the claim file inside the worktree's git directory
+claim_of() { echo "$(git -C "$1" rev-parse --absolute-git-dir)/claude-peer.claim"; }
+
+@test "run: exports CLAUDE_PEER_WORKTREE, on the scratch path and on the branch path" {
+  run sh "$BIN" run
+  [[ "$output" == *"peer=$REPO/.claude/worktrees/peer-1"* ]]
+  run sh "$BIN" run feat/x
+  [[ "$output" == *"peer=$REPO/.claude/worktrees/feat-x"* ]]
+}
+
+@test "run: writes a claim with its pid and the directory it was started from" {
+  mkdir "$REPO/sub"
+  cd "$REPO/sub"
+  FAKE_SHELL_SLEEP=1 sh "$BIN" run >/dev/null &
+  rpid=$!
+  sleep 0.5
+  c=$(claim_of "$REPO/.claude/worktrees/peer-1")
+  [ "$(sed -n 1p "$c")" = "$rpid" ]
+  [ "$(sed -n 2p "$c")" = "$(pwd -P)" ]
+  wait "$rpid"
+  sh "$BIN" run feat/x >/dev/null
+  [ "$(sed -n 2p "$(claim_of "$REPO/.claude/worktrees/feat-x")")" = "$(pwd -P)" ]
+}
+
+@test "run: a clean peer worktree with a live claim is skipped, reused once the claim is dead" {
+  sh "$BIN" run >/dev/null
+  sleep 300 & spid=$!
+  printf '%s\n%s\n' "$spid" "$REPO" >"$(claim_of "$REPO/.claude/worktrees/peer-1")"
+  run sh "$BIN" run
+  [[ "$output" == *"peer-2	created"* ]]
+  kill "$spid"; wait "$spid" 2>/dev/null || true
+  run sh "$BIN" run
+  [[ "$output" == *"peer-1	reused"* ]]
+}
+
+@test "run: three simultaneous scratch peers land in peer-1, peer-2 and peer-3 once each" {
+  for i in 1 2 3; do
+    FAKE_SHELL_SLEEP=2 sh "$BIN" run >"$BATS_TEST_TMPDIR/out$i" 2>&1 &
+    pids="$pids $!"
+  done
+  for p in $pids; do wait "$p"; done
+  [ "$(cat "$BATS_TEST_TMPDIR"/out? | grep -c "created")" -eq 3 ]
+  for n in 1 2 3; do
+    [ "$(cat "$BATS_TEST_TMPDIR"/out? | grep -c "peer-$n	created")" -eq 1 ]
+  done
+  [ ! -e "$REPO/.git/claude-peer.lock" ]
+}
+
+@test "run: a lock left by a dead pid is broken; one held by a live pid times out" {
+  ln -s 2147483646 "$REPO/.git/claude-peer.lock"
+  run sh "$BIN" run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"peer-1	created"* ]]
+  [ ! -e "$REPO/.git/claude-peer.lock" ]
+  ln -s "$$" "$REPO/.git/claude-peer.lock"
+  CLAUDE_PEER_LOCK_WAIT=1 run sh "$BIN" run
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not lock"*"held by pid $$"* ]]
+  [[ "$output" != *"pwd="* ]]
+}
+
+@test "run: the settle delay applies to a scratch peer, not to a branch peer" {
+  cat >"$BATS_TEST_TMPDIR/bin/sleep" <<'STUB'
+#!/bin/sh
+echo "$*" >>"$SLEEP_LOG"
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/sleep"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH" SLEEP_LOG="$BATS_TEST_TMPDIR/sleep.log"
+  CLAUDE_PEER_SETTLE=3 sh "$BIN" run >/dev/null
+  [ "$(cat "$SLEEP_LOG")" = 3 ]
+  CLAUDE_PEER_SETTLE=3 sh "$BIN" run feat/x >/dev/null
+  [ "$(cat "$SLEEP_LOG")" = 3 ]
+}
+
+@test "run: no branch outside a repository is a plain shell, not a failure" {
+  mkdir "$BATS_TEST_TMPDIR/norepo"
+  cd "$BATS_TEST_TMPDIR/norepo"
+  run sh "$BIN" run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"claude-peer: not in a git repository, so there is no worktree to give this peer; plain shell"* ]]
+  [[ "$output" == *"args=-i"* ]]
+  [[ "$output" == *"peer=unset"* ]]
+}
+
+@test "peers: lists live claims, drops dead ones, filters by leader, silent outside a repository" {
+  sh "$BIN" run >/dev/null
+  sh "$BIN" run feat/x >/dev/null
+  run sh "$BIN" peers
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  sleep 300 & s1=$!
+  sleep 300 & s2=$!
+  mkdir "$BATS_TEST_TMPDIR/lead"
+  printf '%s\n%s\n' "$s1" "$REPO" >"$(claim_of "$REPO/.claude/worktrees/peer-1")"
+  printf '%s\n%s\n' "$s2" "$BATS_TEST_TMPDIR/lead" >"$(claim_of "$REPO/.claude/worktrees/feat-x")"
+  run sh "$BIN" peers
+  [ "$status" -eq 0 ]
+  [ "$output" = "$REPO/.claude/worktrees/feat-x	$s2	$BATS_TEST_TMPDIR/lead"$'\n'"$REPO/.claude/worktrees/peer-1	$s1	$REPO" ]
+  run sh "$BIN" peers --leader "$REPO"
+  [ "$output" = "$REPO/.claude/worktrees/peer-1	$s1	$REPO" ]
+  run sh "$BIN" peers --leader "$BATS_TEST_TMPDIR/nonexistent"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  kill "$s1"; wait "$s1" 2>/dev/null || true
+  run sh "$BIN" peers "$REPO/.claude/worktrees/feat-x"
+  [ "$output" = "$REPO/.claude/worktrees/feat-x	$s2	$BATS_TEST_TMPDIR/lead" ]
+  kill "$s2"
+  cd "$BATS_TEST_TMPDIR"
+  mkdir norepo; cd norepo
+  run sh "$BIN" peers
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "status: the scratch line counts in-use, kept and free peer worktrees" {
+  stubs
+  mkprefs "$BATS_TEST_TMPDIR/domain.plist"
+  export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist" FAKE_LOAD=0
+  run sh "$BIN" status
+  [[ "$output" == *"scratch: 0 peer-N worktrees in $REPO (0 in use, 0 kept"* ]]
+  sh "$BIN" run >/dev/null
+  echo dirty >"$REPO/.claude/worktrees/peer-1/tracked.txt"
+  sh "$BIN" run >/dev/null
+  sleep 300 & spid=$!
+  printf '%s\n%s\n' "$spid" "$REPO" >"$(claim_of "$REPO/.claude/worktrees/peer-2")"
+  sh "$BIN" run >/dev/null
+  run sh "$BIN" status
+  kill "$spid"
+  [[ "$output" == *"scratch: 3 peer-N worktrees in $REPO (1 in use, 1 kept: dirty, on a branch or directory gone, 1 free)"* ]]
+  cd "$BATS_TEST_TMPDIR"; mkdir norepo; cd norepo
+  run sh "$BIN" status
+  [[ "$output" != *"scratch:"* ]]
 }
 
 # --- workgroup / install / status ----------------------------------------------
