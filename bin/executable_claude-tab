@@ -209,11 +209,13 @@ as_string() { printf '%s' "${1-}" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 tabs_script() {
   cat <<'APPLESCRIPT'
 set out to ""
+-- The word tab inside a tell to iTerm2 is its tab class, not a tab character.
+set sep to (character id 9)
 tell application "iTerm2"
   repeat with w in windows
     repeat with t in tabs of w
       repeat with s in sessions of t
-        set out to out & (id of w) & tab & (tty of s) & tab & (name of s) & linefeed
+        set out to out & (id of w) & sep & (tty of s) & sep & (name of s) & linefeed
       end repeat
     end repeat
   end repeat
@@ -256,6 +258,7 @@ restore_tabs_script() {
   cat <<'APPLESCRIPT'
 -- restore: window, tab, sessions in tab, tty, current
 set out to ""
+set sep to (character id 9)
 tell application "iTerm2"
   set cw to 0
   try
@@ -269,7 +272,7 @@ tell application "iTerm2"
       repeat with s in sessions of t
         set cur to 0
         if (id of w) is cw then set cur to 1
-        set out to out & (id of w) & tab & ti & tab & n & tab & (tty of s) & tab & cur & linefeed
+        set out to out & (id of w) & sep & ti & sep & n & sep & (tty of s) & sep & cur & linefeed
       end repeat
     end repeat
   end repeat

@@ -358,6 +358,8 @@ APPLESCRIPT
 open_marks_script() {
   cat <<APPLESCRIPT
 set out to ""
+-- The word tab inside a tell to iTerm2 is its tab class, not a tab character.
+set sep to (character id 9)
 tell application "iTerm2"
 	repeat with w in windows
 		repeat with t in tabs of w
@@ -371,7 +373,7 @@ tell application "iTerm2"
 								set x to (variable named "$MARK_WORKTREE")
 								if x is not missing value then set wtv to (x as text)
 							end try
-							set out to out & (v as text) & tab & wtv & linefeed
+							set out to out & (v as text) & sep & wtv & linefeed
 						end if
 					end try
 				end tell
