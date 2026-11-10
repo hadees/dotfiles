@@ -12,7 +12,7 @@ bundle. A **machine class** chosen once at `chezmoi init` (`mac` / `linux` /
 `--promptString machineClass=<class>`) drives all per-machine templating:
 `ephemeral` deploys shell config only (no identity, no secrets), `wsl` adds
 1Password's ssh.exe forwarding pattern, `mac` pins chezmoi's `sourceDir` to
-`~/code/dotfiles` so the clone is the source of truth.
+`~/code/dotfiles` (when that clone exists) so the clone is the source of truth.
 
 Source naming follows chezmoi conventions: `dot_zshrc` deploys to
 `~/.zshrc`, `private_dot_extra.tmpl` renders to `~/.extra` (mode 0600),

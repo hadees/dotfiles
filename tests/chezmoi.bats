@@ -83,8 +83,17 @@ teardown() {
   assert_no_secret_leaks
 }
 
+@test "mac class without the clone pins no sourceDir, and init --apply still applies" {
+  cd "$BATS_TEST_DIRNAME/.."
+  chez init --source "$PWD" --promptString machineClass=mac --apply --exclude scripts
+  ! grep -q 'sourceDir' "$TMPHOME/.config/chezmoi/chezmoi.toml"
+  grep -q 'machineClass = "mac"' "$TMPHOME/.config/chezmoi/chezmoi.toml"
+  [ -f "$TMPHOME/.zshrc" ]
+}
+
 @test "mac class pins sourceDir and deploys the shell layer" {
   cd "$BATS_TEST_DIRNAME/.."
+  mkdir -p "$TMPHOME/code" && ln -s "$PWD" "$TMPHOME/code/dotfiles"
   chez init --source "$PWD" --promptString machineClass=mac --apply --exclude scripts
   # The mac-only bit that renders identically on every platform: the config
   # pins the development clone as the source of truth.

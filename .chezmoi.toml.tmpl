@@ -6,7 +6,10 @@
 {{-   fail (printf "machineClass %q is invalid: must be one of mac, linux, wsl, ephemeral" $machineClass) -}}
 {{- end -}}
 
-{{ if eq $machineClass "mac" -}}
+{{- /* Pinned only when the clone is there: since chezmoi 2.74.1, init --apply
+     reloads this config and applies from sourceDir, so a pin to a missing
+     directory fails a fresh `init --apply` that cloned elsewhere. */ -}}
+{{ if and (eq $machineClass "mac") (stat (joinPath .chezmoi.homeDir "code/dotfiles")) -}}
 # The development clone doubles as the chezmoi source directory on macs.
 sourceDir = "~/code/dotfiles"
 
