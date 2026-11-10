@@ -594,3 +594,11 @@ fill gamma" ]
   run sh "$CT" restore --bogus
   [ "$status" -eq 2 ]
 }
+
+@test "AppleScript separators are a real tab character, never the tab keyword" {
+  # Inside `tell application "iTerm2"`, `tab` is iTerm2's tab class: the
+  # listing came back with the literal word, and restore found no window.
+  # The stubbed osascript in these tests cannot see that, so pin the source.
+  ! grep -n '& tab &' "$BATS_TEST_DIRNAME/../bin/executable_claude-tab" "$BATS_TEST_DIRNAME/../bin/executable_worktabs"
+  grep -q 'set sep to (character id 9)' "$BATS_TEST_DIRNAME/../bin/executable_claude-tab"
+}
