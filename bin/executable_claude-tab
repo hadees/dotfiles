@@ -20,10 +20,22 @@
 #                            window, title, cwd ("-" for empty)
 #   tabs                     iTerm2's sessions: window, tty, title
 #   focus <pid>              bring that session's iTerm2 tab forward
+#   save [file]              write the live sessions to a file (default
+#                            $XDG_STATE_HOME/claude-tab/saved.tsv; the old one
+#                            becomes <file>.prev); peers and headless sessions
+#                            are left out
+#   restore [--dry-run] [--window <id>] [--delay <seconds>] [file]
+#                            resume the saved sessions inside ONE existing
+#                            window: empty tabs first, new tabs after, never a
+#                            new window (macOS; --dry-run prints the plan)
 set -u
 
 TAB=$(printf '\t')
 TABNAME=${CLAUDE_TAB_TABNAME:-$HOME/bin/tabname}
+PEERCMD=${CLAUDE_TAB_PEER:-$HOME/bin/claude-peer}
+NL='
+'
+OSA_HINT="osascript could not drive iTerm2 — if macOS asked for Automation permission and was denied, grant it in System Settings > Privacy & Security > Automation"
 
 die() { printf 'claude-tab: %s\n' "$*" >&2; exit 1; }
 warn() { printf 'claude-tab: %s\n' "$*" >&2; }
@@ -94,6 +106,37 @@ REG
   done
 }
 
+# Live records of every profile for save/restore: pid, profile dir, session id,
+# kind, cwd, name. A second reader so registry_rows keeps the five fields
+# that list and focus parse.
+registry_full() {
+  profile_dirs | while IFS= read -r d; do
+    [ -d "$d/sessions" ] || continue
+    python3 - "$d" <<'REG'
+import glob, json, os, re, sys
+d = sys.argv[1]
+def field(v):
+    s = re.sub(r"[\t\r\n]", " ", str(v)).strip()
+    return s if s else "-"
+for f in sorted(glob.glob(os.path.join(d, "sessions", "*.json"))):
+    if not re.fullmatch(r"\d+\.json", os.path.basename(f)):
+        continue
+    try:
+        with open(f) as fh:
+            r = json.load(fh)
+        pid = r["pid"]
+        if type(pid) is not int or pid <= 0:
+            continue
+        os.kill(pid, 0)
+    except PermissionError:
+        pass  # alive, just not ours
+    except Exception:
+        continue
+    print("\t".join(field(x) for x in (pid, d, r.get("sessionId"), r.get("kind"), r.get("cwd"), r.get("name"))))
+REG
+  done
+}
+
 # --- pid -> tty --------------------------------------------------------------
 
 # "/dev/<tty>" for a ps tty column, nothing for "no terminal" (macOS "??",
@@ -132,6 +175,13 @@ tty_table() {
 }
 
 # --- the label ---------------------------------------------------------------
+
+init_tabname() {
+  if [ -x "$TABNAME" ]; then have_tabname=1; else
+    have_tabname=0
+    warn "tabname not found at $TABNAME — labels fall back to directory names (chezmoi apply)"
+  fi
+}
 
 # label <TAB> place for a directory: "-" at the toplevel, "subdir=<rel>" below
 # it, "nogit" when tabname declines (not a work tree, or the directory is
@@ -199,6 +249,68 @@ return ""
 APPLESCRIPT
 }
 
+# Read-only, for restore: window id, tab ordinal (own counter — `index of t`
+# fails inside `repeat with`), sessions in the tab, tty, and 1 when the window
+# is the current one.
+restore_tabs_script() {
+  cat <<'APPLESCRIPT'
+-- restore: window, tab, sessions in tab, tty, current
+set out to ""
+tell application "iTerm2"
+  set cw to 0
+  try
+    set cw to (id of current window)
+  end try
+  repeat with w in windows
+    set ti to 0
+    repeat with t in tabs of w
+      set ti to ti + 1
+      set n to (count of sessions of t)
+      repeat with s in sessions of t
+        set cur to 0
+        if (id of w) is cw then set cur to 1
+        set out to out & (id of w) & tab & ti & tab & n & tab & (tty of s) & tab & cur & linefeed
+      end repeat
+    end repeat
+  end repeat
+end tell
+return out
+APPLESCRIPT
+}
+
+# Type $3 into the session on tty $2 of window $1. `write text`, never a tab
+# command: the login shell must run it, so the `claude` wrapper does.
+fill_script() {
+  cat <<APPLESCRIPT
+tell application "iTerm2"
+  set w to (first window whose id is $1)
+  repeat with t in tabs of w
+    repeat with s in sessions of t
+      if (tty of s) is "$(as_string "$2")" then
+        tell s to write text "$(as_string "$3")"
+        return "ok"
+      end if
+    end repeat
+  end repeat
+end tell
+return ""
+APPLESCRIPT
+}
+
+# A new tab in window $1 (never a new window), $2 typed into it.
+newtab_script() {
+  cat <<APPLESCRIPT
+tell application "iTerm2"
+  set w to (first window whose id is $1)
+  tell w
+    set t to (create tab with default profile)
+  end tell
+  tell current session of t to write text "$(as_string "$2")"
+  return "ok"
+end tell
+APPLESCRIPT
+}
+
 run_script() { # applescript on stdin
   s=$(cat)
   i=0
@@ -234,7 +346,7 @@ cmd_focus() {
   { [ -n "$tty" ] && [ "$tty" != - ]; } || die "pid $pid has no terminal (headless)"
   proc_running iTerm2 || die "iTerm2 is not running"
   out=$(focus_script "$tty" | run_script) ||
-    die "osascript could not drive iTerm2 — if macOS asked for Automation permission and was denied, grant it in System Settings > Privacy & Security > Automation"
+    die "$OSA_HINT"
   [ "$out" = ok ] || die "pid $pid is on $tty, which is not an iTerm2 tab"
 }
 
@@ -242,10 +354,7 @@ cmd_list() {
   need_python
   rows=$(registry_rows)
   [ -n "$rows" ] || return 0
-  if [ -x "$TABNAME" ]; then have_tabname=1; else
-    have_tabname=0
-    warn "tabname not found at $TABNAME — labels fall back to directory names (chezmoi apply)"
-  fi
+  init_tabname
   # shellcheck disable=SC2046
   ttys=$(tty_table $(printf '%s\n' "$rows" | cut -f1))
   # One listing per call, not per row; "unknown" when there is none to join.
@@ -277,6 +386,161 @@ EOF_HIT
   done | LC_ALL=C sort -t"$TAB" -k3,3 -k1,1n
 }
 
+# Single-quoted for a POSIX shell.
+sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+# Is the directory a peer worktree? claude-peer knows; without it, the name.
+is_peer() {
+  if [ -x "$PEERCMD" ]; then
+    phys=$(cd "$1" 2>/dev/null && pwd -P) || phys=$1
+    "$PEERCMD" peers "$1" 2>/dev/null </dev/null | cut -f1 | grep -Fxq -e "$1" -e "$phys"
+  else
+    case $1 in */.claude/worktrees/peer-[0-9]*) return 0;; esac
+    return 1
+  fi
+}
+
+# Is the tty sitting at a bare shell prompt? At least one foreground process,
+# every one of them a shell (a pane whose process ended has none).
+tty_idle() {
+  ps -o stat=,ucomm= -t "${1#/dev/}" 2>/dev/null | awk '
+    $1 ~ /\+/ { n++; if ($2 !~ /^-?(zsh|bash|fish)$/ && $2 != "login") bad = 1 }
+    END { exit !(n > 0 && !bad) }'
+}
+
+DEFAULT_SAVED=${XDG_STATE_HOME:-$HOME/.local/state}/claude-tab/saved.tsv
+
+cmd_save() {
+  need_python
+  [ $# -le 1 ] || usage
+  file=${1:-$DEFAULT_SAVED}
+  rows=$(registry_full)
+  if [ -n "$rows" ]; then
+    init_tabname
+    # shellcheck disable=SC2046
+    ttys=$(tty_table $(printf '%s\n' "$rows" | cut -f1))
+    tabs='' listed=0
+    if [ "$(os)" = Darwin ] && proc_running iTerm2; then
+      tabs=$(cmd_tabs 2>/dev/null) && listed=1
+    fi
+  fi
+  kept='' n=0 n_peer=0 n_head=0 n_other=0
+  while IFS=$TAB read -r pid pdir sid kind cwd name; do
+    [ -n "$pid" ] || continue
+    tty=$(printf '%s\n' "$ttys" | awk -F'\t' -v p="$pid" '$1 == p { print $2; exit }')
+    if [ -z "$tty" ] || [ "$tty" = - ]; then n_head=$((n_head + 1)); continue; fi
+    case $kind in -|interactive) ;; *) n_other=$((n_other + 1)); continue;; esac
+    case $sid in -|*[!A-Za-z0-9_-]*) n_other=$((n_other + 1)); continue;; esac
+    [ -d "$cwd" ] || { n_other=$((n_other + 1)); continue; }
+    if is_peer "$cwd"; then n_peer=$((n_peer + 1)); continue; fi
+    where=- win=- idx=999999
+    if [ "$listed" = 1 ]; then
+      where=other
+      hit=$(printf '%s\n' "$tabs" | awk -F'\t' -v t="$tty" '$2 == t { print NR "\t" $1; exit }')
+      if [ -n "$hit" ]; then where=iterm2 idx=${hit%%"$TAB"*} win=${hit#*"$TAB"}; fi
+    fi
+    lp=$(label_of "$cwd" </dev/null)
+    label=${lp%"$TAB"*}
+    # sort key (tab order in iTerm2, then label), then the row
+    kept="$kept$(printf '%06d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "$idx" "$label" \
+      "$pdir" "$sid" "$cwd" "$label" "$name" "$tty" "$where" "$win")$NL"
+    n=$((n + 1))
+  done <<EOF_ROWS
+$rows
+EOF_ROWS
+  left="$n_peer peers, $n_head headless, $n_other other"
+  if [ "$n" -eq 0 ]; then
+    warn "no sessions to save (left out: $left); $file left untouched"
+    return 1
+  fi
+  mkdir -p "$(dirname "$file")" || die "cannot create $(dirname "$file")"
+  [ ! -e "$file" ] || mv -f "$file" "$file.prev" || die "cannot rotate $file"
+  {
+    printf '# claude-tab save %s %s sessions\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$n"
+    printf '%s' "$kept" | LC_ALL=C sort -t"$TAB" -k1,1n -k2,2 | cut -f3-
+  } > "$file" || die "cannot write $file"
+  warn "saved $n sessions to $file (left out: $left)"
+}
+
+cmd_restore() {
+  need_macos restore
+  dry=0 win='' delay=3 file=''
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --dry-run) dry=1;;
+      --window) [ $# -ge 2 ] || usage; win=$2; shift;;
+      --delay) [ $# -ge 2 ] || usage; delay=$2; shift;;
+      -*) usage;;
+      *) [ -z "$file" ] || usage; file=$1;;
+    esac
+    shift
+  done
+  case $delay in ''|*[!0-9.]*|.*|*.*.*) usage;; esac
+  case $win in *[!0-9]*) usage;; esac
+  file=${file:-$DEFAULT_SAVED}
+  [ -s "$file" ] || die "no saved sessions at $file (claude-tab save)"
+  need_python
+  proc_running iTerm2 || die "iTerm2 is not running"
+  listing=$(restore_tabs_script | run_script) || die "$OSA_HINT"
+  [ -n "$win" ] || win=$(printf '%s\n' "$listing" | awk -F'\t' '$5 == 1 { print $1; exit }')
+  [ -n "$win" ] || die "no iTerm2 window to restore into (open one, or pass --window)"
+
+  # Empty tabs: one session, not the one running this, sitting at a shell.
+  own=$(walk_tty "$$")
+  empty='' other_empty=0
+  while IFS=$TAB read -r w _ cnt tty _; do
+    [ "$cnt" = 1 ] && [ "$tty" != "$own" ] && tty_idle "$tty" || continue
+    if [ "$w" = "$win" ]; then empty="$empty$tty$NL"; else other_empty=$((other_empty + 1)); fi
+  done <<EOF_TABS
+$listing
+EOF_TABS
+
+  live=$(registry_full)
+  plan='' f=0 n=0 s=0
+  while IFS=$TAB read -r profile sid cwd label _; do
+    case $profile in ''|'#'*) continue;; esac
+    cmd=- tty=-
+    if printf '%s\n' "$live" | P=$profile S=$sid C=$cwd awk -F'\t' \
+        '$2 == ENVIRON["P"] && ($3 == ENVIRON["S"] || $5 == ENVIRON["C"]) { f = 1 } END { exit !f }'; then
+      act=skip:live
+    elif [ ! -d "$cwd" ]; then act=skip:cwd-gone
+    elif [ ! -d "$profile" ]; then act=skip:profile-gone
+    else
+      case $sid in ''|-|*[!A-Za-z0-9_-]*) act=skip:bad-id;; *) act='' ;; esac
+    fi
+    if [ -z "${act-}" ]; then
+      cmd="cd -- $(sq "$cwd") && CLAUDE_PROFILE=$(sq "$profile") claude --resume $sid"
+      if [ -n "$empty" ]; then
+        act=fill tty=${empty%%"$NL"*} empty=${empty#*"$NL"} f=$((f + 1))
+      else
+        act=new n=$((n + 1))
+      fi
+    else
+      s=$((s + 1))
+    fi
+    plan="$plan$act$TAB$tty$TAB$label$TAB$cmd$NL"
+    act=''
+  done < "$file"
+  if [ "$dry" = 1 ]; then printf '%s' "$plan"; return 0; fi
+
+  first=1
+  while IFS=$TAB read -r act tty label cmd; do
+    case $act in fill|new) ;; *) continue;; esac
+    [ "$first" = 1 ] || sleep "$delay"
+    first=0
+    if [ "$act" = fill ]; then scr=$(fill_script "$win" "$tty" "$cmd"); else scr=$(newtab_script "$win" "$cmd"); fi
+    out=$(printf '%s\n' "$scr" | run_script) || die "$OSA_HINT"
+    if [ "$out" != ok ]; then
+      warn "$tty is no longer a tab of window $win; skipped $label"
+      if [ "$act" = fill ]; then f=$((f - 1)); else n=$((n - 1)); fi
+      s=$((s + 1))
+    fi
+  done <<EOF_PLAN
+$plan
+EOF_PLAN
+  warn "restored $f into empty tabs, $n in new tabs, $s skipped; $other_empty empty tabs in other windows left alone"
+}
+
 # --- dispatch ----------------------------------------------------------------
 
 [ $# -ge 1 ] || usage
@@ -286,6 +550,8 @@ case $cmd in
   list)      cmd_list;;
   tabs)      cmd_tabs;;
   focus)     cmd_focus "$@";;
+  save)      cmd_save "$@";;
+  restore)   cmd_restore "$@";;
   -h|--help|help) usage;;
   *)         die "unknown command '$cmd' (claude-tab help)";;
 esac
