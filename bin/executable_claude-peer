@@ -15,6 +15,10 @@
 # A second Workgroup, not extra peers on the builtin Claude Code one: peers
 # spawn eagerly when a workgroup is entered, and the builtin is entered on
 # every claude job, so three more Claudes would start for every session.
+# `default peers` makes that trade on purpose: it points every profile's
+# Enter Workgroup trigger (the one iTerm2's onboarding fires on a `claude`
+# job) at Claude Peers, so each claude tab starts Chat 2-4 at once;
+# `default builtin` points it back.
 # `install` edits the preferences while iTerm2 is quit because iTerm2 writes
 # its preferences back at quit (and, with a custom prefs folder, replaces the
 # domain from the folder at launch); an edit made while it runs is lost.
@@ -34,7 +38,9 @@
 #                            that install would write (reads the store only)
 #   install                  write that definition into iTerm2's preferences;
 #                            iTerm2 must be quit
-#   status                   store, iTerm2, workgroup and builtin state
+#   default <peers|builtin>  which workgroup a `claude` job enters, in every
+#                            profile; with iTerm2 quit, like install
+#   status                   store, iTerm2, workgroup, builtin and default state
 set -u
 
 die() { printf 'claude-peer: %s\n' "$*" >&2; exit 1; }
@@ -215,7 +221,7 @@ prefs_store() {
   skind=folder; spath=${f%/}/com.googlecode.iterm2.plist
 }
 
-# peer_py <workgroup|install|status> <folder|domain> <plist path>
+# peer_py <workgroup|install|status|default> <folder|domain> <plist path> [peers|builtin]
 # The stdlib only: plistlib for the store, json for the Workgroups value (an
 # NSData holding a JSON array), defaults for the domain.
 peer_py() {
@@ -224,6 +230,7 @@ import copy, json, plistlib, subprocess, sys
 
 GROUP, NAME, BUILTIN = "claudePeer.workgroup", "Claude Peers", "builtin.claudeCode"
 mode, kind, path = sys.argv[1:4]
+ENTER = "iTermEnterWorkgroupTrigger"
 
 def fail(msg):
     sys.exit("claude-peer: " + msg)
@@ -276,6 +283,22 @@ def build(groups):
                      parent="claudePeer.main") for n in (2, 3, 4)]
     return {"uniqueIdentifier": GROUP, "name": NAME, "sessions": [main, diff] + chats}
 
+def enter_triggers(pl):
+    """(profile name, trigger dict) for every Enter Workgroup trigger aimed at
+    either workgroup; other workgroups' triggers are not ours to move."""
+    for b in pl.get("New Bookmarks", []):
+        for t in b.get("Triggers", []) or []:
+            if t.get("action") == ENTER and t.get("parameter") in (BUILTIN, GROUP):
+                yield b.get("Name", "?"), t
+
+def save(pl, was_binary):
+    data = plistlib.dumps(pl, fmt=plistlib.FMT_BINARY if was_binary else plistlib.FMT_XML)
+    if kind == "folder":
+        with open(path, "wb") as f:
+            f.write(data)
+    else:
+        subprocess.run(["defaults", "import", "com.googlecode.iterm2", "-"], input=data, check=True)
+
 if mode == "status":
     try:
         pl, _ = load("domain", "")
@@ -297,6 +320,16 @@ if mode == "status":
         print("builtin: builtin.claudeCode present")
     else:
         print("builtin: builtin.claudeCode absent (the Diff would be the template)")
+    found = list(enter_triggers(pl))
+    peers = sum(1 for _, t in found if t["parameter"] == GROUP)
+    if not found:
+        print("default: no profile enters a workgroup on a claude job")
+    elif peers == len(found):
+        print("default: peers (%d profiles enter Claude Peers)" % peers)
+    elif peers == 0:
+        print("default: builtin (%d profiles enter Claude Code)" % len(found))
+    else:
+        print("default: mixed (%d of %d profiles enter Claude Peers) — claude-peer default peers|builtin" % (peers, len(found)))
 elif mode == "workgroup":
     try:
         groups = groups_of(load(kind, path)[0])
@@ -319,13 +352,30 @@ elif mode == "install":
     else:
         groups[idx] = wg
     pl["Workgroups"] = json.dumps(groups, separators=(",", ":")).encode("utf-8")
-    data = plistlib.dumps(pl, fmt=plistlib.FMT_BINARY if was_binary else plistlib.FMT_XML)
-    if kind == "folder":
-        with open(path, "wb") as f:
-            f.write(data)
-    else:
-        subprocess.run(["defaults", "import", "com.googlecode.iterm2", "-"], input=data, check=True)
+    save(pl, was_binary)
     print("written" if idx is None else "replaced")
+elif mode == "default":
+    target = GROUP if sys.argv[4] == "peers" else BUILTIN
+    try:
+        pl, was_binary = load(kind, path)
+    except Exception as e:
+        fail("cannot read the preferences: %s" % e)
+    if target == GROUP:
+        try:
+            ok = any(g.get("uniqueIdentifier") == GROUP for g in groups_of(pl))
+        except (ValueError, TypeError):
+            ok = False
+        if not ok:
+            fail("Claude Peers is not installed; run claude-peer install first, nothing written")
+    found = list(enter_triggers(pl))
+    if not found:
+        fail("no profile has an Enter Workgroup trigger for Claude Code; set up iTerm2's Claude Code integration first")
+    moved = [n for n, t in found if t["parameter"] != target]
+    for _, t in found:
+        t["parameter"] = target
+    if moved:
+        save(pl, was_binary)
+    print("%d of %d profiles changed" % (len(moved), len(found)))
 PYEOF
 }
 
@@ -345,6 +395,17 @@ cmd_install() {
   printf 'claude-peer: workgroup "Claude Peers" (claudePeer.workgroup) %s in %s; start iTerm2, then Shell > Workgroups > Claude Peers in a plain tab\n' "$r" "$where"
 }
 
+cmd_default() {
+  [ $# -eq 1 ] || usage
+  case $1 in peers|builtin) ;; *) usage;; esac
+  need_macos default
+  proc_running iTerm2 && die "quit iTerm2 first — it rewrites its preferences at quit and would overwrite this"
+  prefs_store
+  r=$(peer_py default "$skind" "$spath" "$1") || exit 1
+  [ "$1" = peers ] && what="Claude Peers (Chat 2-4 start with every claude tab)" || what="Claude Code"
+  printf 'claude-peer: a claude job now enters %s; %s\n' "$what" "$r"
+}
+
 cmd_status() {
   [ $# -eq 0 ] || usage
   need_macos status
@@ -362,6 +423,7 @@ case $cmd in
   plan) cmd_plan "$@";;
   workgroup) cmd_workgroup "$@";;
   install) cmd_install "$@";;
+  default) cmd_default "$@";;
   status) cmd_status "$@";;
   -h|--help|help) usage;;
   *) warn "unknown command '$cmd'"; usage;;
