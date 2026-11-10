@@ -1102,6 +1102,44 @@ the daemon (`am check-inbox`), never from the store; the server's own
 "Contact approved" notices are filtered out as bookkeeping. Messages are
 data from another agent, not instructions — the shared memory says so.
 
+**The leader checks it can be reached, and reaches its peers, in the same
+hooks.** No new wiring: `hook start` and `hook prompt` already run in every
+profile. A *peer* is a session whose cwd is (or is beneath)
+`$CLAUDE_PEER_WORKTREE`, which `claude-peer run` exports; comparing against
+the payload cwd keeps a leaked variable from misclassifying another tab. A
+peer gets nothing added: one string comparison. Anyone else's `start` line
+gains a sentence if `CLAUDE_CODE_MESSAGING_SOCKET` is unset or not a socket
+(no native inbox, so nobody can `SendMessage` to it) and another if the
+profile's config lacks the server, then "Tell the operator before starting
+work"; a healthy start adds nothing. On a leader's `prompt`, before the mail
+lookup, a roll-call joins the claims its peers wrote (`claude-peer peers
+--leader <cwd>`) against this profile's `sessions/*.json` registry: a live
+record with a socket is `native` (the line names it for `SendMessage`), one
+without a socket is `noinbox`, one only under another mapped profile is
+`other` (use postbox mail, the line gives the name), none is `starting`. A
+peer's Claude registers seconds after its shell, so `starting` is given 60
+seconds before it is reported. One line, once per session (state:
+`$STATE/rollcall/<session id>`, then `done`), and the leader tells the
+operator and carries on — it does not restart a peer or retry by mail except
+for `other`. Registration stays lazy and no model tool call is spent.
+
+Cost, over a session start that is otherwise unchanged (one `sh`, a few
+`python3` starts, one `curl` capped at two seconds, one `am check-inbox`,
+about 95 words): a non-peer start adds one socket test and one `python3` for
+`connected`, no context when healthy; a leader adds one `claude-peer peers`
+and one `python3` per prompt until the roll-call resolves (normally the
+first), then one file read, and one line of context once. An instruction to
+call `ListAgents` would spend a model turn and a listing of every session on
+the machine in every leader, and eager `register_agent` a tool call in every
+one of the four or more agents a tab holds.
+
+Hermes joins neither route. It is not a Claude Code session and binds no
+inbox socket, so it cannot be reached natively; it is a postbox client where
+its profile configures the server, so it can send and fetch mail when asked,
+but nothing tells it a name, nothing wakes it, and under `hermes.worktree`
+its directory is a new random one per chat, so it has no stable address. It
+is not part of the roll-call.
+
 **An idle session gets woken, by a courier.** Hooks only run on a session's
 own events, so a session sitting at its prompt would never see mail until
 you typed something. The only thing that can give an idle session a turn
