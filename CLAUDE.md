@@ -969,6 +969,19 @@ plist is tracked here and rewritten by iTerm2 at every quit, so the edit is
 the same drift as any save and is not committed back. `status` prints
 `store:`, `iterm2:`, `workgroup:` and `builtin:`.
 
+`claude-peer default peers` makes it the default instead. It points every
+profile's Enter Workgroup trigger (the one iTerm2's onboarding fires on a
+`claude` job) from `builtin.claudeCode` at `claudePeer.workgroup`, so every
+claude tab enters Claude Peers. That is the eager-spawn trade above, taken on
+purpose: each claude tab starts Chat 2-4 at once, three more Claudes, each in
+its own scratch `peer-N` worktree. `default builtin` switches it back. It
+needs iTerm2 quit, as `install` does, and moves only triggers aimed at one of
+the two workgroups. `status` prints a `default:` line that reads `builtin`,
+`peers` or `mixed`. iTerm2's own Reinstall of the integration rewrites these
+triggers, and `mixed` or `builtin` afterwards is the sign that happened.
+Dynamic profiles that inherit from Default (worktabs' `Workspace`) follow
+Default.
+
 Use: a plain tab, Shell > Workgroups > Claude Peers (no API, sdef or `it2`
 verb enters one), then type `claude` in Chat. **Exit hazard:** the Exit
 trigger is `leaderOnly`, so the leader's `claude` ending tears the group down
