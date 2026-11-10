@@ -196,6 +196,16 @@ Read from the v3.7.7 source (the stamp is still 3.7.6, refresh pending):
   an edit lands only while iTerm2 is quit.
 - A buried peer still appears in the Session Status tool, and a row click swaps
   it in (`ToolStatus.swift:1184, 1477`, `PTYSession.m:17565-17590`).
+- A workgroup member's end action is forced to the default, so a member whose
+  program exits stays as an ended pane with a restart offer and does not close
+  (`PTYSession.m:5173-5184`, `:5148-5170`).
+- Any member's *termination* (closing its pane) exits the whole group
+  (`iTermWorkgroupInstance.swift:248-258, 266-311`).
+- The "session ended very soon" warning is skipped for workgroup members
+  (`PTYSession.m:4041-4043`).
+- A peer is launched with no inherited environment (`environment: nil`), and an
+  empty command means the profile's own command (`PTYSession.swift:2214-2217,
+  2660-2690`).
 
 Distinct from this repo's `workset` (a set of git worktrees one Claude Code
 session spans) and `worktabs` (tabs opened by group): a workgroup is an

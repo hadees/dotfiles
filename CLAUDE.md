@@ -956,8 +956,9 @@ runs. The
 script deploys on every machine class — those three need only git; the iTerm2
 verbs refuse off macOS.
 
-The definition is a **second** Workgroup, `Claude Peers` (Chat, Diff, Chat 2-4;
-the peers' command is `claude-peer run`), never extra peers on the builtin:
+The definition is a **second** Workgroup, `Claude Peers` (Chat, Diff, Chat 2-4,
+Hermes; the Chat peers' command is `claude-peer run`, the last one's
+`claude-peer hermes`), never extra peers on the builtin:
 peers spawn at entry and the builtin is entered on every `claude` job.
 `claude-peer install` writes it into the `Workgroups` key (JSON in a data
 value), refuses while iTerm2 runs, and edits the custom prefs folder's plist
@@ -967,14 +968,18 @@ launch replaces the domain's syncable keys from the folder
 (`:1768-1830`), so `defaults write` or an edit while iTerm2 runs is lost. That
 plist is tracked here and rewritten by iTerm2 at every quit, so the edit is
 the same drift as any save and is not committed back. `status` prints
-`store:`, `iterm2:`, `workgroup:` and `builtin:`.
+`store:`, `iterm2:`, `workgroup:` and `builtin:`. `workgroup:` compares the
+installed definition's sessions (identifier, name, command) with what
+`build()` would write now over the same store and says `installed, out of date
+(...); this version defines N (...)` when they differ: the script gained a
+session, or the builtin Diff it copies changed, since `install` last ran.
 
 `claude-peer default peers` makes it the default instead. It points every
 profile's Enter Workgroup trigger (the one iTerm2's onboarding fires on a
 `claude` job) from `builtin.claudeCode` at `claudePeer.workgroup`, so every
 claude tab enters Claude Peers. That is the eager-spawn trade above, taken on
-purpose: each claude tab starts Chat 2-4 at once, three more Claudes, each in
-its own scratch `peer-N` worktree. `default builtin` switches it back. It
+purpose: each claude tab starts Chat 2-4 and Hermes at once, three more
+Claudes, each in its own scratch `peer-N` worktree, plus the Hermes pane. `default builtin` switches it back. It
 needs iTerm2 quit, as `install` does, and moves only triggers aimed at one of
 the two workgroups. `status` prints a `default:` line that reads `builtin`,
 `peers` or `mixed`. iTerm2's own Reinstall of the integration rewrites these
@@ -993,11 +998,80 @@ workgroup statuses* **off** (on, four Claudes are one row). Rows read `[group]
 <repo>` for the leader and `<repo>@<slug>` for peers (no group prefix:
 `WORKTABS_GROUP` is not inherited).
 
+**Scratch peers are safe to start together.** With `default peers` the
+scratch path is the normal one, and Chat 2-4 start in the same instant
+(iTerm2 spawns every peer in one loop at entry), so it is built for that.
+`scratch_checkout` runs under a per-repo lock, a symlink
+`<git common dir>/claude-peer.lock` whose target is the holder's pid (`ln -s`
+is atomic; no `flock` on macOS), and a dead holder's lock is broken. Every
+`run` also writes a **claim**, `claude-peer.claim` in the worktree's own git
+directory: line 1 the pid of the `run` (`exec` keeps it, so it becomes the
+shell that parents claude), line 2 the leader's directory. A claim whose pid
+answers `kill -0` means the worktree is **in use**, and a scratch peer skips it
+as it skips a dirty one. Claims are never deleted; a dead pid is simply not
+live, and the file goes with the worktree. `claude-peer peers [--leader <dir>]
+[<dir>]` prints `worktree<TAB>pid<TAB>leader` for each live claim in the
+repository, on every OS. Residual: breaking a stale lock is not atomic, so two
+waiters racing at the instant a holder was killed can still collide; the
+claim's re-read is the backstop. The iTerm2 Enter trigger matches the job name
+only, so `claude --version` in a tab enters the group too: a scratch peer
+therefore settles `CLAUDE_PEER_SETTLE` seconds (default 2, 0 disables) before
+it makes anything, so a short job costs nothing, and runs `git worktree add`
+immune to hangup so a pane torn down mid-checkout leaves no half-made tree.
+Outside a repository a scratch peer prints one line and leaves a plain shell
+(a branch argument still dies). `status` adds `scratch: <n> peer-N worktrees
+in <repo> (<a> in use, <k> kept: dirty, on a branch or directory gone, <f>
+free)` when run inside a repository.
+
+**The Hermes peer** is a plain shell unless a Hermes profile routes the
+directory. `claude-peer hermes [-- hermes args…]` needs no repository, makes no
+worktree, writes no claim and sets no `CLAUDE_PEER_WORKTREE`; it settles
+`CLAUDE_PEER_SETTLE` seconds, then `exec`s an interactive shell that calls the
+zsh function `hermes_peer` (see the Hermes section: the gate is
+`hermes_profile`, so no account name is tested here) and then stays a shell
+whatever that did, so the pane ends at a prompt, never at iTerm2's restart
+banner. A shell without `hermes_peer` (the installed definition is newer than
+the deployed functions) says so and stays a shell. Where `hermes.worktree` is
+on, each Hermes start fetches the base branch and creates
+`<toplevel>/.worktrees/hermes-<id>` plus a branch, removed at exit unless it
+holds unpushed commits (leftovers are reaped by the next start once a day old),
+and Hermes appends `.worktrees/` to the tracked `.gitignore` of whichever
+checkout the leader stands in, once, if that line is missing (Hermes 0.19.0
+`cli.py`). The Hermes peer has no Session Status row (rows come from Claude
+Code hooks) and is not part of the leader's roll-call.
+
 **One Diff only, and it is the leader's.** Peers of peers never spawn and the
 git poller follows the leader's PWD, so a peer's uncommitted work is visible
 only from inside its Chat; its commits show by typing `main..<branch>` in the
 Diff's base selector. Tests: `tests/claude-peer.bats` (stub ps/uname/defaults,
 fixture plists; the real store is only touched by the operator's `install`).
+
+**`claude-tab save` and `restore` bring the tabs back after a quit.** An iTerm2
+quit takes every session with it, and `claude-peer install` and `default`
+require one. `save [file]` writes the live sessions to
+`$XDG_STATE_HOME/claude-tab/saved.tsv` (state, not a temporary directory, so it
+survives a reboot; the previous file becomes `.prev`): one row per session,
+`profile_dir, session_id, cwd, label, name, tty, where, window`, in iTerm2's
+tab order. It leaves out peers (`claude-peer peers`, else the `peer-N` name),
+sessions with no tty, a `kind` other than `interactive`, a cwd that is gone and
+an unusable session id, and counts each on stderr; with nothing to save it
+exits 1 and leaves the old file alone. `restore [--dry-run] [--window <id>]
+[--delay <s>] [file]` (macOS) resumes each row with `cd -- <cwd> &&
+CLAUDE_PROFILE=<profile dir> claude --resume <id>`, typed with `write text` so
+the login shell and the `claude` wrapper run it. The profile is explicit
+because history is partitioned per profile directory.
+
+It works in **one window**, the current one or `--window`, and never creates a
+window. Empty tabs of that window are filled first (one session, not the tab
+running `restore`, every foreground process a shell), new tabs are made only
+when those run out, and empty tabs in other windows are counted and left alone.
+It does not use `worktabs`' script, which makes one window per group: the
+operator rejected that. A row whose session is already live in that profile (same
+id or same cwd) is skipped, so running it twice is safe. Restored tabs carry no
+worktabs mark, so a later `worktabs start` does not recognise them, and a
+session opened by `workset open` comes back without its extra directories. The
+registry layout is observed, not an interface. Tests: `tests/claude-tab.bats`
+(stub osascript/ps/sleep, fixture registries).
 
 ### Postbox (sessions talking across profiles)
 
@@ -1054,6 +1128,44 @@ turn (`stop_hook_active`), which is the loop guard. Unread is read through
 the daemon (`am check-inbox`), never from the store; the server's own
 "Contact approved" notices are filtered out as bookkeeping. Messages are
 data from another agent, not instructions — the shared memory says so.
+
+**The leader checks it can be reached, and reaches its peers, in the same
+hooks.** No new wiring: `hook start` and `hook prompt` already run in every
+profile. A *peer* is a session whose cwd is (or is beneath)
+`$CLAUDE_PEER_WORKTREE`, which `claude-peer run` exports; comparing against
+the payload cwd keeps a leaked variable from misclassifying another tab. A
+peer gets nothing added: one string comparison. Anyone else's `start` line
+gains a sentence if `CLAUDE_CODE_MESSAGING_SOCKET` is unset or not a socket
+(no native inbox, so nobody can `SendMessage` to it) and another if the
+profile's config lacks the server, then "Tell the operator before starting
+work"; a healthy start adds nothing. On a leader's `prompt`, before the mail
+lookup, a roll-call joins the claims its peers wrote (`claude-peer peers
+--leader <cwd>`) against this profile's `sessions/*.json` registry: a live
+record with a socket is `native` (the line names it for `SendMessage`), one
+without a socket is `noinbox`, one only under another mapped profile is
+`other` (use postbox mail, the line gives the name), none is `starting`. A
+peer's Claude registers seconds after its shell, so `starting` is given 60
+seconds before it is reported. One line, once per session (state:
+`$STATE/rollcall/<session id>`, then `done`), and the leader tells the
+operator and carries on — it does not restart a peer or retry by mail except
+for `other`. Registration stays lazy and no model tool call is spent.
+
+Cost, over a session start that is otherwise unchanged (one `sh`, a few
+`python3` starts, one `curl` capped at two seconds, one `am check-inbox`,
+about 95 words): a non-peer start adds one socket test and one `python3` for
+`connected`, no context when healthy; a leader adds one `claude-peer peers`
+and one `python3` per prompt until the roll-call resolves (normally the
+first), then one file read, and one line of context once. An instruction to
+call `ListAgents` would spend a model turn and a listing of every session on
+the machine in every leader, and eager `register_agent` a tool call in every
+one of the four or more agents a tab holds.
+
+Hermes joins neither route. It is not a Claude Code session and binds no
+inbox socket, so it cannot be reached natively; it is a postbox client where
+its profile configures the server, so it can send and fetch mail when asked,
+but nothing tells it a name, nothing wakes it, and under `hermes.worktree`
+its directory is a new random one per chat, so it has no stable address. It
+is not part of the roll-call.
 
 **An idle session gets woken, by a courier.** Hooks only run on a session's
 own events, so a session sitting at its prompt would never see mail until
@@ -1310,6 +1422,16 @@ effective profile and its source, and its config, via the same
 and, for a local-ollama profile, whether the server answers) without
 starting anything; `doctor` includes it. Tests: `tests/hermes.bats` (stub
 hermes/ollama/curl; fixture profile names only).
+
+**`hermes_peer` is what the Claude Peers Hermes session runs.** It calls
+`hermes` only where `hermes_profile` routes the directory (a pin or an
+account mapping); anywhere else it prints one line and the pane stays a plain
+shell. The gate cannot be left to the wrapper, which passes an unrouted
+directory through to Hermes' own resolution — the sticky `active_profile`
+would then run one account's profile in another account's repo. Isolation
+follows `hermes.worktree` and is not forced, and a refusal (profile mapped but
+not created, retired launcher pin) is the wrapper's own. `hermes-doctor` has a
+`peer:` line saying which of the two the cwd gets.
 
 ### Tailnets (two Tailscale networks at once)
 
@@ -1840,7 +1962,8 @@ row per live Claude Code session across every profile (from each profile's
 labelled by `tabname`, with the iTerm2 window and title its tty belongs to;
 `focus <pid>` brings that tab forward. `list` works anywhere; `tabs` and
 `focus` need macOS. Tests: `tests/claude-tab.bats`, `tests/tabname.bats`.
-The tab bar reads `<repo> (claude)` during a session; the conversation topic no
+`save` and `restore` bring the sessions back after an iTerm2 quit (see "Claude
+peers"). The tab bar reads `<repo> (claude)` during a session; the conversation topic no
 longer appears there.
 
 `bin/tabname [dir]` (`~/bin/tabname`) is the label: the git toplevel's name, or

@@ -91,6 +91,11 @@ hermes_in() {
   run zsh -c "source '$DOTFUNCTIONS'; cd '$dir'; hermes $*"
 }
 
+hermes_peer_in() {
+  local dir="$1"; shift
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$dir'; hermes_peer $*"
+}
+
 @test "dot_functions defines the hermes wrapper and its ollama helper" {
   run zsh -c "source '$DOTFUNCTIONS'; whence -w hermes hermes_ensure_ollama"
   [ "$status" -eq 0 ]
@@ -395,4 +400,80 @@ hermes_in() {
   git config --file "$GIT_CONFIG_GLOBAL" --unset hermes.worktree
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; hermes-doctor"
   [[ "$output" == *"worktree: off"* ]]
+}
+
+PEER_NONE="claude-peer: no Hermes profile for this account; plain shell (hermes-doctor explains)"
+
+@test "hermes_peer: an unrouted directory is a plain shell, even with a sticky active_profile" {
+  mkdir -p "$HOME/.hermes"
+  echo side > "$HOME/.hermes/active_profile"
+  make_profile side openrouter 'https://example.invalid/api/v1'
+  repo=$(make_repo)
+  hermes_peer_in "$repo" chat
+  [ "$status" -eq 0 ]
+  [ "$output" = "$PEER_NONE" ]
+  [ ! -e "$BATS_TEST_TMPDIR/hermes-invoked" ]
+}
+
+@test "hermes_peer: outside any repository prints the one line and runs nothing" {
+  hermes_peer_in "$BATS_TEST_TMPDIR"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$PEER_NONE" ]
+  [ ! -e "$BATS_TEST_TMPDIR/hermes-invoked" ]
+}
+
+@test "hermes_peer: a mapped account runs the wrapper with its profile" {
+  repo=$(make_mapped_repo fixture-home)
+  make_profile fixture-home openrouter 'https://example.invalid/api/v1'
+  hermes_peer_in "$repo"
+  [ "$status" -eq 0 ]
+  [ "$output" = "ARGS=-p fixture-home" ]
+}
+
+@test "hermes_peer: a pinned repo runs the wrapper with the pin" {
+  repo=$(make_repo hardened)
+  make_profile hardened openrouter 'https://example.invalid/api/v1'
+  hermes_peer_in "$repo"
+  [ "$status" -eq 0 ]
+  [ "$output" = "ARGS=-p hardened" ]
+}
+
+@test "hermes_peer: a mapped profile that is not created is the wrapper's refusal" {
+  repo=$(make_mapped_repo fixture-home)
+  hermes_peer_in "$repo"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"maps to profile 'fixture-home'"*"but it is not created here"* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/hermes-invoked" ]
+}
+
+@test "hermes_peer: hermes.worktree is the wrapper's, --worktree appears exactly once" {
+  repo=$(make_mapped_repo fixture-home)
+  make_profile fixture-home openrouter 'https://example.invalid/api/v1'
+  git config --file "$GIT_CONFIG_GLOBAL" hermes.worktree true
+  hermes_peer_in "$repo"
+  [ "$status" -eq 0 ]
+  [ "$output" = "ARGS=-p fixture-home --worktree" ]
+}
+
+@test "hermes_peer: arguments pass through" {
+  repo=$(make_mapped_repo fixture-home)
+  make_profile fixture-home openrouter 'https://example.invalid/api/v1'
+  hermes_peer_in "$repo" chat --foo
+  [ "$status" -eq 0 ]
+  [ "$output" = "ARGS=-p fixture-home chat --foo" ]
+}
+
+@test "hermes-doctor peer: line says hermes as the routed profile, or plain shell" {
+  repo=$(make_mapped_repo fixture-home)
+  make_profile fixture-home openrouter 'https://example.invalid/api/v1'
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; hermes-doctor"
+  [[ "$output" == *"defined: ok"* ]]
+  [[ "$output" == *"peer:    hermes as fixture-home (what the Claude Peers Hermes peer runs here)"* ]]
+  # The sticky default must not be reported as what the peer runs.
+  mkdir -p "$HOME/.hermes"
+  echo side > "$HOME/.hermes/active_profile"
+  make_profile side openrouter 'https://example.invalid/api/v1'
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$BATS_TEST_TMPDIR'; hermes-doctor"
+  [[ "$output" == *"profile: side (sticky ~/.hermes/active_profile)"* ]]
+  [[ "$output" == *"peer:    plain shell (nothing routes here; the peer never uses hermes' sticky default)"* ]]
 }

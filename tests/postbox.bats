@@ -83,6 +83,7 @@ STUB
   export FAKE_OS=Darwin
   export PATH="$BIN:$PATH"
 
+  SOCKDIR=$(mktemp -d /tmp/pb.XXXXXX)
   WORK="$HOME/code/some-project"
   mkdir -p "$WORK"
   cd "$WORK" || return 1
@@ -90,6 +91,7 @@ STUB
 
 teardown() {
   cd / || true
+  rm -rf "${SOCKDIR:-}"
 }
 
 # A registry entry for a live session of this profile at $2, named $3, under
@@ -506,6 +508,183 @@ STUB
   run payload '{}' hook nonsense
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+}
+
+# --- leader check: native inbox, connection, Claude Peers roll-call -------------
+
+# A real unix socket (a path that is a socket is all the check reads). Short
+# path: a socket path is capped near 104 bytes on macOS.
+mksock() { # name -> path
+  python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$SOCKDIR/$1"
+  printf '%s\n' "$SOCKDIR/$1"
+}
+
+# A live registry record (bats' own pid) in profile dir $1 for cwd $2, named $3,
+# with inbox socket path $4 (may be empty).
+reg() {
+  mkdir -p "$1/sessions"
+  printf '{"pid":%s,"cwd":"%s","name":"%s","status":"idle","messagingSocketPath":"%s"}\n' "$$" "$2" "$3" "$4" > "$1/sessions/$3.json"
+}
+
+# claude-peer stub: logs its arguments, prints $FAKE_CLAIMS.
+peer_stub() {
+  cat > "$BIN/claude-peer" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$PEER_LOG"
+[ -z "${FAKE_CLAIMS:-}" ] || printf '%s\n' "$FAKE_CLAIMS"
+STUB
+  chmod +x "$BIN/claude-peer"
+  export PEER_LOG="$BATS_TEST_TMPDIR/peer.log" POSTBOX_CLAUDE_PEER="$BIN/claude-peer"
+}
+
+leader_profile() {
+  export CLAUDE_CONFIG_DIR="$HOME/.claude-a"
+  mkdir -p "$CLAUDE_CONFIG_DIR"
+  printf '{"mcpServers":{"postbox":{"type":"http"}}}' > "$CLAUDE_CONFIG_DIR/.claude.json"
+  git config --file "$GIT_CONFIG_GLOBAL" claude.profile.a '~/.claude-a'
+}
+
+claim_line() { printf '%s\t4242\t%s\n' "$1" "$WORK"; }
+
+@test "hook start: a non-peer without a native inbox socket is told, and told to tell the operator" {
+  leader_profile
+  unset CLAUDE_CODE_MESSAGING_SOCKET
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook start
+  [[ "$output" == *"This session has no native inbox"* ]]
+  [[ "$output" == *"Tell the operator before starting work."* ]]
+  [[ "$output" != *"not connected in this profile"* ]]
+}
+
+@test "hook start: a healthy non-peer start adds nothing" {
+  leader_profile
+  export CLAUDE_CODE_MESSAGING_SOCKET
+  CLAUDE_CODE_MESSAGING_SOCKET=$(mksock own.sock)
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook start
+  [[ "$output" != *"no native inbox"* ]]
+  [[ "$output" != *"not connected"* ]]
+  [[ "$output" != *"Tell the operator"* ]]
+}
+
+@test "hook start: a profile that lacks the server is told so" {
+  leader_profile
+  rm "$CLAUDE_CONFIG_DIR/.claude.json"
+  export CLAUDE_CODE_MESSAGING_SOCKET
+  CLAUDE_CODE_MESSAGING_SOCKET=$(mksock own.sock)
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook start
+  [[ "$output" == *"The postbox MCP server is not connected in this profile"* ]]
+  [[ "$output" == *"Tell the operator before starting work."* ]]
+  [[ "$output" != *"no native inbox"* ]]
+}
+
+@test "hook start: a peer gets none of the added sentences; a stray variable elsewhere does not make a peer" {
+  unset CLAUDE_CODE_MESSAGING_SOCKET
+  export CLAUDE_CONFIG_DIR="$HOME/.claude-a"
+  mkdir -p "$CLAUDE_CONFIG_DIR"
+  export CLAUDE_PEER_WORKTREE="$WORK"
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook start
+  [[ "$output" == *"this session is agent "* ]]
+  [[ "$output" != *"no native inbox"* ]]
+  [[ "$output" != *"not connected"* ]]
+  [[ "$output" != *"Tell the operator"* ]]
+  mkdir -p "$WORK/sub"
+  run payload '{"cwd":"'"$WORK"'/sub","session_id":"s1"}' hook start
+  [[ "$output" != *"no native inbox"* ]]
+  export CLAUDE_PEER_WORKTREE="$HOME/code/elsewhere"
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook start
+  [[ "$output" == *"no native inbox"* ]]
+}
+
+@test "hook prompt: a leader whose three peers all have an inbox is told once, by name" {
+  leader_profile; peer_stub
+  claims=''
+  for i in 1 2 3; do
+    wt="$HOME/code/peer-$i"; mkdir -p "$wt"
+    reg "$CLAUDE_CONFIG_DIR" "$wt" "Peer$i" "$(mksock "p$i.sock")"
+    claims="$claims$(claim_line "$wt")"$'\n'
+  done
+  export FAKE_CLAIMS="${claims%$'\n'}" POSTBOX_NOW=1000
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ "$status" -eq 0 ]
+  [[ "$output" == "postbox: your Claude Peers are reachable natively — SendMessage to Peer1 (peer-1), Peer2 (peer-2), Peer3 (peer-3)" ]]
+  grep -q -- "peers --leader $WORK" "$PEER_LOG"
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ -z "$output" ]
+  [ "$(wc -l < "$PEER_LOG" | tr -d ' ')" -eq 1 ]
+}
+
+@test "hook prompt: a peer with no registry record yet is waited for, then reported" {
+  leader_profile; peer_stub
+  wt="$HOME/code/peer-1"; mkdir -p "$wt"
+  export FAKE_CLAIMS="$(claim_line "$wt")"
+  POSTBOX_NOW=1000 run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ -z "$output" ]
+  POSTBOX_NOW=1010 run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ -z "$output" ]
+  [ "$(cat "$POSTBOX_STATE/rollcall/s1")" = 1000 ]
+  POSTBOX_NOW=1061 run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [[ "$output" == *"Claude Peers check: 0 of 1 reachable natively"* ]]
+  [[ "$output" == *"peer-1 — its shell is up but no Claude session is registered"* ]]
+  [[ "$output" == *"Tell the operator once and carry on; do not work around it."* ]]
+  [ "$(cat "$POSTBOX_STATE/rollcall/s1")" = done ]
+  POSTBOX_NOW=1100 run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ -z "$output" ]
+}
+
+@test "hook prompt: a session with no inbox socket, and one under another profile, are told apart" {
+  leader_profile; peer_stub
+  git config --file "$GIT_CONFIG_GLOBAL" claude.profile.b '~/.claude-b'
+  mkdir -p "$HOME/.claude-b"
+  w1="$HOME/code/peer-1"; w2="$HOME/code/peer-2"; w3="$HOME/code/peer-3"; mkdir -p "$w1" "$w2" "$w3"
+  reg "$CLAUDE_CONFIG_DIR" "$w1" Peer1 ""
+  reg "$HOME/.claude-b" "$w2" Peer2 "$(mksock b.sock)"
+  reg "$CLAUDE_CONFIG_DIR" "$w3" Peer3 "$(mksock c.sock)"
+  export FAKE_CLAIMS="$(claim_line "$w1")"$'\n'"$(claim_line "$w2")"$'\n'"$(claim_line "$w3")" POSTBOX_NOW=1000
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [[ "$output" == *"1 of 3 reachable natively (Peer3 (peer-3))"* ]]
+  [[ "$output" == *"peer-1 — its Claude session has no inbox socket (/status there)"* ]]
+  [[ "$output" == *"peer-2 — it runs under another profile (.claude-b): reach it by postbox mail as $("$PB" name "$w2")"* ]]
+  [[ "$output" != *"no Claude session is registered"* ]]
+}
+
+@test "hook prompt: no claims is silent, and after a minute stops asking" {
+  leader_profile; peer_stub
+  POSTBOX_NOW=1000 run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ -z "$output" ]
+  POSTBOX_NOW=1060 run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ -z "$output" ]
+  [ "$(cat "$POSTBOX_STATE/rollcall/s1")" = done ]
+  POSTBOX_NOW=1070 run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ "$(wc -l < "$PEER_LOG" | tr -d ' ')" -eq 2 ]
+}
+
+@test "hook prompt: a peer never runs the roll-call" {
+  leader_profile; peer_stub
+  export CLAUDE_PEER_WORKTREE="$WORK" FAKE_CLAIMS="$(claim_line "$HOME/code/peer-1")"
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ -z "$output" ]
+  [ ! -e "$PEER_LOG" ]
+  [ ! -e "$POSTBOX_STATE/rollcall/s1" ]
+}
+
+@test "hook prompt: without a claude-peer executable the roll-call is skipped and mail is still listed" {
+  leader_profile
+  export POSTBOX_CLAUDE_PEER="$BATS_TEST_TMPDIR/nope"
+  export FAKE_INBOX='{"unread_count":1,"messages":[{"id":3,"subject":"review please","from":"BlueLake"}]}'
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [[ "$output" == "postbox: 1 unread message(s) for "* ]]
+  [[ "$output" != *"Claude Peers"* ]]
+}
+
+@test "hook prompt: the roll-call line and unread mail arrive together" {
+  leader_profile; peer_stub
+  wt="$HOME/code/peer-1"; mkdir -p "$wt"
+  reg "$CLAUDE_CONFIG_DIR" "$wt" Peer1 "$(mksock p1.sock)"
+  export FAKE_CLAIMS="$(claim_line "$wt")" POSTBOX_NOW=1000
+  export FAKE_INBOX='{"unread_count":1,"messages":[{"id":3,"subject":"review please","from":"BlueLake"}]}'
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [[ "$output" == *"reachable natively — SendMessage to Peer1 (peer-1)"* ]]
+  [[ "$output" == *"1 unread message(s) for "* ]]
+  [[ "$output" == *"BlueLake: review please"* ]]
 }
 
 # --- guard ----------------------------------------------------------------------

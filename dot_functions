@@ -1296,6 +1296,22 @@ function hermes() {
 	command hermes "${inject[@]}" "$@";
 }
 
+# What the Claude Peers workgroup's Hermes session runs (`claude-peer hermes`).
+# The gate lives here, not in the wrapper: hermes() passes a directory that
+# routes nowhere through to hermes' own resolution, whose sticky default
+# would put one account's profile in another account's repo. So run hermes()
+# only where hermes_profile routes this directory; otherwise say so and leave
+# the pane as a plain shell. Everything else — the pin, the refusal of an
+# uncreated profile, hermes.worktree, the ollama start — is the wrapper's.
+function hermes_peer() {
+	emulate -L zsh;
+	hermes_profile >/dev/null || {
+		print -r -- "claude-peer: no Hermes profile for this account; plain shell (hermes-doctor explains)";
+		return 0;
+	};
+	hermes "$@";
+}
+
 # Diagnose what `hermes` would do right here: is the wrapper loaded, which
 # binary runs, which pins apply, the effective profile and its config, and —
 # only when that config wants a local Ollama — whether the server answers.
@@ -1303,9 +1319,9 @@ function hermes() {
 # path and the model keys come from the same helpers the wrapper calls, so
 # doctor and wrapper cannot drift. Mirrors gh-/claude-/wrangler-doctor.
 function hermes-doctor() {
-	local pin model launcher eff src cfg provider base hostport bin acct mapped wt;
+	local pin model launcher eff src cfg provider base hostport bin acct mapped wt routed;
 	print -r -- "wrapper: $(whence -w hermes)";
-	print -r -- "defined: $(defined_trace hermes_profile gh_account_for_cwd git_origin_slug hermes_cfg_path hermes_model_get hermes_ensure_ollama bin_trace)";
+	print -r -- "defined: $(defined_trace hermes_profile hermes_peer gh_account_for_cwd git_origin_slug hermes_cfg_path hermes_model_get hermes_ensure_ollama bin_trace)";
 	print -r -- "binary:  $(bin="$(whence -p hermes)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH')";
 	print -r -- "cwd:     $PWD";
 	launcher="$(command git config --get hermes.launcher 2>/dev/null)";
@@ -1345,6 +1361,12 @@ function hermes-doctor() {
 		fi;
 	fi;
 	print -r -- "profile: ${eff:-<none>} ($src)";
+	routed="$(hermes_profile)" || routed='';
+	if [[ -n $routed ]]; then
+		print -r -- "peer:    hermes as $routed (what the Claude Peers Hermes peer runs here)";
+	else
+		print -r -- "peer:    plain shell (nothing routes here; the peer never uses hermes' sticky default)";
+	fi;
 	if [[ -n $eff && $eff != default && ! -d ${cfg:h} ]]; then
 		print -r -- "config:  $cfg (profile MISSING — run: hermes profile create $eff)";
 	elif [[ ! -r $cfg ]]; then
