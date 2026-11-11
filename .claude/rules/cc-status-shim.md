@@ -85,11 +85,15 @@ only when `tabstatus.group-prefix` is `true` (default off), on a session's
 first UserPromptSubmit (marked by an empty `<session_id>.named` beside the seats
 file, written whether or not a rename happened, deleted on
 SessionStart/SessionEnd) and on every Stop and StopFailure, so
-a later rename by iTerm2 heals at the end of the turn. It runs after the
+a later rename by iTerm2 heals at the end of the turn. It also runs at
+SessionStart, for every role (a leader is `plain` by `tabname`'s definition until a
+peer claims it), so the row is named before anything is typed; SessionStart still
+writes no marker, and the first UserPromptSubmit renames again. It runs after the
 cc-status call and before the paints, which keeps a paint the last `it2` call of
-a turn end. Never on SessionStart: that fires before the job-start trigger may
-have, and a rename landing first would be captured as the "original" title the
-workgroup restores on exit. The title has control characters dropped and is cut
+a turn end. Known cost: where the `claude` job-start trigger, not the wrapper's
+variable, enters the workgroup after SessionStart, the workgroup may record this
+name as the title to restore, and the tab keeps it after `claude` exits (fix by
+hand as below). Not observed yet. The title has control characters dropped and is cut
 at 80 characters. `$WORKSET` needs no `tabname`; without it, no `tabname`, no `cwd`,
 or a directory outside a repo means no rename, never an empty one (iTerm2 would
 show its profile name). `set-name` is

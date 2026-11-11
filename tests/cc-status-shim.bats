@@ -959,7 +959,7 @@ NAMED_FILE() { printf '%s/tabstatus/s1.named' "$XDG_STATE_HOME"; }
   ! grep -qx 'set-name' "$BATS_TEST_TMPDIR/argv_all"
 }
 
-@test "rename: SessionStart and SessionEnd delete the marker and never rename" {
+@test "rename: SessionEnd never renames; SessionStart and SessionEnd delete the marker" {
   local ev
   for ev in SessionStart SessionEnd; do
     mkdir -p "$(dirname "$(NAMED_FILE)")"
@@ -967,7 +967,45 @@ NAMED_FILE() { printf '%s/tabstatus/s1.named' "$XDG_STATE_HOME"; }
     run_shim <<< "$(named_payload "$ev")"
     [ ! -e "$(NAMED_FILE)" ]
   done
+  rm -f "$BATS_TEST_TMPDIR/argv_all"
+  run_shim <<< "$(named_payload SessionEnd)"
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ] || ! grep -qx 'set-name' "$BATS_TEST_TMPDIR/argv_all"
+}
+
+# session_start_names <label> <expected title> <runner>: a SessionStart names the row once, paints nothing, writes no marker.
+session_start_names() {
+  [ -n "$1" ] && printf '%s\n' "$1" > "$BATS_TEST_TMPDIR/role.out"
+  "$3" <<< "$(named_payload SessionStart)"
+  [ "$(it2_argv)" = "session|set-name|$2|--session|ABC-123" ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
+  [ ! -e "$(NAMED_FILE)" ]
+}
+
+@test "rename: SessionStart names a peer, a lead and a plain cwd, in legacy and after mode" {
+  local run
+  for run in run_shim run_after; do
+    rm -f "$BATS_TEST_TMPDIR"/{argv,argv_all,calls}
+    session_start_names $'peer\tproj · Alpha' "proj · Alpha" $run
+    rm -f "$BATS_TEST_TMPDIR"/{argv,argv_all,calls}
+    session_start_names $'lead\tproj ▸ Lead' "proj ▸ Lead" $run
+    rm -f "$BATS_TEST_TMPDIR"/{argv,argv_all,calls} "$BATS_TEST_TMPDIR/role.out"
+    session_start_names "" proj $run
+  done
+}
+
+@test "rename: SessionStart in a set names the row after the set, in both modes" {
+  export WORKSET=myset
+  session_start_names "" myset run_shim
+  rm -f "$BATS_TEST_TMPDIR"/{argv,argv_all,calls}
+  session_start_names "" myset run_after
+}
+
+@test "rename: SessionStart outside a repo renames nothing and still passes the payload on" {
+  local p; p=$(named_payload SessionStart /elsewhere)
+  run_shim <<< "$p"
+  [ "$status" -eq 0 ]
   [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
 }
 
 @test "explain: prints name= and rename= with the reason" {

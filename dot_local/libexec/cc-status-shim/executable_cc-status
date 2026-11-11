@@ -53,9 +53,11 @@
 # UserPromptSubmit of a session (marked by <session_id>.named beside the seats
 # file, written whether or not a rename happened) and on every Stop and
 # StopFailure, just before the paint, so a later
-# rename by iTerm2 heals at the end of the turn. Never on SessionStart: that
-# fires before the workgroup's entry may have, and a rename landing first would
-# be captured as the "original" title the workgroup restores on exit. The title
+# rename by iTerm2 heals at the end of the turn. Also at SessionStart, for every
+# role, so the row is named before anything is typed; the first prompt still
+# renames and heals a title iTerm2 sets later. Known cost: if the workgroup
+# entry comes after it, the workgroup may record this name as the title to
+# restore on exit. The title
 # is cut at 80 characters and control characters are dropped. $WORKSET needs
 # no tabname; without it, no tabname, no cwd or no repo means no rename.
 # tabname's role (peer, lead, plain) also picks a text colour at a turn end that
@@ -520,7 +522,7 @@ if event in ("Stop", "StopFailure") and not active and isinstance(msg, str):
 # The session's name and role: "<WORKSET or tabname of cwd>", behind "[<group>] " when
 # tabstatus.group-prefix is true. Returns (title or None, the reason it is not renamed, role).
 def session_title():
-    if seat or event not in ("UserPromptSubmit", "Stop", "StopFailure"):
+    if seat or event not in ("SessionStart", "UserPromptSubmit", "Stop", "StopFailure"):
         return None, "event", "plain"
     if event == "UserPromptSubmit" and nf and os.path.exists(nf):
         return None, "already named", "plain"
