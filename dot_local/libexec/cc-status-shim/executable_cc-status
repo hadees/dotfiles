@@ -94,18 +94,23 @@
 # start at the end of the turn. lsof and one ps run only on a Stop that has at
 # least one quiet shell task.
 #
-#   cc-status             hook mode: payload on stdin, exit 0 always
-#   cc-status explain     payload on stdin; print the decision, call nothing
+#   cc-status             hook mode (legacy): payload on stdin, calls the hook itself
+#   cc-status after       hook mode behind iTerm2's own `it2 handle-agent-hook`: never
+#                         calls the hook, sends only what the rule file's table allows
+#   cc-status explain [after]
+#                         payload on stdin; print the decision, call nothing
 #                         (cookie= is the API cookie's state; see iterm2-cookie)
 #   cc-status settings    print the hooks block for a profile's settings.json
 #
-# Wiring: each profile's settings.json runs cc-status on every hook event;
-# point that command at this file instead (`cc-status settings` prints it).
-# The file is deliberately NAMED cc-status, in a directory off PATH. iTerm2
-# 3.7.3's own health check accepts a hook only if the command is a bare
-# executable path ending in /cc-status (a wrapper line, or any other name,
-# makes the app report its integration broken and a Reinstall append a raw
-# cc-status beside it). The symlink iTerm2 maintains at
+# Wiring: each profile's settings.json runs one command per hook event;
+# `cc-status settings` prints it. With iTerm2 3.7.7+ (an `it2` beside the
+# cc-status symlink) it is a single line: the cookie clause, `it2
+# handle-agent-hook` on the payload, then `cc-status after`. 3.7.7 accepts a
+# hook entry only when it runs a program inside ~/.config/iterm2, and the
+# handler comes first so upstream changes flow through. Without that `it2` the
+# command is this file's bare absolute path (legacy mode), which iTerm2 3.7.3's
+# health check requires: it tests the literal string with isExecutableFile and
+# wants it to end in /cc-status. The symlink iTerm2 maintains at
 # ~/.config/iterm2/cc-status is left alone — the app recreates it over
 # anything else put there — and is where the real binary is found;
 # CC_STATUS_BIN overrides that (tests). it2 is taken from beside the real
@@ -126,6 +131,12 @@ case $mode in after) after=1 ;; explain) [ "${2:-}" = after ] && after=1 ;; esac
 
 if [ "$mode" = settings ]; then
   cmd="$HOME/.local/libexec/cc-status-shim/cc-status"
+  if [ -x "$HOME/.config/iterm2/it2" ]; then
+    # C: iTerm2's handler on the untouched payload, then the shim as a corrector.
+    ckf="$HOME/.local/state/iterm2/api-cookie"
+    cmd="p=\$(cat); [ $ckf -nt \"$HOME/Library/Application Support/iTerm2/private/socket\" ] && read -r ITERM2_COOKIE ITERM2_KEY <$ckf && [ -n \"\$ITERM2_KEY\" ] && export ITERM2_COOKIE ITERM2_KEY; printf '%s' \"\$p\" | $HOME/.config/iterm2/it2 handle-agent-hook; printf '%s' \"\$p\" | $cmd after"
+  fi
+  cmd=$(printf '%s' "$cmd" | sed 's/\\/\\\\/g; s/"/\\"/g')
   printf 'cc-status settings: the shim does not edit settings.json — each profile'"'"'s\nfile is owned by its overlay. Put this in that file, replacing iTerm2'"'"'s own\ncc-status entries (never beside them):\n\n{\n  "hooks": {\n'
   sep=
   for ev in SessionStart SessionEnd UserPromptSubmit PreToolUse PostToolUse PermissionRequest Notification Stop StopFailure SubagentStart SubagentStop; do
@@ -135,12 +146,16 @@ if [ "$mode" = settings ]; then
   done
   printf '\n  }\n}\n\n'
   cat <<'TXT'
-The command is a bare absolute path: iTerm2 3.7.3's health check tests the
-literal string with isExecutableFile, so "~" and "$HOME" fail it and the app
-reports the integration broken. iTerm2 > Reinstall rewrites the entry back to
-the raw cc-status (re-paste afterwards); Uninstall strips it. SubagentStart is
-not one of the ten events iTerm2 wires; cc-status ignores it, and the shim
-uses it to track which seats are running.
+With iTerm2 3.7.7+ (an it2 beside cc-status in ~/.config/iterm2) the command is
+one line: the cookie clause, iTerm2's own `it2 handle-agent-hook` on the payload,
+then `cc-status after` to correct what the handler painted. 3.7.7 only accepts a
+hook entry that runs a program inside ~/.config/iterm2, and the handler comes
+first so new upstream behaviour is never lost. Without that it2 the command is
+the bare absolute path: iTerm2 3.7.3's health check tests the literal string
+with isExecutableFile, so "~" and "$HOME" fail it. Either way, iTerm2 >
+Reinstall may rewrite entries (re-apply the overlay afterwards) and Uninstall
+strips raw ones. SubagentStart is not one of the ten events iTerm2 wires; the
+shim uses it to track which seats are running.
 TXT
   exit 0
 fi

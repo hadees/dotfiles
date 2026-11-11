@@ -244,7 +244,7 @@ rename_only() {
   [[ $output == *"event=PreToolUse"* && $output == *"action=passthrough"* ]]
 }
 
-@test "settings: valid JSON naming all eleven events, each with the bare expanded shim path" {
+@test "settings: valid JSON naming all eleven events, each with the bare expanded shim path, without iTerm2's it2" {
   run sh "$SHIM" settings
   [ "$status" -eq 0 ]
   printf '%s\n' "$output" | sed -n '/^{/,/^}/p' > "$BATS_TEST_TMPDIR/settings.json"
@@ -257,6 +257,47 @@ for ev, entries in h.items():
         for hook in e["hooks"]:
             assert hook["command"] == sys.argv[2] + "/.local/libexec/cc-status-shim/cc-status", (ev, hook)
 PY
+}
+
+# settings_c: C as the rule file spells it, built from $HOME (single spaces, only the socket path quoted).
+settings_c() {
+  printf '%s' "p=\$(cat); [ $HOME/.local/state/iterm2/api-cookie -nt \"$HOME/Library/Application Support/iTerm2/private/socket\" ] && read -r ITERM2_COOKIE ITERM2_KEY <$HOME/.local/state/iterm2/api-cookie && [ -n \"\$ITERM2_KEY\" ] && export ITERM2_COOKIE ITERM2_KEY; printf '%s' \"\$p\" | $HOME/.config/iterm2/it2 handle-agent-hook; printf '%s' \"\$p\" | $HOME/.local/libexec/cc-status-shim/cc-status after"
+}
+
+@test "settings: with iTerm2's it2 every command is the handler, then the shim" {
+  mkdir -p "$HOME/.config/iterm2"
+  : > "$HOME/.config/iterm2/it2"; chmod +x "$HOME/.config/iterm2/it2"
+  run sh "$SHIM" settings
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | sed -n '/^{/,/^}/p' > "$BATS_TEST_TMPDIR/settings.json"
+  settings_c > "$BATS_TEST_TMPDIR/c.txt"
+  python3 - "$BATS_TEST_TMPDIR/settings.json" "$BATS_TEST_TMPDIR/c.txt" <<'PY'
+import json, sys
+h = json.load(open(sys.argv[1]))["hooks"]
+c = open(sys.argv[2]).read()
+assert len(h) == 11, sorted(h)
+for ev, entries in h.items():
+    for e in entries:
+        for hook in e["hooks"]:
+            assert hook["command"] == c, (ev, hook["command"], c)
+PY
+}
+
+@test "settings: the printed line runs under sh, handing the handler and the shim the same bytes" {
+  mkdir -p "$HOME/.config/iterm2" "$HOME/.local/libexec/cc-status-shim"
+  printf '#!/bin/sh\ncat > "%s/handler_in"\nprintf "%%s\\n" "$@" > "%s/handler_argv"\n' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$HOME/.config/iterm2/it2"
+  printf '#!/bin/sh\ncat > "%s/shim_in"\nprintf "%%s\\n" "$@" > "%s/shim_argv"\n' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$HOME/.local/libexec/cc-status-shim/cc-status"
+  chmod +x "$HOME/.config/iterm2/it2" "$HOME/.local/libexec/cc-status-shim/cc-status"
+  run sh "$SHIM" settings
+  printf '%s\n' "$output" | sed -n '/^{/,/^}/p' > "$BATS_TEST_TMPDIR/settings.json"
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["hooks"]["Stop"][0]["hooks"][0]["command"])' "$BATS_TEST_TMPDIR/settings.json" > "$BATS_TEST_TMPDIR/cmd.sh"
+  printf '{"hook_event_name":"Stop","x":"a b"}' > "$BATS_TEST_TMPDIR/payload"
+  run sh -c "$(cat "$BATS_TEST_TMPDIR/cmd.sh")" < "$BATS_TEST_TMPDIR/payload"
+  [ "$status" -eq 0 ]
+  cmp "$BATS_TEST_TMPDIR/payload" "$BATS_TEST_TMPDIR/handler_in"
+  cmp "$BATS_TEST_TMPDIR/payload" "$BATS_TEST_TMPDIR/shim_in"
+  [ "$(cat "$BATS_TEST_TMPDIR/handler_argv")" = handle-agent-hook ]
+  [ "$(cat "$BATS_TEST_TMPDIR/shim_argv")" = after ]
 }
 
 @test "shim: it2 is taken from beside the real binary, not from PATH" {

@@ -100,7 +100,7 @@ and the Enter/Exit Workgroup triggers into that plist itself, as it does every
 other preference; that is iTerm2 saving, not part of this mechanism, and
 clearing the root's displayName in Settings was rejected because it would be a
 preference edit in the tracked plist. `cc-status explain` prints `name=` and
-`rename=yes|no (<reason>)`, `marker=present|none` and `cookie=` (API cookie section). A tab already stuck on `Chat (-zsh)` is fixed once
+`rename=yes|no (<reason>)`, `marker=present|none`, `mode=`, `writes=` (after mode) and `cookie=` (API cookie section). A tab already stuck on `Chat (-zsh)` is fixed once
 by hand: `it2 session set-name "$(tabname)"` in it, or Session > Edit Session.
 Workgroup peers (`claude-peer`) are never renamed by iTerm2, so their rows are
 the shim's name alone.
@@ -134,7 +134,7 @@ the detail: on Stop or StopFailure with nothing active, a
 `last_assistant_message` whose last non-empty line (bullets and quotes
 stripped) ends in `?` or `？`. cc-status alone cannot show it — it reserves
 "waiting" for PermissionRequest and AskUserQuestion, paints a plain Stop
-idle, and its detail is only the message's opening ~180 characters, where a
+`done` (idle before 3.7.5), and its detail is only the message's opening ~180 characters, where a
 closing question is cut off. The paint follows cc-status's and outranks the
 quiet-task one; a Stop with something active stays working, and
 SubagentStop never fires it.
@@ -162,28 +162,87 @@ default, so leaders keep cc-status's colour unless it is set. `peer` and `lead`
 join `quiet`, `question` and `stalled` in the names refused as a seat's
 `agent_type`. `cc-status explain` prints `role=` and `colour=`.
 
-Wiring is the load-bearing part. The shim is **named** `cc-status`, in a
-directory off `PATH`, and its hook command is the bare absolute path with
-the home directory expanded: iTerm2 3.7.3's health check accepts a hook
-only if the command ends in `/cc-status` and `isExecutableFile` passes on
-the literal string (verified in the app's onboarding source at that tag), so
-`~`, `$HOME`, a wrapper line or another name makes the app report its
-integration broken, and a Reinstall then appends a raw cc-status beside it,
-which repaints "working". Master's hook lexer (`CCStatusHookCommand.swift`,
-2026-10-03) will relax this, but 3.7.3 and 3.7.4 do not. The shim sits in
-cc-status's own slot, never beside it — hooks for one event run in
-parallel, so a second hook would race the thing it fixes — on eleven
-events: the ten iTerm2 wires plus `SubagentStart`, which cc-status ignores
-and the seat file relies on. Reinstall rewrites the entry back to the raw
-binary and Uninstall strips it; re-applying the overlays restores it. The
-overlays write the line (`cc-status settings` prints the block;
-`docs/private-overlays.md`). iTerm2's own symlink at
-`~/.config/iterm2/cc-status` is left alone — `ensureCCStatusSymlink`
-removes anything else put there — and is where the shim finds the real
-binary, with `it2` from beside it; `PATH` only carries `it2` while an
-experimental iTerm2 setting is on. The shim deploys on every machine class
-and exits 0 at once without the binary, which beats a hook entry that
-errors on every event.
+Wiring is the load-bearing part, and it has two forms by iTerm2 release. The
+shim is **named** `cc-status`, in a directory off `PATH`. **3.7.3 to 3.7.6**:
+the hook command is the bare absolute path with the home directory expanded;
+the health check accepts a hook only if the command ends in `/cc-status` and
+`isExecutableFile` passes on the literal string, so `~`, `$HOME`, a wrapper line
+or another name makes the app report its integration broken, and a Reinstall
+appends a raw cc-status beside it, which repaints "working". The shim then runs
+in **legacy mode** (no argument: it calls the hook itself, with a filtered
+payload), in cc-status's own slot, never beside it, because hooks for one event
+run in parallel. **3.7.7+** (marked by `~/.config/iterm2/it2` beside the
+`cc-status` symlink) moved the hook to `it2 handle-agent-hook` and added an
+ownership rule (`isOwned`, `CCStatusHookCommand.swift`): an entry is the app's
+only if it runs a program inside `~/.config/iterm2`. The shim's path is outside
+it, so a bare shim line is "not healthy for us", which is why the wiring changed.
+
+**C**, the line for 3.7.7+ (`cc-status settings` prints it; one command per
+event, eleven events: the ten iTerm2 wires plus `SubagentStart`, which only the
+shim's seat file uses):
+
+    p=$(cat); [ COOKIE -nt "SOCK" ] && read -r ITERM2_COOKIE ITERM2_KEY <COOKIE && [ -n "$ITERM2_KEY" ] && export ITERM2_COOKIE ITERM2_KEY; printf '%s' "$p" | ~/.config/iterm2/it2 handle-agent-hook; printf '%s' "$p" | ~/.local/libexec/cc-status-shim/cc-status after
+
+with every path absolute and `$HOME` expanded (never `~`), single spaces, only
+the socket path quoted; `COOKIE` and `SOCK` are the two paths in the API cookie
+section. Its decisions: the **cookie clause** runs first, with builtins only,
+and exports a fresh cookie or nothing (that section says why); **stdin is read
+once** into `p` and replayed with the `printf` builtin, so a large payload meets
+no argument limit and both programs see the same bytes; **`;`, not `&&`**, so
+the exit status is the shim's, always 0 (a hook exiting 2 blocks the tool call,
+and a handler failure must not also cost the row its name); **iTerm2's handler
+goes first**, so upstream behaviour and new events flow through untouched, and
+the shim only corrects. With `it2` missing, `sh` prints one "No such file" line
+and the shim exits 0 without one of its own: no rows, no hook error. iTerm2
+reads C as owned (`it2` in command position, followed by `handle-agent-hook`,
+inside the dot dir); the leading `p=$(cat)` makes it "runs more than the hook",
+so **Reinstall keeps it** and removes raw entries after it, a raw entry
+elsewhere in the file makes the handler run **twice**, and **Uninstall leaves C
+in place** (it also removes the workgroup and triggers). The overlays render C
+from the deployed paths and gate it on `it2` existing; the three tiers below it
+are older lines (`docs/private-overlays.md`). The launch alert reads one file,
+`settings.json` in the directory recorded at the last install, once per iTerm2
+launch.
+
+**`cc-status after`** (`explain after`) is the shim behind the handler: the
+handler has already painted, so it never calls the hook and writes only what
+this table allows. An update carrying a status word, colour or detail is an
+*assertion*, and one without its own `--expires-on` drops the expiry the
+previous one armed (the handler's Esc-returns-to-idle); an update carrying only
+the task count is *bookkeeping*: it keeps the expiry, and is the one thing that
+releases an expiry held back by outstanding work. So a re-asserting write
+appends the handler's own expiry (`EXPIRY`: `--expires-on progress-end
+--then-status idle --then-dot-color '#00d75f' --then-text-color '#888888'
+--then-detail ''`).
+
+| After the handler | name | status | detail | dot, text | count | expiry |
+| --- | --- | --- | --- | --- | --- | --- |
+| SessionStart, a first UserPromptSubmit, Stop, StopFailure | set | – | – | – | – | – |
+| PreToolUse/PostToolUse in a seat; SubagentStart of a seat | – | never | `<seat>: <tool>` / `<seat> running` | seat | – | re-armed |
+| SubagentStop, K still active | – | never | `K background task(s) running` | seat colour if a seat remains | K | re-armed if more than the count is sent |
+| Stop/StopFailure, K>0 active, some quiet or a seat running | – | never | `K … running` (seats named) | seat | K | none |
+| Stop/StopFailure, nothing active, a stalled task | – | `waiting` | stalled text | red | 0 | none |
+| Stop, nothing active, a closing question | – | `waiting` | the question | yellow | 0 | none |
+| Stop/StopFailure, nothing active, quiet tasks | – | `idle` | quiet text | amber, grey | 0 | none |
+| Stop/StopFailure, nothing else painted, peer or lead | – | never | – | role text colour | – | – |
+
+A status word is written only at a turn end with nothing active, never
+mid-turn, never on SubagentStop, and never over `error` (a StopFailure ending in
+a question keeps iTerm2's `error`). Any other event writes nothing. **Cost**:
+outside a seat nothing changes (one handler call per event); inside a seat every
+tool call costs the handler and the shim's repaint, about 0.31 s per
+PreToolUse/PostToolUse against 0.17 s for the shim alone, and the row shows
+orange for that gap before it takes the seat's colour.
+
+Common to both forms: the shim sits in cc-status's own slot, never beside it, on
+the same eleven events; Reinstall of the legacy form rewrites it back to the raw
+binary and Uninstall strips it, so re-applying the overlays restores it
+(`cc-status settings` prints the block; `docs/private-overlays.md`). iTerm2's own
+symlink at `~/.config/iterm2/cc-status` is left alone (`ensureCCStatusSymlink`
+removes anything else put there) and is where the shim finds the real binary,
+with `it2` from beside it; `PATH` only carries `it2` while an experimental
+iTerm2 setting is on. The shim deploys on every machine class and exits 0 at
+once without the binary, which beats a hook entry that errors on every event.
 
 Pass-through events cost one `sh`, a `cat`, two `case` matches and a pipe
 into cc-status; every Stop and StopFailure, and a session's first
