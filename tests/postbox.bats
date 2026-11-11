@@ -544,7 +544,8 @@ leader_profile() {
   git config --file "$GIT_CONFIG_GLOBAL" claude.profile.a '~/.claude-a'
 }
 
-claim_line() { printf '%s\t4242\t%s\n' "$1" "$WORK"; }
+# One `claude-peer peers` row: worktree, pid ($2, default 4242), leader, label.
+claim_line() { printf '%s\t%s\t%s\t%s\n' "$1" "${2:-4242}" "$WORK" "${1##*/}"; }
 
 @test "hook start: a non-peer without a native inbox socket is told, and told to tell the operator" {
   leader_profile
@@ -597,36 +598,90 @@ claim_line() { printf '%s\t4242\t%s\n' "$1" "$WORK"; }
 @test "hook prompt: a leader whose three peers all have an inbox is told once, by name" {
   leader_profile; peer_stub
   claims=''
-  for i in 1 2 3; do
-    wt="$HOME/code/peer-$i"; mkdir -p "$wt"
-    reg "$CLAUDE_CONFIG_DIR" "$wt" "Peer$i" "$(mksock "p$i.sock")"
+  for i in alpha beta gamma; do
+    wt="$HOME/code/$i"; mkdir -p "$wt"
+    reg "$CLAUDE_CONFIG_DIR" "$wt" "Peer-$i" "$(mksock "$i.sock")"
     claims="$claims$(claim_line "$wt")"$'\n'
   done
   export FAKE_CLAIMS="${claims%$'\n'}" POSTBOX_NOW=1000
   run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
   [ "$status" -eq 0 ]
-  [[ "$output" == "postbox: your Claude Peers are reachable natively — SendMessage to Peer1 (peer-1), Peer2 (peer-2), Peer3 (peer-3)" ]]
+  [[ "$output" == "postbox: Claude Peers: Peer-alpha (alpha), Peer-beta (beta), Peer-gamma (gamma) are up; SendMessage reaches them." ]]
   grep -q -- "peers --leader $WORK" "$PEER_LOG"
   run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
   [ -z "$output" ]
-  [ "$(wc -l < "$PEER_LOG" | tr -d ' ')" -eq 1 ]
+  [ "$(awk -F'\t' 'NF == 4 && $4 == "told"' "$POSTBOX_STATE/rollcall/s1" | wc -l | tr -d ' ')" -eq 3 ]
 }
 
-@test "hook prompt: a peer with no registry record yet is waited for, then reported" {
+@test "hook prompt: a peer that appears at the fifth prompt is announced then, and no python3 starts before" {
   leader_profile; peer_stub
-  wt="$HOME/code/peer-1"; mkdir -p "$wt"
+  real=$(command -v python3)
+  printf '#!/bin/sh\n[ -z "${ROLLCALL_OTHERS+x}" ] || echo rollcall >> "%s"\nexec "%s" "$@"\n' "$BATS_TEST_TMPDIR/py.log" "$real" > "$BIN/python3"
+  chmod +x "$BIN/python3"
+  wt="$HOME/code/alpha"; mkdir -p "$wt"
+  reg "$CLAUDE_CONFIG_DIR" "$wt" PeerA "$(mksock a.sock)"
+  export POSTBOX_NOW=1000
+  for _ in 1 2 3 4; do
+    run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+    [ -z "$output" ]
+  done
+  [ ! -e "$POSTBOX_STATE/rollcall/s1" ]
+  [ ! -e "$BATS_TEST_TMPDIR/py.log" ]
   export FAKE_CLAIMS="$(claim_line "$wt")"
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it." ]
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ -z "$output" ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/py.log" | tr -d ' ')" -eq 1 ]
+}
+
+@test "hook prompt: a claim that vanishes is reported once, and not again" {
+  leader_profile; peer_stub
+  wt="$HOME/code/alpha"; mkdir -p "$wt"
+  reg "$CLAUDE_CONFIG_DIR" "$wt" PeerA "$(mksock a.sock)"
+  export FAKE_CLAIMS="$(claim_line "$wt")" POSTBOX_NOW=1000
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [[ "$output" == *"PeerA (alpha) is up"* ]]
+  export FAKE_CLAIMS=''
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: alpha has stopped." ]
+  [ ! -s "$POSTBOX_STATE/rollcall/s1" ]
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ -z "$output" ]
+}
+
+@test "hook prompt: a restarted peer (same worktree, new pid) is announced again" {
+  leader_profile; peer_stub
+  wt="$HOME/code/alpha"; mkdir -p "$wt"
+  reg "$CLAUDE_CONFIG_DIR" "$wt" PeerA "$(mksock a.sock)"
+  export FAKE_CLAIMS="$(claim_line "$wt" 4242)" POSTBOX_NOW=1000
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [[ "$output" == *"PeerA (alpha) is up"* ]]
+  export FAKE_CLAIMS="$(claim_line "$wt" 4343)"
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it." ]
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ -z "$output" ]
+}
+
+@test "hook prompt: a peer with no registry record yet is waited for 60 seconds from its own first sighting" {
+  leader_profile; peer_stub
+  wt="$HOME/code/alpha"; mkdir -p "$wt"
   POSTBOX_NOW=1000 run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
   [ -z "$output" ]
-  POSTBOX_NOW=1010 run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  # The session is old; the claim is new.
+  export FAKE_CLAIMS="$(claim_line "$wt")"
+  POSTBOX_NOW=5000 run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
   [ -z "$output" ]
-  [ "$(cat "$POSTBOX_STATE/rollcall/s1")" = 1000 ]
-  POSTBOX_NOW=1061 run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  POSTBOX_NOW=5010 run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ -z "$output" ]
+  [ "$(cat "$POSTBOX_STATE/rollcall/s1")" = "$(printf '%s\t4242\t5000\tpending' "$wt")" ]
+  POSTBOX_NOW=5061 run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
   [[ "$output" == *"Claude Peers check: 0 of 1 reachable natively"* ]]
-  [[ "$output" == *"peer-1 — its shell is up but no Claude session is registered"* ]]
+  [[ "$output" == *"alpha — its shell is up but no Claude session is registered"* ]]
   [[ "$output" == *"Tell the operator once and carry on; do not work around it."* ]]
-  [ "$(cat "$POSTBOX_STATE/rollcall/s1")" = done ]
-  POSTBOX_NOW=1100 run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ "$(cat "$POSTBOX_STATE/rollcall/s1")" = "$(printf '%s\t4242\t5000\ttold' "$wt")" ]
+  POSTBOX_NOW=5100 run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
   [ -z "$output" ]
 }
 
@@ -634,32 +689,32 @@ claim_line() { printf '%s\t4242\t%s\n' "$1" "$WORK"; }
   leader_profile; peer_stub
   git config --file "$GIT_CONFIG_GLOBAL" claude.profile.b '~/.claude-b'
   mkdir -p "$HOME/.claude-b"
-  w1="$HOME/code/peer-1"; w2="$HOME/code/peer-2"; w3="$HOME/code/peer-3"; mkdir -p "$w1" "$w2" "$w3"
+  w1="$HOME/code/alpha"; w2="$HOME/code/beta"; w3="$HOME/code/gamma"; mkdir -p "$w1" "$w2" "$w3"
   reg "$CLAUDE_CONFIG_DIR" "$w1" Peer1 ""
   reg "$HOME/.claude-b" "$w2" Peer2 "$(mksock b.sock)"
   reg "$CLAUDE_CONFIG_DIR" "$w3" Peer3 "$(mksock c.sock)"
   export FAKE_CLAIMS="$(claim_line "$w1")"$'\n'"$(claim_line "$w2")"$'\n'"$(claim_line "$w3")" POSTBOX_NOW=1000
   run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
-  [[ "$output" == *"1 of 3 reachable natively (Peer3 (peer-3))"* ]]
-  [[ "$output" == *"peer-1 — its Claude session has no inbox socket (/status there)"* ]]
-  [[ "$output" == *"peer-2 — it runs under another profile (.claude-b): reach it by postbox mail as $("$PB" name "$w2")"* ]]
+  [[ "$output" == *"1 of 3 reachable natively (Peer3 (gamma))"* ]]
+  [[ "$output" == *"alpha — its Claude session has no inbox socket (/status there)"* ]]
+  [[ "$output" == *"beta — it runs under another profile (.claude-b): reach it by postbox mail as $("$PB" name "$w2")"* ]]
   [[ "$output" != *"no Claude session is registered"* ]]
 }
 
-@test "hook prompt: no claims is silent, and after a minute stops asking" {
+@test "hook prompt: a legacy state file does not suppress a new peer" {
   leader_profile; peer_stub
-  POSTBOX_NOW=1000 run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
-  [ -z "$output" ]
-  POSTBOX_NOW=1060 run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
-  [ -z "$output" ]
-  [ "$(cat "$POSTBOX_STATE/rollcall/s1")" = done ]
-  POSTBOX_NOW=1070 run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
-  [ "$(wc -l < "$PEER_LOG" | tr -d ' ')" -eq 2 ]
+  wt="$HOME/code/alpha"; mkdir -p "$wt"
+  reg "$CLAUDE_CONFIG_DIR" "$wt" PeerA "$(mksock a.sock)"
+  mkdir -p "$POSTBOX_STATE/rollcall"
+  printf 'done\n' > "$POSTBOX_STATE/rollcall/s1"
+  export FAKE_CLAIMS="$(claim_line "$wt")" POSTBOX_NOW=1000
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it." ]
 }
 
 @test "hook prompt: a peer never runs the roll-call" {
   leader_profile; peer_stub
-  export CLAUDE_PEER_WORKTREE="$WORK" FAKE_CLAIMS="$(claim_line "$HOME/code/peer-1")"
+  export CLAUDE_PEER_WORKTREE="$WORK" FAKE_CLAIMS="$(claim_line "$HOME/code/alpha")"
   run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
   [ -z "$output" ]
   [ ! -e "$PEER_LOG" ]
@@ -677,12 +732,12 @@ claim_line() { printf '%s\t4242\t%s\n' "$1" "$WORK"; }
 
 @test "hook prompt: the roll-call line and unread mail arrive together" {
   leader_profile; peer_stub
-  wt="$HOME/code/peer-1"; mkdir -p "$wt"
+  wt="$HOME/code/alpha"; mkdir -p "$wt"
   reg "$CLAUDE_CONFIG_DIR" "$wt" Peer1 "$(mksock p1.sock)"
   export FAKE_CLAIMS="$(claim_line "$wt")" POSTBOX_NOW=1000
   export FAKE_INBOX='{"unread_count":1,"messages":[{"id":3,"subject":"review please","from":"BlueLake"}]}'
   run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
-  [[ "$output" == *"reachable natively — SendMessage to Peer1 (peer-1)"* ]]
+  [[ "$output" == *"Claude Peers: Peer1 (alpha) is up"* ]]
   [[ "$output" == *"1 unread message(s) for "* ]]
   [[ "$output" == *"BlueLake: review please"* ]]
 }

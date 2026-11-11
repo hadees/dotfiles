@@ -636,38 +636,56 @@ is_peer() { # cwd
   return 1
 }
 
-# The leader's roll-call: which of its Claude Peers (claims written by
-# `claude-peer run`) can it SendMessage to? Runs on the leader's first prompts
-# until it can say, at most once per session (state: $STATE/rollcall/<sid>,
-# the first-check time, then `done`). A peer's Claude registers seconds after
-# its shell starts, so "no record yet" gets 60 seconds before it is reported.
-# Reads the registries directly (all_sessions' five fields are read
-# positionally by the courier); registration with the server stays lazy.
+# The leader's roll-call, per peer: which of its Claude Peers (claims written
+# by `claude-peer run`) can it SendMessage to? Every prompt compares the live
+# claims naming this cwd with what was already said. State, one line per claim,
+# in $STATE/rollcall/<sid>: `worktree<TAB>pid<TAB>first_seen<TAB>pending|told`;
+# anything else in the file (the old `done`, a bare timestamp) reads as empty.
+# A peer's Claude registers seconds after its claim, so "no record yet" gets 60
+# seconds from that claim's first sighting. A told claim that is gone is
+# reported once. Reads the registries directly (all_sessions' five fields are
+# read positionally by the courier); registration with the server stays lazy.
 rollcall() {
   [ -n "$sid" ] || return 0
   PEERCMD=${POSTBOX_CLAUDE_PEER:-$HOME/bin/claude-peer}
   [ -x "$PEERCMD" ] || return 0
   rc_f=$STATE/rollcall/$sid
   rc_now=${POSTBOX_NOW:-$(date +%s)}
-  if [ -f "$rc_f" ]; then
-    rc_first=$(cat "$rc_f" 2>/dev/null)
-    [ "$rc_first" = done ] && return 0
-  else
-    mkdir -p "$STATE/rollcall" 2>/dev/null && printf '%s\n' "$rc_now" > "$rc_f" 2>/dev/null || return 0
-    rc_first=$rc_now
-  fi
-  [ "$rc_first" -ge 0 ] 2>/dev/null || rc_first=$rc_now
-  rc_old=0; [ $((rc_now - rc_first)) -ge 60 ] && rc_old=1
+  rc_tab=$(printf '\t'); rc_nl='
+'
   rc_claims=$("$PEERCMD" peers --leader "$cwd" 2>/dev/null)
-  if [ -z "$rc_claims" ]; then
-    [ "$rc_old" = 1 ] && printf 'done\n' > "$rc_f"
-    return 0
-  fi
-  rc_own=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
-  rc_others=$(mapped_dirs | while IFS= read -r d; do [ "$d" = "$rc_own" ] || printf '%s\n' "$d"; done)
-  # kind, worktree, extra: native (extra = the session's name), noinbox, other
-  # (extra = the other profile directory's basename), starting (no live record).
-  rc_out=$(printf '%s\n' "$rc_claims" | cut -f1 | ROLLCALL_OTHERS=$rc_others python3 -c '
+  rc_old=$(awk -F'\t' 'NF == 4 && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && ($4 == "pending" || $4 == "told")' "$rc_f" 2>/dev/null)
+  [ -n "$rc_claims$rc_old" ] || return 0
+  # S: told and still live (already a state line); P: pending (worktree, pid,
+  # first_seen, label); X: told and gone. A restarted peer (same worktree, new
+  # pid) is a new claim.
+  rc_merged=$(printf '%s\n' "$rc_claims" | RC_OLD=$rc_old RC_NOW=$rc_now awk -F'\t' '
+BEGIN {
+  n = split(ENVIRON["RC_OLD"], o, "\n")
+  for (i = 1; i <= n; i++) { split(o[i], f, "\t"); k = f[1] "\t" f[2]; st[k] = f[4]; fs[k] = f[3] }
+}
+NF >= 2 {
+  k = $1 "\t" $2; live[$1] = 1; seen[k] = 1
+  lab = ($4 == "" || $4 == "-") ? $1 : $4; sub(/.*\//, "", lab)
+  if (st[k] == "told") print "S\t" $1 "\t" $2 "\t" fs[k] "\ttold"
+  else print "P\t" $1 "\t" $2 "\t" ((k in fs) ? fs[k] : ENVIRON["RC_NOW"]) "\t" lab
+}
+END {
+  for (k in st) if (st[k] == "told" && !(k in seen)) {
+    split(k, g, "\t")
+    if (!(g[1] in live)) { w = g[1]; sub(/.*\//, "", w); print "X\t" w }
+  }
+}')
+  rc_pick() { printf '%s\n' "$rc_merged" | awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }'; }
+  rc_state=$(rc_pick S); rc_pend=$(rc_pick P); rc_stop=$(rc_pick X)
+  rc_total=0; rc_native=0; rc_ok=''; rc_bad=''
+  if [ -n "$rc_pend" ]; then
+    rc_own=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+    rc_others=$(mapped_dirs | while IFS= read -r d; do [ "$d" = "$rc_own" ] || printf '%s\n' "$d"; done)
+    # kind, worktree, extra, label, first_seen, pid. Kinds: native (extra = the
+    # session's name), noinbox, other (extra = the other profile directory's
+    # basename), starting (no live record).
+    rc_out=$(printf '%s\n' "$rc_pend" | ROLLCALL_OTHERS=$rc_others python3 -c '
 import glob, json, os, stat, sys
 def live(d):
     for f in sorted(glob.glob(os.path.join(d, "sessions", "*.json"))):
@@ -684,46 +702,57 @@ def sock(p):
     except OSError:
         return False
 own, others = sys.argv[1], [o for o in os.environ.get("ROLLCALL_OTHERS", "").split("\n") if o]
-for wt in (l.rstrip("\n") for l in sys.stdin):
-    if not wt:
+for line in (l.rstrip("\n") for l in sys.stdin):
+    if not line:
         continue
+    wt, pid, first, label = line.split("\t")
+    tail = "\t%s\t%s\t%s" % (label, first, pid)
     real = os.path.realpath(wt)
     here = [r for r in live(own) if os.path.realpath(r.get("cwd") or "") == real]
     nat = [r for r in here if sock(r.get("messagingSocketPath"))]
     if nat:
-        print("native\t%s\t%s" % (wt, str(nat[0].get("name") or os.path.basename(wt)).replace("\t", " ")))
+        print("native\t%s\t%s%s" % (wt, str(nat[0].get("name") or label).replace("\t", " "), tail))
     elif here:
-        print("noinbox\t%s\t-" % wt)
+        print("noinbox\t%s\t-%s" % (wt, tail))
     else:
         for d in others:
             if any(os.path.realpath(r.get("cwd") or "") == real for r in live(d)):
-                print("other\t%s\t%s" % (wt, os.path.basename(d)))
+                print("other\t%s\t%s%s" % (wt, os.path.basename(d), tail))
                 break
         else:
-            print("starting\t%s\t-" % wt)
+            print("starting\t%s\t-%s" % (wt, tail))
 ' "$rc_own" 2>/dev/null) || return 0
-  [ -n "$rc_out" ] || return 0
-  rc_total=0; rc_native=0; rc_starting=0; rc_ok=''; rc_bad=''
-  while IFS="$(printf '\t')" read -r k wt extra; do
-    [ -n "$k" ] || continue
-    rc_total=$((rc_total + 1))
-    b=${wt##*/}
-    case $k in
-      native) rc_native=$((rc_native + 1)); rc_ok="${rc_ok:+$rc_ok, }$extra ($b)" ;;
-      starting) rc_starting=$((rc_starting + 1)); rc_bad="${rc_bad:+$rc_bad; }$b — its shell is up but no Claude session is registered (look at that peer's pane)" ;;
-      noinbox) rc_bad="${rc_bad:+$rc_bad; }$b — its Claude session has no inbox socket (/status there)" ;;
-      other) rc_bad="${rc_bad:+$rc_bad; }$b — it runs under another profile ($extra): reach it by postbox mail as $(name_of "$wt")" ;;
-    esac
-  done <<EOF
+    while IFS=$rc_tab read -r k wt extra label first pid; do
+      [ -n "$k" ] || continue
+      rc_line="$wt$rc_tab$pid$rc_tab$first$rc_tab"
+      if [ "$k" = starting ] && [ $((rc_now - first)) -lt 60 ]; then
+        rc_state="${rc_state:+$rc_state$rc_nl}${rc_line}pending"; continue
+      fi
+      rc_state="${rc_state:+$rc_state$rc_nl}${rc_line}told"
+      rc_total=$((rc_total + 1))
+      case $k in
+        native) rc_native=$((rc_native + 1)); rc_ok="${rc_ok:+$rc_ok, }$extra ($label)" ;;
+        starting) rc_bad="${rc_bad:+$rc_bad; }$label — its shell is up but no Claude session is registered (look at that peer's pane)" ;;
+        noinbox) rc_bad="${rc_bad:+$rc_bad; }$label — its Claude session has no inbox socket (/status there)" ;;
+        other) rc_bad="${rc_bad:+$rc_bad; }$label — it runs under another profile ($extra): reach it by postbox mail as $(name_of "$wt")" ;;
+      esac
+    done <<EOF
 $rc_out
 EOF
-  [ "$rc_starting" -gt 0 ] && [ "$rc_old" = 0 ] && return 0
-  if [ -z "$rc_bad" ]; then
-    printf 'postbox: your Claude Peers are reachable natively — SendMessage to %s\n' "$rc_ok"
-  else
-    printf 'postbox: Claude Peers check: %s of %s reachable natively (%s). Not reachable: %s. Tell the operator once and carry on; do not work around it.\n' "$rc_native" "$rc_total" "$rc_ok" "$rc_bad"
   fi
-  printf 'done\n' > "$rc_f"
+  if [ -n "$rc_bad" ]; then
+    printf 'postbox: Claude Peers check: %s of %s reachable natively (%s). Not reachable: %s. Tell the operator once and carry on; do not work around it.\n' "$rc_native" "$rc_total" "$rc_ok" "$rc_bad"
+  elif [ -n "$rc_ok" ]; then
+    case $rc_ok in
+      *", "*) printf 'postbox: Claude Peers: %s are up; SendMessage reaches them.\n' "$rc_ok" ;;
+      *) printf 'postbox: Claude Peers: %s is up; SendMessage reaches it.\n' "$rc_ok" ;;
+    esac
+  fi
+  [ -z "$rc_stop" ] || printf '%s\n' "$rc_stop" | while IFS= read -r w; do
+    printf 'postbox: Claude Peers: %s has stopped.\n' "$w"
+  done
+  mkdir -p "$STATE/rollcall" 2>/dev/null && printf '%s' "${rc_state:+$rc_state$rc_nl}" > "$rc_f" 2>/dev/null
+  return 0
 }
 
 cmd_hook() {
