@@ -38,3 +38,16 @@ silent there and this is where it shows. `doctor` itself opens with a
 the caller, and the calling shell's non-default pattern/glob options —
 read before any `emulate`, so a pasted transcript says which shell it
 came from.
+
+`iterm2-cookie` is the verb `iterm2-doctor` will point at, not a doctor: it
+mints the API cookie the hooks read, and `iterm2_cookie_state` names whether
+that cookie is fresh, stale, rejected or absent (see `cc-status-shim.md`).
+
+`iterm2-doctor` prints two lines after `cc-status:`. `cookie:` is the static
+state (`fresh`, `stale`, `rejected`, `absent`, each with the fix); whether
+iTerm2 accepts the cookie is `iterm2-cookie status`'s question. `osascript:`
+is the size of `~/.local/state/iterm2/uncookied` (hook events that ran without a
+cookie), that file's birth time, and the number of processes whose command
+line contains `request cookie and key for app named`, from one `ps`; `0 … since
+never` when the file does not exist. `iterm2_cookie_state` is in its `defined:`
+list.

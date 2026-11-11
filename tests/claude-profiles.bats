@@ -53,6 +53,12 @@ setup() {
   fi
   export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
 
+  # A fresh API cookie (the stand-in socket is absent, so the cookie is newer
+  # than it): no pty test meets the no-cookie launch line unless it removes
+  # this file.
+  mkdir -p "$HOME/.local/state/iterm2"
+  : > "$HOME/.local/state/iterm2/api-cookie"
+
   DOTFUNCTIONS="$BATS_TEST_DIRNAME/../dot_functions"
 }
 
@@ -157,7 +163,7 @@ claude_in() {
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: claude: function"* ]]
-  [[ "$output" == *"defined: ok (10 helpers)"* ]]
+  [[ "$output" == *"defined: ok (11 helpers)"* ]]
   [[ "$output" == *"binary:  $BATS_TEST_TMPDIR/bin/claude"* ]]
   [[ "$output" == *"account: personal-account"* ]]
   [[ "$output" == *"launch:  $HOME/.claude-personal"* ]]
@@ -990,6 +996,46 @@ os.waitpid(pid, 0)
   rm -r "$HOME/.claude-personal/sessions"
   PTY_DIR=$repo PTY_ANSWER=n pty_claude
   [[ "$output" != *"already running"* ]]
+  [[ "$output" == *"rc=0"* ]]
+}
+
+# The launch line about a missing API cookie needs an attended launch, an
+# iTerm2 session and an it2; the sandbox cookie from setup makes it fresh.
+cookie_line_setup() {
+  mkdir -p "$HOME/.config/iterm2"
+  printf '#!/bin/sh\n' > "$HOME/.config/iterm2/it2"
+  chmod +x "$HOME/.config/iterm2/it2"
+  export ITERM_SESSION_ID=w0t0p0:FIXTURE
+}
+
+@test "claude: an attended launch with no API cookie says so once, with the state" {
+  cookie_line_setup
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  rm "$HOME/.local/state/iterm2/api-cookie"
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" == *"claude: no iTerm2 API cookie for this iTerm2 run (absent), so every hook event starts osascript (iTerm2 issue 13189): run iterm2-cookie"* ]]
+  [[ "$output" == *"CLAUDE_CONFIG_DIR="* ]]
+  [[ "$output" == *"rc=0"* ]]
+  [ "$(printf '%s' "$output" | grep -c 'no iTerm2 API cookie')" -eq 1 ]
+  # A set-aside cookie is named as rejected.
+  : > "$HOME/.local/state/iterm2/api-cookie.rejected"
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" == *"for this iTerm2 run (rejected)"* ]]
+}
+
+@test "claude: a fresh cookie, print mode, no it2, no iTerm2 session or the switch say nothing" {
+  cookie_line_setup
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" != *"no iTerm2 API cookie"* ]]
+  rm "$HOME/.local/state/iterm2/api-cookie"
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude -p hello
+  [[ "$output" != *"no iTerm2 API cookie"* ]]
+  (unset ITERM_SESSION_ID; PTY_DIR=$repo PTY_ANSWER=n pty_claude; [[ "$output" != *"no iTerm2 API cookie"* ]])
+  (rm "$HOME/.config/iterm2/it2"; PTY_DIR=$repo PTY_ANSWER=n pty_claude; [[ "$output" != *"no iTerm2 API cookie"* ]])
+  git config --file "$GIT_CONFIG_GLOBAL" claude.iterm2-check false
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" != *"no iTerm2 API cookie"* ]]
   [[ "$output" == *"rc=0"* ]]
 }
 
