@@ -21,6 +21,7 @@ setup() {
   git config --global user.name octo
   git config --global user.email octo@example.com
   git config --global init.defaultBranch main
+  git config --global claude-peer.picker off
   cat >"$BATS_TEST_TMPDIR/bin/fakeshell" <<'STUB'
 #!/bin/sh
 echo "pwd=$PWD"
@@ -410,7 +411,7 @@ pane() {
     exec sh "$BIN" run --as "$s" --wait >"$BATS_TEST_TMPDIR/pane-$t.out" 2>&1 3>&- ) &
   LAST_PANE=$!
   PANES="$PANES $LAST_PANE"
-  until_ok "[ -f '$REPO/.git/claude-peer.wait/$s.$LAST_PANE' ]"
+  until_ok "[ -f '$(git -C "$d" rev-parse --path-format=absolute --git-common-dir)/claude-peer.wait/$s.$LAST_PANE' ]"
 }
 
 # press <tag> <text>: type a line into that pane's terminal
@@ -1555,4 +1556,348 @@ hellofix() {
   [ "$(shell_runs)" -eq 0 ]
   run sh "$BIN" start alpha fix it
   [ "$status" -eq 0 ]
+}
+
+# --- the picker in the waiting pane -------------------------------------------------
+
+# A stand-in fzf: logs its arguments (one per line) and the environment the
+# preview needs, keeps the rows it was given, counts its calls, and ends as
+# FAKE_FZF_OUT / FAKE_FZF_RC say. With FAKE_FZF_SLEEP it waits, and notes a TERM.
+fzfstub() {
+  mkdir -p "$BATS_TEST_TMPDIR/fzfbin"
+  cat >"$BATS_TEST_TMPDIR/fzfbin/fzf" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$@" >"$FAKE_FZF_LOG"
+printf '%s\n' "$CLAUDE_PEER_SELF" >"$FAKE_FZF_LOG.self"
+echo x >>"$FAKE_FZF_LOG.calls"
+cat >"$FAKE_FZF_LOG.rows"
+if [ -n "${FAKE_FZF_SLEEP-}" ]; then
+  trap 'echo TERM >>"$FAKE_FZF_LOG.term"; kill $sp 2>/dev/null; exit 143' TERM
+  sleep "$FAKE_FZF_SLEEP" & sp=$!
+  wait $sp
+fi
+[ -z "${FAKE_FZF_OUT-}" ] || printf '%s' "$FAKE_FZF_OUT"
+exit "${FAKE_FZF_RC-0}"
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/fzfbin/fzf"
+  export PATH="$BATS_TEST_TMPDIR/fzfbin:$PATH"
+  export FAKE_FZF_LOG="$BATS_TEST_TMPDIR/fzf.log"
+}
+
+# typeline <tag> <text>: press, and return once the pane has read the line, so
+# the next line cannot overtake it
+typeline() { press "$1" "$2"; until_ok "! kill -0 $! 2>/dev/null"; }
+
+# pane_count <tag> <text>: how many times the pane's output has that text (a prompt
+# has no newline after it, so lines are not anchored)
+pane_count() { grep -oF -- "$2" "$BATS_TEST_TMPDIR/pane-$1.out" | wc -l | tr -d ' '; }
+
+# pane_says <slot-tag> <text>: wait until the pane's output has that text on a line
+pane_says() { until_ok "grep -qF -- '$2' '$BATS_TEST_TMPDIR/pane-$1.out'"; }
+
+@test "picker list: with no setting and no terminal Return opens the numbered list, and a second Return is a blank session" {
+  hellofix
+  git config --global --unset claude-peer.picker
+  FAKE_SHELL_SLEEP=2 pane alpha
+  grep -qx "Alpha: Return picks a context, c continues the last session, q leaves a shell" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  typeline alpha ''
+  pane_says alpha 'c continue · r resume · n new task · s new task, and save it · q back'
+  grep -q '^ 1  @fresh         Blank session$' "$BATS_TEST_TMPDIR/pane-alpha.out"
+  grep -q '^ 3  hello          Hello (asks: Who)$' "$BATS_TEST_TMPDIR/pane-alpha.out"
+  grep -q '^ 8  @continue      Continue the last session$' "$BATS_TEST_TMPDIR/pane-alpha.out"
+  grep -q '^ 9  @resume        Resume a session$' "$BATS_TEST_TMPDIR/pane-alpha.out"
+  grep -q '^10  @task          New task$' "$BATS_TEST_TMPDIR/pane-alpha.out"
+  typeline alpha ''
+  until_ok 'grep -q "claude-peer proj-alpha\$" "$FAKE_SHELL_LOG"'
+  cl=$(claim_of "$REPO/.claude/worktrees/alpha")
+  [ "$(sed -n 4p "$cl")" = pane ]
+  [ "$(sed -n 5p "$cl")" = - ]
+}
+
+@test "picker list: a number starts that context and asks for its value; c, r and a typed context name work too" {
+  hellofix
+  git config --global claude-peer.picker list
+  FAKE_SHELL_SLEEP=2 pane alpha
+  typeline alpha ''
+  pane_says alpha ' 3  hello'
+  typeline alpha 3
+  pane_says alpha 'Who: '
+  typeline alpha World
+  until_ok 'grep -q "claude-peer proj-alpha --agent plan-fable --model sonnet --effort low --append-system-prompt be brief Hello World\.\$" "$FAKE_SHELL_LOG"'
+  cl=$(claim_of "$REPO/.claude/worktrees/alpha")
+  [ "$(sed -n 4p "$cl")" = pane ]
+  [ "$(sed -n 5p "$cl")" = hello ]
+  [ "$(sed -n 6p "$cl")" = "hello: World" ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  # a context name typed at the waiting prompt; an empty answer to its question is back to waiting
+  typeline alpha hello
+  typeline alpha ''
+  until_ok '[ "$(pane_count alpha "Who: ")" -eq 2 ]'
+  typeline alpha hello
+  typeline alpha Again
+  until_ok 'grep -q "append-system-prompt be brief Hello Again\.\$" "$FAKE_SHELL_LOG"'
+  [ "$(shell_runs)" -eq 2 ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  # an unknown line asks again, c continues
+  typeline alpha nosuch
+  typeline alpha c
+  until_ok 'grep -q "claude-peer proj-alpha --continue\$" "$FAKE_SHELL_LOG"'
+}
+
+@test "picker list: r ends the argument list with --resume and nothing after it" {
+  hellofix
+  git config --global claude-peer.picker list
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  typeline alpha ''
+  pane_says alpha 'c continue · r resume'
+  typeline alpha r
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = --resume ]
+  [ "$(cat "$BATS_TEST_TMPDIR/last.n")" -eq 6 ]
+  grep -q "claude-peer proj-alpha --resume\$" "$FAKE_SHELL_LOG"
+}
+
+@test "picker list: n takes the typed task as the prompt; an empty task and an unknown answer go back" {
+  hellofix
+  git config --global claude-peer.picker list
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  typeline alpha ''
+  pane_says alpha 'c continue · r resume'
+  typeline alpha zzz
+  until_ok '[ "$(pane_count alpha "c continue · r resume")" -eq 2 ]'
+  typeline alpha n
+  pane_says alpha 'Task: '
+  typeline alpha ''
+  until_ok '[ "$(pane_count alpha "Alpha: Return picks")" -eq 2 ]'
+  [ "$(shell_runs)" -eq 0 ]
+  typeline alpha ''
+  pane_says alpha 'c continue · r resume'
+  typeline alpha n
+  typeline alpha 'fix the thing'
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = "fix the thing" ]
+  cl=$(claim_of "$REPO/.claude/worktrees/alpha")
+  [ "$(sed -n 4p "$cl")" = pane ]
+  [ "$(sed -n 6p "$cl")" = "fix the thing" ]
+  grep -qx "Alpha · fix the thing" "$BATS_TEST_TMPDIR/pane-alpha.out"
+}
+
+@test "picker list: s saves the task as 90-<name>.ctx for this repository; the same name again, and a bad name, are refused and the task still starts" {
+  hellofix
+  git config --global claude-peer.picker list
+  FAKE_SHELL_SLEEP=2 pane alpha
+  typeline alpha ''
+  pane_says alpha 'c continue · r resume'
+  typeline alpha s
+  typeline alpha 'fix ci please'
+  pane_says alpha 'Save as (a name like fix-ci, Return skips): '
+  typeline alpha fix-ci
+  until_ok 'grep -q "claude-peer proj-alpha fix ci please\$" "$FAKE_SHELL_LOG"'
+  f=$CLAUDE_PEER_CONTEXTS/octo/proj/90-fix-ci.ctx
+  [ "$(cat "$f")" = $'title: fix ci please\n\nfix ci please' ]
+  grep -qF "saved as fix-ci ($f)" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  run sh "$BIN" context list
+  [[ "$output" == *"fix-ci"$'\t'"fix ci please"* ]]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  typeline alpha ''
+  pane_says alpha 'c continue · r resume'
+  typeline alpha s
+  typeline alpha 'second try'
+  typeline alpha fix-ci
+  until_ok 'grep -q "claude-peer proj-alpha second try\$" "$FAKE_SHELL_LOG"'
+  grep -qF "not saved: fix-ci already exists in $CLAUDE_PEER_CONTEXTS/octo/proj" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  [ "$(cat "$f")" = $'title: fix ci please\n\nfix ci please' ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  # a name another file of the directory already has, and a bad name
+  typeline alpha ''
+  pane_says alpha 'c continue · r resume'
+  typeline alpha s
+  typeline alpha 'third'
+  typeline alpha deploy
+  until_ok 'grep -q "claude-peer proj-alpha third\$" "$FAKE_SHELL_LOG"'
+  grep -qF "not saved: deploy already exists in " "$BATS_TEST_TMPDIR/pane-alpha.out"
+  [ ! -e "$CLAUDE_PEER_CONTEXTS/octo/proj/90-deploy.ctx" ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  typeline alpha ''
+  pane_says alpha 'c continue · r resume'
+  typeline alpha s
+  typeline alpha 'fourth'
+  typeline alpha 'Bad Name'
+  until_ok 'grep -q "claude-peer proj-alpha fourth\$" "$FAKE_SHELL_LOG"'
+  grep -qF "not saved: 'Bad Name' is not a name" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  [ "$(ls "$CLAUDE_PEER_CONTEXTS/octo/proj" | wc -l | tr -d ' ')" -eq 2 ]
+}
+
+@test "picker list: the same name saved from a pane in one repository and one in another lands in each repository's own directory" {
+  hellofix
+  git config --global claude-peer.picker list
+  git -C "$BATS_TEST_TMPDIR/other" commit -q --allow-empty -m init
+  FAKE_SHELL_SLEEP=2 pane alpha
+  FAKE_SHELL_SLEEP=2 pane alpha "$BATS_TEST_TMPDIR/other" o
+  typeline alpha ''
+  typeline o ''
+  pane_says alpha 'c continue · r resume'
+  pane_says o 'c continue · r resume'
+  typeline alpha s
+  typeline o s
+  typeline alpha 'in proj'
+  typeline o 'in other'
+  typeline alpha same
+  typeline o same
+  until_ok '[ -f "$CLAUDE_PEER_CONTEXTS/octo/proj/90-same.ctx" ] && [ -f "$CLAUDE_PEER_CONTEXTS/octo/other/90-same.ctx" ]'
+  until_ok 'grep -q "args=.*in other\$" "$FAKE_SHELL_LOG" && grep -q "args=.*in proj\$" "$FAKE_SHELL_LOG"'
+  ! grep -qF 'not saved' "$BATS_TEST_TMPDIR/pane-alpha.out" "$BATS_TEST_TMPDIR/pane-o.out"
+  run sh "$BIN" context list
+  [[ "$output" == *"same"$'\t'"in proj"* ]]
+  [[ "$output" != *"in other"* ]]
+  cd "$BATS_TEST_TMPDIR/other"
+  run sh "$BIN" context list
+  [[ "$output" == *"same"$'\t'"in other"* ]]
+  [[ "$output" != *"in proj"* ]]
+}
+
+@test "picker list: a save in a repository with no origin says so, asks no name, and the task still starts" {
+  hellofix
+  git config --global claude-peer.picker list
+  git -C "$BATS_TEST_TMPDIR/bare" commit -q --allow-empty -m init
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha "$BATS_TEST_TMPDIR/bare" b
+  typeline b ''
+  pane_says b 'c continue · r resume'
+  typeline b s
+  typeline b 'no home for this'
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = "no home for this" ]
+  grep -qF "not saved: this repository has no origin remote, so it has no context directory" "$BATS_TEST_TMPDIR/pane-b.out"
+  ! grep -q 'Save as' "$BATS_TEST_TMPDIR/pane-b.out"
+  [ ! -e "$CLAUDE_PEER_CONTEXTS/90-no-home-for-this.ctx" ]
+}
+
+@test "picker list: a start from outside interrupts the list and the question after it" {
+  hellofix
+  git config --global claude-peer.picker list
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  typeline alpha ''
+  pane_says alpha 'c continue · r resume'
+  typeline alpha 3
+  pane_says alpha 'Who: '
+  CLAUDE_PEER_START_WAIT=10 run sh "$BIN" start alpha hello
+  [ "$status" -eq 0 ]
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = hello ]
+}
+
+@test "picker fzf: the call carries the key, preview and query flags, the rows come in order, and a canned pick starts that context" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  FAKE_FZF_OUT=$'\n\nhello\tHello (asks: Who)\n' FAKE_SHELL_SLEEP=2 pane alpha
+  grep -qx "Alpha: Return picks a context, c continues the last session, q leaves a shell" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  typeline alpha ''
+  until_ok '[ -f "$FAKE_FZF_LOG.rows" ]'
+  grep -qxF -- '--expect=ctrl-t,ctrl-s' "$FAKE_FZF_LOG"
+  grep -qxF -- '--print-query' "$FAKE_FZF_LOG"
+  grep -qxF -- '--no-multi' "$FAKE_FZF_LOG"
+  grep -qxF -- '--delimiter=\t' "$FAKE_FZF_LOG"
+  grep -qxF -- '--with-nth=2..' "$FAKE_FZF_LOG"
+  grep -qxF -- '--prompt=Alpha ▸ ' "$FAKE_FZF_LOG"
+  grep -qxF -- '--preview=sh "$CLAUDE_PEER_SELF" context show {1}' "$FAKE_FZF_LOG"
+  grep -qxF -- '--preview-window=right:55%:wrap' "$FAKE_FZF_LOG"
+  [ "$(cat "$FAKE_FZF_LOG.self")" = "$BIN" ]
+  [ "$(cut -f1 "$FAKE_FZF_LOG.rows" | tr '\n' ' ')" = "@fresh plain hello say greet mine deploy @continue @resume @task " ]
+  [ "$(sed -n 3p "$FAKE_FZF_LOG.rows")" = $'hello\thello          Hello (asks: Who)' ]
+  pane_says alpha 'Who: '
+  typeline alpha World
+  until_ok 'grep -q "append-system-prompt be brief Hello World\.\$" "$FAKE_SHELL_LOG"'
+  [ "$(wc -l <"$FAKE_FZF_LOG.calls" | tr -d ' ')" -eq 1 ]
+}
+
+@test "picker fzf: the preview command runs the script's own context show" {
+  hellofix
+  CLAUDE_PEER_SELF=$BIN run sh -c 'sh "$CLAUDE_PEER_SELF" context show hello'
+  [ "$status" -eq 0 ]
+  [[ "$output" == "hello — Hello"* ]]
+}
+
+@test "picker fzf: a built-in row starts it, ctrl-t uses the query as the task, exit 1 with a query is a task, ctrl-s saves it" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  FAKE_FZF_OUT=$'\n\n@continue\tContinue\n' FAKE_SHELL_SLEEP=2 pane alpha
+  typeline alpha ''
+  until_ok 'grep -q "claude-peer proj-alpha --continue\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  FAKE_FZF_OUT=$'use this\nctrl-t\n@fresh\tBlank\n' FAKE_SHELL_SLEEP=2 pane alpha
+  typeline alpha ''
+  until_ok 'grep -q "claude-peer proj-alpha use this\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  FAKE_FZF_RC=1 FAKE_FZF_OUT=$'typed and unmatched\n\n' FAKE_SHELL_SLEEP=2 pane alpha
+  typeline alpha ''
+  until_ok 'grep -q "claude-peer proj-alpha typed and unmatched\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  FAKE_FZF_RC=1 FAKE_FZF_OUT=$'save me\nctrl-s\n' FAKE_SHELL_SLEEP=2 pane alpha
+  typeline alpha ''
+  pane_says alpha 'Save as (a name like fix-ci, Return skips): '
+  typeline alpha keeper
+  until_ok 'grep -q "claude-peer proj-alpha save me\$" "$FAKE_SHELL_LOG"'
+  [ "$(cat "$CLAUDE_PEER_CONTEXTS/octo/proj/90-keeper.ctx")" = $'title: save me\n\nsave me' ]
+  [ "$(shell_runs)" -eq 4 ]
+}
+
+@test "picker fzf: Esc (130) and an empty exit 1 go back to waiting; exit 2 says so once and uses the list from then on" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  FAKE_FZF_RC=130 pane alpha
+  typeline alpha ''
+  until_ok '[ "$(pane_count alpha "Alpha: Return picks")" -eq 2 ]'
+  [ "$(shell_runs)" -eq 0 ]
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  FAKE_FZF_RC=1 FAKE_FZF_OUT=$'\n\n' pane alpha
+  typeline alpha ''
+  until_ok '[ "$(wc -l <"$FAKE_FZF_LOG.calls" | tr -d " ")" -eq 2 ]'
+  [ "$(shell_runs)" -eq 0 ]
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  rm -f "$FAKE_FZF_LOG.calls"
+  FAKE_FZF_RC=2 pane alpha
+  typeline alpha ''
+  pane_says alpha 'c continue · r resume'
+  grep -qF "claude-peer: fzf failed (exit 2); using the list" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  typeline alpha q
+  until_ok '[ "$(pane_count alpha "Alpha: Return picks")" -eq 2 ]'
+  typeline alpha ''
+  until_ok '[ "$(pane_count alpha "c continue · r resume")" -eq 2 ]'
+  [ "$(pane_count alpha "fzf failed")" -eq 1 ]
+  [ "$(wc -l <"$FAKE_FZF_LOG.calls" | tr -d ' ')" -eq 1 ]
+  [ "$(shell_runs)" -eq 0 ]
+}
+
+@test "picker fzf: a start from outside while fzf is open closes it with TERM at once and the session gets the prompt" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  FAKE_FZF_SLEEP=30 FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  typeline alpha ''
+  until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+  [ "$(sh "$BIN" slots | cut -f2)" = waiting ]
+  CLAUDE_PEER_START_WAIT=10 run sh "$BIN" start alpha hello
+  [ "$status" -eq 0 ]
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = hello ]
+  until_ok '[ -f "$FAKE_FZF_LOG.term" ]'
+  grep -qx "(picker closed: started from outside)" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  grep -qx "Alpha · started by Lead · hello" "$BATS_TEST_TMPDIR/pane-alpha.out"
+}
+
+@test "picker off: Return is a blank session and the hint is today's line; a context name is not special" {
+  hellofix
+  FAKE_SHELL_SLEEP=2 pane alpha
+  grep -qx "Alpha: Return starts a Claude here, c continues the last session, q leaves a shell" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  typeline alpha hello
+  until_ok '[ "$(pane_count alpha "Alpha: Return starts")" -eq 2 ]'
+  [ "$(shell_runs)" -eq 0 ]
+  typeline alpha ''
+  until_ok 'grep -q "claude-peer proj-alpha\$" "$FAKE_SHELL_LOG"'
 }

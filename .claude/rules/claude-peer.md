@@ -137,7 +137,8 @@ registered `peer-N` worktrees remain; nothing uses or removes them any more
 
 **A pane waits until it is told.** `claude-peer run --as <slot> --wait` is
 what a slot pane runs: it prints `<Label>: Return starts a Claude here, c
-continues the last session, q leaves a shell` and makes no worktree, claim or
+continues the last session, q leaves a shell` (with the picker, below, on:
+`Return picks a context, …`) and makes no worktree, claim or
 Claude until it is woken. Return starts a fresh session, `c` one with
 `--continue`, `q` (or Ctrl-C) removes its wait file and leaves a plain shell,
 anything else asks again; when the session ends for any reason the claim goes
@@ -262,6 +263,27 @@ overlay does this for `audit`). A context is a launcher: it points at a skill or
 and restates no procedure. `{owner}` and `{repo}` in `40-prs.ctx` are gh's own placeholders,
 typed literally, and only `{input}` is substituted. The lookup rule is the one above: top,
 `<owner>/`, `<owner>/<repo>/`, a deeper file wins by name.
+
+**The picker.** Return in a waiting pane opens a list of rows instead of starting a blank
+session (`git config claude-peer.picker fzf|list|off`, read in the leader directory when the
+pane starts; unset is `fzf` when `fzf` is on PATH and stdout is a terminal, else `list`; `off`
+is the pre-picker pane, hint line and all). `pick_rows` builds the rows, `id<TAB>display`:
+`@fresh`, each context of the repository, `@continue`, `@resume` (`claude … --resume` alone,
+so Claude's own list chooses), `@task`. A line typed at the waiting prompt that is exactly a
+context name starts it. Both front ends are reached through `pane_pick`; every question in
+them (`<ask>: `, `Task: `, `Save as …`) is read by `pane_ask`, which is `pane_block`, so a
+`start` request interrupts any of them. fzf runs as a background child the pane `wait`s on,
+with its signals reset in the subshell (the pane ignores `TTIN` and `TTOU`); a request while
+it is open sends it TERM, runs `stty sane` on the terminal and handles the request. fzf exits
+130: back to waiting; `ctrl-t` or `ctrl-s` (or exit 1) with a typed query: that text is the
+task, and `ctrl-s` also saves it; any other failure prints `fzf failed` once and the pane
+uses the numbered list from then on. Saving writes `<root>/<owner>/<repo>/90-<name>.ctx`
+(`title:` the first 60 characters, a blank line, the task) and refuses, with one `not saved:`
+line and the task still starting, a bad name, a name the directory already has under any
+prefix, or a repository with no origin. The preview is `claude-peer context show`, reached
+through `CLAUDE_PEER_SELF`, the script's absolute path, exported by the pane. The tests use a
+stub `fzf` on `PATH`; whether the real fzf works as a background child in a workgroup pane is
+live check L-a/L-b.
 
 **The Hermes peer** exists only in `Claude Peers + Hermes`, and is a plain shell
 unless a Hermes profile routes the directory; the gate below is now the second

@@ -65,9 +65,11 @@
 #                            start claude -n <repo>-<slot> through the shell (the
 #                            wrapper applies); exit 3 when a live claim holds it
 #   run --as <slot> --wait [-- claude args...]
-#                            a pane: wait for Return (c continues the last
-#                            session, q leaves a shell) or for `start`, take a
-#                            slot of the pool, run claude, wait again
+#                            a pane: wait for Return (opens the picker of
+#                            contexts; git config claude-peer.picker fzf|list|
+#                            off; c continues the last session, q leaves a
+#                            shell) or for `start`, take a slot of the pool,
+#                            run claude, wait again
 #   run <branch> [-- claude args...]
 #                            the same on <repo>/.claude/worktrees/<slug> and
 #                            <branch>
@@ -437,7 +439,7 @@ pane_shell() { # leave: forget this pane, hand the terminal back, become a shell
 # header.
 task_line() { printf '%s\n' "$1" | sed -n 1p | tr '\t\r' '  ' | cut -c1-80; }
 
-# mode(fresh|continue) slot(or -) prompt claude-args...: take a slot, run one
+# mode(fresh|continue|resume) slot(or -) prompt claude-args...: take a slot, run one
 # session in it, return. Never exits: a refusal is printed and the pane waits on.
 # The caller sets PG_CTX (a context path), PG_CTXNAME, PG_BY (who started it) and
 # PG_TASK (one line); they are read, and cleared, here.
@@ -473,9 +475,176 @@ pane_go() {
     pg_v=$(ctx_get "$pg_ctx" system); [ -z "$pg_v" ] || set -- "$@" --append-system-prompt "$pg_v"
   fi
   [ -z "$pg_prompt" ] || set -- "$@" "$pg_prompt"
+  [ "$pg_mode" != resume ] || set -- "$@" --resume   # no value: Claude's own list chooses
   run_session "$pg_wt" "$rname-$pg_taken" "$@"
   [ ! -t 1 ] || printf '\033]21337;status=;indicator=;status-color=;detail=\a'
   return 0
+}
+
+# --- the picker: what Return opens in a waiting pane ---------------------------------
+
+# slug -> id<TAB>display per row: blank session, the contexts, continue, resume, new task
+pick_rows() {
+  printf '@fresh\t%-14s %s\n' @fresh 'Blank session'
+  ctx_files "$1" | while IFS=$ctx_tab read -r pk_n pk_p; do
+    pk_t=$(ctx_get "$pk_p" title); pk_a=$(ctx_get "$pk_p" ask)
+    printf '%s\t%-14s %s%s\n' "$pk_n" "$pk_n" "${pk_t:-$pk_n}" "${pk_a:+ (asks: $pk_a)}"
+  done
+  printf '@continue\t%-14s %s\n' @continue 'Continue the last session'
+  printf '@resume\t%-14s %s\n' @resume 'Resume a session'
+  printf '@task\t%-14s %s\n' @task 'New task'
+}
+
+# prompt -> the answer in pn_ans; status 1 when a request, Ctrl-C or end of input
+# cut it short (the caller goes back to waiting; a request is handled there).
+pane_ask() {
+  printf '%s' "$1"
+  pane_block
+  [ ! -f "$pn_me.start" ] || return 1
+  if [ -n "$pn_intr" ]; then pn_intr=; return 1; fi
+  [ -f "$pn_me.key" ] || return 1
+  pn_ans=$(cat "$pn_me.key"); rm -f "$pn_me.key"
+  return 0
+}
+
+# task-text: write <root>/<slug>/90-<name>.ctx when a name is given. Status 1 only
+# when a request cut the question short; every refusal is one line and status 0.
+pane_save() {
+  [ -n "$pn_slug" ] || { echo 'not saved: this repository has no origin remote, so it has no context directory'; return 0; }
+  pane_ask 'Save as (a name like fix-ci, Return skips): ' || { [ ! -f "$pn_me.start" ]; return; }
+  [ -n "$pn_ans" ] || return 0
+  sv_n=$pn_ans
+  printf '%s\n' "$sv_n" | LC_ALL=C grep -Eq '^[a-z][a-z0-9_-]*$' ||
+    { echo "not saved: '$sv_n' is not a name (lowercase letters, digits, - and _)"; return 0; }
+  sv_d=$(ctx_dir)/$pn_slug
+  for sv_f in "$sv_d"/*.ctx; do
+    [ -f "$sv_f" ] || continue
+    [ "$(ctx_name_of "$sv_f")" != "$sv_n" ] || { echo "not saved: $sv_n already exists in $sv_d"; return 0; }
+  done
+  mkdir -p "$sv_d" || { echo "not saved: cannot create $sv_d"; return 0; }
+  { printf 'title: %s\n\n' "$(printf '%s\n' "$1" | sed -n 1p | tr '\t\r' '  ' | cut -c1-60)"; printf '%s\n' "$1"; } >"$sv_d/90-$sv_n.ctx" &&
+    echo "saved as $sv_n ($sv_d/90-$sv_n.ctx)"
+  return 0
+}
+
+# task-text save("" or 1) definition-args...: a fresh session whose prompt is the text
+pane_task() {
+  pt_t=$1 pt_s=$2; shift 2
+  [ -z "$pt_s" ] || pane_save "$pt_t" || return 0
+  rm -f "$pn_me"
+  PG_BY=pane PG_TASK=$(task_line "$pt_t")
+  pane_go fresh - "$pt_t" "$@"
+}
+
+# save("" or 1) definition-args...: ask for the task, then start it
+pane_newtask() {
+  pw_s=$1; shift
+  pane_ask 'Task: ' || return 0
+  [ -z "$pn_ans" ] || pane_task "$pn_ans" "$pw_s" "$@"
+}
+
+# context-name definition-args...: ask for its value when it has `ask`, then start it
+pane_named() {
+  px_n=$1; shift
+  px_p=$(ctx_find "$px_n" "$pn_slug") && ctx_check "$px_p" || return 0
+  px_a=$(ctx_get "$px_p" ask); px_v=
+  if [ -n "$px_a" ]; then
+    pane_ask "$px_a: " || return 0
+    px_v=$pn_ans
+    [ -n "$px_v" ] || return 0
+  fi
+  px_m=$(ctx_get "$px_p" mode)
+  rm -f "$pn_me"
+  PG_CTX=$px_p PG_CTXNAME=$px_n PG_BY=pane
+  PG_TASK=$(task_line "$px_n${px_v:+: $px_v}")
+  pane_go "${px_m:-fresh}" - "$(ctx_prompt "$px_p" "$px_v")" "$@"
+}
+
+# row-id definition-args...: what each row runs
+pane_choose() {
+  pc_id=$1; shift
+  case $pc_id in
+    @fresh|@continue|@resume) rm -f "$pn_me"; PG_BY=pane; pane_go "${pc_id#@}" - '' "$@";;
+    @task) pane_newtask "" "$@";;
+    *) pane_named "$pc_id" "$@";;
+  esac
+  return 0
+}
+
+# Is the typed line the name of a context of this repository?
+pane_has_ctx() { ctx_files "$pn_slug" 2>/dev/null | cut -f1 | grep -qxF -- "$1"; }
+
+# fzf as a background child the pane waits on, like the reader, so a request
+# (USR1) still interrupts it. Status 1: fzf failed, use the list.
+pane_fzf() {
+  rm -f "$pn_me.pick"
+  ( trap - TTIN TTOU; exec fzf --no-multi --no-sort --layout=reverse --height=100% \
+      --delimiter='\t' --with-nth=2.. --prompt="$label ▸ " \
+      --header='enter start · ctrl-t use what I typed as the task · ctrl-s the same, and save it · esc back' \
+      --print-query --expect=ctrl-t,ctrl-s \
+      --preview='sh "$CLAUDE_PEER_SELF" context show {1}' --preview-window=right:55%:wrap \
+      <"$pn_me.rows" >"$pn_me.pick" ) &
+  pn_rpid=$!
+  while :; do
+    wait "$pn_rpid"; pf_rc=$?
+    if [ -f "$pn_me.start" ]; then
+      kill "$pn_rpid" 2>/dev/null; wait "$pn_rpid" 2>/dev/null
+      pn_rpid=
+      # a FIFO (the tests' terminal) would block the open until a writer comes
+      [ ! -c "$pn_tty" ] || stty sane <"$pn_tty" 2>/dev/null
+      echo '(picker closed: started from outside)'
+      return 0
+    fi
+    kill -0 "$pn_rpid" 2>/dev/null || break
+  done
+  pn_rpid=
+  case $pf_rc in
+    0|1) ;;
+    130) return 0;;
+    *) echo "claude-peer: fzf failed (exit $pf_rc); using the list"; pn_pick=list; return 1;;
+  esac
+  pf_q=$(sed -n 1p "$pn_me.pick"); pf_k=$(sed -n 2p "$pn_me.pick"); pf_id=$(sed -n 3p "$pn_me.pick" | cut -f1)
+  case $pf_k in
+    ctrl-t|ctrl-s)
+      [ -z "$pf_q" ] || pane_task "$pf_q" "$([ "$pf_k" = ctrl-s ] && echo 1)" "$@"
+      return 0;;
+  esac
+  if [ "$pf_rc" = 0 ]; then
+    [ -z "$pf_id" ] || pane_choose "$pf_id" "$@"
+  elif [ -n "$pf_q" ]; then
+    pane_task "$pf_q" "" "$@"
+  fi
+  return 0
+}
+
+# The numbered list, read by the pane's own line reader.
+pane_list() {
+  while :; do
+    awk -F'\t' '{ printf "%2d  %s\n", NR, $2 }' "$pn_me.rows"
+    echo 'c continue · r resume · n new task · s new task, and save it · q back'
+    pane_ask "$label ▸ " || return 0
+    pl_id=
+    case $pn_ans in
+      '') pl_id=@fresh;;
+      c) pl_id=@continue;;
+      r) pl_id=@resume;;
+      n) pane_newtask "" "$@"; return 0;;
+      s) pane_newtask 1 "$@"; return 0;;
+      q) return 0;;
+      *[!0-9]*) pl_id=$(cut -f1 "$pn_me.rows" | grep -xF -- "$pn_ans" | sed -n 1p);;
+      *) pl_id=$(awk -F'\t' -v n="$pn_ans" 'NR == n { print $1 }' "$pn_me.rows");;
+    esac
+    [ -z "$pl_id" ] || { pane_choose "$pl_id" "$@"; return 0; }
+  done
+}
+
+# Return in a waiting pane: pick a row, start it or go back to waiting.
+pane_pick() {
+  pick_rows "$pn_slug" >"$pn_me.rows"
+  if [ "$pn_pick" = fzf ]; then
+    pane_fzf "$@" && return 0
+  fi
+  pane_list "$@"
 }
 
 # "$@": the definition's claude args. Needs repo rname slot label LEADER.
@@ -491,6 +660,17 @@ pane() {
   trap 'exit 143' TERM
   trap 'exit 129' HUP
   trap pane_cleanup EXIT
+  pn_pick=$(git config --get claude-peer.picker 2>/dev/null)
+  case $pn_pick in
+    fzf|list|off) ;;
+    *) if command -v fzf >/dev/null 2>&1 && [ -t 1 ]; then pn_pick=fzf; else pn_pick=list; fi;;
+  esac
+  pn_slug=
+  if [ "$pn_pick" != off ]; then
+    pn_slug=$(origin_slug) || pn_slug=
+    case $0 in /*) CLAUDE_PEER_SELF=$0;; *) CLAUDE_PEER_SELF=$(cd "$(dirname "$0")" && pwd -P)/${0##*/};; esac
+    export CLAUDE_PEER_SELF
+  fi
   if [ "$(git config --get claude-peer.start 2>/dev/null)" = auto ]; then
     settle
     PG_BY=pane
@@ -503,14 +683,22 @@ pane() {
     pn_ev=
     while [ -z "$pn_ev" ]; do
       if [ -f "$pn_me.start" ]; then pn_ev=request; break; fi
-      [ -z "$pn_show" ] || printf '%s: Return starts a Claude here, c continues the last session, q leaves a shell\n' "$label"
+      if [ -n "$pn_show" ]; then
+        if [ "$pn_pick" = off ]; then printf '%s: Return starts a Claude here, c continues the last session, q leaves a shell\n' "$label"
+        else printf '%s: Return picks a context, c continues the last session, q leaves a shell\n' "$label"; fi
+      fi
       pn_show=
       pane_block
       if [ -f "$pn_me.start" ]; then pn_ev=request
       elif [ -n "$pn_intr" ]; then pn_ev=quit
       elif [ -f "$pn_me.key" ]; then
         pn_k=$(cat "$pn_me.key"); rm -f "$pn_me.key"
-        case $pn_k in '') pn_ev=fresh;; c) pn_ev=continue;; q) pn_ev=quit;; *) pn_show=1;; esac
+        case $pn_k in
+          '') if [ "$pn_pick" = off ]; then pn_ev=fresh; else pn_ev=pick; fi;;
+          c) pn_ev=continue;;
+          q) pn_ev=quit;;
+          *) if [ "$pn_pick" != off ] && pane_has_ctx "$pn_k"; then pn_ev=named; else pn_show=1; fi;;
+        esac
       elif [ "$pn_ended" = 1 ] && [ "$pn_reader" = 1 ]; then
         pn_reader=0   # the reader ended with no line: no terminal, only a request wakes this pane
       fi
@@ -535,6 +723,8 @@ pane() {
           pn_prompt=$(ctx_prompt "$pn_cxp" "$pn_prompt")
         fi
         pane_go "$pn_mode" "$pn_req" "$pn_prompt" "$@";;
+      pick) pane_pick "$@";;
+      named) pane_choose "$pn_k" "$@";;
       *) rm -f "$pn_me"; PG_BY=pane; pane_go "$pn_ev" - '' "$@";;
     esac
     pn_show=1
