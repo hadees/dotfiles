@@ -226,6 +226,26 @@ binary has nothing to check, so they are not in the manifest):
 - The API server bounds its inbound buffer and disconnects ping-flooding
   clients.
 
+3.7.7, from its release notes:
+
+- `Session.async_eval_javascript` runs JavaScript in a browser session's page
+  and returns the result. The first time a script does it on a site, iTerm2
+  asks; these grants and the URL-loading ones are reviewed in Settings >
+  General > Magic.
+- `Session.async_set_browser_toolbar_hidden` hides a browser session's
+  toolbar so the page fills the pane (the menu item is Web > Show Toolbar).
+- `set_session_status` takes a `progress` argument, matching `it2 session
+  set-status --progress`.
+- Context menu providers can group items into submenus and show them only
+  where an expression is true (`ContextMenuProviderRPC`'s `submenu` and
+  `visible_when`).
+- The package ships type annotations, so mypy and editors check scripts.
+- Fixed: subscribing to profile change notifications always failed;
+  `Color.hex` failed on profile colours; nested `MainMenu` submenus were
+  unreachable on Python 3.12 and earlier; `Selection.async_get_string` added
+  line breaks a copy would not; approving a URL-load prompt after the script
+  gave up waiting no longer loads the URL.
+
 ## LocalWriteOnlyProfile
 
 The way to restyle one session without editing the profile every other

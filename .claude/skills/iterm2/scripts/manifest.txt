@@ -20,7 +20,7 @@
 # it when the reference stops claiming it. A fact nobody documents is noise;
 # a claim nothing checks is the failure mode this skill exists to prevent.
 
-version 3.7.6
+version 3.7.7
 
 # --- AppleScript dictionary -------------------------------------------
 # The sdef ships in the bundle and is the dictionary Script Editor shows.
@@ -218,28 +218,33 @@ bundle iTermBrowserPlugin.app
 # not findable here; everything below is 16 bytes or longer, or a colour.
 util cc-status
 util it2
-utilstr cc-status background_tasks
-utilstr cc-status notification_type
-utilstr cc-status permission_prompt
-utilstr cc-status last_assistant_message
-utilstr cc-status --background-tasks
-utilstr cc-status 1 background task running
-utilstr cc-status #00d75f
-utilstr cc-status #5f87ff
-utilstr cc-status #888888
-utilstr cc-status #ff9500
+# 3.7.7: cc-status is a trampoline that execs `it2 handle-agent-hook`; the
+# payload handling, detail text and colours moved into it2 unchanged.
+utilstr cc-status handle-agent-hook
+utilstr it2 background_tasks
+utilstr it2 notification_type
+utilstr it2 permission_prompt
+utilstr it2 last_assistant_message
+utilstr it2 --background-tasks
+utilstr it2 1 background task running
+utilstr it2 #00d75f
+utilstr it2 #5f87ff
+utilstr it2 #888888
+utilstr it2 #ff9500
 # it2 is Swift ArgumentParser: its flags are derived from property names
 # (_backgroundTasks), so "--background-tasks" is not a literal in 3.7.6.
 # Check the help text that documents the flag instead.
 utilstr it2 Number of background tasks still running (stored in memory for later get-background-tasks queries).
 utilstr it2 Print the background-task count last stored via set-status --background-tasks.
-utilstr cc-status --background-tasks-delta
-utilstr cc-status --agent
+utilstr it2 --background-tasks-delta
+utilstr it2 Meant to be named as the hook command in the agent
 utilstr it2 ITERM_SESSION_ID
 utilstr it2 Authentication failed. Ensure iTerm2 Python API is enabled: Settings > General > Magic > Enable Python API
 binstr ccStatusSymlinkIsHealthy
 binstr ensureCCStatusSymlink
-binstr utilities/cc-status
+binstr handle-agent-hook
+binstr NoSyncClaudeCodeConfigDirPath
+binstr Claude Code Integration Looks Broken
 binstr com.iterm2.set-status
 binstr Toolbelt.Session Status
 binstr * `status=TEXT` 
@@ -252,6 +257,8 @@ binstr  Sets optional detail text shown below the status (wraps up to 3 lines).
 # See references/session-status.md.
 binstr **Control Sequence (OSC 21337):** Programs can set tab status directly:
 binstr **Program Status Protocol (OSC 7501):** A program can report that it is idle, working, waiting on you, done, or failed, and can report on several tasks at once. A session with more than one lists up to four of them, most urgent first, under its own row.
+binstr  button to configure which status keywords have the highest priority. The default order is: waiting, done, error, working, idle.
+binstr Right-click a row and choose **Snooze** to move it to the bottom of the list and dim it. A snoozed entry automatically un-snoozes the next time its status changes.
 binstr Set Tab Status
 binstr Set Profile Setting
 binstr Enter Workgroup

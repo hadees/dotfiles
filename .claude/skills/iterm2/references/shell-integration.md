@@ -65,10 +65,12 @@ bash `\[$(iterm2_prompt_mark)\]`, fish `iterm2_prompt_mark` inside
 
 ### Limitations
 
-"By default, shell integration does not work with tmux or screen." For tmux,
-`export ITERM_ENABLE_SHELL_INTEGRATION_WITH_TMUX=1` before loading it. "It
-works well with tmux integration (`tmux -CC`) but not with the regular tmux
-UI."
+"By default, shell integration does not work with tmux or screen." Since
+3.7.7 it loads inside tmux by itself (marks, directory, host and git status
+work there, including on a host reached from a tmux pane); before that it
+needed `export ITERM_ENABLE_SHELL_INTEGRATION_WITH_TMUX=1`. It still skips
+GNU screen. 3.7.7 also adds nushell as a supported shell, automatic loading
+and SSH Integration included.
 
 File transfer: iTerm2 links libssh2 and does **not** shell out to `scp`. It
 honours `known_hosts`, defaults to `~/.ssh/id_rsa|id_dsa|id_ed25519|id_ecdsa`,
