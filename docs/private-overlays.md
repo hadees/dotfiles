@@ -666,6 +666,11 @@ npx", not "pin <side-company> to its profile").
    tailnet; `tailnet-mount.<name>.*` if that tailnet serves a directory
    worth mounting; a `workspace.<name>.dir` for each of that account's
    projects you want reopened after a restart; Finicky rules.
+   A profile other than the default lists the default directory's memory
+   (`CLAUDE.md`, `CLAUDE.local.md`, `CLAUDE.work.md`, `rules/**`, as absolute
+   paths) in `claudeMdExcludes` in its `settings.json`, except a file it
+   imports on purpose; `claude-doctor`'s `memory:` line says when one is
+   missing.
    Personal overlay only:
    `claude.profile.default` names the profile stray, unpinned directories
    get (unset, they get bare `claude` = the default config dir).
