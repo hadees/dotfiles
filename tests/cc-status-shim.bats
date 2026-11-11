@@ -1189,3 +1189,97 @@ status_flags() { { grep -cx -- '--status' "$BATS_TEST_TMPDIR/argv_all" || true; 
   [[ $output != *"writes="* ]]
   [ ! -e "$BATS_TEST_TMPDIR/calls" ]
 }
+
+# after, mid-turn: a seat's tool calls and its start repaint its colours with the handler's expiry,
+# and SubagentStop corrects only the count (or the count and a detail), never a status word.
+EXPIRY_ARGV='--expires-on|progress-end|--then-status|idle|--then-dot-color|#00d75f|--then-text-color|#888888|--then-detail|'
+# no_python: a python3 stub that records its start, then runs the real one.
+no_python() {
+  printf '#!/bin/sh\necho x >> "%s/py_calls"\nexec "%s" "$@"\n' "$BATS_TEST_TMPDIR" "$(command -v python3)" > "$STUB/python3"
+  chmod +x "$STUB/python3"
+}
+sub_stop() { payload SubagentStop "$1" '"session_id":"s1","agent_id":"ag1"'"${2:+,$2}"; }
+
+@test "after: an in-seat PreToolUse and PostToolUse repaint the seat colour with the expiry, no status" {
+  local ev
+  for ev in PreToolUse PostToolUse; do
+    rm -f "$BATS_TEST_TMPDIR/argv" "$BATS_TEST_TMPDIR/calls"
+    run_after <<< "$(seat_payload "$ev" plan-fable '"tool_name":"Bash"')"
+    [ "$(it2_argv)" = "set-status|--session|ABC-123|--detail|plan-fable: Bash|--dot-color|#d787ff|--text-color|#d787ff|$EXPIRY_ARGV" ]
+    [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
+  done
+  [ "$(status_flags)" -eq 0 ]
+  ! grep -qx -- '--background-tasks' "$BATS_TEST_TMPDIR/argv_all"
+}
+
+@test "after: an in-seat tool call with no tool name shows the seat alone" {
+  run_after <<< "$(seat_payload PreToolUse work-sonnet)"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--detail|work-sonnet|--dot-color|#00afaf|--text-color|#00afaf|$EXPIRY_ARGV" ]
+}
+
+@test "after: SubagentStart of a seat sends the seat text and colours with the expiry" {
+  run_after <<< "$(seat_payload SubagentStart plan-fable)"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--detail|plan-fable running|--dot-color|#d787ff|--text-color|#d787ff|$EXPIRY_ARGV" ]
+  [ "$(status_flags)" -eq 0 ]
+}
+
+@test "after: in-seat PermissionRequest and Notification record nothing" {
+  run_after <<< "$(seat_payload PermissionRequest plan-fable)"
+  run_after <<< "$(seat_payload Notification plan-fable)"
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
+@test "after: the gate sends hooks of a seat to python, and a SubagentStop without tasks starts none" {
+  no_python
+  run_after <<< "$(seat_payload PreToolUse scout-haiku '"tool_name":"Read"')"
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/py_calls")" -eq 1 ]
+  run_after <<< "$(seat_payload SubagentStart scout-haiku)"
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/py_calls")" -eq 2 ]
+  rm "$BATS_TEST_TMPDIR/py_calls" "$BATS_TEST_TMPDIR/calls"
+  run_after <<< '{"hook_event_name":"SubagentStop","agent_id":"ag1","background_tasks":[]}'
+  run_after <<< '{"hook_event_name":"SubagentStop","agent_id":"ag1"}'
+  [ ! -e "$BATS_TEST_TMPDIR/py_calls" ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
+@test "after: a SubagentStop listing only the stopped agent sends exactly the zero count" {
+  run_after <<< "$(sub_stop '[{"task_id":"ag1","task_type":"local_agent"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--background-tasks|0" ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
+}
+
+@test "after: a SubagentStop beside an active task sends the detail, the count and the expiry" {
+  age_file b 30
+  run_after <<< "$(sub_stop '[{"task_id":"ag1","task_type":"local_agent"},{"task_id":"b","task_type":"local_bash"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--detail|1 background task running|--background-tasks|1|$EXPIRY_ARGV" ]
+  [ "$(status_flags)" -eq 0 ]
+}
+
+@test "after: a SubagentStop beside only a quiet shell sends exactly the zero count" {
+  age_file a 7200
+  run_after <<< "$(sub_stop '[{"task_id":"ag1","task_type":"local_agent"},{"task_id":"a","task_type":"local_bash"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--background-tasks|0" ]
+}
+
+@test "after: a SubagentStop with a running seat among the active sends the seat colours, count and expiry" {
+  mkdir -p "$(dirname "$SEATS_FILE")"
+  printf 'ag2\tplan-fable\n' > "$SEATS_FILE"
+  age_file ag2 30
+  run_after <<< "$(sub_stop '[{"task_id":"ag1","task_type":"local_agent"},{"task_id":"ag2","task_type":"local_agent"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--detail|plan-fable running · 1 background task running|--dot-color|#d787ff|--text-color|#d787ff|--background-tasks|1|$EXPIRY_ARGV" ]
+  [ "$(status_flags)" -eq 0 ]
+}
+
+@test "after: a SubagentStop whose list holds one active task and not the stopped agent sends nothing" {
+  age_file b 30
+  run_after <<< "$(sub_stop '[{"task_id":"b","task_type":"local_bash"}]')"
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
+@test "after: explain after names the mid-turn writes" {
+  run sh "$SHIM" explain after <<< "$(seat_payload PreToolUse plan-fable '"tool_name":"Bash"')"
+  [[ $output == *"writes=detail,dot,text,expiry"* ]]
+  run sh "$SHIM" explain after <<< "$(sub_stop '[{"task_id":"ag1","task_type":"local_agent"}]')"
+  [[ $output == *"writes=count"$'\n'* || $output == *"writes=count" ]]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}

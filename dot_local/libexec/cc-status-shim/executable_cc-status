@@ -440,7 +440,9 @@ now = time.time()
 scratch = payload.get("scratchpad_dir")
 active, quiet, rows, fed = [], [], [], None
 stalled, busy_cpu, keep, quiet_ages = [], set(), {}, []
+n_raw = 0   # entries a SubagentStop listed, before the stopped agent is dropped
 if event in ("Stop", "StopFailure", "SubagentStop") and isinstance(tasks, list) and tasks:
+    n_raw = len(tasks)
     if event == "SubagentStop" and aid:
         tasks = [t for t in tasks if not (isinstance(t, dict) and t.get("task_id") == aid)]
     prior = tasks_read()
@@ -573,6 +575,22 @@ if after and event in ("Stop", "StopFailure"):
         plan.append(dict(detail=f"{k} background task{'s' if k != 1 else ''} running", count=k))
     elif not active and role in ("peer", "lead") and (peer_color if role == "peer" else lead_color):
         plan.append(dict(text=peer_color if role == "peer" else lead_color))
+elif after and in_seat_tool:
+    tool = payload.get("tool_name")
+    plan.append(dict(detail=f"{seat}: {tool}" if tool else seat, dot=seat_col, text=seat_col, expire=True))
+elif after and event == "SubagentStart" and seat:
+    plan.append(dict(detail=f"{seat} running", dot=seat_col, text=seat_col, expire=True))
+elif after and event == "SubagentStop" and fed is not None:
+    # Mid-turn: never a status word. The count alone is bookkeeping and keeps the handler's expiry;
+    # anything more is an assertion and carries the expiry again.
+    k = len(active)
+    if busy:
+        c = seat_color(busy[0])
+        plan.append(dict(detail=seat_text(), dot=c, text=c, count=k, expire=True))
+    elif k and k != n_raw:
+        plan.append(dict(detail=f"{k} background task{'s' if k != 1 else ''} running", count=k, expire=True))
+    elif k != n_raw:
+        plan.append(dict(count=0))
 
 if explain:
     action = ("seat-paint" if in_seat_tool else "passthrough" if fed is None else
