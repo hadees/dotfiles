@@ -452,6 +452,7 @@ hold() {
   [ -z "$(sh "$BIN" peers)" ]
   [ "$(find "$REPO/.git" -name claude-peer.claim | wc -l | tr -d ' ')" -eq 0 ]
   [ "$(grep -c "Return starts a Claude here" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 2 ]
+  grep -qx "Alpha" "$BATS_TEST_TMPDIR/pane-alpha.out"
 }
 
 @test "run --as --wait: c continues, q leaves a shell, anything else asks again" {
@@ -1461,4 +1462,84 @@ names() { printf '%s\n' "$output" | cut -f1 | tr '\n' ' '; }
   [ "$output" = "$HOME/.config/claude-peer/contexts" ]
   XDG_CONFIG_HOME="$BATS_TEST_TMPDIR/xdg" run sh "$BIN" context dir
   [ "$output" = "$BATS_TEST_TMPDIR/xdg/claude-peer/contexts" ]
+}
+
+# --- start --context ---------------------------------------------------------------
+
+# hello: every flag a context can set, and a body that takes the value
+hellofix() {
+  ctxfix
+  printf 'title: Hello\nask: Who\nagent: plan-fable\nmodel: sonnet\neffort: low\nsystem: be brief\n\nHello {input}.\n' >"$CLAUDE_PEER_CONTEXTS/30-hello.ctx"
+  printf 'title: Say\n\nSay: {input}!\n' >"$CLAUDE_PEER_CONTEXTS/40-say.ctx"
+}
+
+@test "start --context: the flags go in the fixed order before the prompt, the claim has seven lines, the pane says who and what" {
+  hellofix
+  FAKE_SHELL_SLEEP=2 pane alpha
+  run sh "$BIN" start alpha --context hello World
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha --agent plan-fable --model sonnet --effort low --append-system-prompt be brief Hello World\.\$" "$FAKE_SHELL_LOG"'
+  cl=$(claim_of "$REPO/.claude/worktrees/alpha")
+  [ "$(wc -l <"$cl" | tr -d ' ')" -eq 7 ]
+  [ "$(sed -n 4p "$cl")" = Lead ]
+  [ "$(sed -n 5p "$cl")" = hello ]
+  [ "$(sed -n 6p "$cl")" = "hello: World" ]
+  [[ "$(sed -n 7p "$cl")" =~ ^[0-9]+$ ]]
+  run sh "$BIN" peers
+  [ "$(printf '%s' "$output" | awk -F'\t' '{ print NF }')" -eq 4 ]
+  grep -qx "Alpha · started by Lead · hello: World" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  [ ! -e "$REPO/.git/claude-peer.wait/alpha.$LAST_PANE.meta" ]
+}
+
+@test "start --context: a multi-line value from stdin arrives byte for byte inside the prompt; a plain start still names its prompt" {
+  hellofix
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  want=$'a & \\ "q" $HOME\nsecond line'
+  run sh -c 'printf "%s" "$1" | sh "$2" start alpha --context say -' _ "$want" "$BIN"
+  [ "$status" -eq 0 ]
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = "Say: $want!" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/last.n")" -eq 6 ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  run sh "$BIN" start alpha fix the thing
+  [ "$status" -eq 0 ]
+  until_ok 'grep -qx "Alpha · started by Lead · fix the thing" "$BATS_TEST_TMPDIR/pane-alpha.out"'
+}
+
+@test "start --context: a context with mode continue puts --continue first" {
+  hellofix
+  FAKE_SHELL_SLEEP=2 pane alpha
+  run sh "$BIN" start alpha --context greet
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha --continue --agent plan-fable owner greet\$" "$FAKE_SHELL_LOG"'
+}
+
+@test "start --context: --continue with it is 2, an unknown context 1, a missing value 2; none wakes the pane" {
+  hellofix
+  pane alpha
+  run sh "$BIN" start alpha --continue --context hello World
+  [ "$status" -eq 2 ]
+  run sh "$BIN" start alpha --context nope World
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no context 'nope' here"* ]]
+  run sh "$BIN" start alpha --context hello
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"context hello needs a value: Who"* ]]
+  [ "$(shell_runs)" -eq 0 ]
+  [ "$(sh "$BIN" slots | cut -f2)" = waiting ]
+  [ ! -e "$REPO/.git/claude-peer.wait/alpha.$LAST_PANE.start" ]
+  [ ! -e "$REPO/.git/claude-peer.wait/alpha.$LAST_PANE.meta" ]
+}
+
+@test "start --context: a pane whose wait file has no line 2 predates contexts, exit 4; a plain start still works" {
+  hellofix
+  pane alpha
+  printf '%s\n' "$REPO" >"$REPO/.git/claude-peer.wait/alpha.$LAST_PANE"
+  run sh "$BIN" start alpha --context hello World
+  [ "$status" -eq 4 ]
+  [[ "$output" == *"the waiting pane (pid $LAST_PANE) predates contexts; reopen its tab"* ]]
+  [ "$(shell_runs)" -eq 0 ]
+  run sh "$BIN" start alpha fix it
+  [ "$status" -eq 0 ]
 }

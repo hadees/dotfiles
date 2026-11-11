@@ -72,9 +72,14 @@
 #                            the same on <repo>/.claude/worktrees/<slug> and
 #                            <branch>
 #   run [--]                 a pane of an older definition: one line, a shell
-#   start <slot|next> [--continue] [--leader <dir>] [--] [prompt words...]
+#   start <slot|next> [--continue] [--leader <dir>] [--context <name>] [--] [words...]
 #                            wake a waiting pane to run claude in <slot> (next:
-#                            whatever the pane would take; prompt - reads stdin)
+#                            whatever the pane would take; words - reads stdin);
+#                            with --context the words are the value of that
+#                            start context (a context carries its own mode, so
+#                            --continue with it is exit 2; ask without a value
+#                            is 2, an unknown context 1, a pane that predates
+#                            contexts 4)
 #                            -> slot<TAB>worktree<TAB>started<TAB>session name;
 #                            exit 3 already running or no slot free, 4 no pane
 #                            waiting, 1 not started in CLAUDE_PEER_START_WAIT s
@@ -428,10 +433,18 @@ pane_shell() { # leave: forget this pane, hand the terminal back, become a shell
   exec "${SHELL:-/bin/sh}" -i
 }
 
+# One line of at most 80 characters, tabs as spaces, for a claim and the pane's
+# header.
+task_line() { printf '%s\n' "$1" | sed -n 1p | tr '\t\r' '  ' | cut -c1-80; }
+
 # mode(fresh|continue) slot(or -) prompt claude-args...: take a slot, run one
 # session in it, return. Never exits: a refusal is printed and the pane waits on.
+# The caller sets PG_CTX (a context path), PG_CTXNAME, PG_BY (who started it) and
+# PG_TASK (one line); they are read, and cleared, here.
 pane_go() {
   pg_mode=$1 pg_req=$2 pg_prompt=$3; shift 3
+  pg_ctx=${PG_CTX-} pg_ctxname=${PG_CTXNAME-} pg_by=${PG_BY-} pg_task=${PG_TASK-}
+  PG_CTX= PG_CTXNAME= PG_BY= PG_TASK=
   if [ "$pg_req" != - ]; then
     out=$(slot_checkout "$repo" "$pg_req" "$(label_of "$pg_req")"); pg_rc=$?
   else
@@ -448,8 +461,17 @@ pane_go() {
   if [ "$pg_taken" != "$slot" ] && [ "$pg_req" = - ] && claim_live "$repo/.claude/worktrees/$slot"; then
     pg_msg="$pg_msg (this pane's $label is in use by the peers of $(sed -n 2p "$(claim_file "$repo/.claude/worktrees/$slot")"))"
   fi
+  case $pg_by in ''|pane) ;; *) pg_msg="$pg_msg · started by $pg_by";; esac
+  [ -z "$pg_task" ] || pg_msg="$pg_msg · $pg_task"
   echo "$pg_msg"
+  printf '%s\n%s\n%s\n%s\n' "${pg_by:--}" "${pg_ctxname:--}" "${pg_task:--}" "$(date +%s)" >>"$(claim_file "$pg_wt")"
   [ "$pg_mode" != continue ] || set -- --continue "$@"
+  if [ -n "$pg_ctx" ]; then
+    for pg_k in agent model effort; do
+      pg_v=$(ctx_get "$pg_ctx" "$pg_k"); [ -z "$pg_v" ] || set -- "$@" "--$pg_k" "$pg_v"
+    done
+    pg_v=$(ctx_get "$pg_ctx" system); [ -z "$pg_v" ] || set -- "$@" --append-system-prompt "$pg_v"
+  fi
   [ -z "$pg_prompt" ] || set -- "$@" "$pg_prompt"
   run_session "$pg_wt" "$rname-$pg_taken" "$@"
   [ ! -t 1 ] || printf '\033]21337;status=;indicator=;status-color=;detail=\a'
@@ -471,12 +493,13 @@ pane() {
   trap pane_cleanup EXIT
   if [ "$(git config --get claude-peer.start 2>/dev/null)" = auto ]; then
     settle
+    PG_BY=pane
     pane_go fresh - '' "$@"
   fi
   pn_show=1
   while :; do
     pane_reap "$pn_wd"
-    printf '%s\n' "$LEADER" >"$pn_me"
+    printf '%s\n2\n' "$LEADER" >"$pn_me"
     pn_ev=
     while [ -z "$pn_ev" ]; do
       if [ -f "$pn_me.start" ]; then pn_ev=request; break; fi
@@ -497,10 +520,22 @@ pane() {
       request)
         pn_mode=$(sed -n 1p "$pn_me.start"); pn_req=$(sed -n 2p "$pn_me.start")
         pn_prompt=$(sed -n '3,$p' "$pn_me.start")
-        rm -f "$pn_me.start" "$pn_me"
+        pn_by=$(sed -n 's/^by=//p' "$pn_me.meta" 2>/dev/null | sed -n 1p)
+        pn_cx=$(sed -n 's/^context=//p' "$pn_me.meta" 2>/dev/null | sed -n 1p)
+        rm -f "$pn_me.start" "$pn_me.meta" "$pn_me"
         slot_ok "$pn_req" || pn_req=-
+        PG_BY=$pn_by
+        if [ -z "$pn_cx" ]; then
+          PG_TASK=$(task_line "$pn_prompt")
+        else
+          # the file can have gone since `start` looked; the reason is printed and the pane waits on
+          pn_cxp=$(ctx_find "$pn_cx" "$(origin_slug)") && ctx_check "$pn_cxp" || { PG_BY=; pn_show=1; continue; }
+          PG_CTX=$pn_cxp PG_CTXNAME=$pn_cx
+          PG_TASK=$(task_line "$pn_cx${pn_prompt:+: $pn_prompt}")
+          pn_prompt=$(ctx_prompt "$pn_cxp" "$pn_prompt")
+        fi
         pane_go "$pn_mode" "$pn_req" "$pn_prompt" "$@";;
-      *) rm -f "$pn_me"; pane_go "$pn_ev" - '' "$@";;
+      *) rm -f "$pn_me"; PG_BY=pane; pane_go "$pn_ev" - '' "$@";;
     esac
     pn_show=1
   done
@@ -600,16 +635,17 @@ cmd_peers() {
   done | LC_ALL=C sort
 }
 
-# <slot|next> [--continue] [--leader <dir>] [--] [prompt words...]
+# <slot|next> [--continue] [--leader <dir>] [--context <name>] [--] [words...]
 cmd_start() {
   [ $# -ge 1 ] || usage
   st_req=$1; shift
   [ "$st_req" = next ] || slot_ok "$st_req" || die "'$st_req' is not a slot name (lowercase letters, digits, - and _)"
-  st_mode=fresh st_leader=
+  st_mode=fresh st_leader= st_cont=0 st_cx=
   while [ $# -gt 0 ]; do
     case $1 in
-      --continue) st_mode=continue; shift;;
+      --continue) st_mode=continue st_cont=1; shift;;
       --leader) [ $# -ge 2 ] || usage; st_leader=$2; shift 2;;
+      --context) [ $# -ge 2 ] || usage; st_cx=$2; shift 2;;
       --) shift; break;;
       *) break;;
     esac
@@ -619,6 +655,13 @@ cmd_start() {
     -*) usage;;
     *) st_prompt="$*";;
   esac
+  if [ -n "$st_cx" ]; then
+    [ "$st_cont" = 0 ] || { warn "--context carries its own mode; --continue cannot go with it"; exit 2; }
+    st_cxp=$(ctx_find "$st_cx" "$(origin_slug)") && ctx_check "$st_cxp" || exit 1
+    st_ask=$(ctx_get "$st_cxp" ask)
+    [ -z "$st_ask" ] || [ -n "$st_prompt" ] || { warn "context $st_cx needs a value: $st_ask"; exit 2; }
+    st_mode=$(ctx_get "$st_cxp" mode); st_mode=${st_mode:-fresh}
+  fi
   repo=$(repo_root) || exit 1
   rname=$(rname_of "$repo")
   if [ "$st_req" != next ]; then
@@ -643,6 +686,22 @@ cmd_start() {
   st_pick=$(printf '%s\n' "$st_all" | awk -F'\t' -v s="$st_req" '$1 == s { print; exit }')
   [ -n "$st_pick" ] || st_pick=$(printf '%s\n' "$st_all" | sed -n 1p)
   st_own=$(printf '%s' "$st_pick" | cut -f1); st_pid=$(printf '%s' "$st_pick" | cut -f2)
+  st_dir=$(wait_dir "$repo")
+  if [ -n "$st_cx" ] && [ "$(sed -n 2p "$st_dir/$st_own.$st_pid" 2>/dev/null)" != 2 ]; then
+    warn "the waiting pane (pid $st_pid) predates contexts; reopen its tab"
+    exit 4
+  fi
+  # who is asking: the label of the slot worktree the caller stands in, else Lead
+  # when the caller is where the woken pane's leader is, else the directory's name
+  st_by=
+  if claim_live "$PWD"; then st_by=$(sed -n 3p "$(claim_file "$PWD")"); fi
+  if [ -z "$st_by" ]; then
+    st_here=$(pwd -P)
+    st_top=$(cd "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null && pwd -P)
+    st_pl=$(printf '%s' "$st_pick" | cut -f3)
+    if [ "$st_here" = "$st_pl" ] || [ "${st_top:-$st_here}" = "$st_pl" ]; then st_by=Lead
+    else st_by=$(basename "$PWD"); fi
+  fi
   if [ "$st_req" = next ]; then
     st_pool=$(pool_words) || exit 1
     st_n=0 st_free=0
@@ -652,11 +711,12 @@ cmd_start() {
     done
     [ "$st_free" = 1 ] || { warn "all $st_n slots are in use in $repo"; exit 3; }
   fi
-  st_dir=$(wait_dir "$repo")
   st_file=$st_dir/$st_own.$st_pid.start
+  st_meta=$st_dir/$st_own.$st_pid.meta
+  { printf 'by=%s\n' "$(log_clean "$st_by")"; [ -z "$st_cx" ] || printf 'context=%s\n' "$st_cx"; } >"$st_meta" || die "cannot write the request in $st_dir"
   { printf '%s\n%s\n' "$st_mode" "$([ "$st_req" = next ] && echo - || echo "$st_req")"; printf '%s' "$st_prompt"; } >"$st_file.tmp" &&
     mv "$st_file.tmp" "$st_file" || die "cannot write the request in $st_dir"
-  kill -USR1 "$st_pid" 2>/dev/null || { rm -f "$st_file"; warn "the pane (pid $st_pid) is gone"; exit 4; }
+  kill -USR1 "$st_pid" 2>/dev/null || { rm -f "$st_file" "$st_meta"; warn "the pane (pid $st_pid) is gone"; exit 4; }
   st_limit=$(( ${CLAUDE_PEER_START_WAIT:-60} * 5 )); st_i=0
   while [ "$st_i" -lt "$st_limit" ]; do
     sleep 0.2
@@ -671,7 +731,7 @@ cmd_start() {
     # a USR1 that landed before the pane's wait began is lost; send it again
     [ $((st_i % 5)) -ne 0 ] || [ ! -f "$st_file" ] || kill -USR1 "$st_pid" 2>/dev/null
   done
-  rm -f "$st_file"
+  rm -f "$st_file" "$st_meta"
   warn "$st_req did not start within ${CLAUDE_PEER_START_WAIT:-60}s; its pane shows why"
   exit 1
 }

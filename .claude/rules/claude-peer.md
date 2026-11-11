@@ -230,9 +230,28 @@ usable origin reads the top only). A file is `[NN-]<name>.ctx`; a deeper file of
 the same name replaces a shallower one and takes the later position. An invalid
 file (unknown key, a value that could read as a flag, a header line without
 `: `, a `repo:` key) is skipped by `context list` with a stderr line and fails
-`context show`. `claude-peer context list|show|dir` only reads; nothing starts a
-peer from a context yet. `origin_slug` is ported from the one in
-`bin/executable_postbox`.
+`context show`. `claude-peer context list|show|dir` only reads. `origin_slug` is
+ported from the one in `bin/executable_postbox`.
+
+`claude-peer start <slot|next> [--leader <dir>] --context <name> [value words…]`
+(`-` reads the value from stdin) starts a peer from a context. `start` resolves
+the context for its repository before waking anything and fails at the caller:
+unknown or invalid is 1, `--context` with `--continue` is 2 (a context carries
+its own mode), a context with `ask` and no value is 2. The request file is the
+plain one (mode from the context, the value as the rest); a sidecar
+`<slot>.<pid>.meta` (`by=…`, `context=…`) is written first, and the pane looks
+the context up itself (a file deleted in between: the pane prints why and waits
+on). A pane writes `2` as line 2 of its wait file; `start --context` to a pane
+without it is exit 4 (`predates contexts; reopen its tab`), a plain `start` to
+it works. `pane_go` is the one place that builds the `claude` arguments, in this
+order: `-n <repo>-<slot> [--continue] [definition args] [--agent A] [--model M]
+[--effort E] [--append-system-prompt S] [prompt]`; it reads `PG_CTX`,
+`PG_CTXNAME`, `PG_BY` and `PG_TASK` and clears them. The claim gains lines 4-7:
+who started it (`Lead`, a slot label, a directory name, `pane` for Return, `-`
+unknown), the context name or `-`, the task line (at most 80 characters) or `-`,
+and the start time in epoch seconds; lines 1-3, `peers` and the session name are
+unchanged. The pane's header line is the slot's label, then ` · started by <by>`
+(not for Return) and ` · <task>`.
 
 **The Hermes peer** exists only in `Claude Peers + Hermes`, and is a plain shell
 unless a Hermes profile routes the directory; the gate below is now the second
