@@ -1534,7 +1534,7 @@ hellofix() {
 
 @test "start --context: a pane whose wait file has no line 2 predates contexts, exit 4; a plain start still works" {
   hellofix
-  pane alpha
+  FAKE_SHELL_SLEEP=2 pane alpha
   printf '%s\n' "$REPO" >"$REPO/.git/claude-peer.wait/alpha.$LAST_PANE"
   run sh "$BIN" start alpha --context hello World
   [ "$status" -eq 4 ]
