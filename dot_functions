@@ -727,7 +727,7 @@ function claude-doctor() {
 	# silently defanged with `|| true`), whether the binary itself is on
 	# PATH, and how many denials it has ever logged. Computed from the
 	# script's own `rules` output and the settings file's own text, never a
-	# second copy of either — see CLAUDE.md, "Deny rules reach Bash".
+	# second copy of either — see .claude/rules/denyguard.md.
 	local settings="$dir/settings.json" deny_n deny_bin deny_wired deny_log deny_hits deny_line deny_rules deny_rc;
 	# The exit status matters more than the count: a corrupt settings.json and
 	# an absent one both yield zero lines, and printing "0 path rules" at the
@@ -2364,7 +2364,7 @@ function git-doctor() {
 	else
 		print -r -- "author:  NOT SET — no user.email in effect here (public-only clone, or no include matched this remote); git will refuse or guess";
 	fi;
-	# Signing: entirely machine-local (see CLAUDE.md), so report what is on
+	# Signing: entirely machine-local (see .claude/rules/git-identity.md), so report what is on
 	# and whether the parts it points at exist.
 	sign="$(command git config --get commit.gpgsign 2>/dev/null)";
 	if [[ ${(L)sign} == true ]]; then

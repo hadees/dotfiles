@@ -1,0 +1,57 @@
+---
+paths:
+  - "**/bin/executable_claude-tab"
+  - "**/bin/executable_tabname"
+  - "**/tests/claude-tab.bats"
+  - "**/tests/tabname.bats"
+---
+
+# claude-tab
+
+**`claude-tab save` and `restore` bring the tabs back after a quit.** An iTerm2
+quit takes every session with it, and `claude-peer install` and `default`
+require one. `save [file]` writes the live sessions to
+`$XDG_STATE_HOME/claude-tab/saved.tsv` (state, not a temporary directory, so it
+survives a reboot; the previous file becomes `.prev`): one row per session,
+`profile_dir, session_id, cwd, label, name, tty, where, window`, in iTerm2's
+tab order. It leaves out peers (`claude-peer peers`, else the `peer-N` name),
+sessions with no tty, a `kind` other than `interactive`, a cwd that is gone and
+an unusable session id, and counts each on stderr; with nothing to save it
+exits 1 and leaves the old file alone. `restore [--dry-run] [--window <id>]
+[--delay <s>] [file]` (macOS) resumes each row with `cd -- <cwd> &&
+CLAUDE_PROFILE=<profile dir> claude --resume <id>`, typed with `write text` so
+the login shell and the `claude` wrapper run it. The profile is explicit
+because history is partitioned per profile directory.
+
+It works in **one window**, the current one or `--window`, and never creates a
+window. Empty tabs of that window are filled first (one session, not the tab
+running `restore`, every foreground process a shell), new tabs are made only
+when those run out, and empty tabs in other windows are counted and left alone.
+It does not use `worktabs`' script, which makes one window per group: the
+operator rejected that. A row whose session is already live in that profile (same
+id or same cwd) is skipped, so running it twice is safe. Restored tabs carry no
+worktabs mark, so a later `worktabs start` does not recognise them, and a
+session opened by `workset open` comes back without its extra directories. The
+registry layout is observed, not an interface. Tests: `tests/claude-tab.bats`
+(stub osascript/ps/sleep, fixture registries).
+
+`bin/claude-tab` reads the other side of the same join: `list` prints one
+row per live Claude Code session across every profile (from each profile's
+`sessions/<pid>.json` registry, the files `claude_sessions_here` reads),
+labelled by `tabname`, with the iTerm2 window and title its tty belongs to;
+`focus <pid>` brings that tab forward. `list` works anywhere; `tabs` and
+`focus` need macOS. Tests: `tests/claude-tab.bats`, `tests/tabname.bats`.
+`save` and `restore` bring the sessions back after an iTerm2 quit (see "Claude
+peers"). The tab bar reads `<repo> (claude)` during a session; the conversation topic no
+longer appears there.
+
+`bin/tabname [dir]` (`~/bin/tabname`) is the label: the git toplevel's name, or
+for a linked worktree the repo, an `@`, then the worktree name, so the worktrees
+under `.claude/worktrees/` stay told apart. Outside a work tree it prints
+nothing and exits 1 — never 0 with empty output. It is a script so the shim and
+any other tab labeller (an Alfred switcher) share one answer. The worktree
+format is `git config tabname.worktree-format '{repo} <glyph>{worktree}'`; the
+default is ASCII because the toolbelt renders rows in iTerm2's UI font
+(`NSFont.it_toolbelt()`), where a Nerd Font private-use glyph is a tofu box
+unless proven otherwise. Set a glyph only after checking it in both the Session
+Status tool and the tab bar. Tests: `tests/tabname.bats`.

@@ -27,9 +27,9 @@ setup() {
 # look like a secret. Generic patterns only — a test naming a real account,
 # org, or address would itself be the leak (see the NOTE below). Excluded as
 # known-benign: vendored vim syntax files (upstream maintainer addresses),
-# .gitconfig's git@github.com URL rewrites (hosts, not identities), and
-# CLAUDE.md's documented onepasswordRead template example (an op:// reference
-# shape from the public docs, not a rendered secret).
+# .gitconfig's git@github.com URL rewrites (hosts, not identities), and a
+# `{{ onepasswordRead ` template line (an op:// reference shape, not a rendered
+# secret; CLAUDE.md carries one but is not deployed).
 assert_no_secret_leaks() {
   local leaks
   leaks="$(grep -rEIn --exclude-dir=.vim \

@@ -382,21 +382,14 @@ employer-specific — profile-specific memory belongs in that profile's own
   and `CLAUDE_CODE_PROMPT_CACHE_TTL=1h` (subagents default to a five-minute
   cache, and a session on usage credits drops the main conversation to five
   minutes too); `PONYTAIL_SUBAGENT_MATCHER='^(work-|unstick-)'`, which scopes
-  the ponytail plugin's ruleset to the seats that write code. Ponytail is
-  installed per profile (marketplace `DietrichGebert/ponytail`, plugin
-  `ponytail@ponytail`) — the one style skill that ships a benchmark at all,
-  and it is the vendor's own, not an independent one: real headless Claude
-  Code sessions editing a seeded codebase, 12 one-line tickets scored on diff
-  size plus 7 tasks scored on whether the code survives adversarial input,
-  Haiku 4.5, n=4. Treat that as a reason to try it, never as a number to
-  quote: it is not this machine, this model, or this work, and by the rule
-  above nothing here is a saving until `/usage` moves. It injects itself into
-  matching subagents, so its rules are never pasted into a definition.
+  the ponytail plugin's ruleset to the seats that write code. Ponytail's
+  benchmark is the vendor's own: treat it as a reason to try it, never as a
+  number to quote. It injects itself into matching subagents, so its rules
+  are never pasted into a definition.
   A fifth, `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, is not a default: it is
-  exported only where `claude.terminal-title false` is set (machine-local,
-  overlay-supplied, under a `mac` machine-class guard where the shim is wired), so
-  Claude's own tab titles do not displace the repo name; there, set it to `''`,
-  `0`, `false`, `no` or `off` for one launch to get them back.
+  exported only where `claude.terminal-title false` is set; there, set it to
+  `''`, `0`, `false`, `no` or `off` for one launch to get Claude's own tab
+  titles back.
 - **Cache discipline.** Documented invalidators: switching model, changing
   effort (except Fable 5.1 on a subscription or API key, where effort changes
   keep the cache), fast mode, MCP connect or disconnect, plugin enable or
@@ -405,21 +398,20 @@ employer-specific — profile-specific memory belongs in that profile's own
   `/rewind` over letting a wrong path run to `/compact` (rewind truncates to a
   prefix that is already cached), `/clear` between unrelated tasks, and never
   `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` (~7× a normal session).
-- **Metering on Max**, verified 2026-09-17: one weekly envelope; separate
-  sub-limits for Opus and for "all other models"; **Fable draws the same pool,
-  capped at half of it**, then pay-as-you-go credits behind a consent prompt —
-  not a separate tank; `[1m]` is a credits-gated entitlement (the API has no
-  long-context premium, the plan does). Pin the main model rather than `best`.
+- **Metering on Max**: Fable draws the same weekly pool, capped at half of
+  it, then pay-as-you-go credits behind a consent prompt — not a separate
+  tank. Pin the main model rather than `best`.
   **`/usage` is the instrument**: it attributes consumption per model, skill,
   subagent and MCP server. Read it before any change and a week after; nothing
   above is a saving until that number moves. On a token-billed plan the dollar
   analysis governs instead, and the same routing still applies.
 - **Lever order, Anthropic's, model last**: caching → input hygiene → loop
   hygiene → effort → model. Input hygiene means a CLAUDE.md near 200 lines with
-  detail in on-demand skills — the largest one here is 8,795 words and is paid
-  on every session start, `/clear`, compaction and non-`omitClaudeMd` spawn;
-  that is the biggest number on the table. Loop hygiene is `omitClaudeMd` on
-  seats that take everything from the brief, `PreToolUse` hooks that rewrite a
-  noisy command (`| grep -E 'FAIL|ERROR' | head -100`) before it runs, and
+  per-file detail in path-scoped rules (`.claude/rules/`) rather than skills,
+  whose descriptions are dropped from the listing without warning. Loop
+  hygiene is `omitClaudeMd` on seats that take everything from the brief,
+  `PreToolUse` hooks that rewrite a noisy command before it runs, and
   subagents for bulk. Effort: measured `medium` matched default quality on
   knowledge work at 70–85% of the cost; `/fast` buys speed, not savings.
+- Measurements behind these rules: `docs/claude-delegation-notes.md` in the
+  dotfiles clone.

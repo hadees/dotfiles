@@ -37,7 +37,7 @@
 # be handed the token — do not pin a `tailnet` server there as it stands.
 #
 # Nothing here names a server. Everything comes from machine-local git
-# config, which the private overlays supply (see CLAUDE.md):
+# config, which the private overlays supply (see .claude/rules/remote-mcp.md):
 #
 #   [remote-mcp "<server>"]          # the name sessions use it by — it is
 #                                    # the tool prefix, mcp__<server>__*

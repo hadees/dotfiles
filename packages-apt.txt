@@ -34,8 +34,8 @@ fuse3
 # gh: the gh() wrapper and bin/git-credential-gh-user route accounts through
 # it, so a box without gh cannot resolve an account at all. Ubuntu's build
 # trails upstream badly; add GitHub's own apt repo and this same entry
-# installs the current release instead — see the Package lists section of
-# CLAUDE.md for the one-time source setup.
+# installs the current release instead — see
+# .claude/rules/packages.md for the one-time source setup.
 gh
 # bats: runs this repo's own suite (bats tests) on the machine itself
 bats
