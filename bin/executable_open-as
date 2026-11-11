@@ -77,7 +77,11 @@ if [ "$alias" = iterm2 ]; then
   support="$HOME/Library/Application Support/iTerm2"
   py=${OPEN_AS_PYTHON-}
   if [ -z "$py" ]; then
-    for p in "$support"/iterm2env/versions/*/bin/python3; do [ -x "$p" ] && py=$p; done
+    # iTerm2 3.7 keeps it under uv/venvs/<ver>; older ones under iterm2env.
+    # Last match wins, so uv/venvs is preferred when both exist.
+    for p in "$support"/iterm2env/versions/*/bin/python3 "$support"/uv/venvs/*/bin/python3; do
+      [ -x "$p" ] && py=$p
+    done
   fi
   # Order matters: nothing may talk to iTerm2 before the runtime is known to
   # be there, or iTerm2 offers to install it in a dialog nobody is watching.
