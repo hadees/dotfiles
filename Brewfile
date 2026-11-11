@@ -247,5 +247,6 @@ mas 'Magnet', id: 441258766
 mas 'Mp3tag', id: 1532597159
 mas 'Numbers', id: 409203825
 mas 'Pages', id: 409201541
+mas 'Parall', id: 6754065114
 mas 'Sleepytime', id: 404302586
 mas 'Tailscale', id: 1475387142 # Tailscale.app — owns the system tailnet; bin/tailnet's userspace daemons run beside it
