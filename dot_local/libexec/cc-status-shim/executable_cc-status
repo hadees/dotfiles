@@ -96,6 +96,7 @@
 #
 #   cc-status             hook mode: payload on stdin, exit 0 always
 #   cc-status explain     payload on stdin; print the decision, call nothing
+#                         (cookie= is the API cookie's state; see iterm2-cookie)
 #   cc-status settings    print the hooks block for a profile's settings.json
 #
 # Wiring: each profile's settings.json runs cc-status on every hook event;
@@ -155,6 +156,29 @@ if [ "$mode" != explain ]; then
   case $target in "$0"|*/cc-status-shim/cc-status) exit 0 ;; esac   # never recurse into ourselves
 fi
 
+# The API cookie (iterm2-cookie): with one in its environment it2 talks to iTerm2
+# directly instead of starting an osascript per call. Used only while the file is
+# newer than iTerm2's socket (recreated at each launch); a stale one is worse than
+# none, so it is never exported then, nor half-read. Builtins only: no fork here.
+ck=$HOME/.local/state/iterm2
+sock="$HOME/Library/Application Support/iTerm2/private/socket"
+if [ -n "${ITERM2_COOKIE:-}" ]; then cookie=env
+elif [ -e "$ck/api-cookie" ]; then
+  if [ -e "$sock" ] && ! [ "$ck/api-cookie" -nt "$sock" ]; then cookie=stale
+  else
+    cookie=absent; ck_a=; ck_b=
+    { read -r ck_a ck_b <"$ck/api-cookie"; } 2>/dev/null
+    if [ -n "$ck_a" ] && [ -n "$ck_b" ]; then cookie=fresh; ITERM2_COOKIE=$ck_a ITERM2_KEY=$ck_b; export ITERM2_COOKIE ITERM2_KEY; fi
+  fi
+elif [ -e "$ck/api-cookie.rejected" ]; then cookie=rejected
+else cookie=absent
+fi
+# One byte per hook event that ran without a cookie: iterm2-cookie reports the count.
+if [ "$mode" != explain ] && [ -z "${ITERM2_COOKIE:-}" ]; then
+  [ -d "$ck" ] || mkdir -p -m 700 "$ck" 2>/dev/null
+  { printf x >>"$ck/uncookied"; } 2>/dev/null
+fi
+
 payload=$(cat)
 pass() { printf '%s' "$payload" | "$real"; exit 0; }
 
@@ -200,18 +224,26 @@ fi
 py=$(cat <<'PY'
 import functools, json, os, re, shutil, subprocess, sys, time
 
-mode, real, it2, sid = sys.argv[1:5]
+mode, real, it2, sid, cookie = sys.argv[1:6]
 explain = mode == "explain"
 raw = sys.stdin.read()
 
 def call(argv, data=None, timeout=5, silent=False):
     # A hung or missing helper must never cost the turn.
-    kw = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL} if silent else {}
+    # A silent call is an it2 call: its stderr is read to catch iTerm2 refusing the cookie.
+    kw = {"stdout": subprocess.DEVNULL, "stderr": subprocess.PIPE} if silent else {}
     kw["input" if data else "stdin"] = data or subprocess.DEVNULL
     try:
-        subprocess.run(argv, timeout=timeout, **kw)
+        r = subprocess.run(argv, timeout=timeout, **kw)
     except (OSError, subprocess.SubprocessError):
-        pass
+        return
+    if silent and r.returncode and b"Authentication failed" in r.stderr and os.environ.get("ITERM2_COOKIE"):
+        # A cookie iTerm2 refuses makes every it2 fail with no rows: set it aside (iterm2-cookie status says so).
+        ck = os.path.expanduser("~/.local/state/iterm2/api-cookie")
+        try:
+            os.rename(ck, ck + ".rejected")
+        except OSError:
+            pass
 
 cfg = {}
 try:
@@ -503,6 +535,7 @@ if explain:
     print(f"colour={(peer_color if role == 'peer' else lead_color if role == 'lead' else None) or 'none'}")
     print(f"rename={'yes' if title else 'no'} ({why or 'ok'})")
     print(f"marker={'present' if nf and os.path.exists(nf) else 'none'}")
+    print(f"cookie={cookie}")
     print(f"cc-status={real or 'absent'}")
     print(f"it2={it2 or 'absent'}")
     sys.exit(0)
@@ -565,5 +598,5 @@ elif event in ("Stop", "StopFailure") and not active and role in ("peer", "lead"
         call([it2, "set-status", "--session", sid, "--text-color", c], silent=True)
 PY
 )
-printf '%s' "$payload" | python3 -c "$py" "$mode" "$real" "$it2" "$sid"
+printf '%s' "$payload" | python3 -c "$py" "$mode" "$real" "$it2" "$sid" "$cookie"
 exit 0

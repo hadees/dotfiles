@@ -100,7 +100,7 @@ and the Enter/Exit Workgroup triggers into that plist itself, as it does every
 other preference; that is iTerm2 saving, not part of this mechanism, and
 clearing the root's displayName in Settings was rejected because it would be a
 preference edit in the tracked plist. `cc-status explain` prints `name=` and
-`rename=yes|no (<reason>)` and `marker=present|none`. A tab already stuck on `Chat (-zsh)` is fixed once
+`rename=yes|no (<reason>)`, `marker=present|none` and `cookie=` (API cookie section). A tab already stuck on `Chat (-zsh)` is fixed once
 by hand: `it2 session set-name "$(tabname)"` in it, or Session > Edit Session.
 Workgroup peers (`claude-peer`) are never renamed by iTerm2, so their rows are
 the shim's name alone.
@@ -229,7 +229,18 @@ state and, when it is `fresh` inside a session, makes one authenticated
 `it2 session get-status` and appends `accepted`, or `REFUSED` after setting
 the file aside as `api-cookie.rejected`; `iterm2-cookie forget` removes both.
 Minting also truncates `~/.local/state/iterm2/uncookied`, the count of hook
-events that ran without a cookie (kept by the shim, not by this verb).
+events that ran without a cookie.
+
+**The shim reads the file itself**, in the shell part before the payload, with
+builtins only (no fork), so a session still on an older hook line stops
+spawning at its next event: a fresh cookie is exported as `ITERM2_COOKIE` and
+`ITERM2_KEY` unless the environment already has one, and a stale, absent or
+one-word file exports nothing (an empty cookie would fail every `it2` call).
+In hook mode, never `explain`, an event that still has no cookie appends one
+byte to `uncookied`. An `it2` call of the shim's own that exits non-zero with
+`Authentication failed` on stderr, while a cookie is in play, renames the file
+to `api-cookie.rejected` (the `rejected` state). `cc-status explain` prints
+`cookie=env|fresh|stale|rejected|absent`.
 
 `iterm2_cookie_state` sets `REPLY` to the state without forking, because the
 hook line asks the same question on every event: `fresh` (the cookie is newer

@@ -9,14 +9,16 @@
 # tabname: proj for a cwd ending in /proj, proj@feat-x for /feat-x, else nothing
 # and exit 1; a leading --role is dropped (a bare label, like an older tabname),
 # unless role.out exists, whose content it prints instead. it2 also appends every argv to argv_all, one call per block.
+# Both stubs record ${ITERM2_COOKIE-unset} (fed_cookie, it2_cookie); an it2 with a
+# it2.fail file prints its content on stderr and exits 1, as iTerm2's refusal does.
 
 bats_require_minimum_version 1.5.0
 
 setup() {
   STUB="$BATS_TEST_TMPDIR/utilities"
   mkdir -p "$STUB"
-  printf '#!/bin/sh\ncat > "%s/fed"\n' "$BATS_TEST_TMPDIR" > "$STUB/cc-status"
-  printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/argv"\nprintf "%%s\\n" "$@" >> "%s/argv_all"\necho x >> "%s/calls"\n' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$STUB/it2"
+  printf '#!/bin/sh\necho "${ITERM2_COOKIE-unset}" > "%s/fed_cookie"\ncat > "%s/fed"\n' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$STUB/cc-status"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/argv"\nprintf "%%s\\n" "$@" >> "%s/argv_all"\necho x >> "%s/calls"\necho "${ITERM2_COOKIE-unset}" >> "%s/it2_cookie"\n[ -e "%s/it2.fail" ] && { cat "%s/it2.fail" >&2; exit 1; }\nexit 0\n' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$STUB/it2"
   cat > "$STUB/tabname" <<'SH'
 #!/bin/sh
 [ "$1" = --role ] && shift
@@ -31,7 +33,7 @@ SH
   printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/lsof_argv"\ncat "%s/lsof.out"\n' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$STUB/lsof"
   printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/ps_argv"\ncat "%s/ps.out"\n' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$STUB/ps"
   chmod +x "$STUB/cc-status" "$STUB/it2" "$STUB/lsof" "$STUB/ps" "$STUB/tabname"
-  unset WORKSET WORKTABS_GROUP
+  unset WORKSET WORKTABS_GROUP ITERM2_COOKIE ITERM2_KEY
   export PATH="$STUB:$PATH"
   # By default one shell (4242) holds every output file, with a child: 3.5 s of CPU in all.
   echo 4242 > "$BATS_TEST_TMPDIR/lsof.out"
@@ -953,4 +955,110 @@ NAMED_FILE() { printf '%s/tabstatus/s1.named' "$XDG_STATE_HOME"; }
   run_shim <<< "$p"
   run sh "$SHIM" explain <<< "$p"
   [[ $output == *"marker=present"* && $output == *"rename=no (already named)"* ]]
+}
+
+# The API cookie: iterm2-cookie writes "<cookie> <key>" under $HOME; a fresh one
+# (newer than iTerm2's socket) is handed to cc-status and it2, anything else is not.
+# cookie_file <content> <fresh|stale>: the cookie, newer or older than the socket.
+cookie_file() {
+  COOKIE_DIR="$HOME/.local/state/iterm2"
+  local sock="$HOME/Library/Application Support/iTerm2/private/socket"
+  mkdir -p "$COOKIE_DIR" "$(dirname "$sock")"
+  printf '%s\n' "$1" > "$COOKIE_DIR/api-cookie"
+  : > "$sock"
+  python3 -c 'import os,sys,time; t=time.time()+(60 if sys.argv[1]=="fresh" else -60); os.utime(sys.argv[2],(t,t))' "$2" "$COOKIE_DIR/api-cookie"
+  python3 -c 'import os,sys,time; t=time.time()-3600; os.utime(sys.argv[1],(t,t))' "$sock"
+  [ "$2" = fresh ] || python3 -c 'import os,sys,time; t=time.time()-7200; os.utime(sys.argv[1],(t,t))' "$COOKIE_DIR/api-cookie"
+}
+uncookied_bytes() { wc -c < "$HOME/.local/state/iterm2/uncookied" 2>/dev/null || echo 0; }
+
+@test "cookie: a fresh file reaches both the stub cc-status and the stub it2, and nothing is counted" {
+  cookie_file "ck1 key1" fresh
+  run_shim <<< "$(payload PreToolUse '[]')"
+  [ "$(cat "$BATS_TEST_TMPDIR/fed_cookie")" = ck1 ]
+  run_shim <<< "$(named_payload Stop)"
+  [ "$(sort -u "$BATS_TEST_TMPDIR/it2_cookie")" = ck1 ]
+  [ ! -e "$HOME/.local/state/iterm2/uncookied" ]
+}
+
+@test "cookie: a fresh file with the socket missing is used" {
+  cookie_file "ck1 key1" fresh
+  rm "$HOME/Library/Application Support/iTerm2/private/socket"
+  run_shim <<< "$(payload PreToolUse '[]')"
+  [ "$(cat "$BATS_TEST_TMPDIR/fed_cookie")" = ck1 ]
+}
+
+@test "cookie: a stale file reaches neither program and each event is counted" {
+  cookie_file "ck1 key1" stale
+  run_shim <<< "$(payload PreToolUse '[]')"
+  [ "$(cat "$BATS_TEST_TMPDIR/fed_cookie")" = unset ]
+  run_shim <<< "$(named_payload Stop)"
+  [ "$(sort -u "$BATS_TEST_TMPDIR/it2_cookie")" = unset ]
+  [ "$(uncookied_bytes)" -eq 2 ]
+}
+
+@test "cookie: no file, the same, and the state directory is created for the count" {
+  run_shim <<< "$(payload PreToolUse '[]')"
+  [ "$(cat "$BATS_TEST_TMPDIR/fed_cookie")" = unset ]
+  run_shim <<< "$(payload PreToolUse '[]')"
+  [ "$(uncookied_bytes)" -eq 2 ]
+}
+
+@test "cookie: one already in the environment is left alone and nothing is counted" {
+  cookie_file "ck1 key1" fresh
+  ITERM2_COOKIE=envck run_shim <<< "$(payload PreToolUse '[]')"
+  [ "$(cat "$BATS_TEST_TMPDIR/fed_cookie")" = envck ]
+  [ ! -e "$HOME/.local/state/iterm2/uncookied" ]
+}
+
+@test "cookie: a one-word or empty file exports nothing" {
+  cookie_file "ck1" fresh
+  run_shim <<< "$(payload PreToolUse '[]')"
+  [ "$(cat "$BATS_TEST_TMPDIR/fed_cookie")" = unset ]
+  cookie_file "" fresh
+  run_shim <<< "$(payload PreToolUse '[]')"
+  [ "$(cat "$BATS_TEST_TMPDIR/fed_cookie")" = unset ]
+  [ "$(uncookied_bytes)" -eq 2 ]
+}
+
+@test "cookie: an it2 refused with Authentication failed sets the file aside" {
+  cookie_file "ck1 key1" fresh
+  echo "Authentication failed" > "$BATS_TEST_TMPDIR/it2.fail"
+  run_shim <<< "$(named_payload Stop)"
+  [ ! -e "$COOKIE_DIR/api-cookie" ]
+  [ "$(cat "$COOKIE_DIR/api-cookie.rejected")" = "ck1 key1" ]
+}
+
+@test "cookie: any other it2 failure leaves the file where it is" {
+  cookie_file "ck1 key1" fresh
+  echo "connection refused" > "$BATS_TEST_TMPDIR/it2.fail"
+  run_shim <<< "$(named_payload Stop)"
+  [ -e "$COOKIE_DIR/api-cookie" ]
+  [ ! -e "$COOKIE_DIR/api-cookie.rejected" ]
+}
+
+@test "cookie: a refusal with no cookie in play renames nothing" {
+  cookie_file "ck1 key1" stale
+  echo "Authentication failed" > "$BATS_TEST_TMPDIR/it2.fail"
+  run_shim <<< "$(named_payload Stop)"
+  [ -e "$COOKIE_DIR/api-cookie" ]
+  [ ! -e "$COOKIE_DIR/api-cookie.rejected" ]
+}
+
+@test "explain: cookie= names the state and never writes the uncookied count" {
+  run sh "$SHIM" explain <<< "$(named_payload Stop)"
+  [[ $output == *"cookie=absent"* ]]
+  cookie_file "ck1 key1" stale
+  run sh "$SHIM" explain <<< "$(named_payload Stop)"
+  [[ $output == *"cookie=stale"* ]]
+  cookie_file "ck1 key1" fresh
+  run sh "$SHIM" explain <<< "$(named_payload Stop)"
+  [[ $output == *"cookie=fresh"* ]]
+  ITERM2_COOKIE=envck run sh "$SHIM" explain <<< "$(named_payload Stop)"
+  [[ $output == *"cookie=env"* ]]
+  mv "$COOKIE_DIR/api-cookie" "$COOKIE_DIR/api-cookie.rejected"
+  run sh "$SHIM" explain <<< "$(named_payload Stop)"
+  [[ $output == *"cookie=rejected"* ]]
+  [ ! -e "$COOKIE_DIR/uncookied" ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
 }
