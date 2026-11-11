@@ -20,16 +20,20 @@
 # A force-push is not visible to a hook as a flag: git only says which refs
 # are about to move. So it is inferred the way git itself decides whether a
 # push needs forcing — the remote's current commit is no longer an ancestor
-# of what is being pushed.
+# of what is being pushed. A remote commit this clone has never fetched gets
+# the same verdict, not none: nothing missing from the object store can be
+# an ancestor of a local commit, and git itself rejects that push ("fetch
+# first") unless it is forced. Forced, it is the stale-clone-then-`--force`
+# sequence this gate exists to stop, so it refuses and says to fetch.
 #
-# No opinion (passes) when: the ref is being deleted, or the remote commit is
-# not in this clone (nothing to compare against). GIT_PUSH_CHECK=0 bypasses
-# both gates for one push — it is named for the hook, not for one of them,
-# because that is what it does. Never touches the network. Chains to every
-# `hook.pre-push.run` command and then the repo's own .git/hooks/pre-push,
-# replaying the ref list on stdin to each (see run-local-hook) — including on
-# a bypassed push, since the overlay's leak guard hangs off that path and is
-# not this gate's to switch off.
+# No opinion (passes) when the ref is being deleted; the force gate also has
+# none on a branch the remote does not have yet (nothing there to drop).
+# GIT_PUSH_CHECK=0 bypasses both gates for one push — it is named for the
+# hook, not for one of them, because that is what it does. Never touches the
+# network. Chains to every `hook.pre-push.run` command and then the repo's
+# own .git/hooks/pre-push, replaying the ref list on stdin to each (see
+# run-local-hook) — including on a bypassed push, since the overlay's leak
+# guard hangs off that path and is not this gate's to switch off.
 hooks_dir=$(dirname "$0")
 remote=$1
 refs=$(mktemp "${TMPDIR:-/tmp}/pre-push-refs.XXXXXX") || exit 1
@@ -98,8 +102,17 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 	branch=${remote_ref#refs/heads/}
 	[ "$branch" != "$remote_ref" ] || continue      # not a branch
 	printf '%s\n' "$protected" | grep -qxF "$branch" || continue
-	zero "$remote_sha" && continue
-	git cat-file -e "$remote_sha" 2>/dev/null || continue   # not fetched; no verdict
+	zero "$remote_sha" && continue                  # new on the remote: nothing to drop
+	# A tip this clone has never fetched cannot be an ancestor of anything
+	# local, so this is the non-fast-forward case too — and the one where the
+	# commits about to go are ones nobody here has seen. git refuses the same
+	# push unforced ("fetch first"); this refuses it forced as well.
+	if ! git cat-file -e "$remote_sha" 2>/dev/null; then
+		echo "pre-push: refusing to push $branch — the remote's tip ($(printf '%.7s' "$remote_sha")) is not in this clone." >&2
+		echo "  It cannot be a fast-forward, and forcing it would drop commits this clone has never fetched." >&2
+		echo "  Fetch $remote and retry, or bypass once with GIT_PUSH_CHECK=0." >&2
+		exit 1
+	fi
 	if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
 		echo "pre-push: refusing a non-fast-forward push of $branch" >&2
 		echo "  ($(git rev-parse --short "$remote_sha") on the remote is not an ancestor of $(git rev-parse --short "$local_sha") — commits would be dropped)." >&2
