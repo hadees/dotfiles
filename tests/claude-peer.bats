@@ -6,6 +6,8 @@
 # for $SHELL so nothing starts a real claude.
 # Everything runs in a sandboxed HOME against fixture repos with invented names.
 
+bats_require_minimum_version 1.5.0
+
 setup() {
   BIN="$BATS_TEST_DIRNAME/../bin/executable_claude-peer"
   export HOME="$BATS_TEST_TMPDIR/home"
@@ -1297,4 +1299,166 @@ plistlib.dump(pl, open(p, "wb"))
 PY
   run sh "$BIN" status
   [[ "$output" == *"default: mixed (1 of 2 profiles enter by variable)"* ]]
+}
+
+# --- contexts -----------------------------------------------------------------
+
+ctxfix() { # three fixture repositories and a context tree
+  export CLAUDE_PEER_CONTEXTS="$BATS_TEST_TMPDIR/ctx"
+  git remote add origin git@example.invalid:octo/proj.git
+  mkdir -p "$BATS_TEST_TMPDIR/other" "$BATS_TEST_TMPDIR/bare"
+  git -C "$BATS_TEST_TMPDIR/other" init -q
+  git -C "$BATS_TEST_TMPDIR/other" remote add origin https://example.invalid/Octo/Other
+  git -C "$BATS_TEST_TMPDIR/bare" init -q
+  mkdir -p "$CLAUDE_PEER_CONTEXTS/octo/proj" "$CLAUDE_PEER_CONTEXTS/octo/other"
+  printf 'title: Greet\nask: Who\nmodel: sonnet\neffort: low\nsystem: be brief\n\nHello {input}, again {input}.\nKeep {owner}.\n\n\n' >"$CLAUDE_PEER_CONTEXTS/20-greet.ctx"
+  printf 'title: Plain\n\nJust this.\n' >"$CLAUDE_PEER_CONTEXTS/10-plain.ctx"
+  printf 'title: Owner level\n\nowner\n' >"$CLAUDE_PEER_CONTEXTS/octo/30-mine.ctx"
+  printf 'title: Greet for octo\nagent: plan-fable\nmode: continue\n\nowner greet\n' >"$CLAUDE_PEER_CONTEXTS/octo/05-greet.ctx"
+  printf 'title: Deploy proj\n\nproj\n' >"$CLAUDE_PEER_CONTEXTS/octo/proj/10-deploy.ctx"
+  printf 'title: Deploy other\n\nother\n' >"$CLAUDE_PEER_CONTEXTS/octo/other/10-deploy.ctx"
+}
+
+names() { printf '%s\n' "$output" | cut -f1 | tr '\n' ' '; }
+
+@test "context list: the three levels in order, a deeper same-name file replaces and takes the later place" {
+  ctxfix
+  run sh "$BIN" context list
+  [ "$status" -eq 0 ]
+  [ "$(names)" = "plain greet mine deploy " ]
+  [[ "$output" == *"greet"$'\t'"Greet for octo"$'\t'"-"$'\t'"agent=plan-fable mode=continue"$'\t'"$CLAUDE_PEER_CONTEXTS/octo/05-greet.ctx"* ]]
+  [[ "$output" == *"deploy"$'\t'"Deploy proj"* ]]
+}
+
+@test "context list: a capitalised origin folds, another repository's directory is never read, a linked worktree gives its leader's rows" {
+  ctxfix
+  cd "$BATS_TEST_TMPDIR/other"
+  run sh "$BIN" context list
+  [ "$(names)" = "plain greet mine deploy " ]
+  [[ "$output" == *"Deploy other"* ]]
+  [[ "$output" != *"Deploy proj"* ]]
+  cd "$REPO"
+  sh "$BIN" context list >"$BATS_TEST_TMPDIR/main.rows"
+  git worktree add -q "$REPO/.claude/worktrees/alpha" -b alpha
+  cd "$REPO/.claude/worktrees/alpha"
+  run sh "$BIN" context list
+  [ "$output" = "$(cat "$BATS_TEST_TMPDIR/main.rows")" ]
+}
+
+@test "context list: no origin reads the top level only with a silent stderr; a missing root is empty and exit 0" {
+  ctxfix
+  cd "$BATS_TEST_TMPDIR/bare"
+  run --separate-stderr sh "$BIN" context list
+  [ "$status" -eq 0 ]
+  [ "$(names)" = "plain greet " ]
+  [ -z "$stderr" ]
+  CLAUDE_PEER_CONTEXTS="$BATS_TEST_TMPDIR/none" run --separate-stderr sh "$BIN" context list
+  [ "$status" -eq 0 ]
+  [ -z "$output$stderr" ]
+}
+
+@test "context list: an origin without owner/repo reads the top level and says so once" {
+  ctxfix
+  git remote set-url origin 'host:../../etc'
+  run --separate-stderr sh "$BIN" context list
+  [ "$status" -eq 0 ]
+  [ "$(names)" = "plain greet " ]
+  [ "$stderr" = "claude-peer: origin 'host:../../etc' gives no owner/repo; only the general contexts apply" ]
+}
+
+@test "context list --all: every file once, no override; an invalid file is skipped with a stderr line" {
+  ctxfix
+  printf 'title: Bad\nrepo: octo/proj\n\nx\n' >"$CLAUDE_PEER_CONTEXTS/40-bad.ctx"
+  printf 'title: Not a context\n' >"$CLAUDE_PEER_CONTEXTS/notes.txt"
+  printf 'title: Bad name\n\nx\n' >"$CLAUDE_PEER_CONTEXTS/Bad.ctx"
+  run --separate-stderr sh "$BIN" context list --all
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | wc -l)" -eq 6 ]
+  [ "$(printf '%s\n' "$output" | grep -c "	greet	\|^greet	")" -eq 2 ]
+  [ "$stderr" = "claude-peer: $CLAUDE_PEER_CONTEXTS/40-bad.ctx: repo: is not a key (a per-repository context goes in <owner>/<repo>/)" ]
+}
+
+@test "context list: an invalid file is left out with a stderr line" {
+  ctxfix
+  printf 'title: Bad\nmodel: --evil\n\nx\n' >"$CLAUDE_PEER_CONTEXTS/40-bad.ctx"
+  run --separate-stderr sh "$BIN" context list
+  [ "$(names)" = "plain greet mine deploy " ]
+  [[ "$stderr" == *"40-bad.ctx: model: '--evil' is not a plain value" ]]
+}
+
+@test "context show: header, scope, flags in start's order, and the prompt with the value substituted everywhere" {
+  ctxfix
+  run sh "$BIN" context show plain
+  [ "$status" -eq 0 ]
+  [ "$output" = "plain — Plain"$'\n'"file: $CLAUDE_PEER_CONTEXTS/10-plain.ctx"$'\n'"scope: everywhere"$'\n\n'"Just this." ]
+  run sh "$BIN" context show deploy
+  [[ "$output" == *"scope: octo/proj"* ]]
+  run sh "$BIN" context show mine
+  [[ "$output" == *"scope: octo"$'\n'* ]]
+  run sh "$BIN" context show greet w
+  [[ "$output" == *$'flag: --continue\nflag: --agent plan-fable\n\nowner greet'* ]]
+  cd "$BATS_TEST_TMPDIR/bare"
+  run sh "$BIN" context show greet w
+  [[ "$output" == *$'asks: Who\nflag: --model sonnet\nflag: --effort low\nflag: --append-system-prompt be brief\n\nHello w, again w.'* ]]
+  cd "$REPO"
+  run sh "$BIN" context show 20-greet
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no context '20-greet' here (claude-peer context list)"* ]]
+}
+
+@test "context show: the value arrives byte for byte; {owner} is left alone; a body without {input} gets it appended; no value leaves {input} visible" {
+  ctxfix
+  rm "$CLAUDE_PEER_CONTEXTS/octo/05-greet.ctx"
+  v=$'a & b \\1 \\n "q" \'s\'\nline two'
+  run sh "$BIN" context show greet "$v"
+  [ "$status" -eq 0 ]
+  want="Hello $v, again $v."$'\n'"Keep {owner}."
+  [[ "$output" == *$'\n\n'"$want" ]]
+  [ "${output##*$'\n\n'}" = "$want" ]
+  run sh "$BIN" context show greet
+  [[ "$output" == *"Hello {input}, again {input}."* ]]
+  run sh "$BIN" context show plain extra words
+  [[ "$output" == *$'\n\nJust this.\n\nextra words' ]]
+}
+
+@test "context show: @ names describe the built-in rows; an invalid file fails with its reason" {
+  ctxfix
+  run sh "$BIN" context show @resume
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "@resume — Resume a session" ]
+  [ "${#lines[@]}" -eq 2 ]
+  printf 'title: Bad\nrepo: octo/proj\n\nx\n' >"$CLAUDE_PEER_CONTEXTS/octo/proj/20-bad.ctx"
+  run --separate-stderr sh "$BIN" context show bad
+  [ "$status" -eq 1 ]
+  [[ "$stderr" == *"repo: is not a key (a per-repository context goes in <owner>/<repo>/)" ]]
+  printf 'title: Bad\nbogus: 1\n\nx\n' >"$CLAUDE_PEER_CONTEXTS/octo/proj/20-bad.ctx"
+  run --separate-stderr sh "$BIN" context show bad
+  [[ "$stderr" == *"unknown key 'bogus'" ]]
+  printf 'title: Bad\nmode: sideways\n\nx\n' >"$CLAUDE_PEER_CONTEXTS/octo/proj/20-bad.ctx"
+  run --separate-stderr sh "$BIN" context show bad
+  [ "$status" -eq 1 ]
+  printf 'title Bad\n\nx\n' >"$CLAUDE_PEER_CONTEXTS/octo/proj/20-bad.ctx"
+  run --separate-stderr sh "$BIN" context show bad
+  [[ "$stderr" == *"header line without ': ': title Bad" ]]
+}
+
+@test "context dir: the root, and with --repo the repository's directory; no origin is exit 1" {
+  ctxfix
+  run sh "$BIN" context dir
+  [ "$output" = "$CLAUDE_PEER_CONTEXTS" ]
+  run sh "$BIN" context dir --repo
+  [ "$status" -eq 0 ]
+  [ "$output" = "$CLAUDE_PEER_CONTEXTS/octo/proj" ]
+  run sh "$BIN" context dir --repo "$BATS_TEST_TMPDIR/other"
+  [ "$output" = "$CLAUDE_PEER_CONTEXTS/octo/other" ]
+  run sh "$BIN" context dir --repo "$BATS_TEST_TMPDIR/bare"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"this repository has no origin remote, so it has no context directory" ]]
+}
+
+@test "context: the root defaults under XDG_CONFIG_HOME, else HOME/.config" {
+  run sh "$BIN" context dir
+  [ "$output" = "$HOME/.config/claude-peer/contexts" ]
+  XDG_CONFIG_HOME="$BATS_TEST_TMPDIR/xdg" run sh "$BIN" context dir
+  [ "$output" = "$BATS_TEST_TMPDIR/xdg/claude-peer/contexts" ]
 }

@@ -218,6 +218,22 @@ show` prints the open claims and the last 24 hours of notes, `--all` the file.
 action that reaches the whole machine is not visible from another repository's
 log. `..` in a path is not resolved.
 
+**Contexts** are small text files that say how a peer is started: `key: value`
+header lines (`title`, `ask`, `agent`, `model`, `effort`, `system`, `mode`), an
+empty line, then the body, which is the first prompt (`{input}` is replaced by
+the value, or the value is appended after a blank line). They live under
+`$CLAUDE_PEER_CONTEXTS`, else `~/.config/claude-peer/contexts/`, at three
+levels read in this order: the top (every repository), `<owner>/`, and
+`<owner>/<repo>/`, where `<owner>/<repo>` is the lowercase slug of the main
+checkout's origin (`origin_slug`; a worktree shares it, a repository with no
+usable origin reads the top only). A file is `[NN-]<name>.ctx`; a deeper file of
+the same name replaces a shallower one and takes the later position. An invalid
+file (unknown key, a value that could read as a flag, a header line without
+`: `, a `repo:` key) is skipped by `context list` with a stderr line and fails
+`context show`. `claude-peer context list|show|dir` only reads; nothing starts a
+peer from a context yet. `origin_slug` is ported from the one in
+`bin/executable_postbox`.
+
 **The Hermes peer** exists only in `Claude Peers + Hermes`, and is a plain shell
 unless a Hermes profile routes the directory; the gate below is now the second
 line of defence, speaking only when somebody enters that definition by hand

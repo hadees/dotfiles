@@ -117,6 +117,16 @@
 #                            workgroup (claude() sends the key); builtin: the
 #                            job enters Claude Code again; iTerm2 quit
 #   status                   store, iTerm2, workgroup, hermes and default state
+#   context list [--all] [<dir>]
+#                            name<TAB>title<TAB>ask<TAB>flags<TAB>path per start
+#                            context of the repository of <dir> (default $PWD):
+#                            the general ones, then its owner's, then its own;
+#                            --all: every file under the root, no override
+#   context show <name|@fresh|@continue|@resume|@task> [value words...]
+#                            the context's file, scope, flags and first prompt
+#   context dir [--repo [<dir>]]
+#                            the contexts root, or this repository's directory
+#                            in it (<root>/<owner>/<repo>)
 #
 # Exit codes of start and stop: 0 done; 1 failed; 2 usage; 3 already in
 # the requested state; 4 nothing to act on; 5 refused because busy.
@@ -1208,6 +1218,199 @@ peers_summary() {
   return 0
 }
 
+# --- contexts -----------------------------------------------------------------
+# A context is a small text file: `key: value` header lines, an empty line, then
+# the body, which is the first prompt. They live under ctx_dir at three levels
+# (everywhere, <owner>/, <owner>/<repo>/); a deeper file replaces a shallower
+# one of the same name. Nothing else in this script reads them yet.
+
+ctx_tab=$(printf '\t')
+
+ctx_dir() { printf '%s\n' "${CLAUDE_PEER_CONTEXTS:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-peer/contexts}"; }
+
+# Lowercase owner/repo of the origin of the main checkout of <dir> (default $PWD),
+# or status 1. A worktree shares its main checkout's config, so a peer finds its
+# leader's slug. An origin that is set but gives no usable slug says so once.
+origin_slug() {
+  os_top=$(cd "${1:-$PWD}" 2>/dev/null && repo_root_q) || return 1
+  os_u=$(git -C "$os_top" config --get remote.origin.url 2>/dev/null) || return 1
+  [ -n "$os_u" ] || return 1
+  os_s=${os_u%/}; os_s=${os_s%.git}
+  case $os_s in
+    *://*) os_s=${os_s#*://}; os_s=${os_s#*/};;
+    *:*) os_s=${os_s#*:};;
+    *) os_s=;;
+  esac
+  os_s=$(printf '%s' "${os_s#/}" | LC_ALL=C tr 'A-Z' 'a-z')
+  if printf '%s\n' "$os_s" | LC_ALL=C grep -Eq '^[a-z0-9._-]+(/[a-z0-9._-]+)+$' &&
+    ! printf '%s\n' "$os_s" | LC_ALL=C grep -Eq '(^|/)\.\.?(/|$)'; then
+    printf '%s\n' "$os_s"
+    return 0
+  fi
+  warn "origin '$os_u' gives no owner/repo; only the general contexts apply"
+  return 1
+}
+
+# <slug> -> the directories to read, shallow to deep.
+ctx_levels() {
+  cl_r=$(ctx_dir)
+  printf '%s\n' "$cl_r"
+  [ -z "$1" ] || printf '%s\n%s\n' "$cl_r/${1%%/*}" "$cl_r/$1"
+  return 0
+}
+
+# <file> -> its context name (the file name without NN- and .ctx), or status 1.
+ctx_name_of() {
+  cn=${1##*/}; cn=${cn%.ctx}
+  case $cn in
+    [0-9]*-*) cn_p=${cn%%-*}; case $cn_p in *[!0-9]*) ;; *) cn=${cn#*-};; esac;;
+  esac
+  printf '%s\n' "$cn" | LC_ALL=C grep -Eq '^[a-z][a-z0-9_-]*$' || return 1
+  printf '%s\n' "$cn"
+}
+
+# <slug> -> name<TAB>path per effective context, in display order, validity not
+# looked at. The later of two files with one name wins and takes the later place.
+ctx_scan() {
+  ctx_levels "$1" | while IFS= read -r sc_d; do
+    ( LC_ALL=C; export LC_ALL
+      for sc_f in "$sc_d"/*.ctx; do
+        [ -f "$sc_f" ] || continue
+        sc_n=$(ctx_name_of "$sc_f") || continue
+        printf '%s\t%s\n' "$sc_n" "$sc_f"
+      done )
+  done | awk -F'\t' '{ l[NR] = $0; last[$1] = NR } END { for (i = 1; i <= NR; i++) { split(l[i], a, "\t"); if (last[a[1]] == i) print l[i] } }'
+}
+
+# <path> -> status 0, or 1 and why on stderr.
+ctx_bad() { warn "$1: $2"; return 1; }
+ctx_check() {
+  cc_h=$(sed '/^$/,$d' "$1")
+  while IFS= read -r cc_l; do
+    [ -n "$cc_l" ] || continue
+    case $cc_l in *': '*) ;; *) ctx_bad "$1" "header line without ': ': $cc_l" || return 1;; esac
+    cc_k=${cc_l%%: *}; cc_v=${cc_l#*: }
+    case $cc_k in
+      title|ask|system) ;;
+      agent|model|effort)
+        printf '%s\n' "$cc_v" | LC_ALL=C grep -Eq '^[A-Za-z0-9][]A-Za-z0-9._:[-]*$' || ctx_bad "$1" "$cc_k: '$cc_v' is not a plain value" || return 1;;
+      mode) case $cc_v in fresh|continue) ;; *) ctx_bad "$1" 'mode: must be fresh or continue' || return 1;; esac;;
+      repo) ctx_bad "$1" 'repo: is not a key (a per-repository context goes in <owner>/<repo>/)' || return 1;;
+      *) ctx_bad "$1" "unknown key '$cc_k'" || return 1;;
+    esac
+  done <<EOT
+$cc_h
+EOT
+  return 0
+}
+
+# <slug> -> its valid contexts, as ctx_scan prints them; invalid ones are
+# reported on stderr and left out.
+ctx_files() {
+  ctx_scan "$1" | while IFS=$ctx_tab read -r cf_n cf_p; do
+    ctx_check "$cf_p" && printf '%s\t%s\n' "$cf_n" "$cf_p"
+  done
+}
+
+# <name> <slug> -> the path, or status 1.
+ctx_find() {
+  cf_p=$(ctx_scan "$2" | CF_N=$1 awk -F'\t' '$1 == ENVIRON["CF_N"] { print $2; exit }')
+  [ -n "$cf_p" ] || { warn "no context '$1' here (claude-peer context list)"; return 1; }
+  printf '%s\n' "$cf_p"
+}
+
+# <path> <key> -> the first value of that header key.
+ctx_get() { sed '/^$/,$d' "$1" | CG_P="$2: " awk 'index($0, ENVIRON["CG_P"]) == 1 { print substr($0, length(ENVIRON["CG_P"]) + 1); exit }'; }
+
+# <path> -> the body: after the first empty line, trailing blank lines dropped.
+ctx_body() { awk 'b { l[++n] = $0; if ($0 != "") last = n; next } /^$/ { b = 1 } END { for (i = 1; i <= last; i++) print l[i] }' "$1"; }
+
+# <path> <value> -> the first prompt. The value goes through the environment and
+# awk index/substr, so backslashes and & arrive as typed.
+ctx_prompt() {
+  CP_BODY=$(ctx_body "$1") CP_VALUE=$2 awk 'BEGIN {
+    s = ENVIRON["CP_BODY"]; v = ENVIRON["CP_VALUE"]
+    if (index(s, "{input}") == 0) { print (s == "" || v == "" ? s v : s "\n\n" v); exit }
+    while ((i = index(s, "{input}")) > 0) { o = o substr(s, 1, i - 1) v; s = substr(s, i + 7) }
+    print o s }'
+}
+
+# <path> -> the claude flags it sets, one per line, in the order start passes them.
+ctx_flag_lines() {
+  [ "$(ctx_get "$1" mode)" != continue ] || echo '--continue'
+  for ff_k in agent model effort; do
+    ff_v=$(ctx_get "$1" "$ff_k"); [ -z "$ff_v" ] || echo "--$ff_k $ff_v"
+  done
+  ff_v=$(ctx_get "$1" system); [ -z "$ff_v" ] || echo "--append-system-prompt $ff_v"
+  return 0
+}
+
+# <name> <path> -> name<TAB>title<TAB>ask<TAB>flags<TAB>path
+ctx_row() {
+  cw_f=
+  for cw_k in agent model effort; do
+    cw_v=$(ctx_get "$2" "$cw_k"); [ -z "$cw_v" ] || cw_f="$cw_f $cw_k=$cw_v"
+  done
+  [ "$(ctx_get "$2" mode)" != continue ] || cw_f="$cw_f mode=continue"
+  [ -z "$(ctx_get "$2" system)" ] || cw_f="$cw_f system"
+  cw_t=$(ctx_get "$2" title); cw_a=$(ctx_get "$2" ask)
+  cw_f=${cw_f# }
+  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "${cw_t:-$1}" "${cw_a:--}" "${cw_f:--}" "$2"
+}
+
+# list [--all] [<dir>] | show <name|@builtin> [value words...] | dir [--repo [<dir>]]
+cmd_context() {
+  [ $# -ge 1 ] || usage
+  cx_verb=$1; shift
+  case $cx_verb in
+    list)
+      cx_all=0
+      if [ "${1-}" = --all ]; then cx_all=1; shift; fi
+      [ $# -le 1 ] || usage
+      if [ "$cx_all" = 1 ]; then
+        find "$(ctx_dir)" -type f -name '*.ctx' 2>/dev/null | LC_ALL=C sort | while IFS= read -r cx_p; do
+          cx_n=$(ctx_name_of "$cx_p") && ctx_check "$cx_p" && ctx_row "$cx_n" "$cx_p"
+        done
+      else
+        cx_slug=$(origin_slug "${1:-$PWD}") || cx_slug=
+        ctx_files "$cx_slug" | while IFS=$ctx_tab read -r cx_n cx_p; do ctx_row "$cx_n" "$cx_p"; done
+      fi
+      return 0;;
+    show)
+      [ $# -ge 1 ] || usage
+      cx_name=$1; shift
+      case $cx_name in
+        @fresh) printf '@fresh — Blank session\nclaude -n <name> with no prompt\n'; return 0;;
+        @continue) printf '@continue — Continue the last session\nclaude -n <name> --continue with no prompt\n'; return 0;;
+        @resume) printf '@resume — Resume a session\nclaude -n <name> --resume alone: Claude'"'"'s own list chooses\n'; return 0;;
+        @task) printf '@task — New task\nclaude -n <name> with the text typed in the pane as the prompt\n'; return 0;;
+      esac
+      cx_slug=$(origin_slug) || cx_slug=
+      cx_p=$(ctx_find "$cx_name" "$cx_slug") || exit 1
+      ctx_check "$cx_p" || exit 1
+      cx_t=$(ctx_get "$cx_p" title); cx_a=$(ctx_get "$cx_p" ask)
+      cx_rel=${cx_p#"$(ctx_dir)"/}
+      case $cx_rel in */*) cx_scope=${cx_rel%/*};; *) cx_scope=everywhere;; esac
+      printf '%s — %s\nfile: %s\nscope: %s\n' "$cx_name" "${cx_t:-$cx_name}" "$cx_p" "$cx_scope"
+      [ -z "$cx_a" ] || printf 'asks: %s\n' "$cx_a"
+      ctx_flag_lines "$cx_p" | sed 's/^/flag: /'
+      echo
+      if [ $# -eq 0 ]; then ctx_body "$cx_p"; else ctx_prompt "$cx_p" "$*"; fi
+      return 0;;
+    dir)
+      if [ "${1-}" = --repo ]; then
+        shift; [ $# -le 1 ] || usage
+        cx_slug=$(origin_slug "${1:-$PWD}") || die "this repository has no origin remote, so it has no context directory"
+        printf '%s/%s\n' "$(ctx_dir)" "$cx_slug"
+      else
+        [ $# -eq 0 ] || usage
+        ctx_dir
+      fi
+      return 0;;
+    *) usage;;
+  esac
+}
+
 [ $# -ge 1 ] || usage
 cmd=$1; shift
 case $cmd in
@@ -1225,6 +1428,7 @@ case $cmd in
   install) cmd_install "$@";;
   default) cmd_default "$@";;
   status) cmd_status "$@";;
+  context) cmd_context "$@";;
   -h|--help|help) usage;;
   *) warn "unknown command '$cmd'"; usage;;
 esac
