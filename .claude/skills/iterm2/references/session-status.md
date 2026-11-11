@@ -4,10 +4,11 @@ New in 3.7. Every session can carry a **status** — a word, a coloured dot,
 a text colour, an optional detail — shown as the tab's subtitle, gathered in
 the **Session Status** toolbelt tool, and browsable across windows in the
 **Cockpit**. Programs set it in five ways: two escape codes, the `it2` CLI, a
-trigger, and `cc-status`, the hook binary behind the Claude Code integration.
+trigger, and `it2 handle-agent-hook` (`cc-status` before 3.7.7), the hook
+program behind the Claude Code integration.
 
 Verified against the 3.7.6 bundle (menu nib, executable strings, `it2
---help`) and the 3.7.0–3.7.6 release notes. None of it has a page on
+--help`), re-checked on 3.7.7, and the 3.7.0–3.7.7 release notes. None of it has a page on
 iterm2.com; the in-app help text of the Session Status tool is the only
 first-party description, and it is quoted below.
 
@@ -30,6 +31,12 @@ first-party description, and it is quoted below.
   carries a `StatusPriority` popover), not by tab order. A gear-menu option
   hides the status *text* from tab subtitles and keeps only the dot
   (`ShowSessionStatusInTabSubtitle`).
+- The ⚙ button sets the priority order. Default: waiting, done, error,
+  working, idle.
+- **Snooze** (right-click a row): the row sinks to the bottom and dims, and
+  un-snoozes by itself the next time its status changes. So a snooze lasts
+  only until the next hook repaints the row, which for a Claude row is the
+  next tool call or Stop.
 - The bell button at the bottom of the tool is **Window > Notify on Status
   Change**: the next status change in that window raises an alert, then the
   toggle turns itself off. It is only available while the tool is open.
@@ -120,10 +127,15 @@ installs:
 - a symlink `~/.config/iterm2/cc-status` → `Contents/Resources/utilities/cc-status`,
   which the app re-creates if anything else is put there
   (`ensureCCStatusSymlink`);
-- one hook entry per Claude Code hook event in `settings.json`, each running
-  that symlink. `cc-status` reads the hook payload on stdin
+- one hook entry per Claude Code hook event in `settings.json`. Up to 3.7.6
+  each ran that symlink; `cc-status` read the hook payload on stdin
   (`notification_type`, `permission_prompt`, `last_assistant_message`,
-  `background_tasks`) and calls `it2 session set-status`;
+  `background_tasks`) and called `it2 session set-status`. Since 3.7.7 the
+  installer writes `"~/.config/iterm2/it2" handle-agent-hook` (a second
+  symlink, `~/.config/iterm2/it2`, sits beside `cc-status`), `cc-status` is a
+  trampoline that execs `it2 handle-agent-hook`, and all the payload handling,
+  detail text and colours live in `it2` with unchanged strings.
+  `it2 handle-agent-hook [--agent claude|codex]` is the hook program;
 - optionally the Enter / Exit Workgroup triggers on your profiles.
 
 **Which `settings.json`.** The installer writes one config directory, recorded
@@ -141,6 +153,9 @@ Behaviour that changed inside 3.7, worth knowing before debugging a row:
 | 3.7.5 | The health check no longer calls a hook "broken" for `$HOME`, `~` or a wrapper script in the command, Reinstall keeps such commands instead of adding a duplicate, Uninstall leaves alone a command that also runs other programs, and a symlinked `settings.json` (chezmoi, Stow) is updated through the link instead of being replaced. |
 | 3.7.5 | `cc-status --agent codex` follows Codex CLI from `~/.codex/hooks.json`; there is no installer for it. |
 | 3.7.6 | A `settings.json` with a syntax error is left alone, not overwritten. |
+| 3.7.7 | Hooks run `it2 handle-agent-hook`; `cc-status` only forwards to it. The health check counts a hook only if its command names a program inside `~/.config/iterm2` (the "dot dir"), so a `cc-status` at any other path, such as this repo's shim, reads as no hook. It checks ten events (the wired set minus `SubagentStart`) and reads one file: `settings.json` in `NoSyncClaudeCodeConfigDirPath`, once per iTerm2 launch, on the first local `claude` job. Failing raises **Claude Code Integration Looks Broken**. It never re-adds hooks by itself. Reinstall appends a dot-dir entry for every event without one, rewrites the file with sorted keys, moves the recorded directory and strips its own entries from the old one. Uninstall also removes the workgroup and the Enter/Exit triggers. Hooks on one event run in parallel, so a shim entry beside a raw `it2` entry is a race the last writer wins. |
+| 3.7.7 | The integration installs on a host reached through SSH Integration (iTerm2 > Install Claude Code Integration from a session there, a tmux Integration pane included), so Claude Code there reports status too; Uninstall removes it from every connected host. |
+| 3.7.7 | `it2 session set-status` gained `--expires-on progress-end` with `--then-status/--then-dot-color/--then-text-color/--then-detail`, `--progress`, `--turn-open`, `--if-turn-open`, `--if-background-tasks`, `--background-tasks-delta`, `--json`, `--quiet-if-unresolved`, `--tmux/--tmux-pane`; `it2 session get-status` prints `status, text_color, dot_color, detail, background_tasks, turn_open`. |
 
 ## Workgroups
 
@@ -159,7 +174,7 @@ from your shell.
 The Session Status tool's *Merge workgroup statuses* collapses a workgroup's
 peers into one row.
 
-Read from the v3.7.7 source (the stamp is still 3.7.6, refresh pending):
+Read from the v3.7.7 source:
 
 - A peer's command (a split's or tab's too) is wrapped in an interactive login
   shell, so shell functions apply: `PTYSession.swift:2214-2217, 2660-2690`

@@ -2657,7 +2657,7 @@ function iterm2_pref() {
 # refreshing one without the other fails the suite.
 function iterm2-doctor() {
 	emulate -L zsh;
-	local stamp=3.7.6;
+	local stamp=3.7.7;
 	local app ver skill c d v cmp;
 	local -a chans vers plugs profiles autopy;
 	print -r -- "defined: $(defined_trace iterm2_app_path iterm2_bundle_version iterm2_pref)";

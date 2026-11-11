@@ -37,7 +37,9 @@ PrefsCustomFolder           string (a tilde path is accepted, e.g. ~/code/dotfil
 ```
 
 iTerm2 writes `com.googlecode.iterm2.plist` into that folder, which makes the
-folder trackable in git.
+folder trackable in git. Since 3.7.7, quitting no longer asks to copy
+settings to the folder just because iTerm2 migrated an older setting saved
+there.
 
 **Since 3.7 the folder can carry data files too** — snippets, global notes and
 session-icon customisations. iTerm2 asks once whether to sync them, and asks

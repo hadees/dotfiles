@@ -30,7 +30,7 @@ its executable, its `utilities` directory — and the mechanically checkable
 part of that is listed in `scripts/manifest.txt` so a later version cannot
 quietly falsify it.
 
-**Written against iTerm2 3.7.6.** (First written against 3.6.11.) That
+**Written against iTerm2 3.7.7.** (First written against 3.6.11.) That
 number is the load-bearing fact here.
 iTerm2 updates itself through Sparkle without asking, so a description of it
 decays on its own; the version stamp is what turns that decay into something
