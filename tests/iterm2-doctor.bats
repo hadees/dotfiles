@@ -80,7 +80,7 @@ doctor_stamp() {
   make_app "$(doctor_stamp)"
   doctor
   [ "$status" -eq 0 ]
-  [[ "$output" == *"defined: ok (3 helpers)"* ]]
+  [[ "$output" == *"defined: ok (4 helpers)"* ]]
   [[ "$output" == *"app:     $APP ($(doctor_stamp))"* ]]
   [[ "$output" == *"skill:   written against iTerm2 $(doctor_stamp) — matches"* ]]
   # House style: every label is padded so its value starts in column 10, the
@@ -88,8 +88,8 @@ doctor_stamp() {
   # get pasted into issues.
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    # The one label longer than the column ("cc-status:" is ten characters).
-    [[ "$line" == cc-status:\ * ]] && continue
+    # The labels longer than the column ("cc-status:" and "osascript:" are ten characters).
+    [[ "$line" == cc-status:\ * || "$line" == osascript:\ * ]] && continue
     [[ "$line" =~ ^[a-z]+:\ +[^\ ] ]]
     [[ "${line:0:9}" =~ ^[a-z]+:\ *$ ]]
     [[ "${line:9:1}" != " " ]]
@@ -174,6 +174,42 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"plugins: none installed"* ]]
   [[ "$output" == *"integ:   not installed"* ]]
+}
+
+@test "iterm2-doctor: cookie line names the four states" {
+  make_app "$(doctor_stamp)"
+  state="$HOME/.local/state/iterm2"
+  sock="$HOME/Library/Application Support/iTerm2/private/socket"
+  doctor
+  [[ "$output" == *$'cookie:  absent — run iterm2-cookie'* ]]
+  mkdir -p "$state" "${sock%/*}"
+  : > "$state/api-cookie.rejected"
+  doctor
+  [[ "$output" == *$'cookie:  rejected — iTerm2 refused it; run iterm2-cookie'* ]]
+  : > "$state/api-cookie"
+  touch -t 202001010000 "$state/api-cookie"
+  : > "$sock"
+  doctor
+  [[ "$output" == *$'cookie:  stale — iTerm2 restarted since it was issued; run iterm2-cookie'* ]]
+  touch -t 203001010000 "$state/api-cookie"
+  doctor
+  [[ "$output" == *"cookie:  fresh (newer than the API socket)"* ]]
+}
+
+@test "iterm2-doctor: osascript line counts uncookied events and running cookie requests" {
+  make_app "$(doctor_stamp)"
+  # A real ps would count the osascripts this very bug leaves running.
+  printf '#!/bin/sh\necho "-zsh"\n' > "$STUB/ps"
+  chmod +x "$STUB/ps"
+  doctor
+  [[ "$output" == *"osascript: 0 hook events ran without a cookie since never; 0 cookie requests running now"* ]]
+  mkdir -p "$HOME/.local/state/iterm2"
+  printf xxx > "$HOME/.local/state/iterm2/uncookied"
+  printf '#!/bin/sh\necho "osascript -e tell application iTerm2 to request cookie and key for app named it2"\necho "-zsh"\necho "osascript -e tell application iTerm2 to request cookie and key for app named it2"\n' > "$STUB/ps"
+  chmod +x "$STUB/ps"
+  doctor
+  [[ "$output" == *"osascript: 3 hook events ran without a cookie since "*"; 2 cookie requests running now"* ]]
+  [[ "$output" != *"since never"* ]]
 }
 
 @test "iterm2-doctor: cc-status line reads the symlink without running it" {

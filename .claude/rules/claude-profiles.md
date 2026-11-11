@@ -111,6 +111,18 @@ directory). Nothing is sent without `$ITERM_SESSION_ID`, inside a peer
 writes. `claude-doctor`'s `workgroup:` line shows the key or why there is none.
 The mechanism is in `claude-peer.md`.
 
+**The wrapper says when hooks will spawn osascript.** On an attended launch
+with `$ITERM_SESSION_ID` set and `~/.config/iterm2/it2` present, a state other
+than `fresh` from `iterm2_cookie_state` prints one stderr line, `claude: no
+iTerm2 API cookie for this iTerm2 run (<state>), so every hook event starts
+osascript (iTerm2 issue 13189): run iterm2-cookie`. The checks before the line
+are builtins, so a launch with nothing to say forks nothing (the one
+`git config` read comes only after the state is not `fresh`); it never blocks.
+`git config claude.iterm2-check false` silences it (machine-local, like the
+other switches). `tests/claude-profiles.bats` gives its sandbox a fresh cookie
+in `setup`, so only the tests about this line ever meet it. The cookie is
+described in `cc-status-shim.md`.
+
 **Each profile must be logged in once** with `claude auth login`; credentials
 live in the macOS Keychain and cannot be copied between profiles — verified,
 copying `.claude.json` does not carry a session.

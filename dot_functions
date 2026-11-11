@@ -349,7 +349,7 @@ function bin_trace() {
 # or a literal directory. With no mapping at all, this is plain `claude` on the
 # default ~/.claude config dir.
 function claude() {
-	local dir alias opener here line attended key;
+	local dir alias opener here line attended key REPLY;
 	local -a sess;
 	dir="$(claude_profile_dir)" || dir='';
 	# An attended launch: somebody is sitting at it. No terminal, print
@@ -384,6 +384,15 @@ function claude() {
 		for line in ${(f)"$(claude_memory_leaks $dir)"}; do
 			print -ru2 -- "claude: ${line/#$HOME/~} loads here as project memory: it belongs to the default profile, and ${dir/#$HOME/~}/settings.json does not list it in claudeMdExcludes";
 		done;
+	fi;
+	# With no API cookie every hook event's `it2` starts an osascript (iTerm2
+	# issue 13189). Builtins only until there is something to say; never blocks.
+	# `git config claude.iterm2-check false` silences it.
+	if [[ -n $attended && -n $ITERM_SESSION_ID && -e $HOME/.config/iterm2/it2 ]]; then
+		iterm2_cookie_state;
+		if [[ $REPLY != fresh ]] && [[ "$(command git config --get claude.iterm2-check 2>/dev/null)" != false ]]; then
+			print -ru2 -- "claude: no iTerm2 API cookie for this iTerm2 run ($REPLY), so every hook event starts osascript (iTerm2 issue 13189): run iterm2-cookie";
+		fi;
 	fi;
 	# Choose the iTerm2 Workgroup this tab enters, now that the launch is going
 	# ahead (an `n` above returned already) and only for the launches that were
@@ -717,7 +726,7 @@ function claude-as() {
 function claude-doctor() {
 	local origin acct map dir cred email slug pin;
 	print -r -- "wrapper: $(whence -w claude)";
-	print -r -- "defined: $(defined_trace claude_profile_dir claude_sessions_here claude_memory_leaks claude_peer_key hermes_profile claude_browser_alias claude_browser_can_open gh_account_for_cwd git_origin_slug bin_trace)";
+	print -r -- "defined: $(defined_trace claude_profile_dir claude_sessions_here claude_memory_leaks iterm2_cookie_state claude_peer_key hermes_profile claude_browser_alias claude_browser_can_open gh_account_for_cwd git_origin_slug bin_trace)";
 	print -r -- "binary:  $(bin="$(whence -p claude)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH')";
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
@@ -2752,7 +2761,7 @@ function iterm2-doctor() {
 	local stamp=3.7.7;
 	local app ver skill c d v cmp;
 	local -a chans vers plugs profiles autopy;
-	print -r -- "defined: $(defined_trace iterm2_app_path iterm2_bundle_version iterm2_pref)";
+	print -r -- "defined: $(defined_trace iterm2_app_path iterm2_bundle_version iterm2_pref iterm2_cookie_state)";
 	app="$(iterm2_app_path)";
 	if [[ -z $app ]]; then
 		print -r -- "app:     NOT INSTALLED — no iTerm.app in /Applications or ~/Applications$([[ $(uname) == Darwin ]] || print -r -- ' (macOS-only app)')";
@@ -2807,6 +2816,25 @@ function iterm2-doctor() {
 	elif (( $+commands[it2] )); then ccit2=PATH;
 	else ccit2=absent; fi;
 	print -r -- "cc-status: ~/.config/iterm2/cc-status${cct:+ -> $cct} ($ccstate); it2: $ccit2";
+	# The API cookie the hooks hand to it2 (static: whether iTerm2 accepts it
+	# is `iterm2-cookie status`) and how many hook events ran without one.
+	iterm2_cookie_state;
+	case $REPLY in
+		fresh) print -r -- "cookie:  fresh (newer than the API socket)";;
+		stale) print -r -- "cookie:  stale — iTerm2 restarted since it was issued; run iterm2-cookie";;
+		rejected) print -r -- "cookie:  rejected — iTerm2 refused it; run iterm2-cookie";;
+		*) print -r -- "cookie:  absent — run iterm2-cookie";;
+	esac;
+	local unc="$HOME/.local/state/iterm2/uncookied" uncn=0 uncb='never' uncp=0 uncs;
+	zmodload zsh/stat zsh/datetime 2>/dev/null;
+	if [[ -e $unc ]]; then
+		zstat -A uncn +size -- "$unc";
+		uncs="$(command stat -f %B "$unc" 2>/dev/null)";
+		[[ $uncs == <-> ]] || zstat -A uncs +mtime -- "$unc";
+		strftime -s uncb '%Y-%m-%d %H:%M:%S' "$uncs";
+	fi;
+	(( $+commands[ps] )) && uncp=${#${(M)${(f)"$(command ps -axo command 2>/dev/null)"}:#*request cookie and key for app named*}};
+	print -r -- "osascript: $uncn hook events ran without a cookie since $uncb; $uncp cookie requests running now";
 	# The generative-AI and browser features ship as separate bundles since
 	# 3.5; their absence is why an AI menu item can be missing on an app that
 	# otherwise looks current. They install alongside iTerm.app, so look
