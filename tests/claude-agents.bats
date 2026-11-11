@@ -251,6 +251,8 @@ shared_templates() {
   grep -q 'only when I ask' <<< "$shared" || { echo "shared memory: no ask-first rule for start/stop"; false; }
   grep -q 'Warn, never block' <<< "$shared" || { echo "shared memory: no warn-never-block rule"; false; }
   grep -q 'log claim' "$BATS_TEST_DIRNAME/../.claude/rules/claude-peer.md" || { echo "claude-peer.md: no log claim"; false; }
-  n="$(wc -m < "$BATS_TEST_DIRNAME/../dot_claude-shared/CLAUDE.md")"
+  # Code points, counted by python: wc -m counts bytes under the C locale of
+  # the Rocky CI container.
+  n="$(python3 -c 'import sys; print(len(open(sys.argv[1], encoding="utf-8").read()))' "$BATS_TEST_DIRNAME/../dot_claude-shared/CLAUDE.md")"
   [ "$n" -le 27157 ] || { echo "shared memory is $n characters, limit 27157"; false; }
 }
