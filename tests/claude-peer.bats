@@ -587,6 +587,20 @@ hold() {
   [ -d "$REPO/.claude/worktrees/alpha" ]
 }
 
+@test "stop: the default config directory is searched with no CLAUDE_CONFIG_DIR and no profile mapping" {
+  unset CLAUDE_CONFIG_DIR
+  mkdir -p "$HOME/.claude/sessions"
+  FAKE_SHELL_SLEEP=30 FAKE_SHELL_PID="$BATS_TEST_TMPDIR/shpid" pane alpha
+  sh "$BIN" start alpha >/dev/null
+  until_ok '[ -s "$BATS_TEST_TMPDIR/shpid" ]'
+  sp=$(cat "$BATS_TEST_TMPDIR/shpid")
+  printf '{"pid": %s, "status": "idle"}\n' "$sp" >"$HOME/.claude/sessions/$sp.json"
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  [[ "$output" == *$'\t'"stopped" ]]
+  ! kill -0 "$sp" 2>/dev/null
+}
+
 @test "stop --force: no registry record, every process under the claim is stopped" {
   export CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/empty
   FAKE_SHELL_SLEEP=30 FAKE_SHELL_PID="$BATS_TEST_TMPDIR/shpid" pane alpha
@@ -756,32 +770,42 @@ groups() {
 # pyget <json> <python expression over g>
 pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(eval(sys.argv[2]))' "$1" "$2"; }
 
-@test "workgroup: six sessions in order, the builtin Diff copied, chat peers run claude-peer, Hermes last" {
+@test "workgroup: Claude Peers is four sessions in order, Lead the root, no Diff, no Hermes" {
   mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist" run sh "$BIN" workgroup
   [ "$status" -eq 0 ]
   [ "$(pyget "$output" '[g["uniqueIdentifier"], g["name"]]')" = "['claudePeer.workgroup', 'Claude Peers']" ]
-  [ "$(pyget "$output" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.main', 'claudePeer.diff', 'claudePeer.chat2', 'claudePeer.chat3', 'claudePeer.chat4', 'claudePeer.hermes']" ]
+  [ "$(pyget "$output" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.main', 'claudePeer.alpha', 'claudePeer.beta', 'claudePeer.gamma']" ]
+  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma']" ]
   [ "$(pyget "$output" 'g["sessions"][0]["kind"]')" = "{'kind': 'root'}" ]
-  [ "$(pyget "$output" '[i["kind"] for i in g["sessions"][0]["toolbarItems"]]')" = "['modeSwitcher', 'gitStatus', 'fixtureItem']" ]
-  [ "$(pyget "$output" 'g["sessions"][1]["command"]')" = 'fixture-diff \(gitBase)' ]
-  [ "$(pyget "$output" 'g["sessions"][1]["parentID"]')" = "claudePeer.main" ]
-  [ "$(pyget "$output" 'g["sessions"][1]["toolbarItems"][1]["reloadShortcut"]["serialized"]')" = "0x1-0x2-0x3" ]
-  [ "$(pyget "$output" '[s["command"] for s in g["sessions"][2:5]]')" = "['claude-peer run', 'claude-peer run', 'claude-peer run']" ]
-  [ "$(pyget "$output" '[s["toolbarItems"] for s in g["sessions"][2:]][0]')" = "[{'kind': 'modeSwitcher'}]" ]
-  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"][2:5]]')" = "['Chat 2', 'Chat 3', 'Chat 4']" ]
-  [ "$(pyget "$output" '[g["sessions"][5][k] for k in ("uniqueIdentifier", "displayName", "command", "parentID", "toolbarItems")]')" = "['claudePeer.hermes', 'Hermes', 'claude-peer hermes', 'claudePeer.main', [{'kind': 'modeSwitcher'}]]" ]
-  [ "$(pyget "$output" 'g["sessions"][5]["kind"]')" = "{'kind': 'peer'}" ]
+  [ "$(pyget "$output" '[s["command"] for s in g["sessions"]]')" = "['', 'claude-peer run --as alpha --wait', 'claude-peer run --as beta --wait', 'claude-peer run --as gamma --wait']" ]
+  # the fixture builtin's root has a third item; nothing is copied from it
+  [ "$(pyget "$output" '[i["kind"] for i in g["sessions"][0]["toolbarItems"]]')" = "['modeSwitcher', 'gitStatus']" ]
+  [ "$(pyget "$output" '[s["toolbarItems"] for s in g["sessions"][1:]]')" = "[[{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}]]" ]
+  [ "$(pyget "$output" '[s["kind"]["kind"] for s in g["sessions"][1:]]')" = "['peer', 'peer', 'peer']" ]
+  [ "$(pyget "$output" '[s["parentID"] for s in g["sessions"][1:]]')" = "['claudePeer.main', 'claudePeer.main', 'claudePeer.main']" ]
+  [ "$(pyget "$output" 'any(s["mode"] != "regular" or "profileGUID" in s or s["urlString"] or s["perFileCommand"] or "hermes" in s["command"] for s in g["sessions"])')" = False ]
 }
 
-@test "workgroup: with no builtin in the store the templates stand in" {
-  mkprefs "$BATS_TEST_TMPDIR/prefs.plist" empty
-  CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist" run sh "$BIN" workgroup
+@test "workgroup: reads no store, so none needs to exist" {
+  CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/absent.plist" run sh "$BIN" workgroup
   [ "$status" -eq 0 ]
-  [ "$(pyget "$output" 'g["sessions"][1]["command"]')" = 'git difftool -y -x vimdiff \(gitBase)' ]
-  [ "$(pyget "$output" 'g["sessions"][1]["mode"]')" = "diff" ]
-  [ "$(pyget "$output" '[i["kind"] for i in g["sessions"][0]["toolbarItems"]]')" = "['modeSwitcher', 'gitStatus']" ]
-  [ "$(pyget "$output" '[i["kind"] for i in g["sessions"][1]["toolbarItems"]]')" = "['modeSwitcher', 'changedFileSelector', 'gitBaseSelector', 'navigation']" ]
+  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma']" ]
+}
+
+@test "install: Claude Peers + Hermes is the same four under claudePeer.h plus Hermes last" {
+  stubs
+  mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
+  CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist" sh "$BIN" install >/dev/null
+  g=$(groups "$BATS_TEST_TMPDIR/prefs.plist")
+  h=$(python3 -I -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1])[2]))' "$g")
+  [ "$(pyget "$h" '[g["uniqueIdentifier"], g["name"]]')" = "['claudePeer.h', 'Claude Peers + Hermes']" ]
+  [ "$(pyget "$h" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.h.main', 'claudePeer.h.alpha', 'claudePeer.h.beta', 'claudePeer.h.gamma', 'claudePeer.h.hermes']" ]
+  [ "$(pyget "$h" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Hermes']" ]
+  [ "$(pyget "$h" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.h.main'}" ]
+  [ "$(pyget "$h" 'g["sessions"][-1]["command"]')" = "claude-peer hermes --wait" ]
+  [ "$(pyget "$h" '[s["command"] for s in g["sessions"][1:4]]')" = "['claude-peer run --as alpha --wait', 'claude-peer run --as beta --wait', 'claude-peer run --as gamma --wait']" ]
+  [ "$(pyget "$h" 'g["sessions"][0]["kind"]')" = "{'kind': 'root'}" ]
 }
 
 @test "install: refused while iTerm2 runs, the store untouched" {
@@ -794,21 +818,23 @@ pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(ev
   cmp "$BATS_TEST_TMPDIR/prefs.plist" "$BATS_TEST_TMPDIR/before.plist"
 }
 
-@test "install: folder store gains the workgroup after the builtin; a second run replaces it" {
+@test "install: folder store gains both workgroups after the builtin, which is untouched; a second run replaces them" {
   stubs
   mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
   export CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist"
+  before=$(pyget "$(groups "$CLAUDE_PEER_PREFS")" 'json.dumps(g[0], sort_keys=True)')
   run sh "$BIN" install
   [ "$status" -eq 0 ]
-  [[ "$output" == *"claudePeer.workgroup) written in $CLAUDE_PEER_PREFS"* ]]
+  [[ "$output" == *'"Claude Peers" written and "Claude Peers + Hermes" written in '"$CLAUDE_PEER_PREFS"* ]]
   g=$(groups "$CLAUDE_PEER_PREFS")
-  [ "$(pyget "$g" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup']" ]
+  [ "$(pyget "$g" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup', 'claudePeer.h']" ]
+  [ "$(pyget "$g" 'json.dumps(g[0], sort_keys=True)')" = "$before" ]
   grep -q '<?xml' "$CLAUDE_PEER_PREFS"
   [ "$(python3 -I -c 'import plistlib, sys; print(plistlib.load(open(sys.argv[1], "rb"))["Ponies"])' "$CLAUDE_PEER_PREFS")" = sentinel ]
   run sh "$BIN" install
   [ "$status" -eq 0 ]
-  [[ "$output" == *"replaced"* ]]
-  [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" 'len(g)')" = 2 ]
+  [[ "$output" == *'"Claude Peers" replaced and "Claude Peers + Hermes" replaced'* ]]
+  [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" 'len(g)')" = 3 ]
   # a binary plist stays binary
   mkprefs "$BATS_TEST_TMPDIR/bin.plist" binary
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/bin.plist" run sh "$BIN" install
@@ -823,7 +849,7 @@ pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(ev
   run sh "$BIN" install
   [ "$status" -eq 0 ]
   [[ "$output" == *"written in the com.googlecode.iterm2 domain"* ]]
-  [ "$(pyget "$(groups "$FAKE_DOMAIN")" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup']" ]
+  [ "$(pyget "$(groups "$FAKE_DOMAIN")" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup', 'claudePeer.h']" ]
 }
 
 @test "install: a Workgroups value that is not JSON is refused, nothing written" {
@@ -836,48 +862,69 @@ pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(ev
   cmp "$BATS_TEST_TMPDIR/prefs.plist" "$BATS_TEST_TMPDIR/before.plist"
 }
 
-@test "status: store, iTerm2, workgroup and builtin lines; off macOS it refuses" {
+@test "status: store, iTerm2, workgroup and hermes lines, no builtin line; off macOS it refuses" {
   stubs
   mkprefs "$BATS_TEST_TMPDIR/domain.plist"
   mkdir "$BATS_TEST_TMPDIR/prefsdir"
+  mkprefs "$BATS_TEST_TMPDIR/prefsdir/com.googlecode.iterm2.plist"
   export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist" FAKE_LOAD=1 FAKE_FOLDER="$BATS_TEST_TMPDIR/prefsdir"
   run sh "$BIN" status
   [ "$status" -eq 0 ]
   [[ "$output" == *"store: folder $BATS_TEST_TMPDIR/prefsdir/com.googlecode.iterm2.plist"* ]]
   [[ "$output" == *"iterm2: not running (install allowed)"* ]]
   [[ "$output" == *"workgroup: not installed"* ]]
-  [[ "$output" == *"builtin: builtin.claudeCode present"* ]]
+  [[ "$output" == *"hermes: not installed"* ]]
+  [[ "$output" != *"builtin:"* ]]
   FAKE_PROCS=iTerm2 run sh "$BIN" status
   [[ "$output" == *"iterm2: running"* ]]
-  CLAUDE_PEER_PREFS="$FAKE_DOMAIN" sh "$BIN" install >/dev/null
+  sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (6 sessions: Chat, Review, Chat 2, Chat 3, Chat 4, Hermes)"* ]]
+  [[ "$output" == *"workgroup: installed (4 sessions: Lead, Alpha, Beta, Gamma)"* ]]
+  [[ "$output" == *"hermes: installed (5 sessions: Lead, Alpha, Beta, Gamma, Hermes)"* ]]
   FAKE_OS=Linux run sh "$BIN" status
   [[ "$output" == *"status needs macOS"* ]]
   FAKE_OS=Linux run sh "$BIN" install
   [ "$status" -eq 2 ]
 }
 
-@test "status: a workgroup older than this version says out of date; install clears it" {
+@test "status: the six-session definition of v3 says out of date and hermes not installed; install clears both" {
   stubs
   mkprefs "$BATS_TEST_TMPDIR/domain.plist"
   export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist"
-  CLAUDE_PEER_PREFS="$FAKE_DOMAIN" sh "$BIN" install >/dev/null
   python3 -I - "$FAKE_DOMAIN" <<'PY'
 import json, plistlib, sys
 pl = plistlib.load(open(sys.argv[1], "rb"))
 groups = json.loads(pl["Workgroups"])
-next(g for g in groups if g["uniqueIdentifier"] == "claudePeer.workgroup")["sessions"].pop()
+names = ["Chat", "Diff", "Chat 2", "Chat 3", "Chat 4", "Hermes"]
+groups.append({"uniqueIdentifier": "claudePeer.workgroup", "name": "Claude Peers", "sessions": [
+    {"uniqueIdentifier": "claudePeer.s%d" % i, "displayName": n, "command": "claude-peer run"}
+    for i, n in enumerate(names)]})
 pl["Workgroups"] = json.dumps(groups).encode()
 plistlib.dump(pl, open(sys.argv[1], "wb"))
 PY
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed, out of date (5 sessions: Chat, Review, Chat 2, Chat 3, Chat 4)"* ]]
-  [[ "$output" == *"this version defines 6 (Chat, Review, Chat 2, Chat 3, Chat 4, Hermes)"* ]]
+  [[ "$output" == *"workgroup: installed, out of date (6 sessions: Chat, Diff, Chat 2, Chat 3, Chat 4, Hermes); this version defines 4 (Lead, Alpha, Beta, Gamma)"* ]]
+  [[ "$output" == *"hermes: not installed"* ]]
   CLAUDE_PEER_PREFS="$FAKE_DOMAIN" sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (6 sessions: "* ]]
+  [[ "$output" == *"workgroup: installed (4 sessions: "* ]]
+  [[ "$output" == *"hermes: installed (5 sessions: "* ]]
   [[ "$output" != *"out of date"* ]]
+}
+
+@test "status: reads the store that is true: the folder while iTerm2 is quit, the domain while it runs" {
+  stubs
+  mkprefs "$BATS_TEST_TMPDIR/domain.plist"
+  mkdir "$BATS_TEST_TMPDIR/prefsdir"
+  mkprefs "$BATS_TEST_TMPDIR/prefsdir/com.googlecode.iterm2.plist"
+  export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist" FAKE_LOAD=1 FAKE_FOLDER="$BATS_TEST_TMPDIR/prefsdir"
+  # install into the folder with iTerm2 quit; the domain stays as it was
+  sh "$BIN" install >/dev/null
+  run sh "$BIN" status
+  [[ "$output" == *"workgroup: installed (4 sessions: Lead, Alpha, Beta, Gamma)"* ]]
+  FAKE_PROCS=iTerm2 run sh "$BIN" status
+  [[ "$output" == *"workgroup: not installed"* ]]
+  [[ "$output" == *"hermes: not installed"* ]]
 }
 
 # --- hermes ----------------------------------------------------------------------
