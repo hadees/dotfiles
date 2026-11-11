@@ -141,8 +141,10 @@ pane's Alpha is in use by the peers of <leader>)` when that differs. With every
 name taken it prints `all <n> slots are in use in <repo>` and `Return tries
 again`, and waits. `next` is not a slot name.
 
-**`start`, `stop` and `slots` are the operator's.** A session runs them only when
-asked. `claude-peer start <slot|next> [--continue] [--leader <dir>] [--]
+**`start` and `stop` are the operator's.** A session runs them only when
+asked; `slots` and `log` only read or append, and the shared memory tells every
+session to use them (announce a task when `slots` shows another slot running,
+read `log show` before a machine-wide action). `claude-peer start <slot|next> [--continue] [--leader <dir>] [--]
 [prompt words…]` writes a request file (`<slot>.<pid>.start`: line 1 `fresh` or
 `continue`, line 2 the slot or `-` for the pane's own rule, the rest the prompt)
 beside the pane's wait file, sends `USR1` (again once a second while the file is
