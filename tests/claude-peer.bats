@@ -709,6 +709,146 @@ hold() {
   [[ "$output" == *' claude-peer --foo' ]]
 }
 
+# --- the coordination log ---------------------------------------------------------
+
+# slot_wt <slot> <Label>: a slot worktree with a live claim (the test's own pid),
+# led from $REPO
+slot_wt() {
+  git worktree add -q --detach "$REPO/.claude/worktrees/$1" HEAD
+  printf '%s\n%s\n%s\n' "$$" "$REPO" "$2" >"$(claim_of "$REPO/.claude/worktrees/$1")"
+}
+
+LOG=.git/claude-peer.log
+
+@test "log claim: a shared path is one overlap line, the exit is 0, and the claim is in the log" {
+  slot_wt alpha Alpha; slot_wt beta Beta
+  mkdir -p "$REPO/lib/sub"
+  cd "$REPO/.claude/worktrees/alpha"
+  run sh "$BIN" log claim rework the lib -- lib/sub
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  cd "$REPO/.claude/worktrees/beta"
+  run sh "$BIN" log claim tidy the helpers -- lib/sub/x.sh docs
+  [ "$status" -eq 0 ]
+  [ "$output" = "overlap"$'\t'"Alpha"$'\t'"lib/sub"$'\t'"rework the lib" ]
+  [ "$(wc -l <"$REPO/$LOG" | tr -d ' ')" -eq 2 ]
+  [ "$(cut -f2,3,4,5 "$REPO/$LOG" | sed -n 2p)" = "Beta"$'\t'"claim"$'\t'"tidy the helpers"$'\t'"lib/sub/x.sh" ]
+  [[ "$(cut -f1 "$REPO/$LOG" | sed -n 1p)" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+}
+
+@test "log claim: a directory overlaps what is under it, both ways; paths are taken from the cwd or absolute; the top overlaps all" {
+  slot_wt alpha Alpha; slot_wt beta Beta
+  cd "$REPO/.claude/worktrees/alpha"
+  mkdir -p bin
+  sh "$BIN" log claim a -- bin/tool
+  cd "$REPO/.claude/worktrees/beta"
+  run sh "$BIN" log claim b -- bin/
+  [ "$output" = "overlap"$'\t'"Alpha"$'\t'"bin/tool"$'\t'"a" ]
+  run sh "$BIN" log claim c -- bin/tool2
+  [ -z "$output" ]
+  mkdir -p bin; cd bin
+  run sh "$BIN" log claim d -- tool
+  [ "$output" = "overlap"$'\t'"Alpha"$'\t'"bin/tool"$'\t'"a" ]
+  run sh "$BIN" log claim e -- "$REPO/.claude/worktrees/beta/bin/tool"
+  [[ "$output" == *"overlap"$'\t'"Alpha"$'\t'"bin/tool"* ]]
+  cd "$REPO/.claude/worktrees/beta"
+  run sh "$BIN" log claim f -- .
+  [ "$output" = "overlap"$'\t'"Alpha"$'\t'"bin/tool"$'\t'"a" ]
+  run sh "$BIN" log claim no paths at all
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "log: done closes the caller's claims, a stop line closes that label's, claims of nobody else are touched" {
+  slot_wt alpha Alpha; slot_wt beta Beta
+  cd "$REPO/.claude/worktrees/alpha"
+  sh "$BIN" log claim a -- lib
+  cd "$REPO/.claude/worktrees/beta"
+  sh "$BIN" log claim b -- other
+  run sh "$BIN" log claim c -- lib
+  [ "$(printf '%s\n' "$output" | grep -c '^overlap')" -eq 1 ]
+  cd "$REPO/.claude/worktrees/alpha"
+  sh "$BIN" log done finished
+  cd "$REPO/.claude/worktrees/beta"
+  run sh "$BIN" log claim d -- lib
+  [ -z "$output" ]
+  # a stop line for Beta closes Beta's claims, whoever wrote it
+  cd "$REPO"
+  sh "$BIN" log --as Gamma claim g -- other
+  printf '2000-01-01T00:00:00Z\tLead\tstop\tBeta by Lead\n' >>"$REPO/$LOG"
+  run sh "$BIN" log --as Gamma claim h -- lib
+  [ -z "$output" ]
+  run sh "$BIN" log show
+  [ "$(printf '%s\n' "$output" | cut -f2,3 | sort | tr '\n' ' ')" = "Gamma"$'\t'"claim Gamma"$'\t'"claim " ]
+}
+
+@test "log: who is the slot's label in a claimed worktree, Lead where a live claim names the cwd, the directory name elsewhere, and --as wins" {
+  slot_wt alpha Alpha
+  cd "$REPO/.claude/worktrees/alpha"
+  mkdir sub; cd sub
+  sh "$BIN" log note from a slot
+  cd "$REPO"
+  sh "$BIN" log note from the leader
+  mkdir "$BATS_TEST_TMPDIR/elsewhere"; git -C "$REPO" worktree add -q --detach "$BATS_TEST_TMPDIR/elsewhere/other" HEAD
+  cd "$BATS_TEST_TMPDIR/elsewhere/other"
+  sh "$BIN" log note from nowhere
+  sh "$BIN" log --as Zed note overridden
+  [ "$(cut -f2,3,4 "$REPO/$LOG")" = "Alpha"$'\t'"note"$'\t'"from a slot"$'\n'"Lead"$'\t'"note"$'\t'"from the leader"$'\n'"other"$'\t'"note"$'\t'"from nowhere"$'\n'"Zed"$'\t'"note"$'\t'"overridden" ]
+}
+
+@test "log: a tab or newline in text or a path is written as a space, one line per entry" {
+  cd "$REPO"
+  sh "$BIN" log --as X note "$(printf 'one\ttwo\nthree')"
+  sh "$BIN" log --as X claim "$(printf 'a\tb\nc')" -- "$(printf 'p\tq')"
+  [ "$(wc -l <"$REPO/$LOG" | tr -d ' ')" -eq 2 ]
+  [ "$(sed -n 1p "$REPO/$LOG" | cut -f4)" = "one two three" ]
+  [ "$(sed -n 2p "$REPO/$LOG" | cut -f4,5 | tr '\t' '|')" = "a b c|p q" ]
+}
+
+@test "log show: open claims and the last day's notes; --all is the file; outside a repository nothing, exit 0" {
+  cd "$REPO"
+  printf '2000-01-01T00:00:00Z\tOld\tnote\tancient\n2000-01-01T00:00:00Z\tOld\tclaim\tstill open\tlib\n' >"$REPO/$LOG"
+  sh "$BIN" log --as New note recent
+  run sh "$BIN" log show
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | cut -f2,3,4 | tr '\t' '|')" = "Old|claim|still open"$'\n'"New|note|recent" ]
+  run sh "$BIN" log show --all
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 3 ]
+  cd "$BATS_TEST_TMPDIR"; mkdir -p norepo; cd norepo
+  run sh "$BIN" log show
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run sh "$BIN" log note x
+  [ "$status" -eq 1 ]
+}
+
+@test "log: every worktree reads the one file in the common git directory; a bad verb is usage" {
+  slot_wt alpha Alpha
+  cd "$REPO/.claude/worktrees/alpha"
+  sh "$BIN" log note hello
+  [ ! -e "$(git rev-parse --absolute-git-dir)/claude-peer.log" ]
+  [ -f "$REPO/$LOG" ]
+  run sh "$BIN" log bogus
+  [ "$status" -eq 2 ]
+  run sh "$BIN" log claim
+  [ "$status" -eq 2 ]
+}
+
+@test "start and stop each append their line, and the prompt is passed on untouched" {
+  cfg=$BATS_TEST_TMPDIR/cfg
+  mkdir -p "$cfg/sessions"
+  export CLAUDE_CONFIG_DIR=$cfg
+  FAKE_SHELL_SLEEP=30 FAKE_SHELL_PID="$BATS_TEST_TMPDIR/shpid" FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  sh "$BIN" start alpha some words >/dev/null
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = "some words" ]
+  sp=$(cat "$BATS_TEST_TMPDIR/shpid")
+  [ "$(cut -f2,3,4 "$REPO/$LOG")" = "Lead"$'\t'"start"$'\t'"Alpha by Lead" ]
+  printf '{"pid": %s, "status": "idle"}\n' "$sp" >"$cfg/sessions/$sp.json"
+  sh "$BIN" stop alpha >/dev/null
+  [ "$(cut -f2,3,4 "$REPO/$LOG" | sed -n 2p)" = "Lead"$'\t'"stop"$'\t'"Alpha by Lead" ]
+}
+
 # --- workgroup / install / status ----------------------------------------------
 # Stubs stand in for ps, uname and defaults; the fixture plist is built with
 # plistlib and holds a builtin workgroup plus a sentinel key.

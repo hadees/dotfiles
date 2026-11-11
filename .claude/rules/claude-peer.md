@@ -162,6 +162,30 @@ leader<TAB>session name` for the repository. Exit codes: 0 done; 1 failed; 2
 usage; 3 already in the requested state (running, not running, no slot free);
 4 nothing to act on (no pane waiting); 5 refused because busy.
 
+**A peer is a separate project, not a helper of the leader.** It has its own
+context, branch and pull requests, and plans and delegates inside itself like any
+session; `start` passes its prompt through untouched and nothing here briefs,
+merges or supervises a peer. The one shared thing is the coordination log,
+`<git common dir>/claude-peer.log`, so every worktree of the repository reads the
+same file and it outlives any session. It is append-only, one line per entry,
+tab-separated: `<UTC time><TAB><who><TAB><kind><TAB><text>[<TAB><path>…]`, with
+tabs and newlines in text and paths written as spaces. `kind` is `claim`, `note`,
+`done`, `start` or `stop`. `who` is the label of the slot whose worktree the
+caller stands in (a live claim), else `Lead` when a live claim names the caller's
+directory as its leader, else the directory's name; `log --as <name> …` overrides
+it. `log claim <task> [-- <path>…]` appends a claim and then prints, for every
+open claim of someone else that shares a path (equal, or one a directory prefix
+of the other, paths taken relative to the repository top; `.` is all of it),
+`overlap<TAB><who><TAB><their path><TAB><their task>`; it exits 0 whether or not
+anything overlaps, because a claim is advisory and a non-zero exit reads as
+"blocked". `log note <text>` and `log done [<text>]` append those kinds. A claim
+is open until the same `who` logs `done`, or a `stop` line for that label
+follows it, so a stopped peer never leaves a claim open. `log
+show` prints the open claims and the last 24 hours of notes, `--all` the file.
+`start` and `stop` each append `<label> by <who>`. The log is per repository: an
+action that reaches the whole machine is not visible from another repository's
+log. `..` in a path is not resolved.
+
 **The Hermes peer** exists only in `Claude Peers + Hermes`, and is a plain shell
 unless a Hermes profile routes the directory; the gate below is now the second
 line of defence, speaking only when somebody enters that definition by hand

@@ -45,6 +45,9 @@
 # asks for Return first, and without it settles CLAUDE_PEER_SETTLE seconds
 # (default 2, 0 disables) first, because a `claude --version` typed in a tab
 # also enters the workgroup.
+# A peer is a separate project, not a helper: the one shared thing is the log,
+# <git common dir>/claude-peer.log, where each session says what it is doing and
+# where. It is advisory: `log claim` warns of overlap and never fails on it.
 # `install` edits the preferences while iTerm2 is quit because iTerm2 writes
 # its preferences back at quit (and, with a custom prefs folder, replaces the
 # domain from the folder at launch); an edit made while it runs is lost.
@@ -84,6 +87,14 @@
 #                            worktree<TAB>pid<TAB>leader<TAB>label per live
 #                            claim in the repository of <dir> (default $PWD), sorted;
 #                            --leader keeps one leader's peers
+#   log [--as <name>] claim <task> [-- <path>...]
+#                            say what you are about to do and where; prints
+#                            overlap<TAB>who<TAB>their path<TAB>their task per
+#                            open claim of another that shares a path; exit 0
+#   log [--as <name>] note <text> | done [<text>]
+#                            a note; the end of your open claims
+#   log show [--all]         open claims and the last 24 hours of notes (--all:
+#                            the file), from <git common dir>/claude-peer.log
 #   path <branch>            print the worktree path for <branch> (nothing
 #                            is created)
 #   plan <branch>...         branch<TAB>worktree<TAB>create|reuse|conflict:<why>
@@ -632,6 +643,8 @@ cmd_start() {
     st_i=$((st_i + 1))
     st_got=$(cmd_peers "$repo" | awk -F'\t' -v p="$st_pid" '$2 == p { print $1; exit }')
     if [ -n "$st_got" ]; then
+      st_who=$(log_who)
+      log_add "$st_who" start "$(label_of "${st_got##*/}") by $st_who" 2>/dev/null
       printf '%s\t%s\tstarted\t%s\n' "${st_got##*/}" "$st_got" "$rname-${st_got##*/}"
       exit 0
     fi
@@ -679,6 +692,7 @@ cmd_stop() {
     printf '%s\t%s\tnot-running\n' "$sp_slot" "$sp_wt"
     exit 3
   fi
+  sp_who=$(log_who) # before the kill: the claim that makes this Lead goes with it
   sp_claim=$(sed -n 1p "$(claim_file "$sp_wt")")
   sp_kids=$(descendants "$sp_claim")
   sp_target= sp_status=
@@ -698,7 +712,7 @@ cmd_stop() {
   else for sp_pid in $sp_kids; do kill -TERM "$sp_pid" 2>/dev/null; done; fi
   sp_limit=$(( ${CLAUDE_PEER_STOP_WAIT:-15} * 5 )); sp_i=0
   while [ "$sp_i" -lt "$sp_limit" ]; do
-    claim_live "$sp_wt" || { printf '%s\t%s\tstopped\n' "$sp_slot" "$sp_wt"; exit 0; }
+    claim_live "$sp_wt" || { log_add "$sp_who" stop "$(label_of "$sp_slot") by $sp_who" 2>/dev/null; printf '%s\t%s\tstopped\n' "$sp_slot" "$sp_wt"; exit 0; }
     sleep 0.2
     sp_i=$((sp_i + 1))
   done
@@ -719,6 +733,109 @@ cmd_slots() {
       printf '%s\twaiting\t%s\t%s\t%s\t%s\n' "$sl" "$repo/.claude/worktrees/$sl" "$p" "$l" "$rname-$sl"
     done
   } | LC_ALL=C sort
+}
+
+# --- the coordination log -------------------------------------------------------
+# <git common dir>/claude-peer.log: append-only, one line per entry,
+# <UTC time> TAB <who> TAB <kind> TAB <text> [TAB <path>...]; kind is claim, note,
+# done, start or stop. A claim is open until the same who logs done, or a stop
+# line for that label follows it. Advisory: nothing here ever blocks.
+
+log_file() { c=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && printf '%s/claude-peer.log\n' "$c"; }
+
+log_clean() { printf '%s' "$*" | tr '\t\n\r' '   '; }
+
+# who is acting from here: the label of a live slot worktree, else Lead when a
+# live claim names this directory as its leader, else the directory's name
+log_who() {
+  if claim_live "$PWD"; then
+    lw=$(sed -n 3p "$(claim_file "$PWD")")
+    [ -z "$lw" ] || { printf '%s\n' "$lw"; return; }
+  fi
+  lw_here=$(pwd -P)
+  lw_top=$(cd "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null && pwd -P)
+  if cmd_peers "$PWD" | awk -F'\t' -v h="$lw_here" -v t="${lw_top:-$lw_here}" '$3 == h || $3 == t { f = 1 } END { exit !f }'; then
+    echo Lead
+  else basename "$PWD"; fi
+}
+
+log_add() { # who kind text [TAB path...]
+  f=$(log_file) || return 1
+  printf '%s\t%s\t%s\t%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(log_clean "$1")" "$2" "$(log_clean "$3")" "${4-}" >>"$f"
+}
+
+# path -> relative to the repository top, no ./ or trailing /, . for the top
+# ponytail: .. is not resolved; add when a session is seen passing one
+log_rel() {
+  p=$(log_clean "$1")
+  case $p in
+    /*) if [ "$p" = "$lg_top" ]; then p=; else case $p in "$lg_top"/*) p=${p#"$lg_top"/};; esac; fi;;
+    *) p=$lg_pre$p;;
+  esac
+  while :; do case $p in ./*) p=${p#./};; */) p=${p%/};; .) p=;; *) break;; esac; done
+  printf '%s\n' "${p:-.}"
+}
+
+# the log on stdin; mode overlap prints the open claims of anyone but $LG_ME that
+# share a path with $LG_MINE (tab-separated); mode show prints every open claim
+# and the notes stamped at or after $LG_CUT
+log_scan() { # mode
+  awk -F'\t' -v mode="$1" '
+    function ov(a, b) { return a == b || a == "." || b == "." || index(a "/", b "/") == 1 || index(b "/", a "/") == 1 }
+    { n++; line[n] = $0; kind[n] = $3; who[n] = $2; ts[n] = $1
+      if ($3 == "claim") open[n] = 1
+      else if ($3 == "done" || $3 == "stop") {
+        l = $2; if ($3 == "stop") { l = $4; sub(/ .*/, "", l) }
+        for (i = 1; i < n; i++) if (who[i] == l && kind[i] == "claim") open[i] = 0 } }
+    END {
+      nm = split(ENVIRON["LG_MINE"], mine, "\t")
+      for (i = 1; i <= n; i++) {
+        if (mode == "show") {
+          if (kind[i] == "claim" ? open[i] : (kind[i] == "note" && ts[i] >= ENVIRON["LG_CUT"])) print line[i]
+          continue }
+        if (!open[i] || who[i] == ENVIRON["LG_ME"]) continue
+        split(line[i], f, "\t")
+        for (k = 5; k in f; k++) for (m = 1; m <= nm; m++)
+          if (mine[m] != "" && ov(f[k], mine[m])) { printf "overlap\t%s\t%s\t%s\n", f[2], f[k], f[4]; break }
+      } }'
+}
+
+# [--as <name>] claim <task> [-- <path>...] | note <text> | done [<text>] | show [--all]
+cmd_log() {
+  lg_as=
+  if [ "${1-}" = --as ]; then [ $# -ge 2 ] || usage; lg_as=$2; shift 2; fi
+  [ $# -ge 1 ] || usage
+  lg_verb=$1; shift
+  case $lg_verb in claim|note|done|show) ;; *) usage;; esac
+  lg_file=$(log_file) || { [ "$lg_verb" = show ] && exit 0; die "not inside a git repository"; }
+  lg_me=${lg_as:-$(log_who)}
+  case $lg_verb in
+    show)
+      [ $# -eq 0 ] || { [ "$1" = --all ] && [ $# -eq 1 ]; } || usage
+      [ -f "$lg_file" ] || exit 0
+      if [ "${1-}" = --all ]; then cat "$lg_file"
+      else
+        lg_t=$(( $(date -u +%s) - 86400 ))
+        LG_CUT=$(date -u -d "@$lg_t" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$lg_t" +%Y-%m-%dT%H:%M:%SZ) \
+          log_scan show <"$lg_file"
+      fi;;
+    note) [ $# -ge 1 ] || usage; log_add "$lg_me" note "$*";;
+    done) log_add "$lg_me" done "$*";;
+    claim)
+      lg_task=
+      while [ $# -gt 0 ] && [ "$1" != -- ]; do lg_task=${lg_task:+$lg_task }$1; shift; done
+      [ -n "$lg_task" ] || usage
+      [ $# -eq 0 ] || shift
+      lg_top=$(git rev-parse --show-toplevel) lg_pre=$(git rev-parse --show-prefix)
+      lg_tab=$(printf '\t') lg_paths= lg_mine=
+      for lg_p in "$@"; do
+        lg_r=$(log_rel "$lg_p")
+        lg_paths=$lg_paths$lg_tab$lg_r lg_mine=${lg_mine:+$lg_mine$lg_tab}$lg_r
+      done
+      log_add "$lg_me" claim "$lg_task" "$lg_paths" || exit 1
+      [ -n "$lg_mine" ] && LG_ME=$lg_me LG_MINE=$lg_mine log_scan overlap <"$lg_file"
+      exit 0;;
+  esac
 }
 
 cmd_path() {
@@ -999,6 +1116,7 @@ case $cmd in
   start) cmd_start "$@";;
   stop) cmd_stop "$@";;
   slots) cmd_slots "$@";;
+  log) cmd_log "$@";;
   path) cmd_path "$@";;
   plan) cmd_plan "$@";;
   workgroup) cmd_workgroup "$@";;
