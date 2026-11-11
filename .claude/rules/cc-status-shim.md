@@ -271,8 +271,13 @@ beside the shim), or run neither, plus the seats live. The counting is
 iTerm2 3.7.7's ownership rule over the ten events it checks) and prints
 nothing, status 1, for a missing or unreadable file;
 `iterm2-doctor`'s `cc-status:` line reads the app's symlink and where `it2`
-is, never executing either. Tests: `tests/cc-status-shim.bats` (stub
-cc-status and it2, side by side like the bundle ships them).
+is, never executing either; its `hooks:` lines run `tabstatus_wiring` on
+every profile directory's `settings.json` (`claude_profile_dirs`) and judge K
+against iTerm2 3.7.7's health check, and its `shim:` line reads `it2=` and
+`session=` from the shim's own `explain after` on a `Stop` payload. The verdict
+is the 3.7.7 rule, so read it together with the `skill:` line. Tests:
+`tests/cc-status-shim.bats` (stub cc-status and it2, side by side like the
+bundle ships them).
 
 ## API cookie (`iterm2-cookie`)
 

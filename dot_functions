@@ -612,6 +612,19 @@ function claude_sessions_here() {
 	done;
 }
 
+# Every Claude Code profile directory this machine knows, one per line and
+# deduplicated: ~/.claude, $CLAUDE_CONFIG_DIR when set, and each
+# claude.profile.* value in git config, with a leading ~ expanded. The same
+# list claude_sessions_here builds inline; the two must agree, so change them
+# together. Shared by iterm2-doctor.
+function claude_profile_dirs() {
+	emulate -L zsh;
+	local -aU dirs;
+	dirs=("$HOME/.claude" $CLAUDE_CONFIG_DIR ${(f)"$(command git config --get-regexp '^claude\.profile\.' 2>/dev/null | command cut -d' ' -f2-)"});
+	dirs=(${dirs/#\~/$HOME});
+	print -rl -- $dirs;
+}
+
 # Can a link opened from this shell land in a browser window somebody is
 # looking at? macOS always has `open` and a screen; elsewhere it takes
 # xdg-open and a display. Over ssh the answer is no even on a mac — a window
@@ -2780,9 +2793,11 @@ function iterm2_pref() {
 # whether that still matches the version the .claude/skills/iterm2 skill was
 # researched against, which release channel Homebrew thinks it installed,
 # the plugin bundles, and the handful of preferences that change how the app
-# behaves at startup and towards scripts. Report-only — it reads plists and
-# directory listings and never talks to a running iTerm2, so it is safe from
-# inside one.
+# behaves at startup and towards scripts, plus whether every Claude Code
+# profile's hook line passes iTerm2's own health check and the cc-status
+# shim can paint. Report-only — it reads plists, directory listings and
+# settings files, runs the shim's `explain` (which calls nothing), and never
+# talks to a running iTerm2, so it is safe from inside one.
 #
 # The stamp is the point. A skill that describes an app is a claim about a
 # version; when the app updates underneath it the claim silently rots. Here
@@ -2794,7 +2809,7 @@ function iterm2-doctor() {
 	local stamp=3.7.7;
 	local app ver skill c d v cmp;
 	local -a chans vers plugs profiles autopy;
-	print -r -- "defined: $(defined_trace iterm2_app_path iterm2_bundle_version iterm2_pref iterm2_cookie_state)";
+	print -r -- "defined: $(defined_trace iterm2_app_path iterm2_bundle_version iterm2_pref iterm2_cookie_state tabstatus_wiring claude_profile_dirs)";
 	app="$(iterm2_app_path)";
 	if [[ -z $app ]]; then
 		print -r -- "app:     NOT INSTALLED — no iTerm.app in /Applications or ~/Applications$([[ $(uname) == Darwin ]] || print -r -- ' (macOS-only app)')";
@@ -2868,6 +2883,50 @@ function iterm2-doctor() {
 	fi;
 	(( $+commands[ps] )) && uncp=${#${(M)${(f)"$(command ps -axo command 2>/dev/null)"}:#*request cookie and key for app named*}};
 	print -r -- "osascript: $uncn hook events ran without a cookie since $uncb; $uncp cookie requests running now";
+	# Every profile's settings.json against iTerm2 3.7.7's health check (its
+	# launch alert reads only the directory it last installed into), then the
+	# shim's own `explain after`, which calls nothing. Read with the skill:
+	# line above, since the rule is the one 3.7.7 applies.
+	local nosync wl hd hdn wk shimf shimd sout sit2 ssid;
+	local -a sl;
+	local -A wm;
+	nosync="${$(iterm2_pref NoSyncClaudeCodeConfigDirPath)#NoSyncClaudeCodeConfigDirPath=}";
+	nosync="${${nosync/#\~/$HOME}%/}";
+	hdn=0;
+	for hd in ${(f)"$(claude_profile_dirs)"}; do
+		[[ -e $hd/settings.json ]] || continue;
+		(( hdn++ ));
+		if wl="$(tabstatus_wiring "$hd/settings.json")"; then
+			wm=();
+			for wk in ${=wl}; do wm[${wk%%=*}]=${wk#*=}; done;
+			if (( wm[owned] >= 10 )); then wk="passes ($wm[owned]/10 owned)"; else wk="FAILS ($wm[owned]/10 owned) — re-apply the overlay that owns this file"; fi;
+			wk+="; handler first on $wm[after]/11; raw beside the shim on $wm[both]";
+		else
+			wk="unreadable settings.json";
+		fi;
+		[[ -n $nosync && ${hd%/} == $nosync ]] && wk+=" — the launch alert reads this one";
+		print -r -- "hooks:   ${hd/#$HOME/~}: iTerm2's check $wk";
+	done;
+	(( hdn )) || print -r -- "hooks:   no profile carries a settings.json";
+	shimf="$HOME/.local/libexec/cc-status-shim/cc-status";
+	shimd="${shimf/#$HOME/~}";
+	if [[ ! -x $shimf ]]; then
+		print -r -- "shim:    MISSING — chezmoi apply";
+	elif (( ! $+commands[python3] )); then
+		print -r -- "shim:    $shimd cannot paint: no python3";
+	else
+		sout="$(print -r -- '{"hook_event_name":"Stop"}' | command "$shimf" explain after 2>/dev/null)";
+		sl=(${(f)sout});
+		sit2=${${(M)sl:#it2=*}[1]#it2=};
+		ssid=${${(M)sl:#session=*}[1]#session=};
+		if [[ -z $sit2 || $sit2 == absent ]]; then
+			print -r -- "shim:    $shimd cannot paint: no it2";
+		elif [[ -z $ssid || $ssid == none ]]; then
+			print -r -- "shim:    $shimd cannot paint: not inside an iTerm2 session";
+		else
+			print -r -- "shim:    $shimd can paint (it2: $sit2; session id set)";
+		fi;
+	fi;
 	# The generative-AI and browser features ship as separate bundles since
 	# 3.5; their absence is why an AI menu item can be missing on an app that
 	# otherwise looks current. They install alongside iTerm.app, so look
