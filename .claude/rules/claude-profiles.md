@@ -101,6 +101,16 @@ needs a pseudo-terminal, and the two obvious tools both fail on macOS — zsh's
 `zpty` returns short reads, and `pty.spawn` before Python 3.10 never returns
 once the child exits — so `tests/claude-profiles.bats` forks one by hand.
 
+**The wrapper also chooses the iTerm2 Workgroup a tab enters.** After the
+second-session question is passed, and only on a launch that question applies
+to, `claude()` writes an OSC 1337 `SetUserVar=claudePeerEnter=<base64 of
+"<key>:<nonce>">` escape to the terminal; the key comes from `claude_peer_key`
+(`claude-peer here`, plus `/hermes` where `hermes_profile` routes the
+directory). Nothing is sent without `$ITERM_SESSION_ID`, inside a peer
+(`$CLAUDE_PEER_WORKTREE`), or without the state file `claude-peer default peers`
+writes. `claude-doctor`'s `workgroup:` line shows the key or why there is none.
+The mechanism is in `claude-peer.md`.
+
 **Each profile must be logged in once** with `claude auth login`; credentials
 live in the macOS Keychain and cannot be copied between profiles — verified,
 copying `.claude.json` does not carry a session.

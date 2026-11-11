@@ -9,6 +9,7 @@
 setup() {
   BIN="$BATS_TEST_DIRNAME/../bin/executable_claude-peer"
   export HOME="$BATS_TEST_TMPDIR/home"
+  export XDG_STATE_HOME="$HOME/.local/state"
   mkdir -p "$HOME" "$BATS_TEST_TMPDIR/bin"
   export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig"
   export GIT_CONFIG_SYSTEM=/dev/null
@@ -1132,27 +1133,116 @@ open(p, "wb").write(plistlib.dumps(pl, fmt=plistlib.FMT_BINARY if raw.startswith
 PY
 }
 
-# params <path>: each profile's Enter Workgroup parameter, space separated
+# params <path>: each profile's Enter Workgroup triggers as name:parameter:state
+# (j = the job trigger, v = a variable trigger; * = disabled), space separated
 params() {
-  python3 -I -c 'import plistlib, sys; pl = plistlib.load(open(sys.argv[1], "rb")); print(" ".join(t["parameter"] for b in pl["New Bookmarks"] for t in b["Triggers"] if t["action"] == "iTermEnterWorkgroupTrigger"))' "$1"
+  python3 -I -c '
+import plistlib, sys
+pl = plistlib.load(open(sys.argv[1], "rb"))
+out = []
+for b in pl["New Bookmarks"]:
+    for t in b["Triggers"]:
+        if t["action"] == "iTermEnterWorkgroupTrigger":
+            v = "variableName" in (t.get("eventParams") or {})
+            out.append("%s:%s:%s%s" % (b["Name"], t["parameter"], "v" if v else "j", "*" if t.get("disabled") else ""))
+print(" ".join(out))' "$1"
 }
 
-@test "default: peers moves every builtin trigger, leaves other workgroups alone; builtin moves them back" {
+enter_file() { echo "$XDG_STATE_HOME/claude-peer/enter"; }
+
+@test "default: peers disables the job trigger and adds one variable trigger per workgroup; builtin restores the starting state" {
+  stubs
+  mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
+  addprofiles "$BATS_TEST_TMPDIR/prefs.plist"
+  export CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist"
+  before=$(params "$CLAUDE_PEER_PREFS")
+  sh "$BIN" install >/dev/null
+  [ ! -e "$(enter_file)" ]
+  run sh "$BIN" default peers
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"picks the workgroup of each tab"*"2 of 2 profiles changed"* ]]
+  [ "$(cat "$(enter_file)")" = peers ]
+  [ "$(params "$CLAUDE_PEER_PREFS")" = "One:builtin.claudeCode:j* One:claudePeer.workgroup:v One:claudePeer.h:v Two:builtin.claudeCode:j* Two:claudePeer.workgroup:v Two:claudePeer.h:v Other:someone.else:j" ]
+  # the trigger as iTerm2 holds it (L9)
+  python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
+import plistlib, sys
+pl = plistlib.load(open(sys.argv[1], "rb"))
+vs = [t for b in pl["New Bookmarks"][:1] for t in b["Triggers"] if "eventParams" in t]
+assert vs[0] == {"action": "iTermEnterWorkgroupTrigger", "matchType": 115, "parameter": "claudePeer.workgroup",
+    "eventParams": {"variableName": "user.claudePeerEnter", "variableValueRegex": "^base:"},
+    "disabled": 0, "regex": "", "contentregex": "", "partial": False}, vs[0]
+assert vs[1]["eventParams"]["variableValueRegex"] == "^base/hermes:", vs[1]
+assert pl["Ponies"] == "sentinel"
+PY
+  run sh "$BIN" default peers
+  [[ "$output" == *"0 of 2 profiles changed"* ]]
+  [ "$(params "$CLAUDE_PEER_PREFS" | wc -w)" -eq 7 ]
+  run sh "$BIN" default builtin
+  [ "$status" -eq 0 ]
+  [ ! -e "$(enter_file)" ]
+  [ "$(params "$CLAUDE_PEER_PREFS")" = "$before" ]
+}
+
+@test "default: a trigger it did not write survives both directions, and a job trigger left at Claude Peers by the old default goes back to the builtin" {
+  stubs
+  mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
+  addprofiles "$BATS_TEST_TMPDIR/prefs.plist"
+  export CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist"
+  python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
+import plistlib, sys
+p = sys.argv[1]; pl = plistlib.load(open(p, "rb"))
+pl["New Bookmarks"][0]["Triggers"].append({"action": "iTermEnterWorkgroupTrigger", "matchType": 115, "parameter": "someone.else",
+    "eventParams": {"variableName": "user.somethingElse", "variableValueRegex": "^x"}, "disabled": 0, "regex": ""})
+pl["New Bookmarks"][1]["Triggers"][0]["parameter"] = "claudePeer.workgroup"
+plistlib.dump(pl, open(p, "wb"))
+PY
+  sh "$BIN" install >/dev/null
+  sh "$BIN" default peers >/dev/null
+  [[ "$(params "$CLAUDE_PEER_PREFS")" == *"One:someone.else:v "* ]]
+  sh "$BIN" default builtin >/dev/null
+  [ "$(params "$CLAUDE_PEER_PREFS")" = "One:builtin.claudeCode:j One:someone.else:v Two:builtin.claudeCode:j Other:someone.else:j" ]
+}
+
+@test "install: with the enter file present it adds the trigger of a new workgroup and removes that of a pruned one" {
   stubs
   mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
   addprofiles "$BATS_TEST_TMPDIR/prefs.plist"
   export CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist"
   sh "$BIN" install >/dev/null
-  run sh "$BIN" default peers
+  sh "$BIN" default peers >/dev/null
+  python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
+import json, plistlib, sys
+p = sys.argv[1]; pl = plistlib.load(open(p, "rb"))
+g = json.loads(pl["Workgroups"])
+g.append({"uniqueIdentifier": "claudePeer.v.web", "name": "Claude Peers: web", "sessions": []})
+g = [x for x in g if x["uniqueIdentifier"] != "claudePeer.h"]
+pl["Workgroups"] = json.dumps(g).encode()
+plistlib.dump(pl, open(p, "wb"))
+PY
+  python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
+import plistlib, sys
+p = sys.argv[1]; pl = plistlib.load(open(p, "rb"))
+for b in pl["New Bookmarks"]:
+    b["Triggers"] = [t for t in b["Triggers"] if (t.get("eventParams") or {}).get("variableValueRegex") != "^base/hermes:"] + [
+        {"action": "iTermEnterWorkgroupTrigger", "matchType": 115, "parameter": "claudePeer.gone",
+         "eventParams": {"variableName": "user.claudePeerEnter", "variableValueRegex": "^gone:"}, "disabled": 0, "regex": ""}] if b["Name"] != "Other" else b["Triggers"]
+plistlib.dump(pl, open(p, "wb"))
+PY
+  run sh "$BIN" install
   [ "$status" -eq 0 ]
-  [[ "$output" == *"enters Claude Peers"*"2 of 2 profiles changed"* ]]
-  [ "$(params "$CLAUDE_PEER_PREFS")" = "claudePeer.workgroup claudePeer.workgroup someone.else" ]
-  [ "$(python3 -I -c 'import plistlib, sys; print(plistlib.load(open(sys.argv[1], "rb"))["Ponies"])' "$CLAUDE_PEER_PREFS")" = sentinel ]
-  run sh "$BIN" default peers
-  [[ "$output" == *"0 of 2 profiles changed"* ]]
-  run sh "$BIN" default builtin
-  [ "$status" -eq 0 ]
-  [ "$(params "$CLAUDE_PEER_PREFS")" = "builtin.claudeCode builtin.claudeCode someone.else" ]
+  [[ "$output" == *"variable triggers changed in 2 profiles"* ]]
+  [ "$(params "$CLAUDE_PEER_PREFS")" = "One:builtin.claudeCode:j* One:claudePeer.workgroup:v One:claudePeer.v.web:v One:claudePeer.h:v Two:builtin.claudeCode:j* Two:claudePeer.workgroup:v Two:claudePeer.v.web:v Two:claudePeer.h:v Other:someone.else:j" ]
+}
+
+@test "install: without the enter file it touches no trigger" {
+  stubs
+  mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
+  addprofiles "$BATS_TEST_TMPDIR/prefs.plist"
+  export CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist"
+  before=$(params "$CLAUDE_PEER_PREFS")
+  run sh "$BIN" install
+  [[ "$output" != *"variable triggers"* ]]
+  [ "$(params "$CLAUDE_PEER_PREFS")" = "$before" ]
 }
 
 @test "default: refused while iTerm2 runs, before install, without triggers, or with a bad argument" {
@@ -1166,6 +1256,7 @@ params() {
   run sh "$BIN" default peers
   [ "$status" -eq 1 ]; [[ "$output" == *"not installed"* ]]
   cmp "$BATS_TEST_TMPDIR/prefs.plist" "$BATS_TEST_TMPDIR/before.plist"
+  [ ! -e "$(enter_file)" ]
   run sh "$BIN" default sideways
   [ "$status" -eq 2 ]
   mkprefs "$BATS_TEST_TMPDIR/bare.plist"
@@ -1173,23 +1264,37 @@ params() {
   [ "$status" -eq 1 ]; [[ "$output" == *"no profile has an Enter Workgroup trigger"* ]]
 }
 
-@test "status: the default line reads builtin, peers or mixed from the profiles" {
+@test "here: prints the key for the base workgroup" {
+  run sh "$BIN" here
+  [ "$status" -eq 0 ]
+  [ "$output" = base ]
+  run sh "$BIN" here extra
+  [ "$status" -eq 2 ]
+}
+
+@test "status: the default line reads builtin, peers or mixed from the profiles, and says when the enter file disagrees" {
   stubs
   mkprefs "$BATS_TEST_TMPDIR/domain.plist"
   addprofiles "$BATS_TEST_TMPDIR/domain.plist"
   export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist" FAKE_LOAD=0
   run sh "$BIN" status
   [[ "$output" == *"default: builtin (2 profiles enter Claude Code)"* ]]
+  [[ "$output" != *"enter file"* ]]
   sh "$BIN" install >/dev/null
   sh "$BIN" default peers >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"default: peers (2 profiles enter Claude Peers)"* ]]
+  [[ "$output" == *"default: peers (2 profiles, 2 workgroups by variable)"* ]]
+  [[ "$output" != *"enter file"* ]]
+  rm "$(enter_file)"
+  run sh "$BIN" status
+  [[ "$output" == *"the triggers say peers but the enter file is missing"* ]]
+  printf 'peers\n' >"$(enter_file)"
   python3 -I - "$FAKE_DOMAIN" <<'PY'
 import plistlib, sys
 p = sys.argv[1]; pl = plistlib.load(open(p, "rb"))
-pl["New Bookmarks"][0]["Triggers"][0]["parameter"] = "builtin.claudeCode"
+pl["New Bookmarks"][0]["Triggers"][0]["disabled"] = 0
 plistlib.dump(pl, open(p, "wb"))
 PY
   run sh "$BIN" status
-  [[ "$output" == *"default: mixed (1 of 2 profiles enter Claude Peers)"* ]]
+  [[ "$output" == *"default: mixed (1 of 2 profiles enter by variable)"* ]]
 }

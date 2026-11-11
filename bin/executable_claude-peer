@@ -19,9 +19,15 @@
 # shells, not three Claudes. `Claude Peers + Hermes` is the same plus a Hermes
 # pane, a twin because a pane cannot remove itself from a workgroup: where no
 # Hermes profile routes the directory the other definition must be the one
-# entered. There is no Diff peer. `default peers` points every profile's Enter
-# Workgroup trigger (the one iTerm2's onboarding fires on a `claude` job) at
-# Claude Peers; `default builtin` points it back.
+# entered. There is no Diff peer. Which one a tab enters is the claude()
+# wrapper's choice, made before the job starts: it sets the session variable
+# user.claudePeerEnter to "<key>:<nonce>" (`here` prints the key: base, or
+# base/hermes where Hermes routes) and one variable-changed Enter Workgroup
+# trigger per workgroup, matching its key, enters it. `default peers` disables
+# the Enter trigger iTerm2's onboarding fires on a `claude` job in every profile
+# and writes those triggers (the Settings window cannot make one: it drops their
+# parameters), plus the state file claude() looks for; `default builtin` puts
+# the job trigger back and removes them.
 #
 # A peer is a named slot (alpha, beta, ...): `run --as alpha` takes the worktree
 # <repo>/.claude/worktrees/alpha, in whatever state it was left (detached at
@@ -104,8 +110,12 @@
 #   install                  write that and "Claude Peers + Hermes" (the same
 #                            plus a Hermes pane) into iTerm2's preferences;
 #                            iTerm2 must be quit
-#   default <peers|builtin>  which workgroup a `claude` job enters, in every
-#                            profile; with iTerm2 quit, like install
+#   here                     the key claude() sends to choose the workgroup for
+#                            this directory (base)
+#   default <peers|builtin>  peers: disable the claude job trigger in every
+#                            profile and add one variable trigger per
+#                            workgroup (claude() sends the key); builtin: the
+#                            job enters Claude Code again; iTerm2 quit
 #   status                   store, iTerm2, workgroup, hermes and default state
 #
 # Exit codes of start and stop: 0 done; 1 failed; 2 usage; 3 already in
@@ -951,13 +961,55 @@ def build():
     base = {"uniqueIdentifier": GROUP, "name": NAME, "sessions": build_base("claudePeer")}
     return [base, with_hermes(base)]
 
-def enter_triggers(pl):
-    """(profile name, trigger dict) for every Enter Workgroup trigger aimed at
-    either workgroup; other workgroups' triggers are not ours to move."""
+VAR = "user.claudePeerEnter"
+VAR_ENTER = 115  # iTermTriggerMatchTypeEventVariableChanged
+
+def key_of(gid):
+    """The key the wrapper sends to enter a workgroup (claude() sets the variable
+    to <key>:<nonce>); None for an id that is not one of ours."""
+    if gid == GROUP:
+        return "base"
+    if gid == HGROUP:
+        return "base/hermes"
+    if gid.startswith("claudePeer.v."):
+        name = gid[len("claudePeer.v."):]
+        return name[:-2] + "/hermes" if name.endswith(".h") else name
+    return None
+
+def is_var(t):
+    return t.get("action") == ENTER and (t.get("eventParams") or {}).get("variableName") == VAR
+
+def job_triggers(pl):
+    """(profile dict, job trigger) for every Enter Workgroup trigger that fires on
+    the claude job and is aimed at the builtin or Claude Peers; the variable
+    triggers and other workgroups' triggers are not ours to move."""
     for b in pl.get("New Bookmarks", []):
         for t in b.get("Triggers", []) or []:
-            if t.get("action") == ENTER and t.get("parameter") in (BUILTIN, GROUP):
-                yield b.get("Name", "?"), t
+            if t.get("action") == ENTER and not is_var(t) and t.get("parameter") in (BUILTIN, GROUP):
+                yield b, t
+
+def var_trigger(gid, key):
+    return {"action": ENTER, "matchType": VAR_ENTER, "parameter": gid,
+            "eventParams": {"variableName": VAR, "variableValueRegex": "^%s:" % key},
+            "disabled": 0, "regex": "", "contentregex": "", "partial": False}
+
+def sync_var_triggers(pl, groups):
+    """In every profile that has the job trigger, make the variable triggers one
+    per installed workgroup of ours, nothing else touched. Returns the ids of the
+    profiles it changed."""
+    want = [(g["uniqueIdentifier"], key_of(g["uniqueIdentifier"])) for g in groups
+            if str(g.get("uniqueIdentifier", "")).startswith("claudePeer") and key_of(g["uniqueIdentifier"])]
+    changed = set()
+    for b in {id(b): b for b, _ in job_triggers(pl)}.values():
+        trig = b.setdefault("Triggers", [])
+        keep = [t for t in trig if not is_var(t)]
+        have = {t.get("parameter"): t for t in trig if is_var(t)}
+        mine = [have.get(gid) if have.get(gid) and have[gid]["eventParams"].get("variableValueRegex") == "^%s:" % key
+                else var_trigger(gid, key) for gid, key in want]
+        if [t for t in trig if is_var(t)] != mine:
+            changed.add(id(b))
+        b["Triggers"] = keep + mine
+    return changed
 
 def save(pl, was_binary):
     data = plistlib.dumps(pl, fmt=plistlib.FMT_BINARY if was_binary else plistlib.FMT_XML)
@@ -993,16 +1045,38 @@ if mode == "status":
             else:
                 print("%s: installed, out of date (%d sessions: %s); this version defines %d (%s) — claude-peer install (with iTerm2 quit)"
                       % (label, len(names), ", ".join(names), len(wnames), ", ".join(wnames)))
-    found = list(enter_triggers(pl))
-    peers = sum(1 for _, t in found if t["parameter"] == GROUP)
-    if not found:
+    prof = {}
+    for b, t in job_triggers(pl):
+        st = prof.setdefault(b.get("Name", "?"), [])
+        st.append(t)
+    def state(b_name, ts):
+        b = next(x for x in pl["New Bookmarks"] if x.get("Name", "?") == b_name)
+        vs = [t for t in b.get("Triggers", []) or [] if is_var(t)]
+        if all(t.get("disabled") for t in ts) and vs:
+            return "peers"
+        if not any(t.get("disabled") for t in ts) and not vs and all(t["parameter"] == BUILTIN for t in ts):
+            return "builtin"
+        return "mixed"
+    states = {n: state(n, ts) for n, ts in prof.items()}
+    npeers = sum(1 for v in states.values() if v == "peers")
+    kinds = {t.get("parameter") for b in pl.get("New Bookmarks", []) for t in b.get("Triggers", []) or [] if is_var(t)}
+    if not states:
+        overall = "none"
         print("default: no profile enters a workgroup on a claude job")
-    elif peers == len(found):
-        print("default: peers (%d profiles enter Claude Peers)" % peers)
-    elif peers == 0:
-        print("default: builtin (%d profiles enter Claude Code)" % len(found))
+    elif npeers == len(states):
+        overall = "peers"
+        print("default: peers (%d profiles, %d workgroups by variable)" % (npeers, len(kinds)))
+    elif npeers == 0 and all(v == "builtin" for v in states.values()):
+        overall = "builtin"
+        print("default: builtin (%d profiles enter Claude Code)" % len(states))
     else:
-        print("default: mixed (%d of %d profiles enter Claude Peers) — claude-peer default peers|builtin" % (peers, len(found)))
+        overall = "mixed"
+        print("default: mixed (%d of %d profiles enter by variable) — claude-peer default peers|builtin" % (npeers, len(states)))
+    filed = len(sys.argv) > 4 and sys.argv[4] == "peers"
+    if filed and overall != "peers":
+        print("default: the enter file says peers but the triggers do not (iTerm2's Reinstall rewrites them) — claude-peer default peers")
+    elif overall == "peers" and not filed:
+        print("default: the triggers say peers but the enter file is missing, so claude() sends no key and nothing enters — claude-peer default peers")
 elif mode == "workgroup":
     print(json.dumps(build()[0], indent=2, sort_keys=True))
 elif mode == "install":
@@ -1023,31 +1097,52 @@ elif mode == "install":
             groups[idx] = wg
         done.append('"%s" %s' % (wg["name"], "written" if idx is None else "replaced"))
     pl["Workgroups"] = json.dumps(groups, separators=(",", ":")).encode("utf-8")
+    if len(sys.argv) > 4 and sys.argv[4] == "peers":
+        n = len(sync_var_triggers(pl, groups))
+        extra = "; variable triggers changed in %d profiles" % n
+    else:
+        extra = ""
     save(pl, was_binary)
-    print(" and ".join(done))
+    print(" and ".join(done) + extra)
 elif mode == "default":
-    target = GROUP if sys.argv[4] == "peers" else BUILTIN
+    peers = sys.argv[4] == "peers"
     try:
         pl, was_binary = load(kind, path)
     except Exception as e:
         fail("cannot read the preferences: %s" % e)
-    if target == GROUP:
+    groups = []
+    if peers:
         try:
-            ok = any(g.get("uniqueIdentifier") == GROUP for g in groups_of(pl))
+            groups = groups_of(pl)
+            ok = any(g.get("uniqueIdentifier") == GROUP for g in groups)
         except (ValueError, TypeError):
             ok = False
         if not ok:
             fail("Claude Peers is not installed; run claude-peer install first, nothing written")
-    found = list(enter_triggers(pl))
+    found = list(job_triggers(pl))
     if not found:
         fail("no profile has an Enter Workgroup trigger for Claude Code; set up iTerm2's Claude Code integration first")
-    moved = [n for n, t in found if t["parameter"] != target]
+    moved = {id(b) for b, t in found if bool(t.get("disabled")) != peers or (not peers and t["parameter"] != BUILTIN)}
     for _, t in found:
-        t["parameter"] = target
+        t["disabled"] = 1 if peers else 0
+        if not peers:
+            t["parameter"] = BUILTIN
+    moved |= sync_var_triggers(pl, groups)
     if moved:
         save(pl, was_binary)
-    print("%d of %d profiles changed" % (len(moved), len(found)))
+    print("%d of %d profiles changed" % (len(moved), len({id(b) for b, _ in found})))
 PYEOF
+}
+
+# The file `default peers` writes and claude() looks for before it sends a key:
+# without it the wrapper stays silent, so a stale trigger enters nothing.
+enter_file() { printf '%s/claude-peer/enter\n' "${XDG_STATE_HOME:-$HOME/.local/state}"; }
+enter_state() { [ -r "$(enter_file)" ] && sed -n 1p "$(enter_file)"; return 0; }
+
+# The key the wrapper sends for this directory: the workgroup to enter.
+cmd_here() {
+  [ $# -eq 0 ] || usage
+  printf 'base\n'
 }
 
 cmd_workgroup() {
@@ -1060,7 +1155,7 @@ cmd_install() {
   need_macos install
   proc_running iTerm2 && die "quit iTerm2 first — it rewrites its preferences at quit and would overwrite this"
   prefs_store
-  r=$(peer_py install "$skind" "$spath") || exit 1
+  r=$(peer_py install "$skind" "$spath" "$(enter_state)") || exit 1
   [ "$skind" = folder ] && where=$spath || where="the com.googlecode.iterm2 domain"
   printf 'claude-peer: %s in %s; start iTerm2, then Shell > Workgroups > Claude Peers in a plain tab\n' "$r" "$where"
 }
@@ -1072,8 +1167,14 @@ cmd_default() {
   proc_running iTerm2 && die "quit iTerm2 first — it rewrites its preferences at quit and would overwrite this"
   prefs_store
   r=$(peer_py default "$skind" "$spath" "$1") || exit 1
-  [ "$1" = peers ] && what="Claude Peers (Alpha, Beta and Gamma wait in every claude tab until started)" || what="Claude Code"
-  printf 'claude-peer: a claude job now enters %s; %s\n' "$what" "$r"
+  f=$(enter_file)
+  if [ "$1" = peers ]; then
+    mkdir -p "${f%/*}" && printf 'peers\n' >"$f" || die "cannot write $f"
+    printf 'claude-peer: claude() now picks the workgroup of each tab (Claude Peers: Alpha, Beta and Gamma wait until started); the claude job trigger is disabled; %s\n' "$r"
+  else
+    rm -f "$f"
+    printf 'claude-peer: a claude job now enters Claude Code; the variable triggers are gone; %s\n' "$r"
+  fi
 }
 
 cmd_status() {
@@ -1084,7 +1185,7 @@ cmd_status() {
   if proc_running iTerm2; then printf 'iterm2: running\n'; else printf 'iterm2: not running (install allowed)\n'; fi
   # the store that is true now: iTerm2's memory (the domain) while it runs, the
   # folder file it only writes at quit otherwise
-  if proc_running iTerm2; then peer_py status domain ""; else peer_py status "$skind" "$spath"; fi
+  if proc_running iTerm2; then peer_py status domain "" "$(enter_state)"; else peer_py status "$skind" "$spath" "$(enter_state)"; fi
   peers_summary
 }
 
@@ -1119,6 +1220,7 @@ case $cmd in
   log) cmd_log "$@";;
   path) cmd_path "$@";;
   plan) cmd_plan "$@";;
+  here) cmd_here "$@";;
   workgroup) cmd_workgroup "$@";;
   install) cmd_install "$@";;
   default) cmd_default "$@";;

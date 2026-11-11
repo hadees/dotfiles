@@ -349,7 +349,7 @@ function bin_trace() {
 # or a literal directory. With no mapping at all, this is plain `claude` on the
 # default ~/.claude config dir.
 function claude() {
-	local dir alias opener here line attended;
+	local dir alias opener here line attended key;
 	local -a sess;
 	dir="$(claude_profile_dir)" || dir='';
 	# An attended launch: somebody is sitting at it. No terminal, print
@@ -384,6 +384,15 @@ function claude() {
 		for line in ${(f)"$(claude_memory_leaks $dir)"}; do
 			print -ru2 -- "claude: ${line/#$HOME/~} loads here as project memory: it belongs to the default profile, and ${dir/#$HOME/~}/settings.json does not list it in claudeMdExcludes";
 		done;
+	fi;
+	# Choose the iTerm2 Workgroup this tab enters, now that the launch is going
+	# ahead (an `n` above returned already) and only for the launches that were
+	# asked: a variable-changed trigger per workgroup enters it. The nonce
+	# makes a second launch in the same tab a change again. Any failure
+	# launches without it.
+	if [[ -n $attended ]] && key="$(claude_peer_key)"; then
+		zmodload zsh/datetime 2>/dev/null;
+		printf '\033]1337;SetUserVar=%s=%s\007' claudePeerEnter "$(print -rn -- "$key:${EPOCHREALTIME:-$RANDOM}" | command base64 | command tr -d '\n')" >&2;
 	fi;
 	(
 		# The default profile must run with CLAUDE_CONFIG_DIR UNSET, not set
@@ -472,6 +481,24 @@ function claude() {
 		fi;
 		exec command claude "$@";
 	)
+}
+
+# The key naming the iTerm2 Workgroup a claude tab here should enter, for
+# claude() to send and claude-doctor to show: `claude-peer here`, with
+# "/hermes" added where hermes_profile routes the directory (the gate
+# hermes_peer uses). Prints the key and returns 0, or prints why there is none
+# and returns 1: not in an iTerm2 tab, inside a peer (its own Claude must not
+# try), `claude-peer default peers` not run (no state file), or no claude-peer.
+function claude_peer_key() {
+	emulate -L zsh;
+	local bin="$HOME/bin/claude-peer" file="${XDG_STATE_HOME:-$HOME/.local/state}/claude-peer/enter" key;
+	[[ -n ${ITERM_SESSION_ID-} ]] || { print -r -- 'not in an iTerm2 tab (ITERM_SESSION_ID is unset)'; return 1; };
+	[[ -z ${CLAUDE_PEER_WORKTREE-} ]] || { print -r -- 'inside a peer (CLAUDE_PEER_WORKTREE is set)'; return 1; };
+	[[ -r $file ]] || { print -r -- "${file/#$HOME/~} is missing (claude-peer default peers has not been run)"; return 1; };
+	[[ -x $bin ]] || { print -r -- "${bin/#$HOME/~} is not executable"; return 1; };
+	key="$($bin here 2>/dev/null)" && [[ -n $key ]] || { print -r -- 'claude-peer here failed'; return 1; };
+	hermes_profile >/dev/null 2>&1 && key+=/hermes;
+	print -r -- "$key";
 }
 
 # Entries of the default directory (~/.claude) that load in <profile-dir> as
@@ -690,7 +717,7 @@ function claude-as() {
 function claude-doctor() {
 	local origin acct map dir cred email slug pin;
 	print -r -- "wrapper: $(whence -w claude)";
-	print -r -- "defined: $(defined_trace claude_profile_dir claude_sessions_here claude_memory_leaks claude_browser_alias claude_browser_can_open gh_account_for_cwd git_origin_slug bin_trace)";
+	print -r -- "defined: $(defined_trace claude_profile_dir claude_sessions_here claude_memory_leaks claude_peer_key hermes_profile claude_browser_alias claude_browser_can_open gh_account_for_cwd git_origin_slug bin_trace)";
 	print -r -- "binary:  $(bin="$(whence -p claude)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH')";
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
@@ -737,6 +764,14 @@ function claude-doctor() {
 		fi;
 	else
 		print -r -- "running: <no session in this directory>";
+	fi;
+	# The iTerm2 Workgroup an attended launch here would ask for: the same
+	# helper claude() sends the key from.
+	local wg;
+	if wg="$(claude_peer_key)"; then
+		print -r -- "workgroup: $wg (sent by an attended launch, as user.claudePeerEnter)";
+	else
+		print -r -- "workgroup: not set ($wg)";
 	fi;
 	if [[ $dir == "$HOME/.claude" ]]; then
 		# The default profile authenticates via the shared Keychain entry and

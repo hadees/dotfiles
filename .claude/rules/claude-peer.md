@@ -56,18 +56,48 @@ what this version builds and say `installed, out of date (...); this version
 defines N (...)` when they differ (the script changed since `install` last
 ran), or `not installed`.
 
-`claude-peer default peers` makes Claude Peers the default instead. It points
-every profile's Enter Workgroup trigger (the one iTerm2's onboarding fires on a
-`claude` job) from `builtin.claudeCode` at `claudePeer.workgroup`, so every
-claude tab enters Claude Peers. Because a slot pane waits, that costs three
-blocked `sh` processes per tab and no Claude, row, registry record or worktree
-until a peer is started; where Hermes routes, one idle shell more. `default
-builtin` switches it back. It needs iTerm2 quit, as `install` does, and moves
-only triggers aimed at one of the two workgroups. `status` prints a `default:`
-line that reads `builtin`, `peers` or `mixed`. iTerm2's own Reinstall of the
-integration rewrites these triggers, and `mixed` or `builtin` afterwards is the
-sign that happened. Dynamic profiles that inherit from Default (worktabs'
-`Workspace`) follow Default.
+**How a tab gets its workgroup.** The `claude` job trigger names one workgroup
+per iTerm2 profile, and an iTerm2 profile says nothing about the repo, so the
+choice is the `claude()` wrapper's, made before the job starts. It sets the
+session variable `user.claudePeerEnter` (an OSC 1337 `SetUserVar` escape,
+written to the terminal) to `<key>:<nonce>`, and one variable-changed Enter
+Workgroup trigger per workgroup, matching `^<key>:`, enters it. The keys:
+`claudePeer.workgroup` is `base`, `claudePeer.h` is `base/hermes`,
+`claudePeer.v.<name>` is `<name>` and `claudePeer.v.<name>.h` is
+`<name>/hermes`. `claude-peer here` prints the key for the directory (today
+always `base`); the wrapper adds `/hermes` where `hermes_profile` routes it,
+the gate `hermes_peer` uses. The nonce (`$EPOCHREALTIME`) makes a second launch
+in one tab a second change; whether it enters again after the workgroup was
+exited is live check L15. The wrapper sends the key only **after** the
+second-session question has been passed (an `n` sends nothing and launches
+nothing) and only for a launch that question applies to (an attended one, so
+never under `-p`, a subcommand or a pipe), with `$ITERM_SESSION_ID` set,
+`$CLAUDE_PEER_WORKTREE` unset (a peer's own Claude must not try), the state file
+below readable and `~/bin/claude-peer` executable; any failure launches without
+it. `claude-doctor` prints `workgroup: <key>` or `not set (<why>)` from the same
+helper (`claude_peer_key`).
+
+`claude-peer default peers` turns this on, in every profile that has the
+`claude` Enter trigger: it **disables** that job trigger (kept in place,
+parameter untouched), writes one variable trigger per installed workgroup of
+ours, and writes `${XDG_STATE_HOME:-~/.local/state}/claude-peer/enter` (one line,
+`peers`), the file the wrapper looks for. `default builtin` removes those
+triggers, re-enables the job trigger aimed at `builtin.claudeCode` and removes
+the file; `install` keeps the triggers matching the installed workgroups while
+the file exists. The triggers are written by `claude-peer` alone, with iTerm2
+quit like `install`, into the preferences: the Settings window saves this
+trigger without its variable name and pattern and it never fires, so nobody is
+ever asked to type one. A trigger it did not write is never touched. The cost
+of disabling the job trigger: a `claude` not started through the wrapper
+(`command claude`, an editor terminal) enters no workgroup, and `claude
+--version` no longer does either. Because a slot pane waits, entering costs
+three blocked `sh` processes per tab and no Claude, row, registry record or
+worktree until a peer is started; where Hermes routes, one idle shell more.
+`status` prints `default:` as `peers (<n> profiles, <k> workgroups by
+variable)`, `builtin` or `mixed`, and a second line when the enter file and the
+triggers disagree (the file missing means the wrapper sends nothing; iTerm2's
+own Reinstall of the integration rewrites triggers). Dynamic profiles that
+inherit from Default (worktabs' `Workspace`) follow Default.
 
 Use: a plain tab, Shell > Workgroups > Claude Peers (no API, sdef or `it2`
 verb enters one), then type `claude` in Lead. **Exit hazard:** the Exit
