@@ -104,3 +104,63 @@ once the child exits — so `tests/claude-profiles.bats` forks one by hand.
 **Each profile must be logged in once** with `claude auth login`; credentials
 live in the macOS Keychain and cannot be copied between profiles — verified,
 copying `.claude.json` does not carry a session.
+
+## The default directory's memory reaches every profile
+
+Claude Code loads `./CLAUDE.md` and `./.claude/CLAUDE.md` from the working
+directory **and every directory above it**, labelled project instructions. The
+default config directory is `~/.claude`, so `~/.claude/CLAUDE.md` sits on the
+ancestor path of every session started under the home directory, whichever
+profile it runs in. A non-default profile therefore loads the default
+profile's `CLAUDE.md`, its `CLAUDE.local.md`, its `CLAUDE.work.md` and (as
+project rules) `~/.claude/rules/**` on top of its own memory. Observed from a
+non-default profile, not inferred.
+
+**The fix is an exclude, owned by the overlay that owns the profile.**
+`claudeMdExcludes` in a profile's `settings.json` takes absolute-path globs
+(picomatch, dot files matched; arrays merge across settings layers), so each
+non-default profile lists the default directory's memory: `CLAUDE.md`,
+`CLAUDE.local.md`, `CLAUDE.work.md` and `rules/**`, as absolute paths rendered
+with `joinPath .chezmoi.homeDir`. Nothing moves and no login is touched; a
+running session keeps what it loaded and picks the change up at its next
+start, `/clear` or compaction. The public repo cannot write it: no
+`settings.json` lives here, and the entries name which profile is which. An
+exclude keeps the file out of context; it is not a sensitivity boundary, and
+the file stays readable on disk.
+
+**A profile that imports one of those files on purpose must not list it.** The
+exclude test applies to user-type files too, so excluding an imported file
+would drop the import. The lite profile imports the default profile's
+`CLAUDE.work.md` itself, so it lists three entries, not four; once its
+`CLAUDE.md` is no longer reached by ancestry, its imports are loaded only
+through that import.
+
+**`claude_memory_leaks <profile-dir>` makes a missing exclude visible.** It
+prints, one per line, each of `~/.claude/CLAUDE.md` and `~/.claude/rules/**`
+that would load in that profile and that its `settings.json` does not list. It
+prints nothing for the default directory itself, when the cwd is not under the
+home directory, or when the file or rules do not exist. "Listed" is a literal
+test: the quoted absolute path appears in the settings text. It runs on every
+launch, where a JSON parser costs a process; the price is that a glob-only
+exclude is not recognised and still warns, and that a path inside a deny rule
+does not count, so the overlays write the exact path. It looks only at those
+two entries, the ones that carry the leak; a profile missing just
+`CLAUDE.local.md` is not reported.
+
+`claude()` prints one stderr line per entry before launching and never blocks
+or changes the launch. `git config claude.memory-check false` turns the
+warning off (machine-local policy, like the other switches). `claude-doctor`'s
+`memory:` line, directly after `creds:`, says `clean`, `LEAK` (naming the
+entries and where to list them), `n/a` outside the home directory, or that the
+directory is the default one; it notes when the switch is off. Tests:
+`tests/claude-profiles.bats`.
+
+**Why the profile was not moved out of the default directory.** The leak is
+whatever sits at `~/.claude/CLAUDE.md`, not who uses it. Moving the profile
+leaves that path: the public repo deploys `dot_claude/CLAUDE.md` there on every
+machine class, and Claude Code, Claude Desktop's Code tab, the statusline
+plugin and several hook scripts keep using that directory, so the same exclude
+would still be needed. A move would additionally cost a re-login, rewritten
+absolute paths in the plugin registry, a deny-rule change in other profiles
+that must land before the transcripts move, and a quiesce of every running
+session.

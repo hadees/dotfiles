@@ -157,7 +157,7 @@ claude_in() {
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: claude: function"* ]]
-  [[ "$output" == *"defined: ok (7 helpers)"* ]]
+  [[ "$output" == *"defined: ok (8 helpers)"* ]]
   [[ "$output" == *"binary:  $BATS_TEST_TMPDIR/bin/claude"* ]]
   [[ "$output" == *"account: personal-account"* ]]
   [[ "$output" == *"launch:  $HOME/.claude-personal"* ]]
@@ -991,4 +991,121 @@ os.waitpid(pid, 0)
   PTY_DIR=$repo PTY_ANSWER=n pty_claude
   [[ "$output" != *"already running"* ]]
   [[ "$output" == *"rc=0"* ]]
+}
+
+# The default directory's CLAUDE.md and rules/ load in every profile started
+# under $HOME (Claude Code walks up from the cwd). claude_memory_leaks lists
+# what a profile's settings.json does not exclude. The cwd must be under the
+# sandbox $HOME for any of it to apply, unlike the repos above.
+
+leaks_in() {
+  run zsh -c "source '$DOTFUNCTIONS'; cd '${2:-$HOME}'; claude_memory_leaks '$1'"
+}
+
+home_repo() {
+  local repo="$HOME/repo"
+  rm -rf "$repo"
+  git init -q "$repo"
+  git -C "$repo" remote add origin "$1"
+  echo "$repo"
+}
+
+@test "memory leaks: the default CLAUDE.md is listed for a profile with no settings" {
+  mkdir -p "$HOME/.claude" "$HOME/.claude-personal"
+  : > "$HOME/.claude/CLAUDE.md"
+  leaks_in "$HOME/.claude-personal"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$HOME/.claude/CLAUDE.md" ]
+}
+
+@test "memory leaks: a quoted path in settings.json excludes it" {
+  mkdir -p "$HOME/.claude" "$HOME/.claude-personal"
+  : > "$HOME/.claude/CLAUDE.md"
+  printf '{"claudeMdExcludes":["%s"]}\n' "$HOME/.claude/CLAUDE.md" > "$HOME/.claude-personal/settings.json"
+  leaks_in "$HOME/.claude-personal/"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "memory leaks: the path inside a deny rule string does not exclude it" {
+  mkdir -p "$HOME/.claude" "$HOME/.claude-personal"
+  : > "$HOME/.claude/CLAUDE.md"
+  printf '{"permissions":{"deny":["Read(%s)"]}}\n' "$HOME/.claude/CLAUDE.md" > "$HOME/.claude-personal/settings.json"
+  leaks_in "$HOME/.claude-personal"
+  [ "$output" = "$HOME/.claude/CLAUDE.md" ]
+}
+
+@test "memory leaks: rules/** is listed while any *.md is under rules, until excluded" {
+  mkdir -p "$HOME/.claude/rules/x" "$HOME/.claude-personal"
+  : > "$HOME/.claude/rules/x/y.md"
+  leaks_in "$HOME/.claude-personal"
+  [ "$output" = "$HOME/.claude/rules/**" ]
+  printf '{"claudeMdExcludes":["%s"]}\n' "$HOME/.claude/rules/**" > "$HOME/.claude-personal/settings.json"
+  leaks_in "$HOME/.claude-personal"
+  [ -z "$output" ]
+}
+
+@test "memory leaks: nothing for the default profile, an empty dir, or a cwd outside HOME" {
+  mkdir -p "$HOME/.claude" "$HOME/.claude-personal" "$BATS_TEST_TMPDIR/elsewhere"
+  : > "$HOME/.claude/CLAUDE.md"
+  leaks_in "$HOME/.claude"
+  [ -z "$output" ]
+  leaks_in ''
+  [ -z "$output" ]
+  leaks_in "$HOME/.claude-personal" "$BATS_TEST_TMPDIR/elsewhere"
+  [ -z "$output" ]
+  leaks_in "$HOME/.claude-personal" /
+  [ -z "$output" ]
+}
+
+@test "claude: a leaking profile warns on stderr and still launches" {
+  mkdir -p "$HOME/.claude"
+  : > "$HOME/.claude/CLAUDE.md"
+  repo=$(home_repo 'git@github.com:octo-personal/some-repo.git')
+  claude_in "$repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"claude: ~/.claude/CLAUDE.md loads here as project memory: it belongs to the default profile, and ~/.claude-personal/settings.json does not list it in claudeMdExcludes"* ]]
+  [[ "$output" == *"CLAUDE_CONFIG_DIR=$HOME/.claude-personal"* ]]
+  git config --file "$GIT_CONFIG_GLOBAL" claude.memory-check false
+  claude_in "$repo"
+  [ "$output" = "CLAUDE_CONFIG_DIR=$HOME/.claude-personal" ]
+}
+
+@test "claude: the memory warning loop does not leak its variable into the caller" {
+  mkdir -p "$HOME/.claude"
+  : > "$HOME/.claude/CLAUDE.md"
+  repo=$(home_repo 'git@github.com:octo-personal/some-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude 2>/dev/null; print -r -- \"line=\${line-UNSET}\""
+  [[ "$output" == *"line=UNSET" ]]
+}
+
+@test "claude: the default profile never warns about memory" {
+  mkdir -p "$HOME/.claude"
+  : > "$HOME/.claude/CLAUDE.md"
+  repo=$(home_repo 'git@github.com:octo-work-org/some-repo.git')
+  claude_in "$repo"
+  [ "$output" = "CLAUDE_CONFIG_DIR=UNSET" ]
+}
+
+@test "claude-doctor: memory line covers default, outside HOME, clean and LEAK" {
+  mkdir -p "$HOME/.claude" "$HOME/.claude-personal"
+  : > "$HOME/.claude/CLAUDE.md"
+  doctor_in() { run zsh -c "source '$DOTFUNCTIONS'; cd '$1'; claude-doctor"; }
+  repo=$(home_repo 'git@github.com:octo-work-org/some-repo.git')
+  doctor_in "$repo"
+  [[ "$output" == *"memory:  $HOME/.claude is the default directory; its CLAUDE.md is this profile's own"* ]]
+  repo=$(home_repo 'git@github.com:octo-personal/some-repo.git')
+  doctor_in "$repo"
+  [[ "$output" == *"memory:  LEAK: $HOME/.claude/CLAUDE.md loads here as project memory; list them in claudeMdExcludes in $HOME/.claude-personal/settings.json (its overlay)"* ]]
+  [[ "$output" != *"claude.memory-check is false"* ]]
+  git config --file "$GIT_CONFIG_GLOBAL" claude.memory-check false
+  doctor_in "$repo"
+  [[ "$output" == *"(its overlay) (claude.memory-check is false, so claude does not warn)"* ]]
+  printf '{"claudeMdExcludes":["%s"]}\n' "$HOME/.claude/CLAUDE.md" > "$HOME/.claude-personal/settings.json"
+  doctor_in "$repo"
+  [[ "$output" == *"memory:  clean: nothing of the default directory's loads here"* ]]
+  other="$BATS_TEST_TMPDIR/repo"
+  rm -rf "$other"; git init -q "$other"; git -C "$other" remote add origin 'git@github.com:octo-personal/some-repo.git'
+  doctor_in "$other"
+  [[ "$output" == *"memory:  n/a: $other is not under the home directory"* ]]
 }
