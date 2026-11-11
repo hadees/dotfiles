@@ -34,3 +34,24 @@ worktabs mark, so a later `worktabs start` does not recognise them, and a
 session opened by `workset open` comes back without its extra directories. The
 registry layout is observed, not an interface. Tests: `tests/claude-tab.bats`
 (stub osascript/ps/sleep, fixture registries).
+
+`bin/claude-tab` reads the other side of the same join: `list` prints one
+row per live Claude Code session across every profile (from each profile's
+`sessions/<pid>.json` registry, the files `claude_sessions_here` reads),
+labelled by `tabname`, with the iTerm2 window and title its tty belongs to;
+`focus <pid>` brings that tab forward. `list` works anywhere; `tabs` and
+`focus` need macOS. Tests: `tests/claude-tab.bats`, `tests/tabname.bats`.
+`save` and `restore` bring the sessions back after an iTerm2 quit (see "Claude
+peers"). The tab bar reads `<repo> (claude)` during a session; the conversation topic no
+longer appears there.
+
+`bin/tabname [dir]` (`~/bin/tabname`) is the label: the git toplevel's name, or
+for a linked worktree the repo, an `@`, then the worktree name, so the worktrees
+under `.claude/worktrees/` stay told apart. Outside a work tree it prints
+nothing and exits 1 — never 0 with empty output. It is a script so the shim and
+any other tab labeller (an Alfred switcher) share one answer. The worktree
+format is `git config tabname.worktree-format '{repo} <glyph>{worktree}'`; the
+default is ASCII because the toolbelt renders rows in iTerm2's UI font
+(`NSFont.it_toolbelt()`), where a Nerd Font private-use glyph is a tofu box
+unless proven otherwise. Set a glyph only after checking it in both the Session
+Status tool and the tab bar. Tests: `tests/tabname.bats`.
