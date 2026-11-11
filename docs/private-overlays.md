@@ -569,9 +569,11 @@ raw binary and Uninstall strips them; `dotfiles` restores them, so re-apply
 after either. C survives both (Reinstall keeps it, Uninstall leaves it).
 
 `claude-doctor`'s `tabstatus:` line, run inside a repo of each profile, is
-the check: `shim on 11/11 events, raw cc-status on 0, none on 0` with the
-shim path printed (not `MISSING`). `raw cc-status on 1` is an event the rule
-missed; iTerm2's "Claude Code Integration Looks Broken" alert means a
+the check: `shim on 11/11 events (handler first on 11), raw iTerm2 hook on 0,
+both on 0, none on 0` with the shim path printed (not `MISSING`). `raw iTerm2
+hook on 1` is an event with an entry the rule missed or that a Reinstall
+added; `both` counts events where it sits beside the shim, and the two then
+run in parallel. iTerm2's "Claude Code Integration Looks Broken" alert means a
 command that is not the bare expanded path, or a shim file that is not
 executable. Note that the alert reads the directory recorded at the last install,
 so a profile elsewhere is judged by the doctor, not the alert.

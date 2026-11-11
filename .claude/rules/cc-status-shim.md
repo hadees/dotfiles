@@ -168,7 +168,7 @@ the hook command is the bare absolute path with the home directory expanded;
 the health check accepts a hook only if the command ends in `/cc-status` and
 `isExecutableFile` passes on the literal string, so `~`, `$HOME`, a wrapper line
 or another name makes the app report its integration broken, and a Reinstall
-appends a raw cc-status beside it, which repaints "working". The shim then runs
+appends iTerm2's own cc-status beside it, which repaints "working". The shim then runs
 in **legacy mode** (no argument: it calls the hook itself, with a filtered
 payload), in cc-status's own slot, never beside it, because hooks for one event
 run in parallel. **3.7.7+** (marked by `~/.config/iterm2/it2` beside the
@@ -263,8 +263,13 @@ calling nothing; `unknown` means the output file is not where it looks,
 `passthrough` that the gate missed the payload. The facts the shim rests on
 are `utilstr`/`binstr` lines in the skill's `manifest.txt`, so `verify.sh`
 says when a point release moves them. `claude-doctor`'s `tabstatus:` line
-counts the eleven events in a profile's `settings.json` that run the shim,
-still run iTerm2's raw cc-status, or run neither, plus the seats live;
+counts the eleven events in a profile's `settings.json` that run the shim
+(and on how many the handler runs first), run iTerm2's own hook (alone or
+beside the shim), or run neither, plus the seats live. The counting is
+`tabstatus_wiring <settings.json>` in `dot_functions`, which prints
+`events=11 shim=S after=A raw=R both=B none=N owned=K` (K approximates
+iTerm2 3.7.7's ownership rule over the ten events it checks) and prints
+nothing, status 1, for a missing or unreadable file;
 `iterm2-doctor`'s `cc-status:` line reads the app's symlink and where `it2`
 is, never executing either. Tests: `tests/cc-status-shim.bats` (stub
 cc-status and it2, side by side like the bundle ships them).
