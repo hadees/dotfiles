@@ -9,17 +9,21 @@ paths:
 `bin/claude-peer` puts more Claudes in **one** tab as iTerm2 Workgroup peers
 (the peer bar, ⌥⇧⌘1…), each on its own worktree. A peer's shell starts in the
 leader's cwd and is pinned there, so the script moves, not the shell:
-`claude-peer run [branch] [-- claude args…]` makes or reuses
-`<repo>/.claude/worktrees/<slug>` by `workset checkout`'s rules (ported from
-`worktabs`), `cd`s there and `exec`s an interactive shell running `claude`, so
-it is the `.functions` wrapper and, being a directory no other session is in,
-raises no second-session question. With no branch it makes (or, when clean
-and still detached, reuses) a scratch worktree `peer-N` detached at
-`origin/HEAD`: the branch is Claude's to create once it knows what it is
-working on, so no branch exists for no reason. `path` and `plan` are the dry
-runs. The
-script deploys on every machine class — those three need only git; the iTerm2
-verbs refuse off macOS.
+`claude-peer run --as <slot> [-- claude args…]` takes the slot's worktree
+`<repo>/.claude/worktrees/<slot>`, `cd`s there and runs `claude -n <repo>-<slot>`
+through an interactive shell, so it is the `.functions` wrapper and, being a
+directory no other session is in, raises no second-session question. A slot is a
+name (`alpha`, `beta`, …; lowercase letters, digits, `-` and `_`), and its
+worktree is the slot's: new, it is detached at `origin/HEAD` (the branch is
+Claude's to create once it knows what it is working on); afterwards it is
+reused in whatever state it was left, dirty or on a branch, with nothing
+reset. `run <branch>` does the same on `<repo>/.claude/worktrees/<slug>` and a
+branch, by `workset checkout`'s rules (ported from `worktabs`). `path` and
+`plan` are the dry runs. A bare `run` is a pane of a definition that predates
+slots: it prints one line and leaves a plain shell, so an installed old
+definition costs three plain shells per claude tab instead of three Claudes.
+The script deploys on every machine class — those three need only git; the
+iTerm2 verbs refuse off macOS.
 
 The definition is a **second** Workgroup, `Claude Peers` (Chat, Diff, Chat 2-4,
 Hermes; the Chat peers' command is `claude-peer run`, the last one's
@@ -43,8 +47,7 @@ session, or the builtin Diff it copies changed, since `install` last ran.
 profile's Enter Workgroup trigger (the one iTerm2's onboarding fires on a
 `claude` job) from `builtin.claudeCode` at `claudePeer.workgroup`, so every
 claude tab enters Claude Peers. That is the eager-spawn trade above, taken on
-purpose: each claude tab starts Chat 2-4 and Hermes at once, three more
-Claudes, each in its own scratch `peer-N` worktree, plus the Hermes pane. `default builtin` switches it back. It
+purpose: each claude tab starts Chat 2-4 and Hermes at once. `default builtin` switches it back. It
 needs iTerm2 quit, as `install` does, and moves only triggers aimed at one of
 the two workgroups. `status` prints a `default:` line that reads `builtin`,
 `peers` or `mixed`. iTerm2's own Reinstall of the integration rewrites these
@@ -56,37 +59,35 @@ Use: a plain tab, Shell > Workgroups > Claude Peers (no API, sdef or `it2`
 verb enters one), then type `claude` in Chat. **Exit hazard:** the Exit
 trigger is `leaderOnly`, so the leader's `claude` ending tears the group down
 and terminates the peers; worktrees and transcripts survive, `claude-peer run
-<branch>` then `claude --continue` resumes (a scratch peer: `cd` into its
-`peer-N` and `claude --continue`, since a dirty one is skipped, not reused). The Session Status tool lists
+<branch>` or `run --as <slot>` then `claude --continue` resumes. The Session Status tool lists
 buried peers, one row each, and a click swaps the peer in; keep *Merge
 workgroup statuses* **off** (on, four Claudes are one row). Rows read `[group]
 <repo>` for the leader and `<repo>@<slug>` for peers (no group prefix:
 `WORKTABS_GROUP` is not inherited).
 
-**Scratch peers are safe to start together.** With `default peers` the
-scratch path is the normal one, and Chat 2-4 start in the same instant
-(iTerm2 spawns every peer in one loop at entry), so it is built for that.
-`scratch_checkout` runs under a per-repo lock, a symlink
-`<git common dir>/claude-peer.lock` whose target is the holder's pid (`ln -s`
-is atomic; no `flock` on macOS), and a dead holder's lock is broken. Every
-`run` also writes a **claim**, `claude-peer.claim` in the worktree's own git
-directory: line 1 the pid of the `run` (`exec` keeps it, so it becomes the
-shell that parents claude), line 2 the leader's directory. A claim whose pid
-answers `kill -0` means the worktree is **in use**, and a scratch peer skips it
-as it skips a dirty one. Claims are never deleted; a dead pid is simply not
-live, and the file goes with the worktree. `claude-peer peers [--leader <dir>]
-[<dir>]` prints `worktree<TAB>pid<TAB>leader` for each live claim in the
+**Slots are safe to start together.** Taking a slot (`slot_checkout`) runs
+under a per-repo lock, a symlink `<git common dir>/claude-peer.lock` whose
+target is the holder's pid (`ln -s` is atomic; no `flock` on macOS), and a dead
+holder's lock is broken. Every `run` writes a **claim**, `claude-peer.claim` in
+the worktree's own git directory: line 1 the pid of the `run`, line 2 the
+leader's directory (where `run` started), line 3 the label (`Alpha`; the slug
+for a branch peer). `run` is not an `exec`: it runs claude as a child and
+removes the claim when the child returns, however it ended, so a claim whose
+pid answers `kill -0` means **a Claude is running there now**. A slot with a
+live claim is refused (exit 3, `in use by the peers of <leader> (pid <n>)`);
+anything else is taken as it stands. A registered slot whose directory is gone,
+or a plain directory in its place, is refused with the fix in the message;
+nothing is pruned for you. A `run` killed outright leaves a claim with a dead
+pid, which is simply not live. `claude-peer peers [--leader <dir>] [<dir>]`
+prints `worktree<TAB>pid<TAB>leader<TAB>label` for each live claim in the
 repository, on every OS. Residual: breaking a stale lock is not atomic, so two
 waiters racing at the instant a holder was killed can still collide; the
-claim's re-read is the backstop. The iTerm2 Enter trigger matches the job name
-only, so `claude --version` in a tab enters the group too: a scratch peer
-therefore settles `CLAUDE_PEER_SETTLE` seconds (default 2, 0 disables) before
-it makes anything, so a short job costs nothing, and runs `git worktree add`
-immune to hangup so a pane torn down mid-checkout leaves no half-made tree.
-Outside a repository a scratch peer prints one line and leaves a plain shell
-(a branch argument still dies). `status` adds `scratch: <n> peer-N worktrees
-in <repo> (<a> in use, <k> kept: dirty, on a branch or directory gone, <f>
-free)` when run inside a repository.
+claim's re-read is the backstop. `git worktree add` runs immune to hangup so a
+pane torn down mid-checkout leaves no half-made tree. `status` adds `peers: <n>
+running in <repo>` with the running labels when run inside a repository, and
+`leftover: <k> peer-N worktrees from the retired scratch layout (...)` when
+registered `peer-N` worktrees remain; nothing uses or removes them any more
+(`git worktree remove <path>`).
 
 **The Hermes peer** is a plain shell unless a Hermes profile routes the
 directory. `claude-peer hermes [-- hermes args…]` needs no repository, makes no

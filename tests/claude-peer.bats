@@ -1,8 +1,9 @@
 #!/usr/bin/env bats
 
-# ~/bin/claude-peer: make or reuse a worktree for a branch under
-# <repo>/.claude/worktrees/<slug> (or a detached scratch one, peer-N, when no
-# branch is given), cd into it and start claude through the shell. A stub shell stands in for $SHELL so nothing starts a real claude.
+# ~/bin/claude-peer: make or reuse a worktree for a slot or a branch under
+# <repo>/.claude/worktrees/<name>, cd into it and run claude through the shell as
+# a child, with a claim that lasts as long as the session. A stub shell stands in
+# for $SHELL so nothing starts a real claude.
 # Everything runs in a sandboxed HOME against fixture repos with invented names.
 
 setup() {
@@ -40,7 +41,7 @@ STUB
   [ "$status" -eq 0 ]
   [[ "$output" == *"feat/x"$'\t'"$REPO/.claude/worktrees/feat-x"$'\t'"created"* ]]
   [[ "$output" == *"pwd=$REPO/.claude/worktrees/feat-x"* ]]
-  [[ "$output" == *'args=-i -c claude "$@" claude-peer'* ]]
+  [[ "$output" == *'args=-i -c n=$1; shift; claude -n "$n" "$@" claude-peer proj-feat-x'* ]]
   git worktree list | grep -F "$REPO/.claude/worktrees/feat-x" | grep -F '[feat/x]'
   [ "$(grep -cxF '**/.claude/worktrees/' "$REPO/.git/info/exclude")" -eq 1 ]
 }
@@ -48,7 +49,7 @@ STUB
 @test "run: arguments after -- reach claude" {
   run sh "$BIN" run feat/x -- --continue
   [ "$status" -eq 0 ]
-  [[ "$output" == *'args=-i -c claude "$@" claude-peer --continue' ]]
+  [[ "$output" == *'claude -n "$n" "$@" claude-peer proj-feat-x --continue' ]]
 }
 
 @test "run: a second run reuses the worktree and still execs in it" {
@@ -91,40 +92,6 @@ STUB
   [[ "$output" == *"not inside a non-bare git repository"* ]]
 }
 
-@test "run: no branch gives a detached scratch worktree at the base, no prompt" {
-  git clone -q --bare "$REPO" "$BATS_TEST_TMPDIR/remote.git"
-  git remote add origin "$BATS_TEST_TMPDIR/remote.git"
-  git fetch -q origin
-  git remote set-head origin -a >/dev/null
-  echo two >"$REPO/tracked.txt"
-  git commit -qam 'local only'
-  run sh "$BIN" run </dev/null
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"(detached)	$REPO/.claude/worktrees/peer-1	created"* ]]
-  [[ "$output" == *"pwd=$REPO/.claude/worktrees/peer-1"* ]]
-  ! git -C "$REPO/.claude/worktrees/peer-1" symbolic-ref -q HEAD
-  [ "$(git -C "$REPO/.claude/worktrees/peer-1" rev-parse HEAD)" = "$(git rev-parse origin/HEAD)" ]
-  [ "$(git branch --list | wc -l)" -eq 1 ]
-}
-
-@test "run: a clean detached peer worktree is reused, a dirty or branched one is skipped" {
-  sh "$BIN" run >/dev/null
-  run sh "$BIN" run
-  [[ "$output" == *"peer-1	reused"* ]]
-  [[ "$output" == *"pwd=$REPO/.claude/worktrees/peer-1"* ]]
-  echo dirty >"$REPO/.claude/worktrees/peer-1/tracked.txt"
-  run sh "$BIN" run
-  [[ "$output" == *"peer-2	created"* ]]
-  git -C "$REPO/.claude/worktrees/peer-2" checkout -q -b feat/mine
-  run sh "$BIN" run
-  [[ "$output" == *"peer-3	created"* ]]
-  rm -rf "$REPO/.claude/worktrees/peer-3"
-  run sh "$BIN" run
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"peer-4	created"* ]]
-  [ "$(git worktree list | grep -c peer-)" -eq 4 ]
-}
-
 @test "path prints the worktree path; plan flags a conflict and exits 1" {
   run sh "$BIN" path feat/x
   [ "$status" -eq 0 ]
@@ -152,94 +119,202 @@ STUB
   [ "$(git rev-parse feat/b)" != "$(git rev-parse HEAD)" ]
 }
 
-# --- scratch peers as the default: claim, lock, settle, soft landing, peers -------
+# --- slots: claim, lock, soft landing, peers ----------------------------------------
 
 # claim_of <worktree>: the claim file inside the worktree's git directory
 claim_of() { echo "$(git -C "$1" rev-parse --absolute-git-dir)/claude-peer.claim"; }
 
-@test "run: exports CLAUDE_PEER_WORKTREE, on the scratch path and on the branch path" {
-  run sh "$BIN" run
-  [[ "$output" == *"peer=$REPO/.claude/worktrees/peer-1"* ]]
+# wait_claim <worktree>: until a backgrounded run has written its claim
+wait_claim() {
+  local i
+  for i in $(seq 1 100); do
+    [ -f "$(claim_of "$1" 2>/dev/null)" ] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+# remote_head: an origin whose HEAD differs from the local one
+remote_head() {
+  git clone -q --bare "$REPO" "$BATS_TEST_TMPDIR/remote.git"
+  git remote add origin "$BATS_TEST_TMPDIR/remote.git"
+  git fetch -q origin
+  git remote set-head origin -a >/dev/null
+  echo two >"$REPO/tracked.txt"
+  git commit -qam 'local only'
+}
+
+@test "run --as: a new slot is a detached worktree at origin/HEAD, the session is named for it" {
+  remote_head
+  run sh "$BIN" run --as alpha </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"alpha"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"created"* ]]
+  [[ "$output" == *"pwd=$REPO/.claude/worktrees/alpha"* ]]
+  [[ "$output" == *"peer=$REPO/.claude/worktrees/alpha"* ]]
+  [[ "$output" == *'claude -n "$n" "$@" claude-peer proj-alpha' ]]
+  ! git -C "$REPO/.claude/worktrees/alpha" symbolic-ref -q HEAD
+  [ "$(git -C "$REPO/.claude/worktrees/alpha" rev-parse HEAD)" = "$(git rev-parse origin/HEAD)" ]
+  [ "$(git branch --list | wc -l)" -eq 1 ]
+  [ "$(grep -cxF '**/.claude/worktrees/' "$REPO/.git/info/exclude")" -eq 1 ]
+}
+
+@test "run --as: arguments after -- reach claude, after the session name" {
+  run sh "$BIN" run --as alpha -- --continue
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'claude-peer proj-alpha --continue' ]]
+}
+
+@test "run --as: a slot is reused in whatever state it was left" {
+  sh "$BIN" run --as alpha >/dev/null
+  wt=$REPO/.claude/worktrees/alpha
+  echo dirty >"$wt/tracked.txt"
+  run sh "$BIN" run --as alpha
+  [[ "$output" == *"alpha"$'\t'"$wt"$'\t'"reused"* ]]
+  [[ "$output" == *"pwd=$wt"* ]]
+  [ "$(cat "$wt/tracked.txt")" = dirty ]
+  git -C "$wt" stash -q
+  git -C "$wt" checkout -q -b feat/mine
+  echo more >"$wt/untracked.txt"
+  run sh "$BIN" run --as alpha
+  [[ "$output" == *"reused"* ]]
+  [ "$(git -C "$wt" symbolic-ref --short HEAD)" = feat/mine ]
+  [ -f "$wt/untracked.txt" ]
+}
+
+@test "run --as: the claim has three lines while the session runs and is gone after" {
+  FAKE_SHELL_SLEEP=2 sh "$BIN" run --as alpha >/dev/null &
+  rpid=$!
+  wt=$REPO/.claude/worktrees/alpha
+  wait_claim "$wt"
+  c=$(claim_of "$wt")
+  [ "$(sed -n 1p "$c")" = "$rpid" ]
+  [ "$(sed -n 2p "$c")" = "$REPO" ]
+  [ "$(sed -n 3p "$c")" = Alpha ]
+  [ "$(wc -l <"$c" | tr -d ' ')" -eq 3 ]
+  run sh "$BIN" peers
+  [ "$output" = "$wt"$'\t'"$rpid"$'\t'"$REPO"$'\t'"Alpha" ]
+  wait "$rpid"
+  [ ! -e "$c" ]
+  run sh "$BIN" peers
+  [ -z "$output" ]
+}
+
+@test "run <branch>: the claim carries the slug and the directory it was started from" {
+  mkdir "$REPO/sub"
+  cd "$REPO/sub"
+  FAKE_SHELL_SLEEP=2 sh "$BIN" run feat/x >/dev/null &
+  rpid=$!
+  wt=$REPO/.claude/worktrees/feat-x
+  wait_claim "$wt"
+  c=$(claim_of "$wt")
+  [ "$(sed -n 1p "$c")" = "$rpid" ]
+  [ "$(sed -n 2p "$c")" = "$(pwd -P)" ]
+  [ "$(sed -n 3p "$c")" = feat-x ]
+  wait "$rpid"
+  [ ! -e "$c" ]
+}
+
+@test "run: exports CLAUDE_PEER_WORKTREE, on the slot path and on the branch path" {
+  run sh "$BIN" run --as alpha
+  [[ "$output" == *"peer=$REPO/.claude/worktrees/alpha"* ]]
   run sh "$BIN" run feat/x
   [[ "$output" == *"peer=$REPO/.claude/worktrees/feat-x"* ]]
 }
 
-@test "run: writes a claim with its pid and the directory it was started from" {
-  mkdir "$REPO/sub"
-  cd "$REPO/sub"
-  FAKE_SHELL_SLEEP=1 sh "$BIN" run >/dev/null &
+@test "run --as: a slot with a live claim exits 3 and starts nothing" {
+  FAKE_SHELL_SLEEP=2 sh "$BIN" run --as alpha >/dev/null &
   rpid=$!
-  sleep 0.5
-  c=$(claim_of "$REPO/.claude/worktrees/peer-1")
-  [ "$(sed -n 1p "$c")" = "$rpid" ]
-  [ "$(sed -n 2p "$c")" = "$(pwd -P)" ]
+  wait_claim "$REPO/.claude/worktrees/alpha"
+  run sh "$BIN" run --as alpha
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"in use by the peers of $REPO (pid $rpid)"* ]]
+  [[ "$output" != *"pwd="* ]]
+  [ "$(git worktree list | grep -c alpha)" -eq 1 ]
   wait "$rpid"
-  sh "$BIN" run feat/x >/dev/null
-  [ "$(sed -n 2p "$(claim_of "$REPO/.claude/worktrees/feat-x")")" = "$(pwd -P)" ]
 }
 
-@test "run: a clean peer worktree with a live claim is skipped, reused once the claim is dead" {
-  sh "$BIN" run >/dev/null
-  sleep 300 & spid=$!
-  printf '%s\n%s\n' "$spid" "$REPO" >"$(claim_of "$REPO/.claude/worktrees/peer-1")"
-  run sh "$BIN" run
-  [[ "$output" == *"peer-2	created"* ]]
-  kill "$spid"; wait "$spid" 2>/dev/null || true
-  run sh "$BIN" run
-  [[ "$output" == *"peer-1	reused"* ]]
-}
-
-@test "run: three simultaneous scratch peers land in peer-1, peer-2 and peer-3 once each" {
-  for i in 1 2 3; do
-    FAKE_SHELL_SLEEP=2 sh "$BIN" run >"$BATS_TEST_TMPDIR/out$i" 2>&1 &
-    pids="$pids $!"
-  done
-  for p in $pids; do wait "$p"; done
-  [ "$(cat "$BATS_TEST_TMPDIR"/out? | grep -c "created")" -eq 3 ]
-  for n in 1 2 3; do
-    [ "$(cat "$BATS_TEST_TMPDIR"/out? | grep -c "peer-$n	created")" -eq 1 ]
-  done
+@test "run --as: two different slots started together get one worktree each" {
+  FAKE_SHELL_SLEEP=1 sh "$BIN" run --as alpha >"$BATS_TEST_TMPDIR/out1" 2>&1 &
+  p1=$!
+  FAKE_SHELL_SLEEP=1 sh "$BIN" run --as beta >"$BATS_TEST_TMPDIR/out2" 2>&1 &
+  p2=$!
+  wait "$p1"; wait "$p2"
+  grep -q "alpha"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"created" "$BATS_TEST_TMPDIR/out1"
+  grep -q "beta"$'\t'"$REPO/.claude/worktrees/beta"$'\t'"created" "$BATS_TEST_TMPDIR/out2"
+  [ "$(git worktree list | grep -c -e '/alpha ' -e '/beta ')" -eq 2 ]
   [ ! -e "$REPO/.git/claude-peer.lock" ]
 }
 
-@test "run: a lock left by a dead pid is broken; one held by a live pid times out" {
-  ln -s 2147483646 "$REPO/.git/claude-peer.lock"
+@test "run --as: a registered worktree whose directory is gone, and a plain directory, are refused" {
+  sh "$BIN" run --as alpha >/dev/null
+  rm -rf "$REPO/.claude/worktrees/alpha"
+  run sh "$BIN" run --as alpha
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"registered but missing"* ]]
+  [[ "$output" == *"git worktree prune"* ]]
+  [[ "$output" != *"pwd="* ]]
+  git worktree prune
+  run sh "$BIN" run --as alpha
+  [[ "$output" == *"alpha"$'\t'*$'\t'"created"* ]]
+  mkdir -p "$REPO/.claude/worktrees/gamma"
+  run sh "$BIN" run --as gamma
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"exists but is not a git worktree"* ]]
+}
+
+@test "run --as: a bad slot name, and a slot with a branch, are refused, nothing created" {
+  run sh "$BIN" run --as 'Bad Slot'
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"'Bad Slot' is not a slot name"* ]]
+  run sh "$BIN" run --as Alpha
+  [ "$status" -eq 1 ]
+  run sh "$BIN" run --as alpha feat/x
+  [ "$status" -eq 2 ]
+  run sh "$BIN" run --as
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"pwd="* ]]
+  [ ! -e "$REPO/.claude/worktrees" ]
+}
+
+@test "run: bare, in a repository or not, is one line and a plain shell, nothing created" {
   run sh "$BIN" run
   [ "$status" -eq 0 ]
-  [[ "$output" == *"peer-1	created"* ]]
+  [[ "$output" == *"predates named slots; quit iTerm2 and run claude-peer install. Plain shell."* ]]
+  [[ "$output" == *'args=-i' ]]
+  [[ "$output" == *"peer=unset"* ]]
+  [ ! -e "$REPO/.claude/worktrees" ]
+  mkdir "$BATS_TEST_TMPDIR/norepo"
+  cd "$BATS_TEST_TMPDIR/norepo"
+  run sh "$BIN" run --
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"predates named slots"* ]]
+  [[ "$output" == *'args=-i' ]]
+}
+
+@test "run --as: a lock left by a dead pid is broken; one held by a live pid times out" {
+  ln -s 2147483646 "$REPO/.git/claude-peer.lock"
+  run sh "$BIN" run --as alpha
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"alpha"$'\t'*$'\t'"created"* ]]
   [ ! -e "$REPO/.git/claude-peer.lock" ]
   ln -s "$$" "$REPO/.git/claude-peer.lock"
-  CLAUDE_PEER_LOCK_WAIT=1 run sh "$BIN" run
+  CLAUDE_PEER_LOCK_WAIT=1 run sh "$BIN" run --as beta
   [ "$status" -eq 1 ]
   [[ "$output" == *"could not lock"*"held by pid $$"* ]]
   [[ "$output" != *"pwd="* ]]
 }
 
-@test "run: the settle delay applies to a scratch peer, not to a branch peer" {
-  cat >"$BATS_TEST_TMPDIR/bin/sleep" <<'STUB'
-#!/bin/sh
-echo "$*" >>"$SLEEP_LOG"
-STUB
-  chmod +x "$BATS_TEST_TMPDIR/bin/sleep"
-  export PATH="$BATS_TEST_TMPDIR/bin:$PATH" SLEEP_LOG="$BATS_TEST_TMPDIR/sleep.log"
-  CLAUDE_PEER_SETTLE=3 sh "$BIN" run >/dev/null
-  [ "$(cat "$SLEEP_LOG")" = 3 ]
-  CLAUDE_PEER_SETTLE=3 sh "$BIN" run feat/x >/dev/null
-  [ "$(cat "$SLEEP_LOG")" = 3 ]
-}
-
-@test "run: no branch outside a repository is a plain shell, not a failure" {
-  mkdir "$BATS_TEST_TMPDIR/norepo"
-  cd "$BATS_TEST_TMPDIR/norepo"
-  run sh "$BIN" run
+@test "run --as: from inside a slot worktree the next slot lands under the main checkout" {
+  sh "$BIN" run --as alpha >/dev/null
+  cd "$REPO/.claude/worktrees/alpha"
+  run sh "$BIN" run --as beta
   [ "$status" -eq 0 ]
-  [[ "$output" == *"claude-peer: not in a git repository, so there is no worktree to give this peer; plain shell"* ]]
-  [[ "$output" == *"args=-i"* ]]
-  [[ "$output" == *"peer=unset"* ]]
+  [[ "$output" == *"pwd=$REPO/.claude/worktrees/beta"* ]]
+  [ ! -e "$REPO/.claude/worktrees/alpha/.claude" ]
 }
 
-@test "peers: lists live claims, drops dead ones, filters by leader, silent outside a repository" {
-  sh "$BIN" run >/dev/null
+@test "peers: lists live claims with labels, drops dead ones, filters by leader, silent outside a repository" {
+  sh "$BIN" run --as alpha >/dev/null
   sh "$BIN" run feat/x >/dev/null
   run sh "$BIN" peers
   [ "$status" -eq 0 ]
@@ -247,19 +322,19 @@ STUB
   sleep 300 & s1=$!
   sleep 300 & s2=$!
   mkdir "$BATS_TEST_TMPDIR/lead"
-  printf '%s\n%s\n' "$s1" "$REPO" >"$(claim_of "$REPO/.claude/worktrees/peer-1")"
+  printf '%s\n%s\n%s\n' "$s1" "$REPO" Alpha >"$(claim_of "$REPO/.claude/worktrees/alpha")"
   printf '%s\n%s\n' "$s2" "$BATS_TEST_TMPDIR/lead" >"$(claim_of "$REPO/.claude/worktrees/feat-x")"
   run sh "$BIN" peers
   [ "$status" -eq 0 ]
-  [ "$output" = "$REPO/.claude/worktrees/feat-x	$s2	$BATS_TEST_TMPDIR/lead"$'\n'"$REPO/.claude/worktrees/peer-1	$s1	$REPO" ]
+  [ "$output" = "$REPO/.claude/worktrees/alpha	$s1	$REPO	Alpha"$'\n'"$REPO/.claude/worktrees/feat-x	$s2	$BATS_TEST_TMPDIR/lead	-" ]
   run sh "$BIN" peers --leader "$REPO"
-  [ "$output" = "$REPO/.claude/worktrees/peer-1	$s1	$REPO" ]
+  [ "$output" = "$REPO/.claude/worktrees/alpha	$s1	$REPO	Alpha" ]
   run sh "$BIN" peers --leader "$BATS_TEST_TMPDIR/nonexistent"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
   kill "$s1"; wait "$s1" 2>/dev/null || true
   run sh "$BIN" peers "$REPO/.claude/worktrees/feat-x"
-  [ "$output" = "$REPO/.claude/worktrees/feat-x	$s2	$BATS_TEST_TMPDIR/lead" ]
+  [ "$output" = "$REPO/.claude/worktrees/feat-x	$s2	$BATS_TEST_TMPDIR/lead	-" ]
   kill "$s2"
   cd "$BATS_TEST_TMPDIR"
   mkdir norepo; cd norepo
@@ -268,24 +343,29 @@ STUB
   [ -z "$output" ]
 }
 
-@test "status: the scratch line counts in-use, kept and free peer worktrees" {
+@test "status: the peers line counts running slots; leftover names peer-N worktrees from the old layout" {
   stubs
   mkprefs "$BATS_TEST_TMPDIR/domain.plist"
   export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist" FAKE_LOAD=0
   run sh "$BIN" status
-  [[ "$output" == *"scratch: 0 peer-N worktrees in $REPO (0 in use, 0 kept"* ]]
-  sh "$BIN" run >/dev/null
-  echo dirty >"$REPO/.claude/worktrees/peer-1/tracked.txt"
-  sh "$BIN" run >/dev/null
-  sleep 300 & spid=$!
-  printf '%s\n%s\n' "$spid" "$REPO" >"$(claim_of "$REPO/.claude/worktrees/peer-2")"
-  sh "$BIN" run >/dev/null
+  [[ "$output" == *"peers: 0 running in $REPO"* ]]
+  [[ "$output" != *"leftover:"* ]]
+  git worktree add -q --detach "$REPO/.claude/worktrees/peer-1"
+  git worktree add -q --detach "$REPO/.claude/worktrees/peer-2"
   run sh "$BIN" status
-  kill "$spid"
-  [[ "$output" == *"scratch: 3 peer-N worktrees in $REPO (1 in use, 1 kept: dirty, on a branch or directory gone, 1 free)"* ]]
+  [[ "$output" == *"leftover: 2 peer-N worktrees from the retired scratch layout (peer-1, peer-2); git worktree remove <path> for each"* ]]
+  git worktree remove "$REPO/.claude/worktrees/peer-1"
+  git worktree remove "$REPO/.claude/worktrees/peer-2"
+  FAKE_SHELL_SLEEP=3 sh "$BIN" run --as alpha >/dev/null &
+  rpid=$!
+  wait_claim "$REPO/.claude/worktrees/alpha"
+  run sh "$BIN" status
+  [[ "$output" == *"peers: 1 running in $REPO: Alpha (alpha)"* ]]
+  [[ "$output" != *"leftover:"* ]]
+  wait "$rpid"
   cd "$BATS_TEST_TMPDIR"; mkdir norepo; cd norepo
   run sh "$BIN" status
-  [[ "$output" != *"scratch:"* ]]
+  [[ "$output" != *"peers:"* ]]
 }
 
 # --- workgroup / install / status ----------------------------------------------

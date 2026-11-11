@@ -20,37 +20,41 @@
 # job) at Claude Peers, so each claude tab starts Chat 2-4 at once;
 # `default builtin` points it back.
 #
-# That makes the scratch path the normal one, so it is safe to run at once from
-# several peers: `scratch_checkout` holds a per-repo lock (a symlink in the git
-# common dir) while it picks a peer-N, and every `run` leaves a claim in its
-# worktree's git directory (`claude-peer.claim`: pid, then the leader's
-# directory) that marks the worktree in use for as long as that pid lives. A
-# `claude --version` typed in a tab also enters the workgroup, so a scratch
-# peer waits CLAUDE_PEER_SETTLE seconds (default 2) before it makes anything,
-# and outside a repository it leaves a plain shell instead of failing.
-# The sixth session, Hermes, runs `hermes` (the .functions wrapper, through
+# A peer is a named slot (alpha, beta, ...): `run --as alpha` takes the worktree
+# <repo>/.claude/worktrees/alpha, in whatever state it was left (detached at
+# origin/HEAD when new), and runs claude as a child named <repo>-alpha. Taking a
+# slot holds a per-repo lock (a symlink in the git common dir), and the `run`
+# leaves a claim in the worktree's git directory (`claude-peer.claim`: pid,
+# the leader's directory, the label) for as long as its claude runs; a claim whose
+# pid is alive marks the slot in use, and the claim goes when the session does.
+# A bare `run` is a pane of an older definition: one line, then a plain shell.
+# The Hermes session runs `hermes` (the .functions wrapper, through
 # `hermes_peer`) only where a Hermes profile routes this directory; elsewhere it
-# is a plain shell. It needs no worktree and leaves no claim.
+# is a plain shell. It needs no worktree and leaves no claim; it settles
+# CLAUDE_PEER_SETTLE seconds (default 2, 0 disables) first, because a
+# `claude --version` typed in a tab also enters the workgroup.
 # `install` edits the preferences while iTerm2 is quit because iTerm2 writes
 # its preferences back at quit (and, with a custom prefs folder, replaces the
 # domain from the folder at launch); an edit made while it runs is lost.
 #
 # Usage: claude-peer <command> [args]
-#   run [branch] [-- claude args...]
-#                            make or reuse <repo>/.claude/worktrees/<slug> on
-#                            <branch>, cd there, start claude through the
-#                            shell (the wrapper applies); no branch: a scratch
-#                            worktree detached at origin/HEAD (peer-N), the
-#                            branch is claude's to make; outside a repository
-#                            that form leaves a plain shell
+#   run --as <slot> [-- claude args...]
+#                            take <repo>/.claude/worktrees/<slot> (new: detached
+#                            at origin/HEAD; else reused as it is), cd there and
+#                            start claude -n <repo>-<slot> through the shell (the
+#                            wrapper applies); exit 3 when a live claim holds it
+#   run <branch> [-- claude args...]
+#                            the same on <repo>/.claude/worktrees/<slug> and
+#                            <branch>
+#   run [--]                 a pane of an older definition: one line, a shell
 #   hermes [-- hermes args...]
 #                            the Hermes peer: wait CLAUDE_PEER_SETTLE, then an
 #                            interactive shell that runs hermes_peer (hermes
 #                            where a profile routes here, else a one-line
 #                            notice); no repository or worktree needed
 #   peers [--leader <dir>] [<dir>]
-#                            worktree<TAB>pid<TAB>leader per live claim in
-#                            the repository of <dir> (default $PWD), sorted;
+#                            worktree<TAB>pid<TAB>leader<TAB>label per live
+#                            claim in the repository of <dir> (default $PWD), sorted;
 #                            --leader keeps one leader's peers
 #   path <branch>            print the worktree path for <branch> (nothing
 #                            is created)
@@ -128,9 +132,9 @@ ensure_exclude() { # dir
 
 # --- claims and the lock ---------------------------------------------------------
 # A claim is <git dir of the worktree>/claude-peer.claim: line 1 the pid of the
-# `claude-peer run` that owns the worktree (exec keeps it, so it becomes the
-# shell that parents claude), line 2 the leader's directory. Live while the pid
-# answers signal 0; never deleted here, it goes with the worktree.
+# `claude-peer run` that owns the worktree, line 2 the leader's directory, line 3
+# the label. Live while the pid answers signal 0; `run` removes it when its
+# claude returns, so a live claim means a Claude is running there now.
 
 claim_file() { d=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) && printf '%s/claude-peer.claim\n' "$d"; }
 
@@ -141,9 +145,9 @@ claim_live() { # worktree
   kill -0 "$p" 2>/dev/null
 }
 
-write_claim() { # worktree
+write_claim() { # worktree label
   f=$(claim_file "$1") || die "$(basename "$1"): cannot find its git directory"
-  printf '%s\n%s\n' "$$" "$LEADER" >"$f"
+  printf '%s\n%s\n%s\n' "$$" "$LEADER" "$2" >"$f"
   [ "$(sed -n 1p "$f")" = "$$" ] || die "$(basename "$1"): claimed by another peer"
 }
 
@@ -187,94 +191,103 @@ worktree_checkout() {
       else
         git -C "$1" worktree add -b "$2" "$wt" "$base" >/dev/null || die "'$2': git worktree add failed"
       fi
-      write_claim "$wt"
+      write_claim "$wt" "$(slug_of "$2")"
       printf '%s\t%s\tcreated\n' "$2" "$wt";;
-    reuse) write_claim "$wt"; printf '%s\t%s\treused\n' "$2" "$wt";;
+    reuse) write_claim "$wt" "$(slug_of "$2")"; printf '%s\t%s\treused\n' "$2" "$wt";;
     *) die "${act#conflict:}";;
   esac
-}
-
-# A registered peer worktree a new peer may take over: directory present, still
-# detached, clean, and no live claim on it.
-reusable() { # worktree
-  [ -d "$1" ] && ! git -C "$1" symbolic-ref -q HEAD >/dev/null 2>&1 \
-    && [ -z "$(git -C "$1" status --porcelain 2>/dev/null)" ] && ! claim_live "$1"
 }
 
 # `git worktree add` and `checkout` ignore hangup and terminate: a pane torn
 # down mid-checkout would otherwise leave a half-made tree that looks dirty.
 git_immune() { ( trap '' HUP TERM; exec git "$@" ) >/dev/null; }
 
-# dir -> (detached)<TAB>wt<TAB>created|reused: a scratch worktree with no branch
-# of its own, detached at the base (origin/HEAD, else HEAD), at the first
-# <dir>/.claude/worktrees/peer-N that is free — unregistered, or registered and
-# reusable (which is moved back to the base; a registered one whose directory
-# is gone is skipped, `git worktree prune`). A branch is the session's to make
-# once it knows what it is working on; a name picked here would only be one
-# more branch to delete. The whole pick runs under the repo lock and ends by
-# claiming the worktree.
-scratch_checkout() {
+# repo slot label -> slot<TAB>wt<TAB>created|reused, claimed. The slot's
+# worktree is the slot's: a registered one is reused as it was left (no checkout,
+# no status or branch test); a new one is detached at the base (origin/HEAD, else
+# HEAD), a branch being the session's to make once it knows its work. Exit 3 when
+# a live claim holds it. The whole pick runs under the repo lock.
+slot_checkout() {
   peer_lock "$1"
-  ( scratch_pick "$1" )
+  ( slot_pick "$1" "$2" "$3" )
   rc=$?
   peer_unlock "$1"
   return $rc
 }
 
-scratch_pick() {
-  base=HEAD
-  git -C "$1" rev-parse --verify -q origin/HEAD >/dev/null 2>&1 && base=origin/HEAD
-  trees=$(git -C "$1" worktree list --porcelain)
-  n=1
-  while :; do
-    wt=$1/.claude/worktrees/peer-$n
-    if ! printf '%s\n' "$trees" | grep -qx "worktree $wt" && [ ! -e "$wt" ]; then
-      ensure_exclude "$1"
-      git_immune -C "$1" worktree add --detach "$wt" "$base" || die "peer-$n: git worktree add failed"
-      write_claim "$wt"
-      printf '(detached)\t%s\tcreated\n' "$wt"; return 0
+slot_pick() {
+  wt=$1/.claude/worktrees/$2
+  if git -C "$1" worktree list --porcelain | grep -qx "worktree $wt"; then
+    [ -d "$wt" ] || die "$2: $wt is registered but missing; git worktree prune (from $1), then start it again"
+    if claim_live "$wt"; then
+      cf=$(claim_file "$wt")
+      warn "$2: in use by the peers of $(sed -n 2p "$cf") (pid $(sed -n 1p "$cf"))"
+      return 3
     fi
-    if printf '%s\n' "$trees" | grep -qx "worktree $wt" && reusable "$wt"; then
-      git_immune -C "$wt" checkout -q --detach "$base" || die "peer-$n: cannot move to $base"
-      write_claim "$wt"
-      printf '(detached)\t%s\treused\n' "$wt"; return 0
-    fi
-    n=$((n + 1))
-  done
+    act=reused
+  elif [ -e "$wt" ]; then
+    die "$2: $wt exists but is not a git worktree"
+  else
+    ensure_exclude "$1"
+    base=HEAD
+    git -C "$1" rev-parse --verify -q origin/HEAD >/dev/null 2>&1 && base=origin/HEAD
+    git_immune -C "$1" worktree add --detach "$wt" "$base" || die "$2: git worktree add failed"
+    act=created
+  fi
+  write_claim "$wt" "$3"
+  printf '%s\t%s\t%s\n' "$2" "$wt" "$act"
+}
+
+# wt name [claude args...]: the only place a session starts. A child, not an
+# exec, so the claim can be removed when it returns. An interactive shell, so
+# `claude` is the .functions wrapper; -n names the session (and its status row).
+run_session() {
+  rs_wt=$1 rs_name=$2; shift 2
+  ( cd -- "$rs_wt" || exit 97
+    CLAUDE_PEER_WORKTREE=$rs_wt; export CLAUDE_PEER_WORKTREE
+    exec "${SHELL:-/bin/sh}" -i -c 'n=$1; shift; claude -n "$n" "$@"' claude-peer "$rs_name" "$@" )
+  rs_rc=$?
+  rm -f "$(claim_file "$rs_wt")"
+  return $rs_rc
 }
 
 # --- commands -----------------------------------------------------------------
 
 cmd_run() {
-  b=
-  if [ $# -gt 0 ] && [ "$1" != -- ]; then b=$1; shift; fi
+  slot= b=
+  if [ "${1-}" = --as ]; then
+    [ $# -ge 2 ] || usage
+    slot=$2; shift 2
+  elif [ $# -gt 0 ] && [ "$1" != -- ]; then b=$1; shift; fi
   if [ $# -gt 0 ]; then
     [ "$1" = -- ] || usage
     shift
   fi
+  if [ -z "$slot$b" ]; then
+    echo "claude-peer: this pane's workgroup definition predates named slots; quit iTerm2 and run claude-peer install. Plain shell."
+    exec "${SHELL:-/bin/sh}" -i
+  fi
   LEADER=$(pwd -P)
-  if [ -z "$b" ]; then
-    if ! repo_root_q >/dev/null; then
-      echo 'claude-peer: not in a git repository, so there is no worktree to give this peer; plain shell'
-      exec "${SHELL:-/bin/sh}" -i
-    fi
-    [ "${CLAUDE_PEER_SETTLE:-2}" -gt 0 ] && sleep "${CLAUDE_PEER_SETTLE:-2}"
-    repo=$(repo_root) || exit 1
-    out=$(scratch_checkout "$repo") || exit 1
+  repo=$(repo_root) || exit 1
+  rname=$(printf '%s' "${repo##*/}" | tr -c 'A-Za-z0-9._-' '-')
+  if [ -n "$slot" ]; then
+    # LC_ALL=C: in a UTF-8 locale [a-z] also matches capitals
+    printf '%s\n' "$slot" | LC_ALL=C grep -Eq '^[a-z][a-z0-9_-]*$' ||
+      die "'$slot' is not a slot name (lowercase letters, digits, - and _)"
+    label=$(printf '%s' "$slot" | cut -c1 | tr a-z A-Z)$(printf '%s' "$slot" | cut -c2-)
+    out=$(slot_checkout "$repo" "$slot" "$label") || exit $?
+    name=$rname-$slot
   else
-    repo=$(repo_root) || exit 1
     valid_branch "$b"
     out=$(worktree_checkout "$repo" "$b") || exit 1
+    name=$rname-$(slug_of "$b")
   fi
   printf '%s\n' "$out"
   wt=$(printf '%s\n' "$out" | cut -f2)
   # `cd ""` is a silent no-op, which would start claude in the leader's checkout.
-  cd -- "$wt" || die "cannot enter $wt"
-  CLAUDE_PEER_WORKTREE=$wt
-  export CLAUDE_PEER_WORKTREE
-  # An interactive shell, so `claude` is the .functions wrapper; it stays the
-  # parent because a function cannot be exec'd.
-  exec "${SHELL:-/bin/sh}" -i -c 'claude "$@"' claude-peer "$@"
+  [ -d "$wt" ] || die "cannot enter $wt"
+  run_session "$wt" "$name" "$@"
+  exit $?
 }
 
 # [-- hermes args...]. The shell function does the routing (hermes_profile is
@@ -290,7 +303,7 @@ cmd_hermes() {
   exec "${SHELL:-/bin/sh}" -i -c "$HERMES_SH" claude-peer "$@"
 }
 
-# [--leader <dir>] [<dir>] -> worktree<TAB>pid<TAB>leader per live claim in the
+# [--leader <dir>] [<dir>] -> worktree<TAB>pid<TAB>leader<TAB>label per live claim in the
 # repository of <dir>, sorted by worktree. Silent outside a repository.
 cmd_peers() {
   want=
@@ -308,9 +321,10 @@ cmd_peers() {
     case $pid in ''|*[!0-9]*) continue;; esac
     kill -0 "$pid" 2>/dev/null || continue
     [ -z "$want" ] || [ "$lead" = "$want" ] || continue
+    lab=$(sed -n 3p "$c")
     gd=$(sed -n 1p "$(dirname "$c")/gitdir" 2>/dev/null)
     [ -n "$gd" ] || continue
-    printf '%s\t%s\t%s\n' "$(dirname "$gd")" "$pid" "$lead"
+    printf '%s\t%s\t%s\t%s\n' "$(dirname "$gd")" "$pid" "$lead" "${lab:--}"
   done | LC_ALL=C sort
 }
 
@@ -560,26 +574,24 @@ cmd_status() {
   if [ "$skind" = folder ]; then printf 'store: folder %s\n' "$spath"; else printf 'store: domain\n'; fi
   if proc_running iTerm2; then printf 'iterm2: running\n'; else printf 'iterm2: not running (install allowed)\n'; fi
   peer_py status "$skind" "$spath"
-  scratch_summary
+  peers_summary
 }
 
-# One line on the peer-N worktrees of the repository the caller stands in; none
-# outside one. In use is a live claim; free is what scratch_checkout would take
-# over; the rest are kept (dirty, on a branch, or the directory is gone).
-scratch_summary() {
+# peers: the running peers of the repository the caller stands in, with their
+# labels; leftover: peer-N worktrees from the retired scratch layout, which
+# nothing uses or removes any more. Nothing outside a repository.
+peers_summary() {
   repo=$(repo_root_q) || return 0
-  list=$(git -C "$repo" worktree list --porcelain | sed -n 's/^worktree //p')
-  n_all=0 n_use=0 n_kept=0 n_free=0
-  while IFS= read -r wt; do
-    case $wt in "$repo"/.claude/worktrees/peer-[0-9]*) ;; *) continue;; esac
-    n_all=$((n_all + 1))
-    if claim_live "$wt"; then n_use=$((n_use + 1))
-    elif reusable "$wt"; then n_free=$((n_free + 1))
-    else n_kept=$((n_kept + 1)); fi
-  done <<EOF
-$list
-EOF
-  printf 'scratch: %d peer-N worktrees in %s (%d in use, %d kept: dirty, on a branch or directory gone, %d free)\n' "$n_all" "$repo" "$n_use" "$n_kept" "$n_free"
+  live=$(cmd_peers "$repo")
+  if [ -n "$live" ]; then
+    printf '%s\n' "$live" | awk -F'\t' -v repo="$repo" '{ n = split($1, p, "/"); r = r (NR > 1 ? ", " : "") $4 " (" p[n] ")" }
+      END { printf "peers: %d running in %s: %s\n", NR, repo, r }'
+  else printf 'peers: 0 running in %s\n' "$repo"; fi
+  left=$(git -C "$repo" worktree list --porcelain | sed -n 's/^worktree //p' |
+    awk -v pre="$repo/.claude/worktrees/peer-" 'index($0, pre) == 1 && substr($0, length(pre) + 1) ~ /^[0-9]/ { n = split($0, p, "/"); printf "%s%s", (c++ ? ", " : ""), p[n] } END { printf "\t%d", c }')
+  k=${left##*	}
+  [ "$k" -gt 0 ] && printf 'leftover: %d peer-N worktrees from the retired scratch layout (%s); git worktree remove <path> for each\n' "$k" "${left%	*}"
+  return 0
 }
 
 [ $# -ge 1 ] || usage
