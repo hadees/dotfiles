@@ -377,6 +377,14 @@ function claude() {
 			print -u2;
 		fi;
 	fi;
+	# The default directory's CLAUDE.md and rules load in every profile
+	# started under $HOME. Say so when this profile does not exclude them;
+	# never block. `git config claude.memory-check false` silences it.
+	if [[ -n $dir ]] && [[ "$(command git config --get claude.memory-check 2>/dev/null)" != false ]]; then
+		for line in ${(f)"$(claude_memory_leaks $dir)"}; do
+			print -ru2 -- "claude: ${line/#$HOME/~} loads here as project memory: it belongs to the default profile, and ${dir/#$HOME/~}/settings.json does not list it in claudeMdExcludes";
+		done;
+	fi;
 	(
 		# The default profile must run with CLAUDE_CONFIG_DIR UNSET, not set
 		# to its own path — setting the variable at all switches Claude Code
@@ -464,6 +472,35 @@ function claude() {
 		fi;
 		exec command claude "$@";
 	)
+}
+
+# Entries of the default directory (~/.claude) that load in <profile-dir> as
+# project memory by ancestry — Claude Code walks up from the cwd, and
+# ~/.claude/CLAUDE.md sits on that path for any session under $HOME — and
+# that the profile's settings.json does not list in claudeMdExcludes. One
+# entry per line: the CLAUDE.md, and rules/** when any *.md lives there.
+# "Listed" is a literal test: the entry as a quoted JSON string in the text
+# of settings.json (the overlays write exact absolute paths). A glob-only
+# exclude is not recognised and warns; a JSON parser would cost a process at
+# every launch. Prints nothing for the default directory itself, an empty
+# argument, or a cwd outside $HOME. Shared by claude() and claude-doctor.
+function claude_memory_leaks() {
+	emulate -L zsh;
+	local dir="${1%/}" base="$HOME/.claude" settings='' entry;
+	local -a rules;
+	[[ -z $dir || $dir == "$base" ]] && return 0;
+	[[ ${PWD:A} == ${HOME:A} || ${PWD:A} == ${HOME:A}/* ]] || return 0;
+	[[ -r $dir/settings.json ]] && settings="$(<$dir/settings.json)";
+	if [[ -e $base/CLAUDE.md ]]; then
+		entry="$base/CLAUDE.md";
+		[[ $settings == *"\"$entry\""* ]] || print -r -- "$entry";
+	fi;
+	rules=($base/rules/**/*.md(N[1]));
+	if (( ${#rules} )); then
+		entry="$base/rules/**";
+		[[ $settings == *"\"$entry\""* ]] || print -r -- "$entry";
+	fi;
+	return 0;
 }
 
 # The live Claude Code sessions whose cwd is this directory, across every
@@ -653,7 +690,7 @@ function claude-as() {
 function claude-doctor() {
 	local origin acct map dir cred email slug pin;
 	print -r -- "wrapper: $(whence -w claude)";
-	print -r -- "defined: $(defined_trace claude_profile_dir claude_sessions_here claude_browser_alias claude_browser_can_open gh_account_for_cwd git_origin_slug bin_trace)";
+	print -r -- "defined: $(defined_trace claude_profile_dir claude_sessions_here claude_memory_leaks claude_browser_alias claude_browser_can_open gh_account_for_cwd git_origin_slug bin_trace)";
 	print -r -- "binary:  $(bin="$(whence -p claude)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH')";
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
@@ -722,6 +759,22 @@ function claude-doctor() {
 		fi;
 	fi;
 	print -r -- "creds:   $cred";
+	# The default directory's memory reaching this profile by ancestry: the
+	# same helper claude() warns from, so the two cannot disagree.
+	local -a leaks;
+	leaks=(${(f)"$(claude_memory_leaks $dir)"});
+	if [[ $dir == "$HOME/.claude" ]]; then
+		print -r -- "memory:  $dir is the default directory; its CLAUDE.md is this profile's own";
+	elif [[ ${PWD:A} != ${HOME:A} && ${PWD:A} != ${HOME:A}/* ]]; then
+		print -r -- "memory:  n/a: $PWD is not under the home directory";
+	elif (( ! ${#leaks} )); then
+		print -r -- "memory:  clean: nothing of the default directory's loads here";
+	else
+		local verb=load note='';
+		(( ${#leaks} == 1 )) && verb=loads;
+		[[ "$(command git config --get claude.memory-check 2>/dev/null)" == false ]] && note=' (claude.memory-check is false, so claude does not warn)';
+		print -r -- "memory:  LEAK: ${(j:, :)leaks} $verb here as project memory; list them in claudeMdExcludes in $dir/settings.json (its overlay)$note";
+	fi;
 	# The profile's Bash deny guard: how many path rules it would enforce,
 	# whether the PreToolUse hook is actually wired and fail-closed (not
 	# silently defanged with `|| true`), whether the binary itself is on
