@@ -3,6 +3,7 @@ paths:
   - "**/dot_local/libexec/cc-status-shim/**"
   - "**/tests/cc-status-shim.bats"
   - "**/tests/tabstatus.bats"
+  - "**/tests/iterm2-cookie.bats"
 ---
 
 # Session Status shim (`cc-status`)
@@ -208,6 +209,42 @@ still run iTerm2's raw cc-status, or run neither, plus the seats live;
 `iterm2-doctor`'s `cc-status:` line reads the app's symlink and where `it2`
 is, never executing either. Tests: `tests/cc-status-shim.bats` (stub
 cc-status and it2, side by side like the bundle ships them).
+
+## API cookie (`iterm2-cookie`)
+
+**Every `it2` the hooks run without a cookie starts an `osascript`** (iTerm2
+issue 13189): with no `ITERM2_COOKIE` in its environment `it2` asks iTerm2 for
+one through AppleScript, and those processes pile up. With a reusable cookie
+it talks to iTerm2's websocket API directly and spawns nothing. A cookie lives
+in iTerm2's memory, so one granted as **Forever** lasts until iTerm2 quits.
+
+`iterm2-cookie` (`dot_functions`, run by hand in an iTerm2 session, once per
+iTerm2 launch) asks for it, writes `<cookie> <key>` to
+`~/.local/state/iterm2/api-cookie` (0600, in a 0700 directory, through a
+temporary file and a rename) and uses it **twice** before keeping it: "Always
+Allow All Apps", and a request made with no session, hand back a single-use
+cookie, which passes once and then fails every later hook event. Any failure
+removes the file and says which step failed. `iterm2-cookie status` prints the
+state and, when it is `fresh` inside a session, makes one authenticated
+`it2 session get-status` and appends `accepted`, or `REFUSED` after setting
+the file aside as `api-cookie.rejected`; `iterm2-cookie forget` removes both.
+Minting also truncates `~/.local/state/iterm2/uncookied`, the count of hook
+events that ran without a cookie (kept by the shim, not by this verb).
+
+`iterm2_cookie_state` sets `REPLY` to the state without forking, because the
+hook line asks the same question on every event: `fresh` (the cookie is newer
+than `~/Library/Application Support/iTerm2/private/socket`, which iTerm2
+recreates at each launch, or that socket is missing), `stale` (older, so iTerm2
+restarted), `rejected` (no cookie, a set-aside one) or `absent`. A stale cookie
+is ignored rather than used because a **wrong cookie is worse than none**: with
+`ITERM2_COOKIE` set `it2` never falls back to AppleScript, and iTerm2's refusal
+leaves no rows at all. So the cookie is never exported from shell startup or by
+`claude()` into a long-lived process; the paths are fixed under `$HOME`
+(`XDG_STATE_HOME` is deliberately not consulted) so that the settings
+templates, the shim and the verb name the same file. The file is a bearer
+credential for iTerm2's API for as long as iTerm2 runs, which is why it is
+0600 and not in `~/.extra`. Tests: `tests/iterm2-cookie.bats` (stub `it2`, a
+plain file for the socket).
 
 ## Hook facts kept from the removed tab-triage script
 

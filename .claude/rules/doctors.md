@@ -38,3 +38,7 @@ silent there and this is where it shows. `doctor` itself opens with a
 the caller, and the calling shell's non-default pattern/glob options —
 read before any `emulate`, so a pasted transcript says which shell it
 came from.
+
+`iterm2-cookie` is the verb `iterm2-doctor` will point at, not a doctor: it
+mints the API cookie the hooks read, and `iterm2_cookie_state` names whether
+that cookie is fresh, stale, rejected or absent (see `cc-status-shim.md`).

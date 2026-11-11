@@ -2595,6 +2595,98 @@ function tabstatus() {
 	command it2 set-status --session "${ITERM_SESSION_ID#*:}" --status "$st" --detail "$detail" "$@" "${add[@]}" >/dev/null;
 }
 
+# Whether the API cookie the Claude Code hooks read is usable, in $REPLY (no
+# output, no subprocess — only [[ -e ]] and [[ -nt ]], because the hook line
+# makes the same test on every event):
+#   fresh     the cookie file is newer than iTerm2's API socket, which iTerm2
+#             recreates at every launch (or the socket is missing)
+#   stale     the cookie file is older: iTerm2 restarted since it was issued
+#   rejected  no cookie file, but one iTerm2 refused was set aside
+#   absent    nothing
+# The paths are fixed under $HOME on purpose (no XDG_STATE_HOME): the settings
+# templates, the shim and `iterm2-cookie` must all name the same file.
+function iterm2_cookie_state() {
+	emulate -L zsh;
+	local c="$HOME/.local/state/iterm2/api-cookie" s="$HOME/Library/Application Support/iTerm2/private/socket";
+	if [[ -e $c ]]; then
+		[[ ! -e $s || $c -nt $s ]] && REPLY=fresh || REPLY=stale;
+	elif [[ -e $c.rejected ]]; then
+		REPLY=rejected;
+	else
+		REPLY=absent;
+	fi;
+}
+
+# Mint, check or forget the API cookie the hooks hand to `it2`. An `it2` with
+# no cookie falls back to AppleScript, which leaks one osascript per hook event
+# (iTerm2 issue 13189); with a cookie it speaks the websocket API directly.
+#   iterm2-cookie           ask iTerm2 for a reusable cookie, store it, prove it
+#   iterm2-cookie status    the state, plus whether iTerm2 accepts it right now
+#   iterm2-cookie forget    delete the cookie and any rejected one
+# Run it once per iTerm2 launch, in an iTerm2 session, and answer Forever in
+# the announcement: the cookie lives in iTerm2's memory, so Forever means until
+# it quits. Minting uses the cookie twice before trusting it — a single-use
+# cookie ("Always Allow All Apps" hands one back) would pass once and then make
+# every later hook event fail with no rows at all. The file is a bearer
+# credential for iTerm2's API, so it is written 0600 in a 0700 directory and is
+# never exported from shell startup; only the hook line reads it.
+function iterm2-cookie() {
+	emulate -L zsh;
+	local dir="$HOME/.local/state/iterm2" it2 out w a b i why;
+	local cookie=$dir/api-cookie sid=${ITERM_SESSION_ID#*:};
+	it2="$HOME/.config/iterm2/it2";
+	[[ -x $it2 ]] || it2=${commands[it2]-};
+	case ${1-} in
+		forget) command rm -f "$cookie" "$cookie.rejected"; return 0;;
+		status)
+			iterm2_cookie_state;
+			if [[ $REPLY == fresh && -n $ITERM_SESSION_ID && -n $it2 ]]; then
+				read -r a b <"$cookie";
+				if ITERM2_COOKIE=$a ITERM2_KEY=$b "$it2" session get-status --session "$sid" >/dev/null 2>&1; then
+					REPLY+=" accepted";
+				else
+					REPLY+=" REFUSED";
+					command mv -f "$cookie" "$cookie.rejected";
+				fi;
+			fi;
+			print -r -- "$REPLY";
+			return 0;;
+		'') ;;
+		*) print -ru2 -- "usage: iterm2-cookie [status|forget]"; return 2;;
+	esac;
+	[[ -n $ITERM_SESSION_ID ]] || { print -ru2 -- "iterm2-cookie: not inside an iTerm2 session (iTerm2 asks in the session that requests it)"; return 1; };
+	[[ -n $it2 ]] || { print -ru2 -- "iterm2-cookie: no it2 found (~/.config/iterm2/it2, or on PATH)"; return 1; };
+	print -r -- "iterm2-cookie: iTerm2 will ask in this session's announcement bar; choose Forever (it lasts until iTerm2 quits)";
+	for i in 1; do
+		out="$("$it2" auth cookie 2>/dev/null)" || { why="iTerm2 handed out no cookie (denied or dismissed, or iTerm2 is not running)"; break; };
+		for w in ${=out}; do
+			case $w in
+				ITERM2_COOKIE=*) a=${w#*=};;
+				ITERM2_KEY=*) b=${w#*=};;
+			esac;
+		done;
+		[[ -n $a && -n $b ]] || { why="it2 auth cookie printed no ITERM2_COOKIE and ITERM2_KEY"; break; };
+		( umask 077; command mkdir -p "$dir" && command chmod 700 "$dir" && print -r -- "$a $b" >"$cookie.$$" && command mv -f "$cookie.$$" "$cookie" ) || { why="could not write $cookie"; break; };
+		command rm -f "$cookie.rejected";
+		for i in 1 2; do
+			ITERM2_COOKIE=$a ITERM2_KEY=$b "$it2" session get-status --session "$sid" >/dev/null 2>&1 && continue;
+			if (( i == 1 )); then
+				why="iTerm2 would not accept the cookie it just issued (is iTerm2 running, and is this a live session?)";
+			else
+				why="the cookie worked once and then failed: it is single-use (choose Forever, not Always Allow All Apps)";
+			fi;
+			break 2;
+		done;
+	done;
+	if [[ -n $why ]]; then
+		command rm -f "$cookie" "$cookie.$$";
+		print -ru2 -- "iterm2-cookie: $why";
+		return 1;
+	fi;
+	[[ -e $dir/uncookied ]] && : >| "$dir/uncookied";
+	print -r -- "iterm2-cookie: fresh until iTerm2 quits";
+}
+
 # Where iTerm2 is installed, or nothing. $ITERM2_APP names a non-standard
 # location and, when set, is used *exclusively* — an override that quietly
 # fell back to /Applications would make every answer below a lie about a
