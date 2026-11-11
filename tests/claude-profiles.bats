@@ -58,6 +58,10 @@ setup() {
   # this file.
   mkdir -p "$HOME/.local/state/iterm2"
   : > "$HOME/.local/state/iterm2/api-cookie"
+  # An iTerm2 that does not exist, so no test meets the developer's real one
+  # (a Sparkle update past the skill's stamp would add a launch line to every
+  # pty test). The tests about the drift line point it at a fake bundle.
+  export ITERM2_APP="$BATS_TEST_TMPDIR/no-iterm2.app"
 
   DOTFUNCTIONS="$BATS_TEST_DIRNAME/../dot_functions"
 }
@@ -163,7 +167,7 @@ claude_in() {
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: claude: function"* ]]
-  [[ "$output" == *"defined: ok (12 helpers)"* ]]
+  [[ "$output" == *"defined: ok (14 helpers)"* ]]
   [[ "$output" == *"binary:  $BATS_TEST_TMPDIR/bin/claude"* ]]
   [[ "$output" == *"account: personal-account"* ]]
   [[ "$output" == *"launch:  $HOME/.claude-personal"* ]]
@@ -1063,6 +1067,43 @@ cookie_line_setup() {
   PTY_DIR=$repo PTY_ANSWER=n pty_claude
   [[ "$output" != *"no iTerm2 API cookie"* ]]
   [[ "$output" == *"rc=0"* ]]
+}
+
+# The launch line about an iTerm2 that has moved past the skill's stamp needs
+# an attended launch and a bundle whose Info.plist names another version.
+drift_app() {
+  export ITERM2_APP="$BATS_TEST_TMPDIR/iTerm.app"
+  mkdir -p "$ITERM2_APP/Contents"
+  printf '<plist><dict>\n\t<key>CFBundleShortVersionString</key>\n\t<string>99.0.0</string>\n</dict></plist>\n' \
+    > "$ITERM2_APP/Contents/Info.plist"
+}
+
+@test "claude: an attended launch past the skill's iTerm2 says so once; print mode and the switch do not" {
+  drift_app
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" == *"claude: iTerm2 99.0.0 is newer than the skill's notes ("*"): run iterm2-doctor"* ]]
+  [[ "$output" == *"rc=0"* ]]
+  [ "$(printf '%s' "$output" | grep -c "than the skill's notes")" -eq 1 ]
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude -p hello
+  [[ "$output" != *"than the skill's notes"* ]]
+  git config --file "$GIT_CONFIG_GLOBAL" claude.iterm2-check false
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" != *"than the skill's notes"* ]]
+  [[ "$output" == *"rc=0"* ]]
+}
+
+@test "claude-doctor: the iterm2 line says match, drift, and a silenced check" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"iterm2:  matches the skill's notes"* ]]
+  drift_app
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"iterm2:  iTerm2 99.0.0 is newer than the skill's notes ("*"): run iterm2-doctor"* ]]
+  [[ "$output" != *"claude does not warn"* ]]
+  git config --file "$GIT_CONFIG_GLOBAL" claude.iterm2-check false
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"run iterm2-doctor (claude.iterm2-check is false, so claude does not warn)"* ]]
 }
 
 # The wrapper chooses the iTerm2 Workgroup a tab enters by setting the session

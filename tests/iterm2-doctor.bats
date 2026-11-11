@@ -134,6 +134,51 @@ doctor_stamp() {
   [[ "$output" == *"skill:   written against iTerm2 $(doctor_stamp)"* ]]
 }
 
+# iterm2_skill_drift sets REPLY (no output, no child process): one sentence when
+# the bundle's version is not the doctor's stamp, else empty.
+drift() {
+  run zsh -c "source '$DOTFUNCTIONS'; iterm2_skill_drift; print -r -- \"[\$REPLY]\""
+}
+
+@test "iterm2_skill_drift: a matching version is empty" {
+  make_app x
+  write_info_plist "$APP" "$(doctor_stamp)" ""
+  drift
+  [ "$status" -eq 0 ]
+  [ "$output" = "[]" ]
+}
+
+@test "iterm2_skill_drift: newer and older name the versions and the stamp" {
+  make_app x
+  write_info_plist "$APP" 99.0.0 ""
+  drift
+  [ "$output" = "[iTerm2 99.0.0 is newer than the skill's notes ($(doctor_stamp)): run iterm2-doctor]" ]
+  write_info_plist "$APP" 0.0.1 ""
+  drift
+  [ "$output" = "[iTerm2 0.0.1 is older than the skill's notes ($(doctor_stamp)): run iterm2-doctor]" ]
+}
+
+@test "iterm2_skill_drift: an empty or binary plist, or no app, is empty" {
+  make_app 99.0.0
+  drift
+  [ "$output" = "[]" ]
+  printf 'bplist00\000\001CFBundleShortVersionString' > "$APP/Contents/Info.plist"
+  drift
+  [ "$output" = "[]" ]
+  export ITERM2_APP="$BATS_TEST_TMPDIR/nowhere.app"
+  drift
+  [ "$output" = "[]" ]
+}
+
+@test "iterm2_app_path: sets REPLY to the path it prints, empty when none" {
+  make_app 1.0
+  run zsh -c "source '$DOTFUNCTIONS'; iterm2_app_path >/dev/null; print -r -- \"[\$REPLY]\""
+  [ "$output" = "[$APP]" ]
+  export ITERM2_APP="$BATS_TEST_TMPDIR/nowhere.app"
+  run zsh -c "source '$DOTFUNCTIONS'; REPLY=old; iterm2_app_path >/dev/null; print -r -- \"[\$REPLY]\""
+  [ "$output" = "[]" ]
+}
+
 @test "iterm2-doctor: prefs, api, and startup keys come from the domain, absent ones say so" {
   make_app "$(doctor_stamp)"
   cat > "$PREFS/com.googlecode.iterm2" <<'EOF'

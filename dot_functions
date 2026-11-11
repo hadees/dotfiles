@@ -385,13 +385,22 @@ function claude() {
 			print -ru2 -- "claude: ${line/#$HOME/~} loads here as project memory: it belongs to the default profile, and ${dir/#$HOME/~}/settings.json does not list it in claudeMdExcludes";
 		done;
 	fi;
-	# With no API cookie every hook event's `it2` starts an osascript (iTerm2
-	# issue 13189). Builtins only until there is something to say; never blocks.
-	# `git config claude.iterm2-check false` silences it.
-	if [[ -n $attended && -n $ITERM_SESSION_ID && -e $HOME/.config/iterm2/it2 ]]; then
-		iterm2_cookie_state;
-		if [[ $REPLY != fresh ]] && [[ "$(command git config --get claude.iterm2-check 2>/dev/null)" != false ]]; then
-			print -ru2 -- "claude: no iTerm2 API cookie for this iTerm2 run ($REPLY), so every hook event starts osascript (iTerm2 issue 13189): run iterm2-cookie";
+	# Two things about iTerm2 worth a line: with no API cookie every hook
+	# event's `it2` starts an osascript (iTerm2 issue 13189), and an iTerm2
+	# that has moved off the release the iterm2 skill describes. Builtins and
+	# one file read until there is something to say, then one `git config`
+	# read for both; never blocks. `git config claude.iterm2-check false`
+	# silences them.
+	if [[ -n $attended ]]; then
+		local -a notes;
+		if [[ -n $ITERM_SESSION_ID && -e $HOME/.config/iterm2/it2 ]]; then
+			iterm2_cookie_state;
+			[[ $REPLY != fresh ]] && notes+=("no iTerm2 API cookie for this iTerm2 run ($REPLY), so every hook event starts osascript (iTerm2 issue 13189): run iterm2-cookie");
+		fi;
+		iterm2_skill_drift;
+		[[ -n $REPLY ]] && notes+=($REPLY);
+		if (( $#notes )) && [[ "$(command git config --get claude.iterm2-check 2>/dev/null)" != false ]]; then
+			for line in $notes; do print -ru2 -- "claude: $line"; done;
 		fi;
 	fi;
 	# Choose the iTerm2 Workgroup this tab enters, now that the launch is going
@@ -779,7 +788,7 @@ function claude-as() {
 function claude-doctor() {
 	local origin acct map dir cred email slug pin;
 	print -r -- "wrapper: $(whence -w claude)";
-	print -r -- "defined: $(defined_trace claude_profile_dir claude_sessions_here claude_memory_leaks tabstatus_wiring iterm2_cookie_state claude_peer_key hermes_profile claude_browser_alias claude_browser_can_open gh_account_for_cwd git_origin_slug bin_trace)";
+	print -r -- "defined: $(defined_trace claude_profile_dir claude_sessions_here claude_memory_leaks tabstatus_wiring iterm2_cookie_state iterm2_skill_drift iterm2_app_path claude_peer_key hermes_profile claude_browser_alias claude_browser_can_open gh_account_for_cwd git_origin_slug bin_trace)";
 	print -r -- "binary:  $(bin="$(whence -p claude)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH')";
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
@@ -872,6 +881,15 @@ function claude-doctor() {
 		[[ "$(command git config --get claude.memory-check 2>/dev/null)" == false ]] && note=' (claude.memory-check is false, so claude does not warn)';
 		print -r -- "memory:  LEAK: ${(j:, :)leaks} $verb here as project memory; list them in claudeMdExcludes in $dir/settings.json (its overlay)$note";
 	fi;
+	# Whether the installed iTerm2 is the release the iterm2 skill describes:
+	# the same helper claude() warns from.
+	iterm2_skill_drift;
+	if [[ -z $REPLY ]]; then
+		REPLY="matches the skill's notes";
+	elif [[ "$(command git config --get claude.iterm2-check 2>/dev/null)" == false ]]; then
+		REPLY+=' (claude.iterm2-check is false, so claude does not warn)';
+	fi;
+	print -r -- "iterm2:  $REPLY";
 	# The profile's Bash deny guard: how many path rules it would enforce,
 	# whether the PreToolUse hook is actually wired and fail-closed (not
 	# silently defanged with `|| true`), whether the binary itself is on
@@ -2750,16 +2768,43 @@ function iterm2-cookie() {
 function iterm2_app_path() {
 	emulate -L zsh;
 	local p;
+	REPLY=;
 	if [[ -n $ITERM2_APP ]]; then
-		[[ -d $ITERM2_APP ]] && print -r -- "$ITERM2_APP";
+		[[ -d $ITERM2_APP ]] && { REPLY=$ITERM2_APP; print -r -- "$REPLY"; };
 		return;
 	fi;
 	for p in /Applications/iTerm.app "$HOME/Applications/iTerm.app"; do
 		[[ -d $p ]] || continue;
+		REPLY=$p;
 		print -r -- "$p";
 		return 0;
 	done;
 	return 1;
+}
+
+# One sentence when the installed iTerm2 is not the release the iterm2 skill
+# was written against, else empty; sets REPLY and prints nothing. claude()
+# calls it on every attended launch, so it forks nothing: the version comes
+# from one read of Info.plist (an XML plist; a binary one or any other miss
+# leaves REPLY empty) and the stamp from the body of iterm2-doctor's own
+# `local stamp=` literal, without running the doctor.
+function iterm2_skill_drift() {
+	emulate -L zsh;
+	local app plist ver stamp cmp;
+	local -a match;
+	iterm2_app_path >/dev/null;
+	app=$REPLY; REPLY=;
+	[[ -n $app && -r $app/Contents/Info.plist ]] || return 0;
+	plist="$(<$app/Contents/Info.plist)" 2>/dev/null;
+	[[ $plist =~ '<key>CFBundleShortVersionString</key>[[:space:]]*<string>([^<]*)</string>' ]] || return 0;
+	ver=$match[1];
+	[[ ${functions[iterm2-doctor]} =~ 'local stamp=([0-9][0-9A-Za-z.]*)' ]] || return 0;
+	stamp=$match[1];
+	[[ -n $ver && $ver != "$stamp" ]] || return 0;
+	cmp=newer;
+	autoload -Uz is-at-least;
+	if is-at-least 0 0 2>/dev/null && ! is-at-least "$stamp" "$ver"; then cmp=older; fi;
+	REPLY="iTerm2 $ver is $cmp than the skill's notes ($stamp): run iterm2-doctor";
 }
 
 # An app bundle's marketing version, read off its Info.plist. This is the
