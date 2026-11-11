@@ -28,11 +28,20 @@
 # the leader's directory, the label) for as long as its claude runs; a claim whose
 # pid is alive marks the slot in use, and the claim goes when the session does.
 # A bare `run` is a pane of an older definition: one line, then a plain shell.
+# A pane waits: `run --as <slot> --wait` makes no worktree, claim or Claude until
+# Return is typed in it or `start` signals it (USR1, interrupting a `wait` on a
+# background reader: no polling, no terminal mode changed); when that Claude
+# ends the pane waits again. A pane's slot is a preference: it takes its own
+# when free, else the first free name of the pool (git config
+# claude-peer.slots; default the Greek alphabet), and `claude-peer.start = auto`
+# makes the pane start one Claude at once. A waiting pane leaves a file in
+# <git common dir>/claude-peer.wait/ (<slot>.<pid>, the leader's directory).
 # The Hermes session runs `hermes` (the .functions wrapper, through
 # `hermes_peer`) only where a Hermes profile routes this directory; elsewhere it
-# is a plain shell. It needs no worktree and leaves no claim; it settles
-# CLAUDE_PEER_SETTLE seconds (default 2, 0 disables) first, because a
-# `claude --version` typed in a tab also enters the workgroup.
+# is a plain shell. It needs no worktree and leaves no claim; with --wait it
+# asks for Return first, and without it settles CLAUDE_PEER_SETTLE seconds
+# (default 2, 0 disables) first, because a `claude --version` typed in a tab
+# also enters the workgroup.
 # `install` edits the preferences while iTerm2 is quit because iTerm2 writes
 # its preferences back at quit (and, with a custom prefs folder, replaces the
 # domain from the folder at launch); an edit made while it runs is lost.
@@ -43,15 +52,31 @@
 #                            at origin/HEAD; else reused as it is), cd there and
 #                            start claude -n <repo>-<slot> through the shell (the
 #                            wrapper applies); exit 3 when a live claim holds it
+#   run --as <slot> --wait [-- claude args...]
+#                            a pane: wait for Return (c continues the last
+#                            session, q leaves a shell) or for `start`, take a
+#                            slot of the pool, run claude, wait again
 #   run <branch> [-- claude args...]
 #                            the same on <repo>/.claude/worktrees/<slug> and
 #                            <branch>
 #   run [--]                 a pane of an older definition: one line, a shell
-#   hermes [-- hermes args...]
-#                            the Hermes peer: wait CLAUDE_PEER_SETTLE, then an
-#                            interactive shell that runs hermes_peer (hermes
-#                            where a profile routes here, else a one-line
-#                            notice); no repository or worktree needed
+#   start <slot|next> [--continue] [--leader <dir>] [--] [prompt words...]
+#                            wake a waiting pane to run claude in <slot> (next:
+#                            whatever the pane would take; prompt - reads stdin)
+#                            -> slot<TAB>worktree<TAB>started<TAB>session name;
+#                            exit 3 already running or no slot free, 4 no pane
+#                            waiting, 1 not started in CLAUDE_PEER_START_WAIT s
+#   stop <slot> [--force]    TERM the claude of a running slot when its registry
+#                            record says idle -> slot<TAB>worktree<TAB>stopped;
+#                            exit 3 not running, 5 busy (or no record) w/o --force
+#   slots [<dir>]            slot<TAB>running|waiting<TAB>worktree<TAB>pid<TAB>
+#                            leader<TAB>session name per slot of the repository
+#   hermes [--wait] [-- hermes args...]
+#                            the Hermes peer: wait CLAUDE_PEER_SETTLE (--wait:
+#                            for Return, in hermes_peer), then an interactive
+#                            shell that runs hermes_peer (hermes where a profile
+#                            routes here, else a one-line notice); no
+#                            repository or worktree needed
 #   peers [--leader <dir>] [<dir>]
 #                            worktree<TAB>pid<TAB>leader<TAB>label per live
 #                            claim in the repository of <dir> (default $PWD), sorted;
@@ -67,6 +92,9 @@
 #   default <peers|builtin>  which workgroup a `claude` job enters, in every
 #                            profile; with iTerm2 quit, like install
 #   status                   store, iTerm2, workgroup, builtin and default state
+#
+# Exit codes of start and stop: 0 done; 1 failed; 2 usage; 3 already in
+# the requested state; 4 nothing to act on; 5 refused because busy.
 set -u
 
 die() { printf 'claude-peer: %s\n' "$*" >&2; exit 1; }
@@ -244,6 +272,7 @@ slot_pick() {
 run_session() {
   rs_wt=$1 rs_name=$2; shift 2
   ( cd -- "$rs_wt" || exit 97
+    trap - TTIN TTOU   # a waiting pane ignores them; claude must not inherit that
     CLAUDE_PEER_WORKTREE=$rs_wt; export CLAUDE_PEER_WORKTREE
     exec "${SHELL:-/bin/sh}" -i -c 'n=$1; shift; claude -n "$n" "$@"' claude-peer "$rs_name" "$@" )
   rs_rc=$?
@@ -251,13 +280,205 @@ run_session() {
   return $rs_rc
 }
 
+# --- slot names, the pool, waiting panes ---------------------------------------------
+
+POOL_DEFAULT='alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu'
+
+# LC_ALL=C: in a UTF-8 locale [a-z] also matches capitals. `next` is the word
+# `start` uses for "whatever the pane would take", so it is not a slot.
+slot_ok() { [ "$1" != next ] && printf '%s\n' "$1" | LC_ALL=C grep -Eq '^[a-z][a-z0-9_-]*$'; }
+label_of() { printf '%s%s' "$(printf '%s' "$1" | cut -c1 | tr a-z A-Z)" "$(printf '%s' "$1" | cut -c2-)"; }
+rname_of() { printf '%s' "${1##*/}" | tr -c 'A-Za-z0-9._-' '-'; }
+settle() { st=${CLAUDE_PEER_SETTLE:-2}; [ "$st" -gt 0 ] && sleep "$st"; return 0; }
+
+# The words of claude-peer.slots (read where the caller stands), else the default
+# pool. Its first three are the bar's names. Dies on a word that is not a slot.
+pool_words() {
+  pw=$(git config --get claude-peer.slots 2>/dev/null) || pw=
+  [ -n "$pw" ] || pw=$POOL_DEFAULT
+  for pw_s in $pw; do slot_ok "$pw_s" || die "claude-peer.slots: '$pw_s' is not a slot name"; done
+  printf '%s\n' "$pw"
+}
+
+# repo own pool -> the slot line of the first slot that can be taken, claimed:
+# own, then the pool from its fourth name on, then its first three. A slot with a
+# live claim is skipped; one that cannot be made says why (stderr) and is skipped.
+# Exit 3 and one line when none can. Under the repo lock, taken once.
+pool_checkout() {
+  peer_lock "$1"
+  ( pool_pick "$@" )
+  rc=$?
+  peer_unlock "$1"
+  return $rc
+}
+
+pool_pick() {
+  pk_repo=$1 pk_own=$2
+  pk_order=$pk_own pk_i=0 pk_n=0 pk_first=
+  for s in $3; do
+    pk_n=$((pk_n + 1)); pk_i=$((pk_i + 1))
+    if [ "$pk_i" -le 3 ]; then pk_first="$pk_first $s"
+    elif [ "$s" != "$pk_own" ]; then pk_order="$pk_order $s"; fi
+  done
+  for s in $pk_first; do [ "$s" = "$pk_own" ] || pk_order="$pk_order $s"; done
+  for s in $pk_order; do
+    claim_live "$pk_repo/.claude/worktrees/$s" && continue
+    pk_line=$(slot_pick "$pk_repo" "$s" "$(label_of "$s")") || continue
+    printf '%s\n' "$pk_line"
+    return 0
+  done
+  warn "all $pk_n slots are in use in $pk_repo"
+  return 3
+}
+
+wait_dir() { printf '%s/claude-peer.wait\n' "$(git -C "$1" rev-parse --path-format=absolute --git-common-dir)"; }
+
+# repo -> slot<TAB>pid<TAB>leader of every live waiting pane, sorted by slot
+waiters() {
+  ww_dir=$(wait_dir "$1")
+  for ww_f in "$ww_dir"/*; do
+    [ -f "$ww_f" ] || continue
+    ww_b=${ww_f##*/}
+    case $ww_b in *.*.*) continue;; esac
+    ww_p=${ww_b#*.}
+    case $ww_p in ''|*[!0-9]*) continue;; esac
+    kill -0 "$ww_p" 2>/dev/null || continue
+    printf '%s\t%s\t%s\n' "${ww_b%%.*}" "$ww_p" "$(sed -n 1p "$ww_f")"
+  done | LC_ALL=C sort
+}
+
+# A wait file belongs to a pane that is gone when its pid is.
+pane_reap() {
+  for pr_f in "$1"/*; do
+    [ -e "$pr_f" ] || continue
+    pr_b=${pr_f##*/}; pr_p=${pr_b#*.}; pr_p=${pr_p%%.*}
+    case $pr_p in ''|*[!0-9]*) rm -f "$pr_f"; continue;; esac
+    kill -0 "$pr_p" 2>/dev/null || rm -f "$pr_f"
+  done
+}
+
+# The pane's blocker: a reader of one line from the terminal, else (no terminal)
+# a long sleep. `wait` on it is what a USR1 interrupts. Sets pn_ended=1 when the
+# blocker finished by itself, 0 when it was cut short.
+pane_block() {
+  rm -f "$pn_me.key"
+  if [ "$pn_reader" = 1 ]; then
+    ( IFS= read -r l 2>/dev/null <"$pn_tty" || exit 1; printf '%s\n' "$l" >"$pn_me.key" ) &
+  else
+    sleep 3600 &
+  fi
+  pn_rpid=$!
+  pn_intr=
+  wait "$pn_rpid"
+  if kill -0 "$pn_rpid" 2>/dev/null; then kill "$pn_rpid" 2>/dev/null; pn_ended=0; else pn_ended=1; fi
+  wait "$pn_rpid" 2>/dev/null
+  pn_rpid=
+}
+
+# A signal can land between forking the blocker and recording its pid, so the
+# shell's own job list (jobs -p, through a file: a substitution may not see it)
+# is the cleanup, and pn_rpid only the second line.
+pane_cleanup() {
+  [ -n "${pn_me-}" ] || return 0
+  jobs -p >"$pn_me.jobs" 2>/dev/null
+  # shellcheck disable=SC2046
+  kill $(cat "$pn_me.jobs" 2>/dev/null) 2>/dev/null
+  [ -z "${pn_rpid-}" ] || kill "$pn_rpid" 2>/dev/null
+  rm -f "$pn_me" "$pn_me".*
+}
+
+pane_shell() { # leave: forget this pane, hand the terminal back, become a shell
+  pane_cleanup
+  trap - EXIT TTIN TTOU
+  exec "${SHELL:-/bin/sh}" -i
+}
+
+# mode(fresh|continue) slot(or -) prompt claude-args...: take a slot, run one
+# session in it, return. Never exits: a refusal is printed and the pane waits on.
+pane_go() {
+  pg_mode=$1 pg_req=$2 pg_prompt=$3; shift 3
+  if [ "$pg_req" != - ]; then
+    out=$(slot_checkout "$repo" "$pg_req" "$(label_of "$pg_req")"); pg_rc=$?
+  else
+    pg_pool=$(pool_words) || return 0
+    out=$(pool_checkout "$repo" "$slot" "$pg_pool"); pg_rc=$?
+  fi
+  if [ "$pg_rc" -ne 0 ]; then
+    [ "$pg_rc" -ne 3 ] || [ "$pg_req" != - ] || echo "claude-peer: Return tries again"
+    return 0
+  fi
+  pg_taken=$(printf '%s\n' "$out" | cut -f1)
+  pg_wt=$(printf '%s\n' "$out" | cut -f2)
+  pg_msg=$(label_of "$pg_taken")
+  if [ "$pg_taken" != "$slot" ] && [ "$pg_req" = - ] && claim_live "$repo/.claude/worktrees/$slot"; then
+    pg_msg="$pg_msg (this pane's $label is in use by the peers of $(sed -n 2p "$(claim_file "$repo/.claude/worktrees/$slot")"))"
+  fi
+  echo "$pg_msg"
+  [ "$pg_mode" != continue ] || set -- --continue "$@"
+  [ -z "$pg_prompt" ] || set -- "$@" "$pg_prompt"
+  run_session "$pg_wt" "$rname-$pg_taken" "$@"
+  [ ! -t 1 ] || printf '\033]21337;status=;indicator=;status-color=;detail=\a'
+  return 0
+}
+
+# "$@": the definition's claude args. Needs repo rname slot label LEADER.
+pane() {
+  pn_wd=$(wait_dir "$repo")
+  mkdir -p "$pn_wd" || die "cannot create $pn_wd"
+  pn_me=$pn_wd/$slot.$$
+  pn_tty=${CLAUDE_PEER_TTY:-/dev/tty}
+  pn_rpid= pn_reader=1 pn_intr= pn_ended=0
+  trap : USR1
+  trap 'pn_intr=1' INT
+  trap '' TTIN TTOU
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+  trap pane_cleanup EXIT
+  if [ "$(git config --get claude-peer.start 2>/dev/null)" = auto ]; then
+    settle
+    pane_go fresh - '' "$@"
+  fi
+  pn_show=1
+  while :; do
+    pane_reap "$pn_wd"
+    printf '%s\n' "$LEADER" >"$pn_me"
+    pn_ev=
+    while [ -z "$pn_ev" ]; do
+      if [ -f "$pn_me.start" ]; then pn_ev=request; break; fi
+      [ -z "$pn_show" ] || printf '%s: Return starts a Claude here, c continues the last session, q leaves a shell\n' "$label"
+      pn_show=
+      pane_block
+      if [ -f "$pn_me.start" ]; then pn_ev=request
+      elif [ -n "$pn_intr" ]; then pn_ev=quit
+      elif [ -f "$pn_me.key" ]; then
+        pn_k=$(cat "$pn_me.key"); rm -f "$pn_me.key"
+        case $pn_k in '') pn_ev=fresh;; c) pn_ev=continue;; q) pn_ev=quit;; *) pn_show=1;; esac
+      elif [ "$pn_ended" = 1 ] && [ "$pn_reader" = 1 ]; then
+        pn_reader=0   # the reader ended with no line: no terminal, only a request wakes this pane
+      fi
+    done
+    case $pn_ev in
+      quit) pane_shell;;
+      request)
+        pn_mode=$(sed -n 1p "$pn_me.start"); pn_req=$(sed -n 2p "$pn_me.start")
+        pn_prompt=$(sed -n '3,$p' "$pn_me.start")
+        rm -f "$pn_me.start" "$pn_me"
+        slot_ok "$pn_req" || pn_req=-
+        pane_go "$pn_mode" "$pn_req" "$pn_prompt" "$@";;
+      *) rm -f "$pn_me"; pane_go "$pn_ev" - '' "$@";;
+    esac
+    pn_show=1
+  done
+}
+
 # --- commands -----------------------------------------------------------------
 
 cmd_run() {
-  slot= b=
+  slot= b= wait=0
   if [ "${1-}" = --as ]; then
     [ $# -ge 2 ] || usage
     slot=$2; shift 2
+    if [ "${1-}" = --wait ]; then wait=1; shift; fi
   elif [ $# -gt 0 ] && [ "$1" != -- ]; then b=$1; shift; fi
   if [ $# -gt 0 ]; then
     [ "$1" = -- ] || usage
@@ -268,13 +489,21 @@ cmd_run() {
     exec "${SHELL:-/bin/sh}" -i
   fi
   LEADER=$(pwd -P)
-  repo=$(repo_root) || exit 1
-  rname=$(printf '%s' "${repo##*/}" | tr -c 'A-Za-z0-9._-' '-')
   if [ -n "$slot" ]; then
-    # LC_ALL=C: in a UTF-8 locale [a-z] also matches capitals
-    printf '%s\n' "$slot" | LC_ALL=C grep -Eq '^[a-z][a-z0-9_-]*$' ||
-      die "'$slot' is not a slot name (lowercase letters, digits, - and _)"
-    label=$(printf '%s' "$slot" | cut -c1 | tr a-z A-Z)$(printf '%s' "$slot" | cut -c2-)
+    slot_ok "$slot" || die "'$slot' is not a slot name (lowercase letters, digits, - and _)"
+    label=$(label_of "$slot")
+  fi
+  if [ "$wait" = 1 ]; then
+    repo=$(repo_root_q) || {
+      echo "claude-peer: not in a git repository, so there is no worktree to give this peer; plain shell"
+      exec "${SHELL:-/bin/sh}" -i
+    }
+    rname=$(rname_of "$repo")
+    pane "$@"
+  fi
+  repo=$(repo_root) || exit 1
+  rname=$(rname_of "$repo")
+  if [ -n "$slot" ]; then
     out=$(slot_checkout "$repo" "$slot" "$label") || exit $?
     name=$rname-$slot
   else
@@ -290,15 +519,23 @@ cmd_run() {
   exit $?
 }
 
-# [-- hermes args...]. The shell function does the routing (hermes_profile is
-# zsh and lives in .functions), so this only settles, then starts a shell that
-# calls it and stays a shell whatever it did.
+# [--wait] [-- hermes args...]. The shell function does the routing
+# (hermes_profile is zsh and lives in .functions), so this only settles, then
+# starts a shell that calls it and stays a shell whatever it did. --wait hands
+# the waiting to hermes_peer (CLAUDE_PEER_HERMES_WAIT=1, no settle) unless
+# claude-peer.start is auto.
 cmd_hermes() {
+  hw=0
+  if [ "${1-}" = --wait ]; then hw=1; shift; fi
   if [ $# -gt 0 ]; then
     [ "$1" = -- ] || usage
     shift
   fi
-  [ "${CLAUDE_PEER_SETTLE:-2}" -gt 0 ] && sleep "${CLAUDE_PEER_SETTLE:-2}"
+  if [ "$hw" = 1 ] && [ "$(git config --get claude-peer.start 2>/dev/null)" != auto ]; then
+    CLAUDE_PEER_HERMES_WAIT=1; export CLAUDE_PEER_HERMES_WAIT
+  else
+    settle
+  fi
   HERMES_SH='if typeset -f hermes_peer >/dev/null 2>&1; then hermes_peer "$@"; else echo "claude-peer: hermes_peer is not defined in this shell; plain shell (chezmoi apply)"; fi; exec "${SHELL:-/bin/sh}" -i'
   exec "${SHELL:-/bin/sh}" -i -c "$HERMES_SH" claude-peer "$@"
 }
@@ -326,6 +563,156 @@ cmd_peers() {
     [ -n "$gd" ] || continue
     printf '%s\t%s\t%s\t%s\n' "$(dirname "$gd")" "$pid" "$lead" "${lab:--}"
   done | LC_ALL=C sort
+}
+
+# <slot|next> [--continue] [--leader <dir>] [--] [prompt words...]
+cmd_start() {
+  [ $# -ge 1 ] || usage
+  st_req=$1; shift
+  [ "$st_req" = next ] || slot_ok "$st_req" || die "'$st_req' is not a slot name (lowercase letters, digits, - and _)"
+  st_mode=fresh st_leader=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --continue) st_mode=continue; shift;;
+      --leader) [ $# -ge 2 ] || usage; st_leader=$2; shift 2;;
+      --) shift; break;;
+      *) break;;
+    esac
+  done
+  case ${1-} in
+    -) [ $# -eq 1 ] || usage; st_prompt=$(cat);;
+    -*) usage;;
+    *) st_prompt="$*";;
+  esac
+  repo=$(repo_root) || exit 1
+  rname=$(rname_of "$repo")
+  if [ "$st_req" != next ]; then
+    st_wt=$repo/.claude/worktrees/$st_req
+    if claim_live "$st_wt"; then
+      printf '%s\t%s\trunning\t%s\n' "$st_req" "$st_wt" "$rname-$st_req"
+      exit 3
+    fi
+  fi
+  st_all=$(waiters "$repo")
+  [ -n "$st_all" ] || { warn "no pane is waiting in this repository"; exit 4; }
+  st_leaders=$(printf '%s\n' "$st_all" | cut -f3 | LC_ALL=C sort -u)
+  if [ "$(printf '%s\n' "$st_leaders" | wc -l | tr -d ' ')" -gt 1 ]; then
+    if [ -n "$st_leader" ]; then st_want=$(cd "$st_leader" 2>/dev/null && pwd -P) || st_want=$st_leader
+    else st_want=$(pwd -P); fi
+    st_all=$(printf '%s\n' "$st_all" | awk -F'\t' -v l="$st_want" '$3 == l')
+    [ -n "$st_all" ] || {
+      warn "no pane is waiting for $st_want; the waiting panes belong to: $(printf '%s' "$st_leaders" | tr '\n' ' ')(--leader <dir>)"
+      exit 4
+    }
+  fi
+  st_pick=$(printf '%s\n' "$st_all" | awk -F'\t' -v s="$st_req" '$1 == s { print; exit }')
+  [ -n "$st_pick" ] || st_pick=$(printf '%s\n' "$st_all" | sed -n 1p)
+  st_own=$(printf '%s' "$st_pick" | cut -f1); st_pid=$(printf '%s' "$st_pick" | cut -f2)
+  if [ "$st_req" = next ]; then
+    st_pool=$(pool_words) || exit 1
+    st_n=0 st_free=0
+    for s in $st_pool; do
+      st_n=$((st_n + 1))
+      claim_live "$repo/.claude/worktrees/$s" || st_free=1
+    done
+    [ "$st_free" = 1 ] || { warn "all $st_n slots are in use in $repo"; exit 3; }
+  fi
+  st_dir=$(wait_dir "$repo")
+  st_file=$st_dir/$st_own.$st_pid.start
+  { printf '%s\n%s\n' "$st_mode" "$([ "$st_req" = next ] && echo - || echo "$st_req")"; printf '%s' "$st_prompt"; } >"$st_file.tmp" &&
+    mv "$st_file.tmp" "$st_file" || die "cannot write the request in $st_dir"
+  kill -USR1 "$st_pid" 2>/dev/null || { rm -f "$st_file"; warn "the pane (pid $st_pid) is gone"; exit 4; }
+  st_limit=$(( ${CLAUDE_PEER_START_WAIT:-60} * 5 )); st_i=0
+  while [ "$st_i" -lt "$st_limit" ]; do
+    sleep 0.2
+    st_i=$((st_i + 1))
+    st_got=$(cmd_peers "$repo" | awk -F'\t' -v p="$st_pid" '$2 == p { print $1; exit }')
+    if [ -n "$st_got" ]; then
+      printf '%s\t%s\tstarted\t%s\n' "${st_got##*/}" "$st_got" "$rname-${st_got##*/}"
+      exit 0
+    fi
+    # a USR1 that landed before the pane's wait began is lost; send it again
+    [ $((st_i % 5)) -ne 0 ] || [ ! -f "$st_file" ] || kill -USR1 "$st_pid" 2>/dev/null
+  done
+  rm -f "$st_file"
+  warn "$st_req did not start within ${CLAUDE_PEER_START_WAIT:-60}s; its pane shows why"
+  exit 1
+}
+
+# Every Claude profile directory a registry could be in: the caller's
+# CLAUDE_CONFIG_DIR and each claude.profile.* value. No other line names one.
+profile_dirs() {
+  { printf '%s\n' "${CLAUDE_CONFIG_DIR-}"
+    git config --get-regexp '^claude\.profile\.' 2>/dev/null | cut -d' ' -f2-
+  } | while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        case $d in "~/"*) d="$HOME/${d#\~/}";; esac
+        [ -d "$d" ] && printf '%s\n' "$d"
+      done | awk '!seen[$0]++'
+}
+
+# pid -> every descendant pid, one per line
+descendants() {
+  ps -Ao pid=,ppid= 2>/dev/null | awk -v r="$1" '
+    { pp[$1] = $2 }
+    END { for (;;) { ch = 0
+            for (p in pp) if (!(p in d) && (pp[p] == r || (pp[p] in d))) { d[p] = 1; ch = 1 }
+            if (!ch) break }
+          for (p in d) print p }'
+}
+
+# <slot> [--force]
+cmd_stop() {
+  [ $# -ge 1 ] && [ $# -le 2 ] || usage
+  sp_slot=$1 sp_force=0
+  if [ $# -eq 2 ]; then [ "$2" = --force ] || usage; sp_force=1; fi
+  slot_ok "$sp_slot" || die "'$sp_slot' is not a slot name (lowercase letters, digits, - and _)"
+  repo=$(repo_root) || exit 1
+  sp_wt=$repo/.claude/worktrees/$sp_slot
+  if ! claim_live "$sp_wt"; then
+    printf '%s\t%s\tnot-running\n' "$sp_slot" "$sp_wt"
+    exit 3
+  fi
+  sp_claim=$(sed -n 1p "$(claim_file "$sp_wt")")
+  sp_kids=$(descendants "$sp_claim")
+  sp_target= sp_status=
+  for sp_pid in $sp_kids; do
+    for sp_d in $(profile_dirs); do
+      [ -f "$sp_d/sessions/$sp_pid.json" ] || continue
+      sp_target=$sp_pid
+      sp_status=$(sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$sp_d/sessions/$sp_pid.json" | sed -n 1p)
+      break 2
+    done
+  done
+  if [ "$sp_force" = 0 ] && [ "$sp_status" != idle ]; then
+    warn "$sp_slot is ${sp_status:-unknown}; stop --force to stop it anyway"
+    exit 5
+  fi
+  if [ -n "$sp_target" ]; then kill -TERM "$sp_target" 2>/dev/null
+  else for sp_pid in $sp_kids; do kill -TERM "$sp_pid" 2>/dev/null; done; fi
+  sp_limit=$(( ${CLAUDE_PEER_STOP_WAIT:-15} * 5 )); sp_i=0
+  while [ "$sp_i" -lt "$sp_limit" ]; do
+    claim_live "$sp_wt" || { printf '%s\t%s\tstopped\n' "$sp_slot" "$sp_wt"; exit 0; }
+    sleep 0.2
+    sp_i=$((sp_i + 1))
+  done
+  warn "$sp_slot did not exit within ${CLAUDE_PEER_STOP_WAIT:-15}s"
+  exit 1
+}
+
+# [<dir>] -> slot<TAB>running|waiting<TAB>worktree<TAB>pid<TAB>leader<TAB>session name
+cmd_slots() {
+  [ $# -le 1 ] || usage
+  [ -z "${1-}" ] || cd -- "$1" 2>/dev/null || exit 0
+  repo=$(repo_root_q) || exit 0
+  rname=$(rname_of "$repo")
+  { cmd_peers "$repo" | while IFS='	' read -r w p l _; do
+      printf '%s\trunning\t%s\t%s\t%s\t%s\n' "${w##*/}" "$w" "$p" "$l" "$rname-${w##*/}"
+    done
+    waiters "$repo" | while IFS='	' read -r sl p l; do
+      printf '%s\twaiting\t%s\t%s\t%s\t%s\n' "$sl" "$repo/.claude/worktrees/$sl" "$p" "$l" "$rname-$sl"
+    done
+  } | LC_ALL=C sort
 }
 
 cmd_path() {
@@ -577,16 +964,18 @@ cmd_status() {
   peers_summary
 }
 
-# peers: the running peers of the repository the caller stands in, with their
-# labels; leftover: peer-N worktrees from the retired scratch layout, which
-# nothing uses or removes any more. Nothing outside a repository.
+# peers: how many Claudes run and how many panes wait in the repository the
+# caller stands in, with the running labels; leftover: peer-N worktrees from the
+# retired scratch layout, which nothing uses or removes any more. Nothing
+# outside a repository.
 peers_summary() {
   repo=$(repo_root_q) || return 0
   live=$(cmd_peers "$repo")
+  nw=$(waiters "$repo" | grep -c .)
   if [ -n "$live" ]; then
-    printf '%s\n' "$live" | awk -F'\t' -v repo="$repo" '{ n = split($1, p, "/"); r = r (NR > 1 ? ", " : "") $4 " (" p[n] ")" }
-      END { printf "peers: %d running in %s: %s\n", NR, repo, r }'
-  else printf 'peers: 0 running in %s\n' "$repo"; fi
+    printf '%s\n' "$live" | awk -F'\t' -v repo="$repo" -v w="$nw" '{ n = split($1, p, "/"); r = r (NR > 1 ? ", " : "") $4 " (" p[n] ")" }
+      END { printf "peers: %d running, %d waiting in %s: %s\n", NR, w, repo, r }'
+  else printf 'peers: 0 running, %d waiting in %s\n' "$nw" "$repo"; fi
   left=$(git -C "$repo" worktree list --porcelain | sed -n 's/^worktree //p' |
     awk -v pre="$repo/.claude/worktrees/peer-" 'index($0, pre) == 1 && substr($0, length(pre) + 1) ~ /^[0-9]/ { n = split($0, p, "/"); printf "%s%s", (c++ ? ", " : ""), p[n] } END { printf "\t%d", c }')
   k=${left##*	}
@@ -600,6 +989,9 @@ case $cmd in
   run) cmd_run "$@";;
   hermes) cmd_hermes "$@";;
   peers) cmd_peers "$@";;
+  start) cmd_start "$@";;
+  stop) cmd_stop "$@";;
+  slots) cmd_slots "$@";;
   path) cmd_path "$@";;
   plan) cmd_plan "$@";;
   workgroup) cmd_workgroup "$@";;

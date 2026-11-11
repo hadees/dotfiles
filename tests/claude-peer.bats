@@ -22,11 +22,17 @@ setup() {
 #!/bin/sh
 echo "pwd=$PWD"
 echo "peer=${CLAUDE_PEER_WORKTREE-unset}"
+echo "hermeswait=${CLAUDE_PEER_HERMES_WAIT-unset}"
 echo "args=$*"
+[ -z "${FAKE_SHELL_LOG-}" ] || echo "pwd=$PWD args=$*" >>"$FAKE_SHELL_LOG"
+[ -z "${FAKE_SHELL_PID-}" ] || echo $$ >"$FAKE_SHELL_PID"
+[ -z "${FAKE_SHELL_LAST-}" ] || { for last; do :; done; printf '%s' "$last" >"$FAKE_SHELL_LAST"; echo $# >"$FAKE_SHELL_LAST.n"; }
 [ -z "${FAKE_SHELL_SLEEP-}" ] || sleep "$FAKE_SHELL_SLEEP"
 STUB
   chmod +x "$BATS_TEST_TMPDIR/bin/fakeshell"
   export SHELL="$BATS_TEST_TMPDIR/bin/fakeshell"
+  export FAKE_SHELL_LOG="$BATS_TEST_TMPDIR/shell.log"
+  PANES=
   mkdir -p "$BATS_TEST_TMPDIR/proj"
   REPO=$(cd "$BATS_TEST_TMPDIR/proj" && pwd -P)
   git -C "$REPO" init -q
@@ -34,6 +40,11 @@ STUB
   git -C "$REPO" add .
   git -C "$REPO" commit -qm 'initial commit'
   cd "$REPO"
+}
+
+teardown() {
+  local p
+  for p in $PANES; do kill "$p" 2>/dev/null || true; done
 }
 
 @test "run: creates the worktree, cd's into it, execs an interactive shell" {
@@ -343,12 +354,12 @@ remote_head() {
   [ -z "$output" ]
 }
 
-@test "status: the peers line counts running slots; leftover names peer-N worktrees from the old layout" {
+@test "status: the peers line counts running slots and waiting panes; leftover names peer-N worktrees from the old layout" {
   stubs
   mkprefs "$BATS_TEST_TMPDIR/domain.plist"
   export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist" FAKE_LOAD=0
   run sh "$BIN" status
-  [[ "$output" == *"peers: 0 running in $REPO"* ]]
+  [[ "$output" == *"peers: 0 running, 0 waiting in $REPO"* ]]
   [[ "$output" != *"leftover:"* ]]
   git worktree add -q --detach "$REPO/.claude/worktrees/peer-1"
   git worktree add -q --detach "$REPO/.claude/worktrees/peer-2"
@@ -360,12 +371,328 @@ remote_head() {
   rpid=$!
   wait_claim "$REPO/.claude/worktrees/alpha"
   run sh "$BIN" status
-  [[ "$output" == *"peers: 1 running in $REPO: Alpha (alpha)"* ]]
+  [[ "$output" == *"peers: 1 running, 0 waiting in $REPO: Alpha (alpha)"* ]]
   [[ "$output" != *"leftover:"* ]]
   wait "$rpid"
+  pane beta
+  run sh "$BIN" status
+  [[ "$output" == *"peers: 0 running, 1 waiting in $REPO"* ]]
   cd "$BATS_TEST_TMPDIR"; mkdir norepo; cd norepo
   run sh "$BIN" status
   [[ "$output" != *"peers:"* ]]
+}
+
+# --- waiting panes, start, stop, slots ------------------------------------------------
+# A pane runs in the background with a FIFO for its terminal; `press` types a line
+# into it. The stub shell logs to $FAKE_SHELL_LOG and sleeps FAKE_SHELL_SLEEP, so a
+# session lasts long enough for `start` to see its claim.
+
+# until_ok '<command>': retry for ten seconds
+until_ok() {
+  local i
+  for i in $(seq 1 100); do
+    eval "$1" && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+# pane <slot> [<dir> [<tag>]]: a waiting pane started in <dir> (default $REPO);
+# its terminal is the FIFO tty-<tag> (tag defaults to the slot), or $PANE_TTY.
+pane() {
+  local s=$1 d=${2:-$REPO} t=${3:-$1}
+  local tty=$BATS_TEST_TMPDIR/tty-$t
+  [ -p "$tty" ] || mkfifo "$tty"
+  ( cd "$d" && export CLAUDE_PEER_TTY="${PANE_TTY:-$tty}" &&
+    exec sh "$BIN" run --as "$s" --wait >"$BATS_TEST_TMPDIR/pane-$t.out" 2>&1 3>&- ) &
+  LAST_PANE=$!
+  PANES="$PANES $LAST_PANE"
+  until_ok "[ -f '$REPO/.git/claude-peer.wait/$s.$LAST_PANE' ]"
+}
+
+# press <tag> <text>: type a line into that pane's terminal
+press() {
+  ( printf '%s\n' "$2" >"$BATS_TEST_TMPDIR/tty-$1" ) 3>&- &
+  PANES="$PANES $!"
+}
+
+shell_runs() { [ -f "$FAKE_SHELL_LOG" ] && grep -c . "$FAKE_SHELL_LOG" || echo 0; }
+
+# hold <slot> [<dir>]: a session in <slot> from another leader, for a while
+hold() {
+  mkdir -p "${2:-$REPO/sub}"
+  ( cd "${2:-$REPO/sub}" && FAKE_SHELL_LOG=/dev/null FAKE_SHELL_SLEEP=${HOLD:-8} exec sh "$BIN" run --as "$1" >/dev/null 2>&1 3>&- ) &
+  PANES="$PANES $!"
+  wait_claim "$REPO/.claude/worktrees/$1"
+}
+
+@test "run --as --wait: a waiting pane makes no worktree, claim, lock or shell" {
+  pane alpha
+  run sh "$BIN" slots
+  [ "$status" -eq 0 ]
+  [ "$output" = "alpha"$'\t'"waiting"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"$LAST_PANE"$'\t'"$REPO"$'\t'"proj-alpha" ]
+  [ ! -e "$REPO/.claude/worktrees" ]
+  [ ! -e "$REPO/.git/claude-peer.lock" ]
+  [ "$(shell_runs)" -eq 0 ]
+  run sh "$BIN" peers
+  [ -z "$output" ]
+  grep -q "^Alpha: Return starts a Claude here, c continues the last session, q leaves a shell$" "$BATS_TEST_TMPDIR/pane-alpha.out"
+}
+
+@test "run --as --wait: Return starts a session, and the pane waits again when it ends" {
+  FAKE_SHELL_SLEEP=1 pane alpha
+  press alpha ''
+  until_ok 'grep -q "pwd=$REPO/.claude/worktrees/alpha args=.*claude-peer proj-alpha\$" "$FAKE_SHELL_LOG"'
+  run sh "$BIN" slots
+  [[ "$output" == "alpha"$'\t'"running"$'\t'* ]]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  [ -z "$(sh "$BIN" peers)" ]
+  [ "$(find "$REPO/.git" -name claude-peer.claim | wc -l | tr -d ' ')" -eq 0 ]
+  [ "$(grep -c "Return starts a Claude here" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 2 ]
+}
+
+@test "run --as --wait: c continues, q leaves a shell, anything else asks again" {
+  FAKE_SHELL_SLEEP=1 pane alpha
+  press alpha c
+  until_ok 'grep -q "claude-peer proj-alpha --continue\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  press alpha x
+  until_ok '[ "$(grep -c "Return starts a Claude here" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 3 ]'
+  [ "$(shell_runs)" -eq 1 ]
+  press alpha q
+  until_ok '[ "$(tail -n 1 "$FAKE_SHELL_LOG")" = "pwd=$REPO args=-i" ]'
+  [ -z "$(sh "$BIN" slots)" ]
+  ! ls "$REPO/.git/claude-peer.wait/" | grep .
+}
+
+@test "run --as --wait: outside a repository it is one line and a plain shell" {
+  mkdir "$BATS_TEST_TMPDIR/norepo"
+  cd "$BATS_TEST_TMPDIR/norepo"
+  run sh "$BIN" run --as alpha --wait
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not in a git repository, so there is no worktree to give this peer; plain shell"* ]]
+  [[ "$output" == *'args=-i' ]]
+}
+
+@test "start: wakes the pane; the prompt arrives as one final argument" {
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  run sh "$BIN" start alpha fix the thing
+  [ "$status" -eq 0 ]
+  [ "$output" = "alpha"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"started"$'\t'"proj-alpha" ]
+  # the claim exists a moment before the shell has run
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = "fix the thing" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/last.n")" -eq 6 ]
+  grep -q "claude-peer proj-alpha fix the thing\$" "$FAKE_SHELL_LOG"
+}
+
+@test "start: a prompt from stdin arrives byte for byte" {
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  want=$'say "hi" $HOME `x` \'y\' \\n\nsecond line'
+  run sh -c 'printf "%s" "$1" | sh "$2" start alpha -' _ "$want" "$BIN"
+  [ "$status" -eq 0 ]
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = "$want" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/last.n")" -eq 6 ]
+}
+
+@test "start: --continue goes before the prompt; with no prompt it is the only extra argument" {
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  run sh "$BIN" start alpha --continue go on
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha --continue go on\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  : >"$FAKE_SHELL_LOG"; rm -f "$BATS_TEST_TMPDIR/last.n"
+  run sh "$BIN" start alpha --continue
+  [ "$status" -eq 0 ]
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  grep -q "claude-peer proj-alpha --continue\$" "$FAKE_SHELL_LOG"
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = "--continue" ]
+}
+
+@test "start: no waiting pane is 4, a running slot is 3, a prompt that begins with - is 2" {
+  run sh "$BIN" start alpha
+  [ "$status" -eq 4 ]
+  [[ "$output" == *"no pane is waiting in this repository"* ]]
+  hold alpha
+  run sh "$BIN" start alpha
+  [ "$status" -eq 3 ]
+  [ "$output" = "alpha"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"running"$'\t'"proj-alpha" ]
+  run sh "$BIN" start beta -- -x
+  [ "$status" -eq 2 ]
+  run sh "$BIN" start beta -x
+  [ "$status" -eq 2 ]
+  run sh "$BIN" start 'Bad Slot'
+  [ "$status" -eq 1 ]
+  [ "$(shell_runs)" -eq 0 ]
+}
+
+@test "start: two leaders' panes for one slot, --leader picks one, an unrelated directory neither" {
+  FAKE_SHELL_SLEEP=2 pane alpha "$REPO" a
+  mkdir "$REPO/sub" "$REPO/other"
+  FAKE_SHELL_SLEEP=2 pane alpha "$REPO/sub" b
+  pb=$LAST_PANE
+  cd "$REPO/other"
+  run sh "$BIN" start alpha
+  [ "$status" -eq 4 ]
+  [[ "$output" == *"$REPO"*"$REPO/sub"* ]]
+  [ "$(sh "$BIN" slots | grep -c waiting)" -eq 2 ]
+  run sh "$BIN" start alpha --leader "$REPO/sub"
+  [ "$status" -eq 0 ]
+  run sh "$BIN" peers
+  [ "$(printf '%s' "$output" | cut -f2,3)" = "$pb"$'\t'"$REPO/sub" ]
+  [ "$(sh "$BIN" slots | grep -c waiting)" -eq 1 ]
+}
+
+@test "start: a pane with no terminal still starts on a request" {
+  FAKE_SHELL_SLEEP=2 PANE_TTY=/nonexistent pane alpha
+  run sh "$BIN" start alpha
+  [ "$status" -eq 0 ]
+  [[ "$output" == *$'\t'"started"$'\t'"proj-alpha" ]]
+}
+
+@test "start: a slot the pane did not start with is still started in it" {
+  FAKE_SHELL_SLEEP=2 pane alpha
+  run sh "$BIN" start beta
+  [ "$status" -eq 0 ]
+  [ "$output" = "beta"$'\t'"$REPO/.claude/worktrees/beta"$'\t'"started"$'\t'"proj-beta" ]
+  [ ! -e "$REPO/.claude/worktrees/alpha" ]
+}
+
+@test "stop: TERMs an idle session, refuses a busy one, --force stops anything under the claim" {
+  cfg=$BATS_TEST_TMPDIR/cfg
+  mkdir -p "$cfg/sessions"
+  export CLAUDE_CONFIG_DIR=$cfg
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 3 ]
+  [ "$output" = "alpha"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"not-running" ]
+  FAKE_SHELL_SLEEP=30 FAKE_SHELL_PID="$BATS_TEST_TMPDIR/shpid" pane alpha
+  sh "$BIN" start alpha >/dev/null
+  until_ok '[ -s "$BATS_TEST_TMPDIR/shpid" ]'
+  sp=$(cat "$BATS_TEST_TMPDIR/shpid")
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"alpha is unknown; stop --force to stop it anyway"* ]]
+  printf '{"pid": %s, "status": "busy"}\n' "$sp" >"$cfg/sessions/$sp.json"
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"alpha is busy; stop --force"* ]]
+  kill -0 "$sp"
+  printf '{"pid": %s, "status": "idle"}\n' "$sp" >"$cfg/sessions/$sp.json"
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  [ "$output" = "alpha"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"stopped" ]
+  ! kill -0 "$sp" 2>/dev/null
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  [ -d "$REPO/.claude/worktrees/alpha" ]
+}
+
+@test "stop --force: no registry record, every process under the claim is stopped" {
+  export CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/empty
+  FAKE_SHELL_SLEEP=30 FAKE_SHELL_PID="$BATS_TEST_TMPDIR/shpid" pane alpha
+  sh "$BIN" start alpha >/dev/null
+  until_ok '[ -s "$BATS_TEST_TMPDIR/shpid" ]'
+  sp=$(cat "$BATS_TEST_TMPDIR/shpid")
+  run sh "$BIN" stop alpha --force
+  [ "$status" -eq 0 ]
+  [[ "$output" == *$'\t'"stopped" ]]
+  ! kill -0 "$sp" 2>/dev/null
+}
+
+@test "claude-peer.start = auto: the pane starts a session after the settle delay, then waits" {
+  git config claude-peer.start auto
+  mkfifo "$BATS_TEST_TMPDIR/tty-alpha"
+  CLAUDE_PEER_SETTLE=2 FAKE_SHELL_SLEEP=1 CLAUDE_PEER_TTY="$BATS_TEST_TMPDIR/tty-alpha" \
+    sh "$BIN" run --as alpha --wait >"$BATS_TEST_TMPDIR/pane-alpha.out" 2>&1 3>&- &
+  PANES="$PANES $!"
+  sleep 0.5
+  [ "$(shell_runs)" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  [ "$(shell_runs)" -eq 1 ]
+}
+
+@test "the pool: a taken name sends the pane to the pool's fourth, and says so" {
+  hold alpha
+  pane alpha
+  press alpha ''
+  until_ok 'grep -q "claude-peer proj-delta\$" "$FAKE_SHELL_LOG"'
+  grep -qF "Delta (this pane's Alpha is in use by the peers of $REPO/sub)" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  [ ! -e "$REPO/.claude/worktrees/beta" ]
+}
+
+@test "the pool: a pane takes its own slot when free, whatever order the panes start in" {
+  FAKE_SHELL_SLEEP=3 pane gamma
+  press gamma ''
+  until_ok 'grep -q "claude-peer proj-gamma\$" "$FAKE_SHELL_LOG"'
+  ! grep -q "Gamma (" "$BATS_TEST_TMPDIR/pane-gamma.out"
+}
+
+@test "the pool: with every name held the pane says so and goes on waiting" {
+  git config claude-peer.slots 'alpha beta'
+  hold alpha
+  hold beta
+  pane alpha
+  press alpha ''
+  until_ok 'grep -q "all 2 slots are in use in $REPO" "$BATS_TEST_TMPDIR/pane-alpha.out"'
+  until_ok '[ "$(grep -c "Return tries again" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 1 ]'
+  [ "$(sh "$BIN" slots | grep -c waiting)" -eq 1 ]
+  [ "$(shell_runs)" -eq 0 ]
+}
+
+@test "the pool: a configured pool falls back to a free one of the first three" {
+  git config claude-peer.slots 'alpha beta gamma delta'
+  hold alpha
+  hold delta
+  pane alpha
+  press alpha ''
+  until_ok 'grep -q "claude-peer proj-beta\$" "$FAKE_SHELL_LOG"'
+}
+
+@test "start next: the pane's own slot when free, else by the pool; all held is 3" {
+  FAKE_SHELL_SLEEP=2 pane alpha
+  run sh "$BIN" start next
+  [ "$status" -eq 0 ]
+  [ "$output" = "alpha"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"started"$'\t'"proj-alpha" ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  git config claude-peer.slots 'alpha beta'
+  hold alpha
+  hold beta
+  run sh "$BIN" start next
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"all 2 slots are in use"* ]]
+}
+
+@test "a waiting pane's stale files are cleared by the next pane that registers" {
+  mkdir -p "$REPO/.git/claude-peer.wait"
+  w=$REPO/.git/claude-peer.wait
+  : >"$w/alpha.2147483646"; : >"$w/alpha.2147483646.key"; : >"$w/beta.2147483646.start"
+  pane gamma
+  ! ls "$w" | grep 2147483646
+  [ "$(sh "$BIN" slots | cut -f1)" = gamma ]
+}
+
+@test "a killed pane takes its reader and its wait file with it" {
+  pane alpha
+  pp=$LAST_PANE
+  kids=$(ps -Ao pid=,ppid= | awk -v p="$pp" '$2 == p { print $1 }')
+  [ -n "$kids" ]
+  kill "$pp"
+  until_ok '! kill -0 $pp 2>/dev/null'
+  for k in $kids; do until_ok "! kill -0 $k 2>/dev/null"; done
+  [ -z "$(ls "$REPO/.git/claude-peer.wait")" ]
+}
+
+@test "hermes --wait: asks hermes_peer to wait for Return, unless claude-peer.start is auto" {
+  run sh "$BIN" hermes --wait
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"hermeswait=1"* ]]
+  run sh "$BIN" hermes
+  [[ "$output" == *"hermeswait=unset"* ]]
+  git config claude-peer.start auto
+  run sh "$BIN" hermes --wait -- --foo
+  [[ "$output" == *"hermeswait=unset"* ]]
+  [[ "$output" == *' claude-peer --foo' ]]
 }
 
 # --- workgroup / install / status ----------------------------------------------

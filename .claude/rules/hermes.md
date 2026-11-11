@@ -75,5 +75,10 @@ shell. The gate cannot be left to the wrapper, which passes an unrouted
 directory through to Hermes' own resolution — the sticky `active_profile`
 would then run one account's profile in another account's repo. Isolation
 follows `hermes.worktree` and is not forced, and a refusal (profile mapped but
-not created, retired launcher pin) is the wrapper's own. `hermes-doctor` has a
+not created, retired launcher pin) is the wrapper's own. With
+`CLAUDE_PEER_HERMES_WAIT=1` (exported by `claude-peer hermes --wait`) a routed
+directory first loops `Hermes (<profile>): Return starts hermes here, q leaves
+a shell`: Return runs `hermes`, `q` returns, anything else asks again; an
+unrouted directory prints its one line without asking, and a `hermes_peer`
+older than this ignores the variable and starts at once. `hermes-doctor` has a
 `peer:` line saying which of the two the cwd gets.

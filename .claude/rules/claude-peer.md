@@ -83,16 +83,77 @@ prints `worktree<TAB>pid<TAB>leader<TAB>label` for each live claim in the
 repository, on every OS. Residual: breaking a stale lock is not atomic, so two
 waiters racing at the instant a holder was killed can still collide; the
 claim's re-read is the backstop. `git worktree add` runs immune to hangup so a
-pane torn down mid-checkout leaves no half-made tree. `status` adds `peers: <n>
-running in <repo>` with the running labels when run inside a repository, and
+pane torn down mid-checkout leaves no half-made tree. `status` adds `peers: <r>
+running, <w> waiting in <repo>` with the running labels when run inside a
+repository, and
 `leftover: <k> peer-N worktrees from the retired scratch layout (...)` when
 registered `peer-N` worktrees remain; nothing uses or removes them any more
 (`git worktree remove <path>`).
 
+**A pane waits until it is told.** `claude-peer run --as <slot> --wait` is
+what a slot pane runs: it prints `<Label>: Return starts a Claude here, c
+continues the last session, q leaves a shell` and makes no worktree, claim or
+Claude until it is woken. Return starts a fresh session, `c` one with
+`--continue`, `q` (or Ctrl-C) removes its wait file and leaves a plain shell,
+anything else asks again; when the session ends for any reason the claim goes
+and the pane waits again, so a pane never ends. A waiting pane owns
+`<git common dir>/claude-peer.wait/<slot>.<pid>` (line 1 the leader's
+directory); the next pane to register deletes the files of dead pids. Outside a
+repository the pane prints one line and leaves a plain shell. `git config
+claude-peer.start auto` (read in the starting directory; the public repo sets it
+nowhere) makes a pane settle `CLAUDE_PEER_SETTLE` seconds (default 2, 0
+disables), start one fresh session, then wait like any other.
+
+The wait is a trapped signal, not a poll. The pane blocks in `wait` on a
+background reader of one line from `${CLAUDE_PEER_TTY:-/dev/tty}` (a long
+`sleep` when there is no terminal, so only a request wakes it), and `USR1`
+interrupts a trapped `wait` at once in every shell this runs under (`/bin/sh` is
+bash 3.2 on macOS, dash on Linux); a trapped signal does not reliably interrupt
+`read` in bash 3.2, and a once-a-second poll would fork in every pane of every
+tab. Whole lines, not one keypress, because a single key needs `stty -icanon`,
+a terminal state that has to be restored on every exit path. The pane ignores
+`TTIN` and `TTOU`, so a reader that finds the terminal taken fails instead of
+stopping and the pane falls back to request-only waiting; its claude gets them
+back. TERM and HUP kill the reader and delete the wait file.
+
+**The pool.** A pane's slot is a preference. The pool is the words of `git
+config claude-peer.slots` (default `alpha beta gamma delta epsilon zeta eta theta
+iota kappa lambda mu`); its first three are the bar's names. A pane takes its
+own slot when no Claude runs in it, else the first free name from the pool's
+fourth on, and only then a free one of the first three, so one tab is always
+Alpha, Beta, Gamma under their labels and a second tab gets Delta, Epsilon,
+Zeta, never a name from under the first. It prints the name it took, and `(this
+pane's Alpha is in use by the peers of <leader>)` when that differs. With every
+name taken it prints `all <n> slots are in use in <repo>` and `Return tries
+again`, and waits. `next` is not a slot name.
+
+**`start`, `stop` and `slots` are the operator's.** A session runs them only when
+asked. `claude-peer start <slot|next> [--continue] [--leader <dir>] [--]
+[prompt words…]` writes a request file (`<slot>.<pid>.start`: line 1 `fresh` or
+`continue`, line 2 the slot or `-` for the pane's own rule, the rest the prompt)
+beside the pane's wait file, sends `USR1` (again once a second while the file is
+there; a signal that lands before the pane's `wait` begins is lost), and polls up
+to `CLAUDE_PEER_START_WAIT` seconds (default 60) for a claim held by that pane.
+The prompt is one argument, last, never re-parsed by a shell; `-` reads it from
+stdin, and one that begins with `-` is a usage error. With several leaders'
+panes waiting only those of `--leader` (default the caller's directory) are
+candidates; the pane whose own slot is the one asked for wins, else the first
+by label. `stop <slot> [--force]` sends TERM to the claude under the claim's pid
+whose `sessions/<pid>.json` record, in `$CLAUDE_CONFIG_DIR` or a
+`claude.profile.*` directory, says `idle` (that layout is observed, not an
+interface); a busy or unknown session is refused unless `--force`, which stops
+every process under the claim. The worktree and transcript are never touched.
+`slots [<dir>]` prints `slot<TAB>running|waiting<TAB>worktree<TAB>pid<TAB>
+leader<TAB>session name` for the repository. Exit codes: 0 done; 1 failed; 2
+usage; 3 already in the requested state (running, not running, no slot free);
+4 nothing to act on (no pane waiting); 5 refused because busy.
+
 **The Hermes peer** is a plain shell unless a Hermes profile routes the
-directory. `claude-peer hermes [-- hermes args…]` needs no repository, makes no
-worktree, writes no claim and sets no `CLAUDE_PEER_WORKTREE`; it settles
-`CLAUDE_PEER_SETTLE` seconds, then `exec`s an interactive shell that calls the
+directory. `claude-peer hermes [--wait] [-- hermes args…]` needs no repository,
+makes no worktree, writes no claim and sets no `CLAUDE_PEER_WORKTREE`; it
+settles `CLAUDE_PEER_SETTLE` seconds (with `--wait`, unless `claude-peer.start`
+is `auto`, it exports `CLAUDE_PEER_HERMES_WAIT=1` instead and does not settle,
+`hermes_peer` asking for Return), then `exec`s an interactive shell that calls the
 zsh function `hermes_peer` (see `hermes.md`: the gate is
 `hermes_profile`, so no account name is tested here) and then stays a shell
 whatever that did, so the pane ends at a prompt, never at iTerm2's restart

@@ -1354,14 +1354,24 @@ function hermes() {
 # routes nowhere through to hermes' own resolution, whose sticky default
 # would put one account's profile in another account's repo. So run hermes()
 # only where hermes_profile routes this directory; otherwise say so and leave
-# the pane as a plain shell. Everything else — the pin, the refusal of an
+# the pane as a plain shell. With CLAUDE_PEER_HERMES_WAIT=1 (`claude-peer
+# hermes --wait`) a routed directory first asks for Return. Everything else — the pin, the refusal of an
 # uncreated profile, hermes.worktree, the ollama start — is the wrapper's.
 function hermes_peer() {
 	emulate -L zsh;
-	hermes_profile >/dev/null || {
+	local prof ans;
+	prof="$(hermes_profile)" || {
 		print -r -- "claude-peer: no Hermes profile for this account; plain shell (hermes-doctor explains)";
 		return 0;
 	};
+	if [[ ${CLAUDE_PEER_HERMES_WAIT-} == 1 ]]; then
+		while true; do
+			print -r -- "Hermes ($prof): Return starts hermes here, q leaves a shell";
+			read -r ans || return 0;
+			[[ $ans == q ]] && return 0;
+			[[ -z $ans ]] && hermes "$@";
+		done;
+	fi;
 	hermes "$@";
 }
 
