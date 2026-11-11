@@ -315,6 +315,128 @@ EOF")"
   [ -z "$output" ]
 }
 
+# --- the opener line's tail, and what counts as a heredoc at all -------------
+#
+# Until 2026-11-11 the scan stopped at the first `<<` on a line: a redirect,
+# an argument or a whole command written after the marker went unread, and a
+# here-string or a shift counted as a marker too. Each command is built in a
+# variable first so its quotes and `$((` reach the hook untouched.
+
+@test "heredoc tail: a redirect after the marker into a denied tree is refused" {
+  local cmd="cat <<EOF > $HOME/code/octo-secret/new.txt
+body
+EOF"
+  run hook "$(evt_ml "$HOME/code" "$cmd")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]]
+  [[ "$output" == *"octo-secret/new.txt is inside"* ]]
+}
+
+@test "heredoc tail: a command chained after the marker is scanned, whatever joins it" {
+  local sep cmd
+  for sep in '&&' '|' ';'; do
+    cmd="cat <<EOF $sep cat $HOME/code/octo-secret/x
+body
+EOF"
+    run hook "$(evt_ml "$HOME/code" "$cmd")"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'"permissionDecision": "deny"'* ]] || { echo "allowed with separator $sep"; false; }
+  done
+}
+
+@test "heredoc tail: an argument after the marker still belongs to its command" {
+  # grep -r reads the directory, not the heredoc: the recursion signal and
+  # the ancestor path sit either side of the marker.
+  local cmd="grep -r foo <<EOF $HOME/code
+body
+EOF"
+  run hook "$(evt_ml "$HOME/code" "$cmd")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"recurses here"* ]]
+}
+
+@test "a here-string is not a heredoc: the rest of its line and the lines after it are scanned" {
+  local cmd="cat <<< hi && cat $HOME/code/octo-secret/x"
+  run hook "$(evt_ml "$HOME/code" "$cmd")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]]
+  cmd="grep foo <<< hello $HOME/code/octo-secret/x"
+  run hook "$(evt_ml "$HOME/code" "$cmd")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]]
+  # Nor does it open a body: a later line that equals its word ends nothing.
+  cmd="cat <<< hi
+find $HOME/code -name x
+hi"
+  run hook "$(evt_ml "$HOME/code" "$cmd")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"recurses here"* ]]
+}
+
+@test "a shift or a quoted << is not a heredoc: the rest of the command is scanned" {
+  local cmd='echo $((1<<2)); cat '"$HOME/code/octo-secret/x"
+  run hook "$(evt_ml "$HOME/code" "$cmd")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]]
+  cmd='echo "1 << 2"; cat '"$HOME/code/octo-secret/x"
+  run hook "$(evt_ml "$HOME/code" "$cmd")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]]
+  cmd='echo "1 << 2"; grep -r foo '"$HOME/code"
+  run hook "$(evt_ml "$HOME/code" "$cmd")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"recurses here"* ]]
+  # Even when a later line happens to equal the shift count.
+  cmd='printf "%d" $((1<<4))'"
+find $HOME/code -name x
+4"
+  run hook "$(evt_ml "$HOME/code" "$cmd")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"recurses here"* ]]
+}
+
+@test "a << with no terminator line opens nothing: its lines keep the full rule set" {
+  local cmd="cat <<EOF
+find $HOME/code -name x"
+  run hook "$(evt_ml "$HOME/code" "$cmd")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"recurses here"* ]]
+}
+
+@test "heredoc tail: a data heredoc with a harmless tail still passes prose naming an ancestor" {
+  local cmd="cat <<EOF > notes.md && echo done
+the fix stops grep -r on $HOME/.claude-fixture from being refused
+EOF
+ls $HOME/code"
+  run hook "$(evt_ml "$HOME/code" "$cmd")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  cmd='grep gizmo <<< "some text"'
+  run hook "$(evt_ml "$HOME/code/octo-alpha" "$cmd")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "heredoc controls: a denied path before the marker or after the terminator is still refused" {
+  local cmd="cat $HOME/code/octo-secret/x <<< hi"
+  run hook "$(evt_ml "$HOME/code" "$cmd")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]]
+  cmd="cat > $HOME/code/octo-secret/new.txt <<EOF
+body
+EOF"
+  run hook "$(evt_ml "$HOME/code" "$cmd")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]]
+  cmd="cat <<EOF
+body
+EOF
+cat $HOME/code/octo-secret/x"
+  run hook "$(evt_ml "$HOME/code" "$cmd")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]]
+}
+
 @test "find over the bare home directory is still refused" {
   run hook "$(evt "$HOME/code" "find $HOME -name x")"
   [ "$status" -eq 0 ]

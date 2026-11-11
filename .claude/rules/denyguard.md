@@ -50,10 +50,32 @@ contains the letter (`sort -nr`, `ls -ltr`). First three real firings were
 all false positives of the OLD, whole-command version of this check
 (2026-09-18); this narrowing is that fix.
 
+**A heredoc is only the lines between an opener and its terminator.** The
+line that opens one is a command line like any other: it is scanned whole,
+minus the `<<WORD` operator itself, so a redirect, an argument or a chained
+command written after the marker (`cat <<EOF > path`, `cat <<EOF && cmd`,
+`grep -r x <<EOF dir`) is read exactly as it would be before it. `<<WORD`
+opens a heredoc only when a later line is exactly `WORD` (whitespace
+stripped for `<<-`); with no terminator it opens nothing and every line
+keeps the full rule set. `<<<` is a here-string and never opens one — its
+text is scanned like any other argument — and neither does a shift inside
+`$(( ))`. Being read as a heredoc only ever relaxes the scan (the data body
+above), so every doubtful case falls to the strict side. Until 2026-11-11
+the scan stopped at the marker: whatever followed `<<` on that line went
+unread, here-strings and shifts included, which let `cat <<EOF > <denied
+path>` through — the most common way an agent writes a file.
+
 **What it cannot see.** This is a lexical guard, not a sandbox: a shell
 variable other than `$HOME`, `$(...)` output, a script file's own
 contents, `find <parent> -exec` without a recursive tell, `eval`, base64,
 or any program that computes the path at run time all pass through unseen.
+Heredoc reading has two soft spots of its own: a `<<WORD` inside a quoted
+string still counts as an opener when a later line happens to be exactly
+`WORD` (and its lines get the data reading if that line starts with
+`cat`/`tee`/`printf`), and a delimiter with characters outside
+`[A-Za-z0-9_]`, or a second heredoc opened on the same line, is not
+recognised — its body is read as ordinary commands, which is strict, not
+blind.
 One gap is worth stating separately because a rule's *shape* invites
 over-trust: a token containing a glob is matched only against rules that
 carry a directory prefix, so a bare any-depth rule (`Read(**/*.env)`) does
