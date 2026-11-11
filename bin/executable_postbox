@@ -3,7 +3,7 @@
 #
 # Claude Code can already message another session natively, but only one
 # that shares its config directory, and only one at a time. With several
-# profiles on one machine (see "Claude Code profiles" in CLAUDE.md) that
+# profiles on one machine (see .claude/rules/claude-profiles.md) that
 # leaves two gaps: a session in one profile cannot reach a session in
 # another, and no session can hold a conversation with two others at once.
 # postbox fills exactly those two gaps and nothing else — the native path

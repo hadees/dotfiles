@@ -127,7 +127,7 @@ never a public one.
 
 `user.name`, `user.email`, and `includeIf` routing by SSH remote alias, plus
 signing (`commit.gpgsign`, `gpg.format = ssh`, `gpg.ssh.program`,
-`user.signingkey`) — see CLAUDE.md "Commit signing". The public `.gitconfig`
+`user.signingkey`) — see `.claude/rules/git-identity.md`. The public `.gitconfig`
 ends by including both files; git silently skips whichever is absent.
 
 Routing alone is advice: a repo cloned with a URL shape the `includeIf`
@@ -295,7 +295,7 @@ workflow contains no names — it calls `worktabs`, which reads this config.
 
 `~/bin/workset` opens one Claude Code session over N repos at once — a
 worktree per member, one branch, the session launched in the primary's
-worktree with `--add-dir` for the rest (see CLAUDE.md, "Working sets"). Set
+worktree with `--add-dir` for the rest (see `.claude/rules/workset.md`). Set
 names and member paths are private the same way `[workspace]` entries are,
 so the whole list lives here too:
 
@@ -505,8 +505,8 @@ names count as private (they name accounts and companies).
 
 The public `bin/executable_denyguard` and its `PreToolUse` block are
 identity-free; only the *file* they get pasted into is private, because
-each profile's `settings.json` is overlay-owned (see "Deny rules reach
-Bash" in CLAUDE.md). Paste `denyguard settings`'s output into each
+each profile's `settings.json` is overlay-owned (see
+`.claude/rules/denyguard.md`). Paste `denyguard settings`'s output into each
 profile's settings source as an additional `PreToolUse` matcher, keeping
 its `exit 2` branch intact — that branch is what makes a missing
 `~/bin/denyguard` block Bash instead of silently allowing it.
@@ -516,8 +516,8 @@ its `exit 2` branch intact — that branch is what makes a missing
 iTerm2's Session Status rows come from its `cc-status` binary, which its
 onboarding wires into a profile's hook events; the public
 `dot_local/libexec/cc-status-shim/` shim takes that slot so a stale
-background task stops pinning a tab at "working" (see "Session Status rows
-come from Claude Code hooks" in CLAUDE.md). The shim is identity-free; only
+background task stops pinning a tab at "working" (see
+`.claude/rules/cc-status-shim.md`). The shim is identity-free; only
 the *file* that names it is private, because each profile's `settings.json`
 is overlay-owned. Do not paste `cc-status settings`'s output by hand — it
 bakes in whatever `$HOME` was when it ran. Write the command as a template

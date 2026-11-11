@@ -6,7 +6,7 @@ paths:
 
 # The doctors
 
-`wrangler-doctor` traces all of the above for the cwd (pin, mapping,
+`wrangler-doctor` traces the wrangler routing for the cwd (pin, mapping,
 profile existence, binding, what wrangler will use) without running
 wrangler; `gh-doctor` and `claude-doctor` do the same for their wrappers
 (`gh-doctor` also verifies the stored token really authenticates as the

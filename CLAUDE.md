@@ -58,7 +58,7 @@ bats tests
 
 # Run a single test file
 bats tests/macos.bats
-bats tests/bootstrap.bats
+bats tests/chezmoi.bats
 ```
 
 `bats` must run under **bash ≥ 4**: macOS's `/bin/bash` 3.2 does not fail a
@@ -76,7 +76,8 @@ overlay carries a matching `run-<overlay>` skill that stacks itself on it.
 Skill directories are dot-prefixed, so chezmoi never deploys them.
 
 CI (`.github/workflows/tests.yml`) runs the suite on `ubuntu-latest`,
-`macos-latest`, Rocky Linux 9 (container), and WSL Ubuntu (windows runner).
+`macos-latest`, Rocky Linux 9 (container), and WSL Ubuntu (windows runner), plus a container
+job that runs the one-shot install end to end.
 The macOS job additionally executes `.macos` for real and asserts settings
 stuck (`tests/macos-apply.bats`) — safe there because runners are throwaway
 VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
@@ -100,7 +101,7 @@ VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 - **`.chezmoiignore`** — target paths chezmoi must not manage (repo-level files everywhere, `CLAUDE.md` and `com.googlecode.iterm2.plist` among them; macOS GUI config off-mac; identity/secrets on `ephemeral`)
 - **`bootstrap.sh`** — deprecated wrapper around `chezmoi init --source . --apply`
 - **`docs/watchlist.md`** — tools evaluated and parked as "not yet", each with what would make it worth another look; check it before re-evaluating something, and add to it when an evaluation ends in "not yet"
-- **`.macos`** — macOS `defaults write` settings; reads `$COMPUTER_NAME` env var for machine-specific naming; also enables Touch ID for sudo (via `/etc/pam.d/sudo_local`, Apple's update-proof hook) and a global sudo timestamp (`/etc/sudoers.d/timestamp`, `visudo`-checked before install, mode 0440), because a per-process cache plus Touch ID means one prompt per step for anything that runs sudo from fresh processes; the 60-minute timeout is a preference, overridable with `$SUDO_TIMESTAMP_TIMEOUT`
+- **`.macos`** — macOS `defaults write` settings; reads `$COMPUTER_NAME` env var for machine-specific naming; also Touch ID for sudo and a global sudo timestamp (the `.macos` comments say why)
 - **`Brewfile`** — Homebrew formulae, casks, and Mac App Store apps (macOS only; `.chezmoiscripts/darwin/` runs `brew bundle` when it changes)
 - **`packages-apt.txt`** — Debian/Ubuntu/WSL package list (`.chezmoiscripts/linux/` installs it when it changes; skips gracefully without apt or sudo)
 - **`packages-apt-wsl.txt`** — WSL-only additions, installed on top of the shared list when the machine class is `wsl`
@@ -108,6 +109,14 @@ VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 - **Claude Code statusline** — lives in a private skills marketplace repo (skill `claude-statusline`), not here. Install once per machine with `/claude-statusline`; the plugin's session-start hook keeps the installed copies in `~/.claude` current after that. `~/.claude/settings.json` comes from the work overlay, so on a machine without that overlay there is no statusLine command to be dead.
 - **`init/`** — one-time setup scripts
 - **`theme/`** — Base16 Eighties color themes (darkened bg `#1a1a1a`) for iTerm2, Terminal.app, and Alfred; VSCode uses the `bsides.Theme-Base16-Eighties` extension installed by `.macos`. Terminal apps (bat, delta, fzf, k9s, vim) use `base16-256`/`base16-eighties` and inherit the iTerm palette.
+
+`com.googlecode.iterm2.plist` is tracked because iTerm2's custom prefs
+folder is this clone. iTerm2 rewrites it at every quit, so it is usually
+modified in `git status`. That is iTerm2 saving. Never stage it with other
+work.
+
+`.claude/agents/public-clone-advocate.md` reviews a change to the public
+source from the position of a stranger's clone; its description says when.
 
 ### Commit and push gates
 
@@ -204,6 +213,42 @@ purely a function of which overlays a machine carries.
   messages, added lines, and author/committer identities — and its
   `tests/no-public-leak.bats` audits the whole clone the same way.
 
+### Where the detail lives
+
+Design notes for each tool are in `.claude/rules/<name>.md`. A rule loads
+by itself when a file it covers is opened with Read or Edit. It does not
+load for `grep` or `sed`, for a question that opens no file, or when this
+repo is an added directory of another session. In those cases read the
+rule first.
+
+| Rule | Covers |
+| --- | --- |
+| `git-hooks` | the identity and push gates, the `hook.<name>.run` chain |
+| `git-identity` | signing setup, `bin/git-ssh-pinned`, credential routing |
+| `onepassword` | the three 1Password channels, `onepassword-doctor`, the skill's `VERSIONS` |
+| `packages` | Brewfile and apt lists, the install scripts, `update()` |
+| `composed-identity-files` | ssh config fragments, `allowed_signers`, first-wins against last-wins |
+| `claude-profiles` | `claude()`, per-repo pins, the second-session question, agent stubs |
+| `browser-routing` | `open-as`, `chrome-pairing`, the iTerm2 browser tab, Finicky |
+| `denyguard` | the Bash deny hook, what it cannot see, why it fails closed |
+| `worktabs` | the iTerm2 tab launcher, `workspace.*` config, the Alfred workflow |
+| `claude-peer` | Workgroup peers, scratch worktrees, claims, the Hermes peer |
+| `claude-tab` | `claude-tab` list, focus, save, restore; `tabname` |
+| `postbox` | cross-profile session mail, its hooks, the courier, the roll-call |
+| `remote-mcp` | bearer-token MCP servers, the tailnet forwarder |
+| `wrangler` | Cloudflare auth profiles and bindings |
+| `doctors` | what each `*-doctor` prints, the `defined:` and `binary:` lines |
+| `hermes` | Hermes profiles, `hermes.worktree`, `hermes_peer` |
+| `tailnet` | a userspace tailscaled per tailnet, the ssh and curl wrappers, mounts |
+| `routes` | the fleet routing table |
+| `workset` | working sets, the profile rule, the guard hooks |
+| `iterm2-skill` | the iTerm2 skill's stamp and `verify.sh`, the tracked plist |
+| `cc-status-shim` | Session Status rows, seat colours, row names, terminal titles |
+| `dot-functions` | what else lives in `dot_functions`, and `emulate -L zsh` |
+
+`docs/private-overlays.md` is the overlay manual. `docs/espanso.md` covers
+the text expander, whose config is a separate private repo.
+
 ### Claude Code profiles
 
 Each account has its own config directory, selected by `CLAUDE_CONFIG_DIR`.
@@ -242,6 +287,6 @@ enforces the invariant. The same collision is why a chezmoi-managed file can
 never use `op inject` syntax: `op inject`'s placeholder is a bare secret
 reference wrapped in `{{ }}`, which chezmoi reads as a template action.
 `onepasswordRead` is the chezmoi-side equivalent — don't convert between
-them. (Spelling that placeholder out here would itself trip the rendered-home
-leak guard in `tests/chezmoi.bats`, since this file deploys to `~/CLAUDE.md`;
-the skill has the literal form.)
+them. (Spelling that placeholder out here would add a second secret reference to
+this file, and `tests/no-secrets.bats` pins the count; the skill has the
+literal form.)
