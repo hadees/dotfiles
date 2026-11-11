@@ -49,4 +49,4 @@ renaming a fixture fragment and asserting the answer flips.
 Signing keys are never copied to a machine to make this work: the shared
 workstations sign and authenticate through an ssh agent **forwarded** from the
 mac (`ForwardAgent yes`, scoped to those hosts in the work fragment), so the
-private half stays in 1Password. See the Commit signing section.
+private half stays in 1Password. See `git-identity.md`.

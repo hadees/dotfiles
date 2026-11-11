@@ -34,7 +34,7 @@ denied, and to a session whose cwd already is one. `denyguard check
 that needs it (a working-set opener, for one), and `denyguard settings`
 prints the PreToolUse block below for a profile's `settings.json` to
 paste — it never edits one, since every profile's settings file is
-overlay-owned (see "Private overlays" below).
+overlay-owned (see the "Private overlays" section of CLAUDE.md).
 
 **An ancestor match needs a real recursion signal, in the same simple
 command.** Naming a directory that happens to be an ancestor of a denied

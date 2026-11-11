@@ -52,5 +52,5 @@ set `user.signingkey` to the literal public key (not `op-ssh-sign`, which
 only exists locally). There is **no GPG keypair** in this setup despite the
 `gpgsign` name.
 
-When signing breaks, read the next section before touching any config — the
+When signing breaks, read `onepassword.md` before touching any config — the
 usual failure is transient and not a misconfiguration at all.

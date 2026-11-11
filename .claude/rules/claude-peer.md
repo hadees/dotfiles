@@ -92,7 +92,7 @@ free)` when run inside a repository.
 directory. `claude-peer hermes [-- hermes args…]` needs no repository, makes no
 worktree, writes no claim and sets no `CLAUDE_PEER_WORKTREE`; it settles
 `CLAUDE_PEER_SETTLE` seconds, then `exec`s an interactive shell that calls the
-zsh function `hermes_peer` (see the Hermes section: the gate is
+zsh function `hermes_peer` (see `hermes.md`: the gate is
 `hermes_profile`, so no account name is tested here) and then stays a shell
 whatever that did, so the pane ends at a prompt, never at iTerm2's restart
 banner. A shell without `hermes_peer` (the installed definition is newer than
