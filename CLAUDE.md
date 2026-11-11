@@ -109,234 +109,38 @@ VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 - **`init/`** — one-time setup scripts
 - **`theme/`** — Base16 Eighties color themes (darkened bg `#1a1a1a`) for iTerm2, Terminal.app, and Alfred; VSCode uses the `bsides.Theme-Base16-Eighties` extension installed by `.macos`. Terminal apps (bat, delta, fzf, k9s, vim) use `base16-256`/`base16-eighties` and inherit the iTerm palette.
 
-### Commit identity gate (global git hooks)
+### Commit and push gates
 
-`dot_gitconfig` sets `core.hooksPath = ~/.git-hooks` (`dot_git-hooks/`).
-`pre-commit` refuses a commit whose author or committer email is not one of
-`identity.<account>.email` for the account the origin's owner is pinned to
-(same credential pins as the wrappers; the mapping is overlay-supplied, so
-a public-only clone has no opinion), or of `identity.<owner>/<repo>.email`
-when that per-repo pin exists (a side project committing under its own
-identity — mirrors `wrangler.<owner>/<repo>.profile`). `GIT_IDENTITY_CHECK=0` bypasses one
-commit; `git-doctor` shows the verdict (`gate:`).
+`dot_gitconfig` sets `core.hooksPath` to the deployed `dot_git-hooks/`, so
+these run in every repo on the machine:
 
-`pre-push` is the other real gate there, and it refuses two publications
-that cannot be taken back once a ref is on the remote: a commit still
-marked **unfinished**, and a **non-fast-forward push of a protected
-branch**. Mechanism here, policy in machine-local git config like
-everything else opinionated in this repo — `hook.pre-push.wip = false`
-turns the marker gate off, repeatable `hook.pre-push.protect` replaces the
-default branch list (`main`, `master`) — so a clone with no config gets the
-defaults and a stranger with a different workflow is one config line away
-rather than a fork away. The marker is matched as a standalone word
-anywhere in the subject, case-insensitively: Conventional Commits subjects
-lead with a type, so anchoring at the start would never fire on one, and
-the word boundary is what keeps `swipe` out (`[^[:alnum:]]`, not `\b`,
-which BSD grep drops). A force-push is not visible to a hook as a flag, so
-it is inferred the way git decides one is needed: the remote's commit is no
-longer an ancestor of what is being pushed.
+- **pre-commit** refuses a commit whose author or committer email is not one
+  of `identity.<account>.email` for the account the origin's owner is pinned
+  to, or of `identity.<owner>/<repo>.email` when that per-repo pin exists. A
+  public-only clone has no pins and no opinion. `GIT_IDENTITY_CHECK=0`
+  bypasses one commit.
+- **pre-push** refuses a commit still marked unfinished, and a
+  non-fast-forward push of a protected branch (`main` and `master` unless
+  configured). `GIT_PUSH_CHECK=0` bypasses both for one push; the
+  `hook.pre-push.run` chain still runs.
+- **Signing** is SSH-format through 1Password and machine-local: the
+  tracked `.gitconfig` never enables it. A signature that fails is nearly
+  always the app locked or an approval unanswered. Unlock, approve, retry
+  the same commit. Never commit unsigned, never turn `commit.gpgsign` off,
+  never set a repo-local identity or key.
 
-Two details are load-bearing. git hands the hook the remote's **live** sha,
-read over the push connection, so on a shared branch it is routinely a
-commit this clone has never fetched — the scan falls back to "everything
-this remote has not got" rather than letting `rev-list` fail into an empty,
-silently passing range, which is how a gate like this quietly disarms on
-exactly the branches that need it. And `GIT_PUSH_CHECK=0` bypasses both
-gates for one push but still **chains**: the ref list is drained before the
-bypass, so `hook.pre-push.run` — where the private overlay hangs its leak
-guard — runs on a forced push too. That is not this gate's to switch off.
-It also has no opinion on a ref deletion. Unlike `run-local-hook` it must
-not `exec` into the chain: an EXIT trap does not survive `exec`, and at one
-leaked ref list per push per repo that is unbounded. Every hook name there is
-a shim that first runs any `hook.<name>.run` git-config commands (repeatable,
-per-repo `.git/config`; a failure blocks; each gets the hook's arguments and a
-replay of its stdin — for pre-push, the refs being pushed) and then the repo's
-own `.git/hooks/<name>` — via `git rev-parse --git-common-dir`, never
-`--git-path hooks`, which honours `core.hooksPath` and would exec the shim
-itself. Tests: `tests/git-hooks.bats` — its fixture repos must use
-absolute paths for anything under `.git/`, or a relative path lands in this
-clone's `.git/hooks`. Full guide: `docs/private-overlays.md`.
-
-### Commit signing
-
-Commits are signed with **SSH-format signatures via 1Password**, not GPG.
-Signing is entirely machine-local: the tracked `.gitconfig` does NOT enable
-it, so a fresh machine defaults to unsigned commits instead of failing on a
-missing signer. Each machine opts in via untracked files:
-
-- `~/.gitconfig.local` (from the private overlay) and any per-identity include
-  it pulls in set `commit.gpgsign = true`, `gpg.format = ssh`,
-  `gpg.ssh.program = .../op-ssh-sign`, and
-  `user.signingkey = ~/.ssh/*.pub`.
-- `~/.ssh/config` points `IdentityAgent` at the 1Password agent socket; the
-  private keys live in 1Password and never touch disk. The `.pub` files are
-  just selectors.
-
-**Which key authenticates a `git@github.com:` remote** is the same question
-for ssh that the credential helper answers for https, and it has the same
-answer: `bin/git-ssh-pinned`, installed as `core.sshCommand` by the
-overlays. With several GitHub keys in one agent, ssh offers them in the
-agent's order and GitHub takes the first that authenticates — so a plain
-`git@github.com:` URL lands on whichever account owns *that* key, and every
-other account's private repos are "Repository not found". The old fix was a
-per-account `Host github-<account>` alias in every remote URL. The helper
-reads the owner out of the remote command git hands it (`git-upload-pack
-'<owner>/<repo>.git'`), resolves it through the credential pins to an
-account, and runs `ssh -o IdentitiesOnly=yes -i <identity.<account>.sshkey>`
-— a `.pub` selector; the private half stays in 1Password. It touches nothing
-else: an alias host, an unpinned owner, an account with no key declared, a
-non-GitHub host, or git's `-G` variant probe all pass through untouched, and
-`GIT_SSH_COMMAND=ssh` outranks it for one command. `identity.<owner>/<repo>
-.sshkey` pins one repo (a deploy key, a side project) above its owner's
-account, mirroring the gate's per-repo email pin. `git-doctor`'s `ssh:` line
-traces the same lookup for the cwd. Tests: `tests/git-ssh-pinned.bats`
-(stub ssh, sandboxed git config; the last test drives it through real git).
-The WSL class keeps its `core.sshCommand = ssh.exe` — that ssh reads the
-Windows-side config, where these key paths mean nothing.
-
-On a machine without 1Password (e.g. a remote Linux box), nothing needs
-disabling — signing is simply never enabled there. To sign on a remote you
-keep around, forward your local 1Password SSH agent over the connection and
-set `user.signingkey` to the literal public key (not `op-ssh-sign`, which
-only exists locally). There is **no GPG keypair** in this setup despite the
-`gpgsign` name.
-
-When signing breaks, read the next section before touching any config — the
-usual failure is transient and not a misconfiguration at all.
-
-### 1Password
-
-1Password is load-bearing in three unrelated places — it holds the SSH keys,
-it signs every commit, and it is where `~/.extra`'s secrets come from at
-apply time — over **three connections that fail independently**:
-
-1. the `op` CLI → the desktop app via `~/.config/op/op-daemon.sock`, gated by
-   `op signin` and a session that lapses;
-2. `ssh` and git-over-ssh → the agent socket named by `~/.ssh/config`'s
-   `IdentityAgent` (macOS: inside the app's group container — `~/.1password/
-   agent.sock` is the **Linux** path, and this repo deliberately names the
-   real one);
-3. `op-ssh-sign` → its own connection to the app.
-
-Treating those as one channel is the source of nearly every wasted hour here.
-Verified: **`op-ssh-sign` never reads `SSH_AUTH_SOCK`** (it signs with the
-variable unset, at the launchd default, and pointed at a nonexistent path),
-and **`ssh-add` never reads `~/.ssh/config`** (it speaks only to
-`$SSH_AUTH_SOCK`, which under Claude Code's Bash tool is macOS's launchd
-agent). So `ssh-add -l` listing keys is not evidence a commit will sign, and
-"The agent has no identities" is not evidence anything is broken.
-
-The concrete symptom that costs time: `git commit` dying with
-`error: 1Password: failed to fill whole buffer` / `fatal: failed to write
-commit object` while the agent lists keys and the app is running. That string
-is inside `op-ssh-sign` (Rust's `read_exact` error) and means the app's reply
-came up short — locked, approval unanswered, or restarting. It clears on
-unlock/approve + retry with **no config change**, which is itself the proof
-that nothing is misconfigured. Never respond by committing unsigned or
-turning `commit.gpgsign` off.
-
-`onepassword-doctor` reports all three channels separately (`ssh -G` for the
-`IdentityAgent`, `$SSH_AUTH_SOCK` on its own line), whether `~/.extra`
-mentions a routed token (**names only, never a value**), and a `skill:` line
-comparing the notes' version stamp to what is installed. `doctor` runs it
-last. Versions come off the install without executing anything — the CLI is a
-**cask**, so `bin_trace` reads it out of the Caskroom path, and the app's
-version comes from its `Info.plist`.
-
-The long form lives in the **`onepassword` skill**
-(`.claude/skills/onepassword/`, dot-prefixed so chezmoi never deploys it):
-the triage table, the `op` command surface and secret-reference grammar, the
-SSH agent in depth (`agent.toml`, the OpenSSH six-key limit), and 1Password's
-own release cadence and changelog locations. `VERSIONS` in that directory is
-the stamp the doctor compares against — **bump it only together with
-re-verifying the claims**, since a bumped stamp over stale prose silences the
-nudge without fixing anything. Tests: `tests/onepassword.bats` (stub
-op/ssh/ssh-add, sandboxed HOME; no vault or network touched).
+`git-doctor` shows the gate's verdict and the signing state. `doctor` runs
+every `*-doctor`; run the relevant one before guessing at a routing
+problem.
 
 ### Package lists
 
-CLI tools are declared per-OS — `Brewfile` (macOS), `packages-apt.txt`
-(Debian/Ubuntu/WSL), plus `packages-apt-wsl.txt` for what only makes sense
-inside WSL (today: `wslu`, whose `wslview` gives `xdg-open` a Windows browser
-to hand URLs to). The `wsl` class installs the shared list and then the WSL
-one; every other Linux class installs only the shared one, and only the
-lists it actually installs are hashed into the script, so editing the WSL
-list does not re-run installs on a plain Linux box. **When adding or removing a tool, update every list
-where it's available**, using each distro's native package name (e.g.
-Ubuntu's `bat` package installs the binary as `batcat`; the shell config's
-`command -v` guards tolerate the difference). If a tool exists on one
-platform only, note it in the list file. Homebrew is deliberately not used
-on Linux. The install scripts re-run automatically on `chezmoi apply`
-whenever their list's hash changes; the `ephemeral` machine class never
-runs them.
-
-**Two paths install from the `Brewfile`, and both pass `--no-upgrade`.** The
-`run_onchange_` script converges a machine when the list changes; `update()`
-installs whatever the list declares and the machine lacks, so editing the
-Brewfile is enough to get the tool. Neither upgrades, because `brew upgrade`
-in `update()` already does that and `brew bundle`'s own upgrade pass is worse
-at it: it re-downloads casks that update themselves (an `auto_updates` cask's
-Caskroom record only looks stale) and dies on a `mas` app or a `.pkg` whose
-installer wants a password — which the script, running with no terminal,
-cannot answer. That failure used to abort the whole apply partway. Neither
-path ever runs `brew bundle cleanup`: that uninstalls anything absent from the
-list, which is not what converging a machine should mean.
-
-`update()` itself always runs from `$HOME` and puts the shell back where it
-started, whatever directory it was typed in — a removed cwd (a deleted
-worktree, the usual way) is inherited by every child and each dies on its own
-`getcwd`/`[[ -d $PWD ]]` check, and asdf shims resolve node/ruby/uv from the
-nearest `.tool-versions` above the cwd, so a run typed inside a project would
-update that project's toolchain instead of the global one pinned in
-`~/.tool-versions`. `tests/update.bats` pins this.
-
-**`update()` runs machine-local checks after the upgrades.** Every
-`update.check` command in git config (repeatable, overlay-supplied — the
-public repo names none) runs right after the no-sudo upgrades, while an
-upgrade is still the obvious suspect for whatever it breaks: a service whose
-networking a formula update changed, a cask a daemon reads secrets through.
-A failing check never stops the update; each failure is repeated in a red
-banner at the very end, past the softwareupdate and gem output that would
-otherwise bury it. A value containing `;` must be quoted in the config file
-(git reads a bare `;` as a comment) — `git config --add` does that for you.
-
-**A half-installed cask is invisible to all of this.** A `.pkg` cask whose
-installer never ran still leaves a Caskroom entry, so `brew bundle` counts it
-as satisfied and never retries while the app is missing from `/Applications`.
-`brew reinstall --cask <name>` from a terminal is the only way out.
-
-**A skipped run is recorded as a successful one.** chezmoi keys a
-`run_onchange_` script on its content hash and stores that hash in the
-`entryState` bucket — *not* `scriptState`, and `chezmoi apply --force` does
-not re-run it either. Both install scripts deliberately exit 0 when they
-decline to do anything (no `apt-get`; no root and no passwordless sudo), so
-that skip is written down as done and no later `chezmoi apply` will retry it,
-however much the machine has changed underneath. Granting sudo afterwards
-therefore installs nothing, silently, while `chezmoi status` stays clean. To
-re-trigger: `chezmoi state delete-bucket --bucket=entryState` (re-applying
-files is idempotent), or edit the list, which changes the hash. First hit on
-a WSL box whose package install had skipped for want of sudo.
-
-**`gh` is the one entry whose version matters.** The `gh()` wrapper and
-`bin/git-credential-gh-user` resolve every account through it, so a box
-without `gh` cannot route at all — and Ubuntu's build trails upstream badly
-(24.04 ships 2.45.0). Add GitHub's own apt repo once per machine and the
-`gh` line in `packages-apt.txt` then installs the current release from it
-instead, upgrading with ordinary `apt upgrade`:
-
-```sh
-sudo mkdir -p -m 755 /etc/apt/keyrings
-out=$(mktemp) && wget -nv -O"$out" https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-  && sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg < "$out" > /dev/null \
-  && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-  | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-sudo apt update && sudo apt install gh
-```
-
-Do **not** use the snap — the GitHub CLI project actively discourages it
-(sandbox breakage). Homebrew-on-Linux would also work and is deliberately
-not used here.
+CLI tools are declared per OS: `Brewfile` (macOS), `packages-apt.txt`
+(Debian/Ubuntu/WSL), `packages-apt-wsl.txt` (WSL only). **When adding or
+removing a tool, update every list where it is available**, under each
+distro's own package name, and say so in the list file when a tool exists
+on one platform only. Homebrew is not used on Linux. Both Brewfile install
+paths pass `--no-upgrade`, and nothing runs `brew bundle cleanup`.
 
 ### Machine-local customization
 
@@ -381,51 +185,6 @@ each overlay's README for its one-time init.
 The public `.gitconfig` ends by including `~/.gitconfig.local` and
 `~/.gitconfig.work`; git silently skips whichever is absent, so identity is
 purely a function of which overlays a machine carries.
-
-#### Composed files: one target, several owners
-
-`~/.ssh/config` and `~/.config/git/allowed_signers` are the two targets that
-**mix identities inside a single file** — a personal alias next to a work
-one, a personal signer next to a work signer. chezmoi allows one source per
-target, so neither file can live whole in any repo here: the work overlay
-must not name the personal identity, the personal overlay must not name the
-work one, and the public repo must name neither. Each is therefore assembled
-from per-overlay fragments, and a machine composes exactly what its overlays
-give it — a work-only box (the shared workstations) gets a correct file with
-no personal lines and no conditional anywhere.
-
-The two use different mechanisms, because only one of them can:
-
-- **`~/.ssh/config`** is a skeleton in this repo (`private_dot_ssh/`) whose
-  first line is `Include ~/.ssh/config.d/*.conf`; each overlay drops a
-  fragment there. No generator — ssh includes natively, and an unmatched glob
-  is not an error (`ssh -G` exits 0 on the bare skeleton).
-- **`~/.config/git/allowed_signers`** has no include: `gpg.ssh.allowedSignersFile`
-  names exactly one path. So `bin/git-allowed-signers` concatenates
-  `~/.config/git/allowed_signers.d/*` into it. `dotfiles()` runs it **after**
-  every overlay has applied — the same placement, and for the same reason, as
-  the `touch ~/.finicky.ts` beside it: a `run_after_` script in any one source
-  would compose before the other sources had deployed their fragments and be
-  one apply stale. The path itself is machinery and lives in the public
-  `.gitconfig`, so a repo matching no `includeIf` still verifies rather than
-  erroring.
-
-**The ordering rule is inverted between the two config languages, and this is
-the thing to get right.** ssh_config: *"for each parameter, the first obtained
-value will be used"* — so an earlier fragment wins, and the `Include` must sit
-above `Host *` or the catch-all shadows everything. git: the *last* include
-wins, which is why `.gitconfig` lists `~/.gitconfig.local` before
-`~/.gitconfig.work` and work overrides personal. The fragments are numbered
-`10-personal`, `20-work` so the ssh precedence is written down rather than
-inherited from glob luck; under first-wins that means **personal outranks work
-on any host both describe** — the opposite of what the same visual order means
-in `.gitconfig`. Nothing overlaps today. `tests/ssh-config.bats` pins it by
-renaming a fixture fragment and asserting the answer flips.
-
-Signing keys are never copied to a machine to make this work: the shared
-workstations sign and authenticate through an ssh agent **forwarded** from the
-mac (`ForwardAgent yes`, scoped to those hosts in the work fragment), so the
-private half stays in 1Password. See the Commit signing section.
 
 **Consequences to keep in mind when editing this repo:**
 
