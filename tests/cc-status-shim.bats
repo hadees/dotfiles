@@ -1062,3 +1062,130 @@ uncookied_bytes() { wc -c < "$HOME/.local/state/iterm2/uncookied" 2>/dev/null ||
   [ ! -e "$COOKIE_DIR/uncookied" ]
   [ ! -e "$BATS_TEST_TMPDIR/calls" ]
 }
+
+# after: `cc-status after` runs behind iTerm2's own handler. It never calls the hook, needs no real
+# cc-status, and writes set-status fields only as the rule file's table allows. Stop and StopFailure
+# payloads carry session_id and cwd so the rename also happens (and is argv_all's first call).
+run_after() { run sh "$SHIM" after; }
+after_stop() { payload "${1:-Stop}" "${2:-[]}" '"cwd":"/work/proj","session_id":"s1"'"${3:+,$3}"; }
+# status_flags: the number of --status flags among everything it2 was given.
+status_flags() { { grep -cx -- '--status' "$BATS_TEST_TMPDIR/argv_all" || true; } 2>/dev/null; }
+
+@test "after: a PreToolUse outside a seat starts neither python nor it2" {
+  run_after <<< '{"hook_event_name":"PreToolUse","tool_name":"Bash"}'
+  [ "$status" -eq 0 ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  [ ! -e "$BATS_TEST_TMPDIR/fed" ]
+}
+
+@test "after: never the hook, whatever the event, and it needs no real cc-status" {
+  export CC_STATUS_BIN="$BATS_TEST_TMPDIR/absent"
+  local ev
+  for ev in SessionStart SessionEnd UserPromptSubmit PreToolUse PostToolUse PermissionRequest Notification Stop StopFailure SubagentStart SubagentStop; do
+    run_after <<< "$(after_stop "$ev" '[{"task_id":"a"}]' '"agent_id":"ag1","agent_type":"plan-fable","tool_name":"Bash"')"
+    [ "$status" -eq 0 ]
+    run_after <<< "$(after_stop "$ev")"
+    [ "$status" -eq 0 ]
+  done
+  [ ! -e "$BATS_TEST_TMPDIR/fed" ]
+  ! grep -qx 'handle-agent-hook' "$BATS_TEST_TMPDIR/argv_all"
+}
+
+@test "after: a plain Stop sends only the rename" {
+  run_after <<< "$(after_stop)"
+  rename_only
+}
+
+@test "after: Stop with one active and one quiet task only corrects the count" {
+  age_file a 7200
+  age_file b 30
+  run_after <<< "$(after_stop Stop '[{"task_id":"a","task_type":"local_bash","description":"old"},{"task_id":"b","task_type":"local_agent","description":"busy"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--detail|1 background task running|--background-tasks|1" ]
+  [ "$(status_flags)" -eq 0 ]
+}
+
+@test "after: Stop with only active tasks writes nothing but the rename" {
+  age_file b 30
+  run_after <<< "$(after_stop Stop '[{"task_id":"b","task_type":"local_agent","description":"busy"}]')"
+  rename_only
+}
+
+@test "after: Stop with all quiet tasks paints idle in amber, count 0" {
+  age_file a 7200
+  run_after <<< "$(after_stop Stop '[{"task_id":"a","task_type":"local_agent","description":"quietly"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|idle|--detail|idle · 1 quiet background task, quiet 120 min: quietly|--dot-color|#af8700|--text-color|#888888|--background-tasks|0" ]
+}
+
+@test "after: a stalled task paints waiting in red, count 0" {
+  age_file a 7200
+  echo > "$BATS_TEST_TMPDIR/lsof.out"
+  run_after <<< "$(after_stop Stop '[{"task_id":"a","task_type":"local_bash","description":"install.sh"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|stalled 120 min: install.sh|--dot-color|#ff5f5f|--text-color|#ff5f5f|--background-tasks|0" ]
+}
+
+@test "after: a closing question on Stop paints waiting in yellow, count 0" {
+  run_after <<< "$(after_stop Stop '[]' '"last_assistant_message":"Done.\n\nWhich branch?"')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|Which branch?|--dot-color|#ffd75f|--text-color|#ffd75f|--background-tasks|0" ]
+}
+
+@test "after: StopFailure ending in a question never writes a status; all quiet it paints idle" {
+  run_after <<< "$(after_stop StopFailure '[]' '"last_assistant_message":"Which branch?"')"
+  rename_only
+  [ "$(status_flags)" -eq 0 ]
+  age_file a 7200
+  rm "$BATS_TEST_TMPDIR/argv_all" "$BATS_TEST_TMPDIR/calls"
+  run_after <<< "$(after_stop StopFailure '[{"task_id":"a","task_type":"local_agent","description":"quietly"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|idle|--detail|idle · 1 quiet background task, quiet 120 min: quietly|--dot-color|#af8700|--text-color|#888888|--background-tasks|0" ]
+  rm "$BATS_TEST_TMPDIR/argv_all" "$BATS_TEST_TMPDIR/calls"
+  run_after <<< "$(after_stop StopFailure '[{"task_id":"a","task_type":"local_agent","description":"quietly"}]' '"last_assistant_message":"Retry?"')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|idle|--detail|idle · 1 quiet background task, quiet 120 min: quietly|--dot-color|#af8700|--text-color|#888888|--background-tasks|0" ]
+}
+
+@test "after: a Stop over a running background seat repaints its colours and count, no status" {
+  mkdir -p "$(dirname "$SEATS_FILE")"
+  printf 'ag1\tplan-fable\n' > "$SEATS_FILE"
+  age_file ag1 30
+  run_after <<< "$(after_stop Stop '[{"task_id":"ag1","task_type":"local_agent"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--detail|plan-fable running · 1 background task running|--dot-color|#d787ff|--text-color|#d787ff|--background-tasks|1" ]
+  [ "$(status_flags)" -eq 0 ]
+}
+
+@test "after: a peer's plain Stop sends exactly the peer text colour" {
+  printf 'peer\tproj · Alpha\n' > "$BATS_TEST_TMPDIR/role.out"
+  run_after <<< "$(after_stop)"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--text-color|#8a8a8a" ]
+}
+
+@test "after: the contract: no event but Stop and StopFailure ever sends --status" {
+  local ev
+  for ev in SessionStart SessionEnd UserPromptSubmit PreToolUse PostToolUse PermissionRequest Notification SubagentStart SubagentStop; do
+    run_after <<< "$(after_stop "$ev")"
+    run_after <<< "$(after_stop "$ev" '[{"task_id":"a"}]' '"agent_id":"ag1","agent_type":"plan-fable","tool_name":"Bash"')"
+  done
+  [ "$(status_flags)" -eq 0 ]
+}
+
+@test "after: no it2, or no session id: exit 0 and nothing recorded" {
+  rm "$STUB/it2"
+  run_after <<< "$(after_stop)"
+  [ "$status" -eq 0 ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  printf '#!/bin/sh\necho x >> "%s/calls"\n' "$BATS_TEST_TMPDIR" > "$STUB/it2"; chmod +x "$STUB/it2"
+  ITERM_SESSION_ID= run_after <<< "$(after_stop)"
+  [ "$status" -eq 0 ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
+@test "after: explain after names the mode and the fields it would write, calling nothing" {
+  run sh "$SHIM" explain after <<< "$(after_stop)"
+  [[ $output == *"mode=after"* ]]
+  [[ $output == *"writes=name"$'\n'* || $output == *"writes=name" ]]
+  run sh "$SHIM" explain after <<< "$(after_stop Stop '[]' '"last_assistant_message":"Which branch?"')"
+  [[ $output == *"writes=name,status,detail,dot,text,count"* ]]
+  run sh "$SHIM" explain after <<< '{"hook_event_name":"PreToolUse","tool_name":"Bash"}'
+  [[ $output == *"writes=none"* ]]
+  run sh "$SHIM" explain <<< "$(after_stop)"
+  [[ $output == *"mode=legacy"* ]]
+  [[ $output != *"writes="* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
