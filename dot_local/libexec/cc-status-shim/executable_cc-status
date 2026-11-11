@@ -46,9 +46,10 @@
 # integration's Enter Workgroup trigger renames the session to the workgroup
 # root's displayName ("Chat") when the job `claude` starts, so every row would
 # read "Chat (claude)". The shim renames it back to the repo: `it2 session
-# set-name "[<WORKTABS_GROUP>] <WORKSET or tabname of the payload's cwd>"
-# --session <id>`, the same KEY_NAME override the workgroup wrote, held in
-# memory by iTerm2 — nothing is written to its prefs. It runs on the first
+# set-name "<WORKSET or tabname --role of the payload's cwd>" --session <id>`
+# ("[<WORKTABS_GROUP>] " in front when tabstatus.group-prefix is true), the
+# same KEY_NAME override the workgroup wrote, held in memory by iTerm2 —
+# nothing is written to its prefs. It runs on the first
 # UserPromptSubmit of a session (marked by <session_id>.named beside the seats
 # file, written whether or not a rename happened) and on every Stop and
 # StopFailure, just before the paint, so a later
@@ -57,6 +58,9 @@
 # be captured as the "original" title the workgroup restores on exit. The title
 # is cut at 80 characters and control characters are dropped. $WORKSET needs
 # no tabname; without it, no tabname, no cwd or no repo means no rename.
+# tabname's role (peer, lead, plain) also picks a text colour at a turn end that
+# nothing else painted: tabstatus.color.peer (default #8a8a8a), tabstatus.color.lead
+# (no default).
 #
 # A turn that ends by asking the operator something is not idle: on Stop and
 # StopFailure, with nothing active, a last_assistant_message whose last
@@ -234,13 +238,16 @@ quiet_color = setting("color.quiet", "#af8700", HEX)
 question_color = setting("color.question", "#ffd75f", HEX)
 stall_minutes = int(setting("stall-minutes", "15", r"[0-9]+"))
 stalled_color = setting("color.stalled", "#ff5f5f", HEX)
+peer_color = setting("color.peer", "#8a8a8a", HEX)
+lead_color = setting("color.lead", None, HEX)   # no default: a leader keeps cc-status's colour
+group_prefix = setting("group-prefix", "false", r"true|false") == "true"
 SEATS = {"plan-fable": "#d787ff", "unstick-fable": "#ff5faf", "review-fable": "#af87ff",
          "work-sonnet": "#00afaf", "scout-haiku": "#87af5f"}
 
 @functools.lru_cache(None)   # a bad setting is noted once, not per lookup
 def seat_color(agent_type):
-    # git lower-cases the last key component; "quiet", "question" and "stalled" are paint colours, not seats
-    if not isinstance(agent_type, str) or agent_type.lower() in ("quiet", "question", "stalled"):
+    # git lower-cases the last key component; "quiet", "question", "stalled", "peer" and "lead" are paint colours, not seats
+    if not isinstance(agent_type, str) or agent_type.lower() in ("quiet", "question", "stalled", "peer", "lead"):
         return None
     return setting("color." + agent_type.lower(), SEATS.get(agent_type), HEX)
 
@@ -440,28 +447,34 @@ if event in ("Stop", "StopFailure") and not active and isinstance(msg, str):
     if q.endswith(("?", "？")):
         question = q
 
-# The session's name: "[<group>] <WORKSET or tabname of cwd>", or None with the reason it is not renamed.
+# The session's name and role: "<WORKSET or tabname of cwd>", behind "[<group>] " when
+# tabstatus.group-prefix is true. Returns (title or None, the reason it is not renamed, role).
 def session_title():
     if seat or event not in ("UserPromptSubmit", "Stop", "StopFailure"):
-        return None, "event"
+        return None, "event", "plain"
     if event == "UserPromptSubmit" and nf and os.path.exists(nf):
-        return None, "already named"
+        return None, "already named", "plain"
     if not sid:
-        return None, "no session id"
+        return None, "no session id", "plain"
     if not it2:
-        return None, "no it2"
+        return None, "no it2", "plain"
     clean = lambda v: re.sub(r"[\x00-\x1f\x7f]", "", v or "").strip()
-    name = clean(os.environ.get("WORKSET"))   # a set names the row; no tabname needed
+    name, role = clean(os.environ.get("WORKSET")), "plain"   # a set names the row; no tabname needed
     if not name:
         tn = shutil.which("tabname") or os.path.join(os.path.expanduser("~"), "bin", "tabname")
         if not os.access(tn, os.X_OK):
-            return None, "no tabname"
+            return None, "no tabname", "plain"
         cwd = payload.get("cwd")
-        name = clean(run_out([tn, cwd]) if isinstance(cwd, str) and cwd else None)
+        out = run_out([tn, "--role", cwd]) if isinstance(cwd, str) and cwd else None
+        # "<role><TAB><label>"; an older tabname prints the bare label
+        r, tab, label = (out or "").partition("\t")
+        if tab and r in ("plain", "peer", "lead"):
+            role, out = r, label
+        name = clean(out)
         if not name:
-            return None, "not a repo"
-    group = clean(os.environ.get("WORKTABS_GROUP"))
-    return ((f"[{group}] " if group else "") + name)[:80], ""
+            return None, "not a repo", "plain"
+    group = clean(os.environ.get("WORKTABS_GROUP")) if group_prefix else ""
+    return ((f"[{group}] " if group else "") + name)[:80], "", role
 
 # A running seat among the active tasks: the row stays that seat's colour, not the parent's.
 ids = {t.get("task_id") for t in active if isinstance(t, dict)}
@@ -484,8 +497,10 @@ if explain:
     print(f"seat={seat or 'none'} colour={seat_col or 'none'} state={len(live)}")
     print(f"question={'yes ' + question if question else 'no'}")
     print(f"action={action}")
-    title, why = session_title()
+    title, why, role = session_title()
     print(f"name={title or 'none'}")
+    print(f"role={role}")
+    print(f"colour={(peer_color if role == 'peer' else lead_color if role == 'lead' else None) or 'none'}")
     print(f"rename={'yes' if title else 'no'} ({why or 'ok'})")
     print(f"marker={'present' if nf and os.path.exists(nf) else 'none'}")
     print(f"cc-status={real or 'absent'}")
@@ -512,7 +527,7 @@ else:
     call([real], json.dumps(payload).encode(), 10)
 
 # Before the paints, so the last it2 call of a turn end is still the paint.
-title, _ = session_title()
+title, _, role = session_title()
 # The first prompt is marked whatever the outcome, so python starts once per session for it.
 if event == "UserPromptSubmit" and nf and not seat:
     try:
@@ -543,6 +558,11 @@ elif busy:
     c = seat_color(busy[0])
     paint("working", f"{', '.join(dict.fromkeys(busy))} running · {k} background task{'s' if k != 1 else ''} running",
           c, c, k)
+elif event in ("Stop", "StopFailure") and not active and role in ("peer", "lead"):
+    # Only the text colour: set-status keeps every field it is not given, so the dot stays the status colour.
+    c = peer_color if role == "peer" else lead_color
+    if c:
+        call([it2, "set-status", "--session", sid, "--text-color", c], silent=True)
 PY
 )
 printf '%s' "$payload" | python3 -c "$py" "$mode" "$real" "$it2" "$sid"

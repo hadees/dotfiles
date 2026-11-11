@@ -392,15 +392,11 @@ EOF_HIT
 # Single-quoted for a POSIX shell.
 sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
-# Is the directory a peer worktree? claude-peer knows; without it, the name.
+# Is the directory a peer worktree? claude-peer knows; without it there are no peers.
 is_peer() {
-  if [ -x "$PEERCMD" ]; then
-    phys=$(cd "$1" 2>/dev/null && pwd -P) || phys=$1
-    "$PEERCMD" peers "$1" 2>/dev/null </dev/null | cut -f1 | grep -Fxq -e "$1" -e "$phys"
-  else
-    case $1 in */.claude/worktrees/peer-[0-9]*) return 0;; esac
-    return 1
-  fi
+  [ -x "$PEERCMD" ] || return 1
+  phys=$(cd "$1" 2>/dev/null && pwd -P) || phys=$1
+  "$PEERCMD" peers "$1" 2>/dev/null </dev/null | cut -f1 | grep -Fxq -e "$1" -e "$phys"
 }
 
 # Is the tty sitting at a bare shell prompt? At least one foreground process,

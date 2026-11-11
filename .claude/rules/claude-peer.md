@@ -75,9 +75,9 @@ trigger is `leaderOnly`, so the leader's `claude` ending tears the group down
 and terminates the peers that were started (a waiting pane has nothing to lose); worktrees and transcripts survive, `claude-peer run
 <branch>` or `run --as <slot>` then `claude --continue` resumes. The Session Status tool lists
 buried peers, one row each, and a click swaps the peer in; keep *Merge
-workgroup statuses* **off** (on, four Claudes are one row). Rows read `[group]
-<repo>` for the leader and `<repo>@<slug>` for peers (no group prefix:
-`WORKTABS_GROUP` is not inherited).
+workgroup statuses* **off** (on, four Claudes are one row). Rows read
+`<repo> ▸ Lead` for the leader once a peer is running and `<repo> · <Label>`
+for peers, both from `tabname` (see the cc-status shim paragraph on roles).
 
 **Slots are safe to start together.** Taking a slot (`slot_checkout`) runs
 under a per-repo lock, a symlink `<git common dir>/claude-peer.lock` whose
