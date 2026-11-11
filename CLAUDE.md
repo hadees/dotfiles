@@ -232,7 +232,7 @@ rule first.
 | `browser-routing` | `open-as`, `chrome-pairing`, the iTerm2 browser tab, Finicky |
 | `denyguard` | the Bash deny hook, what it cannot see, why it fails closed |
 | `worktabs` | the iTerm2 tab launcher, `workspace.*` config, the Alfred workflow |
-| `claude-peer` | Workgroup peers, scratch worktrees, claims, the Hermes peer |
+| `claude-peer` | Workgroup peers, named slot worktrees, claims, the Hermes peer |
 | `claude-tab` | `claude-tab` list, focus, save, restore; `tabname` |
 | `postbox` | cross-profile session mail, its hooks, the courier, the roll-call |
 | `remote-mcp` | bearer-token MCP servers, the tailnet forwarder |

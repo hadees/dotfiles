@@ -7,7 +7,8 @@
 # lsof and ps are stubbed there too (and that directory put on PATH): they print
 # lsof.out and ps.out, fixtures a test overwrites, and record their argv. So is
 # tabname: proj for a cwd ending in /proj, proj@feat-x for /feat-x, else nothing
-# and exit 1. it2 also appends every argv to argv_all, one call per block.
+# and exit 1; a leading --role is dropped (a bare label, like an older tabname),
+# unless role.out exists, whose content it prints instead. it2 also appends every argv to argv_all, one call per block.
 
 bats_require_minimum_version 1.5.0
 
@@ -18,7 +19,9 @@ setup() {
   printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/argv"\nprintf "%%s\\n" "$@" >> "%s/argv_all"\necho x >> "%s/calls"\n' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$STUB/it2"
   cat > "$STUB/tabname" <<'SH'
 #!/bin/sh
+[ "$1" = --role ] && shift
 echo "$1" >> "$(dirname "$0")/../tabname_argv"
+[ -e "$(dirname "$0")/../role.out" ] && { cat "$(dirname "$0")/../role.out"; exit; }
 case $1 in
   */feat-x) echo proj@feat-x ;;
   */proj) echo proj ;;
@@ -747,13 +750,75 @@ NAMED_FILE() { printf '%s/tabstatus/s1.named' "$XDG_STATE_HOME"; }
   [ ! -e "$(NAMED_FILE)" ]
 }
 
-@test "rename: WORKSET names the set and WORKTABS_GROUP prefixes it" {
+@test "rename: WORKSET names the set; WORKTABS_GROUP prefixes only with tabstatus.group-prefix true" {
   export WORKSET=myset WORKTABS_GROUP=grp
+  run_shim <<< "$(named_payload Stop)"
+  [ "$(it2_argv)" = "session|set-name|myset|--session|ABC-123" ]
+  git config --global tabstatus.group-prefix true
   run_shim <<< "$(named_payload Stop)"
   [ "$(it2_argv)" = "session|set-name|[grp] myset|--session|ABC-123" ]
   unset WORKSET
   run_shim <<< "$(named_payload Stop)"
   [ "$(it2_argv)" = "session|set-name|[grp] proj|--session|ABC-123" ]
+}
+
+@test "role: a peer's row is named by tabname, without [group], and dimmed after cc-status on a plain Stop" {
+  printf 'peer\tproj · Alpha\n' > "$BATS_TEST_TMPDIR/role.out"
+  export WORKTABS_GROUP=grp
+  run_shim <<< "$(named_payload Stop)"
+  [ "$(head -5 "$BATS_TEST_TMPDIR/argv_all" | paste -sd'|' -)" = "session|set-name|proj · Alpha|--session|ABC-123" ]
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--text-color|#8a8a8a" ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 2 ]
+  git config --global tabstatus.group-prefix true
+  run_shim <<< "$(named_payload Stop)"
+  grep -qx '\[grp\] proj · Alpha' "$BATS_TEST_TMPDIR/argv_all"
+}
+
+@test "role: tabstatus.color.peer overrides the dim colour; a Stop that painted a question is not dimmed" {
+  printf 'peer\tproj · Alpha\n' > "$BATS_TEST_TMPDIR/role.out"
+  git config --global tabstatus.color.peer '#112233'
+  run_shim <<< "$(named_payload Stop)"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--text-color|#112233" ]
+  rm "$BATS_TEST_TMPDIR/argv" "$BATS_TEST_TMPDIR/argv_all" "$BATS_TEST_TMPDIR/calls"
+  run_shim <<< "$(named_payload Stop /work/proj '"last_assistant_message":"Shall I go on?"')"
+  [ "$(grep -c -- '--text-color' "$BATS_TEST_TMPDIR/argv_all")" -eq 1 ]
+  grep -qx '#ffd75f' "$BATS_TEST_TMPDIR/argv_all"
+  ! grep -qx '#112233' "$BATS_TEST_TMPDIR/argv_all"
+}
+
+@test "role: a lead paints nothing by default and tabstatus.color.lead when set" {
+  printf 'lead\tproj ▸ Lead\n' > "$BATS_TEST_TMPDIR/role.out"
+  run_shim <<< "$(named_payload Stop)"
+  [ "$(it2_argv)" = "session|set-name|proj ▸ Lead|--session|ABC-123" ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
+  git config --global tabstatus.color.lead '#445566'
+  run_shim <<< "$(named_payload Stop)"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--text-color|#445566" ]
+}
+
+@test "role: a UserPromptSubmit renames but dims nothing" {
+  printf 'peer\tproj · Alpha\n' > "$BATS_TEST_TMPDIR/role.out"
+  run_shim <<< "$(named_payload UserPromptSubmit)"
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
+  [ "$(it2_argv)" = "session|set-name|proj · Alpha|--session|ABC-123" ]
+}
+
+@test "role: peer and lead are paint colours, not seat names" {
+  git config --global tabstatus.color.peer '#112233'
+  run_shim <<< "$(seat_payload SubagentStart peer)"
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
+@test "explain: prints role= and colour=" {
+  printf 'peer\tproj · Alpha\n' > "$BATS_TEST_TMPDIR/role.out"
+  run sh "$SHIM" explain <<< "$(named_payload Stop)"
+  [[ $output == *"name=proj · Alpha"* && $output == *"role=peer"* && $output == *"colour=#8a8a8a"* ]]
+  printf 'lead\tproj ▸ Lead\n' > "$BATS_TEST_TMPDIR/role.out"
+  run sh "$SHIM" explain <<< "$(named_payload Stop)"
+  [[ $output == *"role=lead"* && $output == *"colour=none"* ]]
+  rm "$BATS_TEST_TMPDIR/role.out"
+  run sh "$SHIM" explain <<< "$(named_payload Stop)"
+  [[ $output == *"role=plain"* && $output == *"colour=none"* ]]
 }
 
 @test "rename: a worktree cwd gets the worktree label" {

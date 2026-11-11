@@ -183,7 +183,8 @@ Read from the v3.7.7 source (the stamp is still 3.7.6, refresh pending):
   leader's PWD, wired once per instance
   (`iTermWorkgroupInstance.swift:1080-1100`); the base selector is a free-form
   combo box whose value is quoted into the diff command, so `main..<branch>`
-  there shows a branch's commits.
+  there shows a branch's commits. (This repo's Claude Peers definitions have no
+  Diff peer; only the builtin does.)
 - The only ways in are the Shell > Workgroups menu and triggers; there is no
   sdef, `it2` or Python API verb (`WorkgroupMenu.swift:10-16`).
 - The Enter trigger does nothing in a session already in a workgroup, and the

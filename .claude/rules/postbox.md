@@ -74,19 +74,25 @@ lookup, a roll-call joins the claims its peers wrote (`claude-peer peers
 --leader <cwd>`) against this profile's `sessions/*.json` registry: a live
 record with a socket is `native` (the line names it for `SendMessage`), one
 without a socket is `noinbox`, one only under another mapped profile is
-`other` (use postbox mail, the line gives the name), none is `starting`. A
-peer's Claude registers seconds after its shell, so `starting` is given 60
-seconds before it is reported. One line, once per session (state:
-`$STATE/rollcall/<session id>`, then `done`), and the leader tells the
-operator and carries on — it does not restart a peer or retry by mail except
-for `other`. Registration stays lazy and no model tool call is spent.
+`other` (use postbox mail, the line gives the name), none is `starting`. The
+roll-call is per peer, on every prompt: the state
+(`$STATE/rollcall/<session id>`) holds one line per claim, `worktree`, `pid`,
+`first_seen`, `pending` or `told`, so a peer started ten minutes in is
+announced when its claim appears, a restarted one (same worktree, new pid) is
+announced again, and a told claim that is gone is reported once as stopped. A
+waiting pane has no claim, so it is never `starting`. A peer's Claude
+registers seconds after its claim, so `starting` is given 60 seconds from that
+claim's first sighting before it is reported. The leader tells the operator
+and carries on — it does not restart a peer or retry by mail except for
+`other`. Registration stays lazy and no model tool call is spent.
 
 Cost, over a session start that is otherwise unchanged (one `sh`, a few
 `python3` starts, one `curl` capped at two seconds, one `am check-inbox`,
 about 95 words): a non-peer start adds one socket test and one `python3` for
 `connected`, no context when healthy; a leader adds one `claude-peer peers`
-and one `python3` per prompt until the roll-call resolves (normally the
-first), then one file read, and one line of context once. An instruction to
+(a `git rev-parse` and a glob) on every prompt for the life of the session,
+one `python3` only on a prompt where a claim is pending, and a line of context
+only when a peer comes up or goes. An instruction to
 call `ListAgents` would spend a model turn and a listing of every session on
 the machine in every leader, and eager `register_agent` a tool call in every
 one of the four or more agents a tab holds.

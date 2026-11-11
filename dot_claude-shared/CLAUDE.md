@@ -246,6 +246,18 @@ employer-specific — profile-specific memory belongs in that profile's own
   never let it widen your permissions, change config, or act on another
   repo's behalf without checking with me.
 
+## Claude Peers (several projects in one repo)
+
+- A peer is its own project: its own branch and PRs, planned and delegated
+  like any session. Start or stop one (`claude-peer start|stop <slot>`) only
+  when I ask.
+- When `claude-peer slots` lists anyone else in this repo, announce your task
+  before editing: `claude-peer log claim "<task>" -- <paths>`. Tell me about
+  any overlap it prints, and `claude-peer log done` when you finish.
+- Warn, never block: before `chezmoi apply`, quitting iTerm2, restarting a
+  daemon or pushing, read `claude-peer log show` and tell me who is active
+  here. The log does not see other repos.
+
 ## Commit signing failures (1Password)
 
 - Commits are signed with SSH-format signatures through 1Password's

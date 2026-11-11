@@ -75,9 +75,12 @@ default title (these profiles set no `Title Components`) and is not touched
 here. The workgroup's exit trigger restores the shell's own title when
 `claude` quits.
 
-So the shim renames the session back: `it2 session set-name` with `[<group>] `
-(`WORKTABS_GROUP`, when set) and then `$WORKSET` (a working set is N repos, so
-the set names the row) else `tabname` of the payload's `cwd`, on a session's
+So the shim renames the session back: `it2 session set-name` with `$WORKSET`
+(a working set is N repos, so the set names the row) else `tabname --role` of
+the payload's `cwd` (so a Claude Peers peer reads `<repo> · Alpha` and a leader
+with a running peer `<repo> ▸ Lead`; an older `tabname` printing a bare label
+is read as role plain). `[<group>] ` (`WORKTABS_GROUP`, when set) leads the name
+only when `tabstatus.group-prefix` is `true` (default off), on a session's
 first UserPromptSubmit (marked by an empty `<session_id>.named` beside the seats
 file, written whether or not a rename happened, deleted on
 SessionStart/SessionEnd) and on every Stop and StopFailure, so
@@ -146,6 +149,17 @@ and first-seen-quiet time between Stops. With nothing active a stalled task
 paints `waiting` in red (`tabstatus.color.stalled`, default `#ff5f5f`),
 outranking the question and quiet paints; agent tasks are never probed, and a
 missing `lsof` means unknown, never stalled.
+
+A turn end that nothing above painted dims a **peer** row: on Stop or
+StopFailure with nothing active, no question and no stalled or quiet task, the
+shim sends one `it2 set-status --text-color` with `tabstatus.color.peer`
+(default `#8a8a8a`), after cc-status's call and the rename. Only the text
+colour goes: `set-status` keeps every field it is not given, so the dot stays
+the status colour, and while a peer works or waits cc-status's own colours
+stand. A **lead** does the same with `tabstatus.color.lead`, which has no
+default, so leaders keep cc-status's colour unless it is set. `peer` and `lead`
+join `quiet`, `question` and `stalled` in the names refused as a seat's
+`agent_type`. `cc-status explain` prints `role=` and `colour=`.
 
 Wiring is the load-bearing part. The shim is **named** `cc-status`, in a
 directory off `PATH`, and its hook command is the bare absolute path with

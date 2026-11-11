@@ -157,7 +157,7 @@ claude_in() {
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: claude: function"* ]]
-  [[ "$output" == *"defined: ok (8 helpers)"* ]]
+  [[ "$output" == *"defined: ok (10 helpers)"* ]]
   [[ "$output" == *"binary:  $BATS_TEST_TMPDIR/bin/claude"* ]]
   [[ "$output" == *"account: personal-account"* ]]
   [[ "$output" == *"launch:  $HOME/.claude-personal"* ]]
@@ -991,6 +991,85 @@ os.waitpid(pid, 0)
   PTY_DIR=$repo PTY_ANSWER=n pty_claude
   [[ "$output" != *"already running"* ]]
   [[ "$output" == *"rc=0"* ]]
+}
+
+# The wrapper chooses the iTerm2 Workgroup a tab enters by setting the session
+# variable user.claudePeerEnter (an OSC 1337 SetUserVar) to <key>:<nonce> once a
+# launch is going ahead. It needs a stub `claude-peer here`, the state file that
+# `claude-peer default peers` writes, and ITERM_SESSION_ID. hermes_profile reads
+# the repo's own `hermes.profile`, so a pin routes a fixture repo.
+
+peer_setup() {
+  mkdir -p "$HOME/bin" "$HOME/.local/state/claude-peer"
+  printf '#!/bin/sh\n[ "$1" = here ] && echo base\n' > "$HOME/bin/claude-peer"
+  chmod +x "$HOME/bin/claude-peer"
+  printf 'peers\n' > "$HOME/.local/state/claude-peer/enter"
+  export XDG_STATE_HOME="$HOME/.local/state" ITERM_SESSION_ID=w0t0p0:FIXTURE
+  unset CLAUDE_PEER_WORKTREE
+}
+
+# the key claude() sent, decoded from the escape in $output (empty: none sent)
+key_sent() {
+  printf '%s' "$output" | tr -d '\r' | sed -n 's/.*SetUserVar=claudePeerEnter=\([A-Za-z0-9+/=]*\).*/\1/p' | base64 -d
+}
+
+@test "workgroup key: an unrouted repo sends base, a repo a Hermes profile routes sends base/hermes, with a nonce" {
+  peer_setup
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" == *"CLAUDE_CONFIG_DIR="* ]]
+  [[ "$(key_sent)" == base:* ]]
+  first=$(key_sent)
+  git -C "$repo" config hermes.profile fixture-agent
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$(key_sent)" == base/hermes:* ]]
+  [ "$(key_sent)" != "$first" ]
+}
+
+@test "workgroup key: sent after the second-session question is answered y, never when it is answered n" {
+  peer_setup
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  make_session "$HOME/.claude-personal" "$$" "$repo" in-this-dir
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" == *"Start another here anyway?"* ]]
+  [[ "$output" == *"rc=1"* ]]
+  [[ "$output" != *"SetUserVar"* ]]
+  PTY_DIR=$repo PTY_ANSWER=y pty_claude
+  [[ "$output" == *"Start another here anyway?"*$'\033]1337;SetUserVar=claudePeerEnter='*"CLAUDE_CONFIG_DIR="* ]]
+  [[ "$(key_sent)" == base:* ]]
+}
+
+@test "workgroup key: nothing is sent without a terminal, under -p or a subcommand, outside iTerm2, inside a peer, or without the state file" {
+  peer_setup
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  claude_in "$repo"
+  [ "$output" = "CLAUDE_CONFIG_DIR=$HOME/.claude-personal" ]
+  for args in 'mcp list' '-p hello' '--version'; do
+    PTY_DIR=$repo PTY_ANSWER=n pty_claude $args
+    [[ "$output" == *"CLAUDE_CONFIG_DIR="* ]]
+    [[ "$output" != *"SetUserVar"* ]]
+  done
+  (unset ITERM_SESSION_ID; PTY_DIR=$repo PTY_ANSWER=n pty_claude; [[ "$output" != *"SetUserVar"* ]])
+  (CLAUDE_PEER_WORKTREE=$repo PTY_DIR=$repo PTY_ANSWER=n pty_claude; [[ "$output" != *"SetUserVar"* ]])
+  rm "$HOME/.local/state/claude-peer/enter"
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" == *"CLAUDE_CONFIG_DIR="* ]]
+  [[ "$output" != *"SetUserVar"* ]]
+}
+
+@test "claude-doctor: the workgroup line prints the key, or why there is none" {
+  peer_setup
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"workgroup: base (sent by an attended launch, as user.claudePeerEnter)"* ]]
+  git -C "$repo" config hermes.profile fixture-agent
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"workgroup: base/hermes (sent"* ]]
+  rm "$HOME/.local/state/claude-peer/enter"
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"workgroup: not set (~/.local/state/claude-peer/enter is missing"* ]]
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; unset ITERM_SESSION_ID; claude-doctor"
+  [[ "$output" == *"workgroup: not set (not in an iTerm2 tab"* ]]
 }
 
 # The default directory's CLAUDE.md and rules/ load in every profile started

@@ -45,7 +45,7 @@ labelled by `tabname`, with the iTerm2 window and title its tty belongs to;
 peers"). The tab bar reads `<repo> (claude)` during a session; the conversation topic no
 longer appears there.
 
-`bin/tabname [dir]` (`~/bin/tabname`) is the label: the git toplevel's name, or
+`bin/tabname [--role] [dir]` (`~/bin/tabname`) is the label: the git toplevel's name, or
 for a linked worktree the repo, an `@`, then the worktree name, so the worktrees
 under `.claude/worktrees/` stay told apart. Outside a work tree it prints
 nothing and exits 1 — never 0 with empty output. It is a script so the shim and
@@ -54,4 +54,23 @@ format is `git config tabname.worktree-format '{repo} <glyph>{worktree}'`; the
 default is ASCII because the toolbelt renders rows in iTerm2's UI font
 (`NSFont.it_toolbelt()`), where a Nerd Font private-use glyph is a tofu box
 unless proven otherwise. Set a glyph only after checking it in both the Session
-Status tool and the tab bar. Tests: `tests/tabname.bats`.
+Status tool and the tab bar.
+
+**Roles.** A directory is a *peer* when its own git directory holds a live
+`claude-peer.claim` (line 1 a pid that answers `kill -0`, line 2 the leader's
+directory, line 3 the label), a *lead* when any live claim under
+`<git common dir>/worktrees/*/` names it (or its toplevel) as the leader, and
+*plain* otherwise; `--role` prints `<role><TAB><label>`. `tabname` reads the
+claim files itself and does not call `claude-peer`, so it works where only it
+is deployed. A tab whose peers are all waiting has no claim anywhere and keeps
+the plain name; it becomes a lead at its next turn end once a peer runs. The
+labels are `tabname.peer-format` (default `{repo} · {peer}`, `{peer}` being the
+claim's label) and `tabname.lead-format` (default `{name} ▸ Lead`, `{name}` the
+plain label); `{repo}`, `{worktree}`, `{peer}` and `{name}` work in all three
+formats. The two role defaults hold ordinary Unicode characters (`·`, `▸`), not
+private-use glyphs; live check L5 confirms they render in the toolbelt. `it2`
+has `session set-name` and no tab-title verb, so the row name and the tab title
+are one string while Claude runs: the role name wins and `[group]` is left off
+(`tabstatus.group-prefix true` restores it). At a shell prompt the tab title
+still shows `[group] <dir>`. `claude-tab` treats a directory as a peer only when
+`claude-peer peers` says so; without `claude-peer` there are none. Tests: `tests/tabname.bats`.

@@ -96,6 +96,12 @@ hermes_peer_in() {
   run zsh -c "source '$DOTFUNCTIONS'; cd '$dir'; hermes_peer $*"
 }
 
+# hermes_peer_wait_in <dir> <stdin text>: the Hermes peer as `claude-peer hermes --wait` runs it
+hermes_peer_wait_in() {
+  local dir="$1" input="$2"
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$dir'; CLAUDE_PEER_HERMES_WAIT=1 hermes_peer" <<<"$input"
+}
+
 @test "dot_functions defines the hermes wrapper and its ollama helper" {
   run zsh -c "source '$DOTFUNCTIONS'; whence -w hermes hermes_ensure_ollama"
   [ "$status" -eq 0 ]
@@ -461,6 +467,39 @@ PEER_NONE="claude-peer: no Hermes profile for this account; plain shell (hermes-
   hermes_peer_in "$repo" chat --foo
   [ "$status" -eq 0 ]
   [ "$output" = "ARGS=-p fixture-home chat --foo" ]
+}
+
+@test "hermes_peer: with CLAUDE_PEER_HERMES_WAIT=1 a routed directory asks first, Return starts hermes and asks again" {
+  repo=$(make_mapped_repo fixture-home)
+  make_profile fixture-home openrouter 'https://example.invalid/api/v1'
+  hermes_peer_wait_in "$repo" ""
+  [ "$status" -eq 0 ]
+  PROMPT="Hermes (fixture-home): Return starts hermes here, q leaves a shell"
+  [ "$output" = "$PROMPT"$'\n'"ARGS=-p fixture-home"$'\n'"$PROMPT" ]
+}
+
+@test "hermes_peer: while waiting, q leaves without running hermes and another word asks again" {
+  repo=$(make_mapped_repo fixture-home)
+  make_profile fixture-home openrouter 'https://example.invalid/api/v1'
+  hermes_peer_wait_in "$repo" $'x\nq'
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'Return starts hermes here' <<<"$output")" -eq 2 ]
+  [ ! -e "$BATS_TEST_TMPDIR/hermes-invoked" ]
+}
+
+@test "hermes_peer: while waiting, an unrouted directory prints the old line and never asks" {
+  repo=$(make_repo)
+  hermes_peer_wait_in "$repo" ""
+  [ "$status" -eq 0 ]
+  [ "$output" = "$PEER_NONE" ]
+  [ ! -e "$BATS_TEST_TMPDIR/hermes-invoked" ]
+}
+
+@test "hermes_peer: without the wait variable a routed directory starts hermes at once" {
+  repo=$(make_mapped_repo fixture-home)
+  make_profile fixture-home openrouter 'https://example.invalid/api/v1'
+  hermes_peer_in "$repo" <<<"q"
+  [ "$output" = "ARGS=-p fixture-home" ]
 }
 
 @test "hermes-doctor peer: line says hermes as the routed profile, or plain shell" {

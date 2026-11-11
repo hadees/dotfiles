@@ -110,3 +110,71 @@ make_repo() {
   [ "$status" -eq 0 ]
   [ "$output" = weird ]
 }
+
+# claim <worktree> <leader> <label> [pid]: a claude-peer claim in the worktree's git directory,
+# held by this test's own pid unless told otherwise.
+claim() {
+  local d; d=$(git -C "$1" rev-parse --absolute-git-dir)
+  printf '%s\n%s\n%s\n' "${4:-$$}" "$2" "$3" >"$d/claude-peer.claim"
+}
+
+@test "a live claim makes the worktree a peer: repo · Label" {
+  wt="$REPO/.claude/worktrees/alpha"
+  git -C "$REPO" worktree add -q --detach "$wt"
+  claim "$wt" "$REPO" Alpha
+  run sh "$BIN" "$wt"
+  [ "$status" -eq 0 ]
+  [ "$output" = 'proj · Alpha' ]
+  run sh "$BIN" --role "$wt"
+  [ "$output" = "$(printf 'peer\tproj · Alpha')" ]
+}
+
+@test "the leader of a live claim is lead: name ▸ Lead" {
+  wt="$REPO/.claude/worktrees/alpha"
+  git -C "$REPO" worktree add -q --detach "$wt"
+  claim "$wt" "$(cd "$REPO" && pwd -P)" Alpha
+  run sh "$BIN" --role "$REPO"
+  [ "$output" = "$(printf 'lead\tproj ▸ Lead')" ]
+  mkdir "$REPO/sub"
+  run sh "$BIN" "$REPO/sub"
+  [ "$output" = 'proj ▸ Lead' ]
+}
+
+@test "a leader that is itself a worktree is repo@worktree ▸ Lead" {
+  git -C "$REPO" worktree add -q "$REPO/.claude/worktrees/feat-x" -b feat-x
+  git -C "$REPO" worktree add -q --detach "$REPO/.claude/worktrees/alpha"
+  claim "$REPO/.claude/worktrees/alpha" "$(cd "$REPO/.claude/worktrees/feat-x" && pwd -P)" Alpha
+  run sh "$BIN" --role "$REPO/.claude/worktrees/feat-x"
+  [ "$output" = "$(printf 'lead\tproj@feat-x ▸ Lead')" ]
+}
+
+@test "a dead pid, a missing file or a claim with two lines is plain" {
+  wt="$REPO/.claude/worktrees/alpha"
+  git -C "$REPO" worktree add -q --detach "$wt"
+  leader=$(cd "$REPO" && pwd -P)
+  sleep 0 & dead=$!; wait "$dead"
+  claim "$wt" "$leader" Alpha "$dead"
+  run sh "$BIN" --role "$wt"; [ "$output" = "$(printf 'plain\tproj@alpha')" ]
+  run sh "$BIN" --role "$REPO"; [ "$output" = "$(printf 'plain\tproj')" ]
+  rm "$(git -C "$wt" rev-parse --absolute-git-dir)/claude-peer.claim"
+  run sh "$BIN" --role "$wt"; [ "$output" = "$(printf 'plain\tproj@alpha')" ]
+  printf '%s\n%s\n' "$$" "$leader" >"$(git -C "$wt" rev-parse --absolute-git-dir)/claude-peer.claim"
+  run sh "$BIN" --role "$wt"; [ "$output" = "$(printf 'plain\tproj@alpha')" ]
+}
+
+@test "tabname.peer-format and tabname.lead-format are honoured" {
+  wt="$REPO/.claude/worktrees/alpha"
+  git -C "$REPO" worktree add -q --detach "$wt"
+  claim "$wt" "$(cd "$REPO" && pwd -P)" Alpha
+  git config --global tabname.peer-format '{repo}/{peer} ({worktree})'
+  git config --global tabname.lead-format 'LEAD {name}'
+  run sh "$BIN" "$wt"; [ "$output" = 'proj/Alpha (alpha)' ]
+  run sh "$BIN" "$REPO"; [ "$output" = 'LEAD proj' ]
+}
+
+@test "--role outside a repo: nothing, exit 1" {
+  cd "$BATS_TEST_TMPDIR"
+  run sh "$BIN" --role
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}

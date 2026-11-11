@@ -12,57 +12,114 @@
 # (<repo>/.claude/worktrees/<slug>), ported from bin/executable_worktabs
 # rather than called.
 #
-# A second Workgroup, not extra peers on the builtin Claude Code one: peers
+# Two more Workgroups, not extra peers on the builtin Claude Code one: peers
 # spawn eagerly when a workgroup is entered, and the builtin is entered on
-# every claude job, so three more Claudes would start for every session.
-# `default peers` makes that trade on purpose: it points every profile's
-# Enter Workgroup trigger (the one iTerm2's onboarding fires on a `claude`
-# job) at Claude Peers, so each claude tab starts Chat 2-4 at once;
-# `default builtin` points it back.
+# every claude job. `Claude Peers` is Lead and the panes Alpha, Beta, Gamma; a
+# pane waits (below), so entering it on every claude job costs three blocked
+# shells, not three Claudes. `Claude Peers + Hermes` is the same plus a Hermes
+# pane, a twin because a pane cannot remove itself from a workgroup: where no
+# Hermes profile routes the directory the other definition must be the one
+# entered. There is no Diff peer. Which one a tab enters is the claude()
+# wrapper's choice, made before the job starts: it sets the session variable
+# user.claudePeerEnter to "<key>:<nonce>" (`here` prints the key: base, or
+# base/hermes where Hermes routes) and one variable-changed Enter Workgroup
+# trigger per workgroup, matching its key, enters it. `default peers` disables
+# the Enter trigger iTerm2's onboarding fires on a `claude` job in every profile
+# and writes those triggers (the Settings window cannot make one: it drops their
+# parameters), plus the state file claude() looks for; `default builtin` puts
+# the job trigger back and removes them.
 #
-# That makes the scratch path the normal one, so it is safe to run at once from
-# several peers: `scratch_checkout` holds a per-repo lock (a symlink in the git
-# common dir) while it picks a peer-N, and every `run` leaves a claim in its
-# worktree's git directory (`claude-peer.claim`: pid, then the leader's
-# directory) that marks the worktree in use for as long as that pid lives. A
-# `claude --version` typed in a tab also enters the workgroup, so a scratch
-# peer waits CLAUDE_PEER_SETTLE seconds (default 2) before it makes anything,
-# and outside a repository it leaves a plain shell instead of failing.
-# The sixth session, Hermes, runs `hermes` (the .functions wrapper, through
+# A peer is a named slot (alpha, beta, ...): `run --as alpha` takes the worktree
+# <repo>/.claude/worktrees/alpha, in whatever state it was left (detached at
+# origin/HEAD when new), and runs claude as a child named <repo>-alpha. Taking a
+# slot holds a per-repo lock (a symlink in the git common dir), and the `run`
+# leaves a claim in the worktree's git directory (`claude-peer.claim`: pid,
+# the leader's directory, the label) for as long as its claude runs; a claim whose
+# pid is alive marks the slot in use, and the claim goes when the session does.
+# A bare `run` is a pane of an older definition: one line, then a plain shell.
+# A pane waits: `run --as <slot> --wait` makes no worktree, claim or Claude until
+# Return is typed in it or `start` signals it (USR1, interrupting a `wait` on a
+# background reader: no polling, no terminal mode changed); when that Claude
+# ends the pane waits again. A pane's slot is a preference: it takes its own
+# when free, else the first free name of the pool (git config
+# claude-peer.slots; default the Greek alphabet), and `claude-peer.start = auto`
+# makes the pane start one Claude at once. A waiting pane leaves a file in
+# <git common dir>/claude-peer.wait/ (<slot>.<pid>, the leader's directory).
+# The Hermes session runs `hermes` (the .functions wrapper, through
 # `hermes_peer`) only where a Hermes profile routes this directory; elsewhere it
-# is a plain shell. It needs no worktree and leaves no claim.
+# is a plain shell. It needs no worktree and leaves no claim; with --wait it
+# asks for Return first, and without it settles CLAUDE_PEER_SETTLE seconds
+# (default 2, 0 disables) first, because a `claude --version` typed in a tab
+# also enters the workgroup.
+# A peer is a separate project, not a helper: the one shared thing is the log,
+# <git common dir>/claude-peer.log, where each session says what it is doing and
+# where. It is advisory: `log claim` warns of overlap and never fails on it.
 # `install` edits the preferences while iTerm2 is quit because iTerm2 writes
 # its preferences back at quit (and, with a custom prefs folder, replaces the
 # domain from the folder at launch); an edit made while it runs is lost.
 #
 # Usage: claude-peer <command> [args]
-#   run [branch] [-- claude args...]
-#                            make or reuse <repo>/.claude/worktrees/<slug> on
-#                            <branch>, cd there, start claude through the
-#                            shell (the wrapper applies); no branch: a scratch
-#                            worktree detached at origin/HEAD (peer-N), the
-#                            branch is claude's to make; outside a repository
-#                            that form leaves a plain shell
-#   hermes [-- hermes args...]
-#                            the Hermes peer: wait CLAUDE_PEER_SETTLE, then an
-#                            interactive shell that runs hermes_peer (hermes
-#                            where a profile routes here, else a one-line
-#                            notice); no repository or worktree needed
+#   run --as <slot> [-- claude args...]
+#                            take <repo>/.claude/worktrees/<slot> (new: detached
+#                            at origin/HEAD; else reused as it is), cd there and
+#                            start claude -n <repo>-<slot> through the shell (the
+#                            wrapper applies); exit 3 when a live claim holds it
+#   run --as <slot> --wait [-- claude args...]
+#                            a pane: wait for Return (c continues the last
+#                            session, q leaves a shell) or for `start`, take a
+#                            slot of the pool, run claude, wait again
+#   run <branch> [-- claude args...]
+#                            the same on <repo>/.claude/worktrees/<slug> and
+#                            <branch>
+#   run [--]                 a pane of an older definition: one line, a shell
+#   start <slot|next> [--continue] [--leader <dir>] [--] [prompt words...]
+#                            wake a waiting pane to run claude in <slot> (next:
+#                            whatever the pane would take; prompt - reads stdin)
+#                            -> slot<TAB>worktree<TAB>started<TAB>session name;
+#                            exit 3 already running or no slot free, 4 no pane
+#                            waiting, 1 not started in CLAUDE_PEER_START_WAIT s
+#   stop <slot> [--force]    TERM the claude of a running slot when its registry
+#                            record says idle -> slot<TAB>worktree<TAB>stopped;
+#                            exit 3 not running, 5 busy (or no record) w/o --force
+#   slots [<dir>]            slot<TAB>running|waiting<TAB>worktree<TAB>pid<TAB>
+#                            leader<TAB>session name per slot of the repository
+#   hermes [--wait] [-- hermes args...]
+#                            the Hermes peer: wait CLAUDE_PEER_SETTLE (--wait:
+#                            for Return, in hermes_peer), then an interactive
+#                            shell that runs hermes_peer (hermes where a profile
+#                            routes here, else a one-line notice); no
+#                            repository or worktree needed
 #   peers [--leader <dir>] [<dir>]
-#                            worktree<TAB>pid<TAB>leader per live claim in
-#                            the repository of <dir> (default $PWD), sorted;
+#                            worktree<TAB>pid<TAB>leader<TAB>label per live
+#                            claim in the repository of <dir> (default $PWD), sorted;
 #                            --leader keeps one leader's peers
+#   log [--as <name>] claim <task> [-- <path>...]
+#                            say what you are about to do and where; prints
+#                            overlap<TAB>who<TAB>their path<TAB>their task per
+#                            open claim of another that shares a path; exit 0
+#   log [--as <name>] note <text> | done [<text>]
+#                            a note; the end of your open claims
+#   log show [--all]         open claims and the last 24 hours of notes (--all:
+#                            the file), from <git common dir>/claude-peer.log
 #   path <branch>            print the worktree path for <branch> (nothing
 #                            is created)
 #   plan <branch>...         branch<TAB>worktree<TAB>create|reuse|conflict:<why>
 #                            per branch, exit 1 on any conflict
 #   workgroup                print the "Claude Peers" Workgroup definition JSON
-#                            that install would write (reads the store only)
-#   install                  write that definition into iTerm2's preferences;
+#                            (Lead, Alpha, Beta, Gamma) that install would write
+#   install                  write that and "Claude Peers + Hermes" (the same
+#                            plus a Hermes pane) into iTerm2's preferences;
 #                            iTerm2 must be quit
-#   default <peers|builtin>  which workgroup a `claude` job enters, in every
-#                            profile; with iTerm2 quit, like install
-#   status                   store, iTerm2, workgroup, builtin and default state
+#   here                     the key claude() sends to choose the workgroup for
+#                            this directory (base)
+#   default <peers|builtin>  peers: disable the claude job trigger in every
+#                            profile and add one variable trigger per
+#                            workgroup (claude() sends the key); builtin: the
+#                            job enters Claude Code again; iTerm2 quit
+#   status                   store, iTerm2, workgroup, hermes and default state
+#
+# Exit codes of start and stop: 0 done; 1 failed; 2 usage; 3 already in
+# the requested state; 4 nothing to act on; 5 refused because busy.
 set -u
 
 die() { printf 'claude-peer: %s\n' "$*" >&2; exit 1; }
@@ -128,9 +185,9 @@ ensure_exclude() { # dir
 
 # --- claims and the lock ---------------------------------------------------------
 # A claim is <git dir of the worktree>/claude-peer.claim: line 1 the pid of the
-# `claude-peer run` that owns the worktree (exec keeps it, so it becomes the
-# shell that parents claude), line 2 the leader's directory. Live while the pid
-# answers signal 0; never deleted here, it goes with the worktree.
+# `claude-peer run` that owns the worktree, line 2 the leader's directory, line 3
+# the label. Live while the pid answers signal 0; `run` removes it when its
+# claude returns, so a live claim means a Claude is running there now.
 
 claim_file() { d=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) && printf '%s/claude-peer.claim\n' "$d"; }
 
@@ -141,9 +198,9 @@ claim_live() { # worktree
   kill -0 "$p" 2>/dev/null
 }
 
-write_claim() { # worktree
+write_claim() { # worktree label
   f=$(claim_file "$1") || die "$(basename "$1"): cannot find its git directory"
-  printf '%s\n%s\n' "$$" "$LEADER" >"$f"
+  printf '%s\n%s\n%s\n' "$$" "$LEADER" "$2" >"$f"
   [ "$(sed -n 1p "$f")" = "$$" ] || die "$(basename "$1"): claimed by another peer"
 }
 
@@ -187,110 +244,328 @@ worktree_checkout() {
       else
         git -C "$1" worktree add -b "$2" "$wt" "$base" >/dev/null || die "'$2': git worktree add failed"
       fi
-      write_claim "$wt"
+      write_claim "$wt" "$(slug_of "$2")"
       printf '%s\t%s\tcreated\n' "$2" "$wt";;
-    reuse) write_claim "$wt"; printf '%s\t%s\treused\n' "$2" "$wt";;
+    reuse) write_claim "$wt" "$(slug_of "$2")"; printf '%s\t%s\treused\n' "$2" "$wt";;
     *) die "${act#conflict:}";;
   esac
-}
-
-# A registered peer worktree a new peer may take over: directory present, still
-# detached, clean, and no live claim on it.
-reusable() { # worktree
-  [ -d "$1" ] && ! git -C "$1" symbolic-ref -q HEAD >/dev/null 2>&1 \
-    && [ -z "$(git -C "$1" status --porcelain 2>/dev/null)" ] && ! claim_live "$1"
 }
 
 # `git worktree add` and `checkout` ignore hangup and terminate: a pane torn
 # down mid-checkout would otherwise leave a half-made tree that looks dirty.
 git_immune() { ( trap '' HUP TERM; exec git "$@" ) >/dev/null; }
 
-# dir -> (detached)<TAB>wt<TAB>created|reused: a scratch worktree with no branch
-# of its own, detached at the base (origin/HEAD, else HEAD), at the first
-# <dir>/.claude/worktrees/peer-N that is free — unregistered, or registered and
-# reusable (which is moved back to the base; a registered one whose directory
-# is gone is skipped, `git worktree prune`). A branch is the session's to make
-# once it knows what it is working on; a name picked here would only be one
-# more branch to delete. The whole pick runs under the repo lock and ends by
-# claiming the worktree.
-scratch_checkout() {
+# repo slot label -> slot<TAB>wt<TAB>created|reused, claimed. The slot's
+# worktree is the slot's: a registered one is reused as it was left (no checkout,
+# no status or branch test); a new one is detached at the base (origin/HEAD, else
+# HEAD), a branch being the session's to make once it knows its work. Exit 3 when
+# a live claim holds it. The whole pick runs under the repo lock.
+slot_checkout() {
   peer_lock "$1"
-  ( scratch_pick "$1" )
+  ( slot_pick "$1" "$2" "$3" )
   rc=$?
   peer_unlock "$1"
   return $rc
 }
 
-scratch_pick() {
-  base=HEAD
-  git -C "$1" rev-parse --verify -q origin/HEAD >/dev/null 2>&1 && base=origin/HEAD
-  trees=$(git -C "$1" worktree list --porcelain)
-  n=1
+slot_pick() {
+  wt=$1/.claude/worktrees/$2
+  if git -C "$1" worktree list --porcelain | grep -qx "worktree $wt"; then
+    [ -d "$wt" ] || die "$2: $wt is registered but missing; git worktree prune (from $1), then start it again"
+    if claim_live "$wt"; then
+      cf=$(claim_file "$wt")
+      warn "$2: in use by the peers of $(sed -n 2p "$cf") (pid $(sed -n 1p "$cf"))"
+      return 3
+    fi
+    act=reused
+  elif [ -e "$wt" ]; then
+    die "$2: $wt exists but is not a git worktree"
+  else
+    ensure_exclude "$1"
+    base=HEAD
+    git -C "$1" rev-parse --verify -q origin/HEAD >/dev/null 2>&1 && base=origin/HEAD
+    git_immune -C "$1" worktree add --detach "$wt" "$base" || die "$2: git worktree add failed"
+    act=created
+  fi
+  write_claim "$wt" "$3"
+  printf '%s\t%s\t%s\n' "$2" "$wt" "$act"
+}
+
+# wt name [claude args...]: the only place a session starts. A child, not an
+# exec, so the claim can be removed when it returns. An interactive shell, so
+# `claude` is the .functions wrapper; -n names the session (and its status row).
+run_session() {
+  rs_wt=$1 rs_name=$2; shift 2
+  ( cd -- "$rs_wt" || exit 97
+    trap - TTIN TTOU   # a waiting pane ignores them; claude must not inherit that
+    CLAUDE_PEER_WORKTREE=$rs_wt; export CLAUDE_PEER_WORKTREE
+    exec "${SHELL:-/bin/sh}" -i -c 'n=$1; shift; claude -n "$n" "$@"' claude-peer "$rs_name" "$@" )
+  rs_rc=$?
+  rm -f "$(claim_file "$rs_wt")"
+  return $rs_rc
+}
+
+# --- slot names, the pool, waiting panes ---------------------------------------------
+
+POOL_DEFAULT='alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu'
+
+# LC_ALL=C: in a UTF-8 locale [a-z] also matches capitals. `next` is the word
+# `start` uses for "whatever the pane would take", so it is not a slot.
+slot_ok() { [ "$1" != next ] && printf '%s\n' "$1" | LC_ALL=C grep -Eq '^[a-z][a-z0-9_-]*$'; }
+label_of() { printf '%s%s' "$(printf '%s' "$1" | cut -c1 | tr a-z A-Z)" "$(printf '%s' "$1" | cut -c2-)"; }
+rname_of() { printf '%s' "${1##*/}" | tr -c 'A-Za-z0-9._-' '-'; }
+settle() { st=${CLAUDE_PEER_SETTLE:-2}; [ "$st" -gt 0 ] && sleep "$st"; return 0; }
+
+# The words of claude-peer.slots (read where the caller stands), else the default
+# pool. Its first three are the bar's names. Dies on a word that is not a slot.
+pool_words() {
+  pw=$(git config --get claude-peer.slots 2>/dev/null) || pw=
+  [ -n "$pw" ] || pw=$POOL_DEFAULT
+  for pw_s in $pw; do slot_ok "$pw_s" || die "claude-peer.slots: '$pw_s' is not a slot name"; done
+  printf '%s\n' "$pw"
+}
+
+# repo own pool -> the slot line of the first slot that can be taken, claimed:
+# own, then the pool from its fourth name on, then its first three. A slot with a
+# live claim is skipped; one that cannot be made says why (stderr) and is skipped.
+# Exit 3 and one line when none can. Under the repo lock, taken once.
+pool_checkout() {
+  peer_lock "$1"
+  ( pool_pick "$@" )
+  rc=$?
+  peer_unlock "$1"
+  return $rc
+}
+
+pool_pick() {
+  pk_repo=$1 pk_own=$2
+  pk_order=$pk_own pk_i=0 pk_n=0 pk_first=
+  for s in $3; do
+    pk_n=$((pk_n + 1)); pk_i=$((pk_i + 1))
+    if [ "$pk_i" -le 3 ]; then pk_first="$pk_first $s"
+    elif [ "$s" != "$pk_own" ]; then pk_order="$pk_order $s"; fi
+  done
+  for s in $pk_first; do [ "$s" = "$pk_own" ] || pk_order="$pk_order $s"; done
+  for s in $pk_order; do
+    claim_live "$pk_repo/.claude/worktrees/$s" && continue
+    pk_line=$(slot_pick "$pk_repo" "$s" "$(label_of "$s")") || continue
+    printf '%s\n' "$pk_line"
+    return 0
+  done
+  warn "all $pk_n slots are in use in $pk_repo"
+  return 3
+}
+
+wait_dir() { printf '%s/claude-peer.wait\n' "$(git -C "$1" rev-parse --path-format=absolute --git-common-dir)"; }
+
+# repo -> slot<TAB>pid<TAB>leader of every live waiting pane, sorted by slot
+waiters() {
+  ww_dir=$(wait_dir "$1")
+  for ww_f in "$ww_dir"/*; do
+    [ -f "$ww_f" ] || continue
+    ww_b=${ww_f##*/}
+    case $ww_b in *.*.*) continue;; esac
+    ww_p=${ww_b#*.}
+    case $ww_p in ''|*[!0-9]*) continue;; esac
+    kill -0 "$ww_p" 2>/dev/null || continue
+    printf '%s\t%s\t%s\n' "${ww_b%%.*}" "$ww_p" "$(sed -n 1p "$ww_f")"
+  done | LC_ALL=C sort
+}
+
+# A wait file belongs to a pane that is gone when its pid is.
+pane_reap() {
+  for pr_f in "$1"/*; do
+    [ -e "$pr_f" ] || continue
+    pr_b=${pr_f##*/}; pr_p=${pr_b#*.}; pr_p=${pr_p%%.*}
+    case $pr_p in ''|*[!0-9]*) rm -f "$pr_f"; continue;; esac
+    kill -0 "$pr_p" 2>/dev/null || rm -f "$pr_f"
+  done
+}
+
+# The pane's blocker: a reader of one line from the terminal, else (no terminal)
+# a long sleep. `wait` on it is what a USR1 interrupts. Sets pn_ended=1 when the
+# blocker finished by itself, 0 when it was cut short.
+pane_block() {
+  rm -f "$pn_me.key"
+  if [ "$pn_reader" = 1 ]; then
+    ( IFS= read -r l 2>/dev/null <"$pn_tty" || exit 1; printf '%s\n' "$l" >"$pn_me.key" ) &
+  else
+    sleep 3600 &
+  fi
+  pn_rpid=$!
+  pn_intr=
+  wait "$pn_rpid"
+  if kill -0 "$pn_rpid" 2>/dev/null; then kill "$pn_rpid" 2>/dev/null; pn_ended=0; else pn_ended=1; fi
+  wait "$pn_rpid" 2>/dev/null
+  pn_rpid=
+}
+
+# A signal can land between forking the blocker and recording its pid, so the
+# shell's own job list (jobs -p, through a file: a substitution may not see it)
+# is the cleanup, and pn_rpid only the second line.
+pane_cleanup() {
+  [ -n "${pn_me-}" ] || return 0
+  jobs -p >"$pn_me.jobs" 2>/dev/null
+  # shellcheck disable=SC2046
+  kill $(cat "$pn_me.jobs" 2>/dev/null) 2>/dev/null
+  [ -z "${pn_rpid-}" ] || kill "$pn_rpid" 2>/dev/null
+  rm -f "$pn_me" "$pn_me".*
+}
+
+pane_shell() { # leave: forget this pane, hand the terminal back, become a shell
+  pane_cleanup
+  trap - EXIT TTIN TTOU
+  exec "${SHELL:-/bin/sh}" -i
+}
+
+# mode(fresh|continue) slot(or -) prompt claude-args...: take a slot, run one
+# session in it, return. Never exits: a refusal is printed and the pane waits on.
+pane_go() {
+  pg_mode=$1 pg_req=$2 pg_prompt=$3; shift 3
+  if [ "$pg_req" != - ]; then
+    out=$(slot_checkout "$repo" "$pg_req" "$(label_of "$pg_req")"); pg_rc=$?
+  else
+    pg_pool=$(pool_words) || return 0
+    out=$(pool_checkout "$repo" "$slot" "$pg_pool"); pg_rc=$?
+  fi
+  if [ "$pg_rc" -ne 0 ]; then
+    [ "$pg_rc" -ne 3 ] || [ "$pg_req" != - ] || echo "claude-peer: Return tries again"
+    return 0
+  fi
+  pg_taken=$(printf '%s\n' "$out" | cut -f1)
+  pg_wt=$(printf '%s\n' "$out" | cut -f2)
+  pg_msg=$(label_of "$pg_taken")
+  if [ "$pg_taken" != "$slot" ] && [ "$pg_req" = - ] && claim_live "$repo/.claude/worktrees/$slot"; then
+    pg_msg="$pg_msg (this pane's $label is in use by the peers of $(sed -n 2p "$(claim_file "$repo/.claude/worktrees/$slot")"))"
+  fi
+  echo "$pg_msg"
+  [ "$pg_mode" != continue ] || set -- --continue "$@"
+  [ -z "$pg_prompt" ] || set -- "$@" "$pg_prompt"
+  run_session "$pg_wt" "$rname-$pg_taken" "$@"
+  [ ! -t 1 ] || printf '\033]21337;status=;indicator=;status-color=;detail=\a'
+  return 0
+}
+
+# "$@": the definition's claude args. Needs repo rname slot label LEADER.
+pane() {
+  pn_wd=$(wait_dir "$repo")
+  mkdir -p "$pn_wd" || die "cannot create $pn_wd"
+  pn_me=$pn_wd/$slot.$$
+  pn_tty=${CLAUDE_PEER_TTY:-/dev/tty}
+  pn_rpid= pn_reader=1 pn_intr= pn_ended=0
+  trap : USR1
+  trap 'pn_intr=1' INT
+  trap '' TTIN TTOU
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+  trap pane_cleanup EXIT
+  if [ "$(git config --get claude-peer.start 2>/dev/null)" = auto ]; then
+    settle
+    pane_go fresh - '' "$@"
+  fi
+  pn_show=1
   while :; do
-    wt=$1/.claude/worktrees/peer-$n
-    if ! printf '%s\n' "$trees" | grep -qx "worktree $wt" && [ ! -e "$wt" ]; then
-      ensure_exclude "$1"
-      git_immune -C "$1" worktree add --detach "$wt" "$base" || die "peer-$n: git worktree add failed"
-      write_claim "$wt"
-      printf '(detached)\t%s\tcreated\n' "$wt"; return 0
-    fi
-    if printf '%s\n' "$trees" | grep -qx "worktree $wt" && reusable "$wt"; then
-      git_immune -C "$wt" checkout -q --detach "$base" || die "peer-$n: cannot move to $base"
-      write_claim "$wt"
-      printf '(detached)\t%s\treused\n' "$wt"; return 0
-    fi
-    n=$((n + 1))
+    pane_reap "$pn_wd"
+    printf '%s\n' "$LEADER" >"$pn_me"
+    pn_ev=
+    while [ -z "$pn_ev" ]; do
+      if [ -f "$pn_me.start" ]; then pn_ev=request; break; fi
+      [ -z "$pn_show" ] || printf '%s: Return starts a Claude here, c continues the last session, q leaves a shell\n' "$label"
+      pn_show=
+      pane_block
+      if [ -f "$pn_me.start" ]; then pn_ev=request
+      elif [ -n "$pn_intr" ]; then pn_ev=quit
+      elif [ -f "$pn_me.key" ]; then
+        pn_k=$(cat "$pn_me.key"); rm -f "$pn_me.key"
+        case $pn_k in '') pn_ev=fresh;; c) pn_ev=continue;; q) pn_ev=quit;; *) pn_show=1;; esac
+      elif [ "$pn_ended" = 1 ] && [ "$pn_reader" = 1 ]; then
+        pn_reader=0   # the reader ended with no line: no terminal, only a request wakes this pane
+      fi
+    done
+    case $pn_ev in
+      quit) pane_shell;;
+      request)
+        pn_mode=$(sed -n 1p "$pn_me.start"); pn_req=$(sed -n 2p "$pn_me.start")
+        pn_prompt=$(sed -n '3,$p' "$pn_me.start")
+        rm -f "$pn_me.start" "$pn_me"
+        slot_ok "$pn_req" || pn_req=-
+        pane_go "$pn_mode" "$pn_req" "$pn_prompt" "$@";;
+      *) rm -f "$pn_me"; pane_go "$pn_ev" - '' "$@";;
+    esac
+    pn_show=1
   done
 }
 
 # --- commands -----------------------------------------------------------------
 
 cmd_run() {
-  b=
-  if [ $# -gt 0 ] && [ "$1" != -- ]; then b=$1; shift; fi
+  slot= b= wait=0
+  if [ "${1-}" = --as ]; then
+    [ $# -ge 2 ] || usage
+    slot=$2; shift 2
+    if [ "${1-}" = --wait ]; then wait=1; shift; fi
+  elif [ $# -gt 0 ] && [ "$1" != -- ]; then b=$1; shift; fi
   if [ $# -gt 0 ]; then
     [ "$1" = -- ] || usage
     shift
   fi
+  if [ -z "$slot$b" ]; then
+    echo "claude-peer: this pane's workgroup definition predates named slots; quit iTerm2 and run claude-peer install. Plain shell."
+    exec "${SHELL:-/bin/sh}" -i
+  fi
   LEADER=$(pwd -P)
-  if [ -z "$b" ]; then
-    if ! repo_root_q >/dev/null; then
-      echo 'claude-peer: not in a git repository, so there is no worktree to give this peer; plain shell'
+  if [ -n "$slot" ]; then
+    slot_ok "$slot" || die "'$slot' is not a slot name (lowercase letters, digits, - and _)"
+    label=$(label_of "$slot")
+  fi
+  if [ "$wait" = 1 ]; then
+    repo=$(repo_root_q) || {
+      echo "claude-peer: not in a git repository, so there is no worktree to give this peer; plain shell"
       exec "${SHELL:-/bin/sh}" -i
-    fi
-    [ "${CLAUDE_PEER_SETTLE:-2}" -gt 0 ] && sleep "${CLAUDE_PEER_SETTLE:-2}"
-    repo=$(repo_root) || exit 1
-    out=$(scratch_checkout "$repo") || exit 1
+    }
+    rname=$(rname_of "$repo")
+    pane "$@"
+  fi
+  repo=$(repo_root) || exit 1
+  rname=$(rname_of "$repo")
+  if [ -n "$slot" ]; then
+    out=$(slot_checkout "$repo" "$slot" "$label") || exit $?
+    name=$rname-$slot
   else
-    repo=$(repo_root) || exit 1
     valid_branch "$b"
     out=$(worktree_checkout "$repo" "$b") || exit 1
+    name=$rname-$(slug_of "$b")
   fi
   printf '%s\n' "$out"
   wt=$(printf '%s\n' "$out" | cut -f2)
   # `cd ""` is a silent no-op, which would start claude in the leader's checkout.
-  cd -- "$wt" || die "cannot enter $wt"
-  CLAUDE_PEER_WORKTREE=$wt
-  export CLAUDE_PEER_WORKTREE
-  # An interactive shell, so `claude` is the .functions wrapper; it stays the
-  # parent because a function cannot be exec'd.
-  exec "${SHELL:-/bin/sh}" -i -c 'claude "$@"' claude-peer "$@"
+  [ -d "$wt" ] || die "cannot enter $wt"
+  run_session "$wt" "$name" "$@"
+  exit $?
 }
 
-# [-- hermes args...]. The shell function does the routing (hermes_profile is
-# zsh and lives in .functions), so this only settles, then starts a shell that
-# calls it and stays a shell whatever it did.
+# [--wait] [-- hermes args...]. The shell function does the routing
+# (hermes_profile is zsh and lives in .functions), so this only settles, then
+# starts a shell that calls it and stays a shell whatever it did. --wait hands
+# the waiting to hermes_peer (CLAUDE_PEER_HERMES_WAIT=1, no settle) unless
+# claude-peer.start is auto.
 cmd_hermes() {
+  hw=0
+  if [ "${1-}" = --wait ]; then hw=1; shift; fi
   if [ $# -gt 0 ]; then
     [ "$1" = -- ] || usage
     shift
   fi
-  [ "${CLAUDE_PEER_SETTLE:-2}" -gt 0 ] && sleep "${CLAUDE_PEER_SETTLE:-2}"
+  if [ "$hw" = 1 ] && [ "$(git config --get claude-peer.start 2>/dev/null)" != auto ]; then
+    CLAUDE_PEER_HERMES_WAIT=1; export CLAUDE_PEER_HERMES_WAIT
+  else
+    settle
+  fi
   HERMES_SH='if typeset -f hermes_peer >/dev/null 2>&1; then hermes_peer "$@"; else echo "claude-peer: hermes_peer is not defined in this shell; plain shell (chezmoi apply)"; fi; exec "${SHELL:-/bin/sh}" -i'
   exec "${SHELL:-/bin/sh}" -i -c "$HERMES_SH" claude-peer "$@"
 }
 
-# [--leader <dir>] [<dir>] -> worktree<TAB>pid<TAB>leader per live claim in the
+# [--leader <dir>] [<dir>] -> worktree<TAB>pid<TAB>leader<TAB>label per live claim in the
 # repository of <dir>, sorted by worktree. Silent outside a repository.
 cmd_peers() {
   want=
@@ -308,10 +583,269 @@ cmd_peers() {
     case $pid in ''|*[!0-9]*) continue;; esac
     kill -0 "$pid" 2>/dev/null || continue
     [ -z "$want" ] || [ "$lead" = "$want" ] || continue
+    lab=$(sed -n 3p "$c")
     gd=$(sed -n 1p "$(dirname "$c")/gitdir" 2>/dev/null)
     [ -n "$gd" ] || continue
-    printf '%s\t%s\t%s\n' "$(dirname "$gd")" "$pid" "$lead"
+    printf '%s\t%s\t%s\t%s\n' "$(dirname "$gd")" "$pid" "$lead" "${lab:--}"
   done | LC_ALL=C sort
+}
+
+# <slot|next> [--continue] [--leader <dir>] [--] [prompt words...]
+cmd_start() {
+  [ $# -ge 1 ] || usage
+  st_req=$1; shift
+  [ "$st_req" = next ] || slot_ok "$st_req" || die "'$st_req' is not a slot name (lowercase letters, digits, - and _)"
+  st_mode=fresh st_leader=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --continue) st_mode=continue; shift;;
+      --leader) [ $# -ge 2 ] || usage; st_leader=$2; shift 2;;
+      --) shift; break;;
+      *) break;;
+    esac
+  done
+  case ${1-} in
+    -) [ $# -eq 1 ] || usage; st_prompt=$(cat);;
+    -*) usage;;
+    *) st_prompt="$*";;
+  esac
+  repo=$(repo_root) || exit 1
+  rname=$(rname_of "$repo")
+  if [ "$st_req" != next ]; then
+    st_wt=$repo/.claude/worktrees/$st_req
+    if claim_live "$st_wt"; then
+      printf '%s\t%s\trunning\t%s\n' "$st_req" "$st_wt" "$rname-$st_req"
+      exit 3
+    fi
+  fi
+  st_all=$(waiters "$repo")
+  [ -n "$st_all" ] || { warn "no pane is waiting in this repository"; exit 4; }
+  st_leaders=$(printf '%s\n' "$st_all" | cut -f3 | LC_ALL=C sort -u)
+  if [ "$(printf '%s\n' "$st_leaders" | wc -l | tr -d ' ')" -gt 1 ]; then
+    if [ -n "$st_leader" ]; then st_want=$(cd "$st_leader" 2>/dev/null && pwd -P) || st_want=$st_leader
+    else st_want=$(pwd -P); fi
+    st_all=$(printf '%s\n' "$st_all" | awk -F'\t' -v l="$st_want" '$3 == l')
+    [ -n "$st_all" ] || {
+      warn "no pane is waiting for $st_want; the waiting panes belong to: $(printf '%s' "$st_leaders" | tr '\n' ' ')(--leader <dir>)"
+      exit 4
+    }
+  fi
+  st_pick=$(printf '%s\n' "$st_all" | awk -F'\t' -v s="$st_req" '$1 == s { print; exit }')
+  [ -n "$st_pick" ] || st_pick=$(printf '%s\n' "$st_all" | sed -n 1p)
+  st_own=$(printf '%s' "$st_pick" | cut -f1); st_pid=$(printf '%s' "$st_pick" | cut -f2)
+  if [ "$st_req" = next ]; then
+    st_pool=$(pool_words) || exit 1
+    st_n=0 st_free=0
+    for s in $st_pool; do
+      st_n=$((st_n + 1))
+      claim_live "$repo/.claude/worktrees/$s" || st_free=1
+    done
+    [ "$st_free" = 1 ] || { warn "all $st_n slots are in use in $repo"; exit 3; }
+  fi
+  st_dir=$(wait_dir "$repo")
+  st_file=$st_dir/$st_own.$st_pid.start
+  { printf '%s\n%s\n' "$st_mode" "$([ "$st_req" = next ] && echo - || echo "$st_req")"; printf '%s' "$st_prompt"; } >"$st_file.tmp" &&
+    mv "$st_file.tmp" "$st_file" || die "cannot write the request in $st_dir"
+  kill -USR1 "$st_pid" 2>/dev/null || { rm -f "$st_file"; warn "the pane (pid $st_pid) is gone"; exit 4; }
+  st_limit=$(( ${CLAUDE_PEER_START_WAIT:-60} * 5 )); st_i=0
+  while [ "$st_i" -lt "$st_limit" ]; do
+    sleep 0.2
+    st_i=$((st_i + 1))
+    st_got=$(cmd_peers "$repo" | awk -F'\t' -v p="$st_pid" '$2 == p { print $1; exit }')
+    if [ -n "$st_got" ]; then
+      st_who=$(log_who)
+      log_add "$st_who" start "$(label_of "${st_got##*/}") by $st_who" 2>/dev/null
+      printf '%s\t%s\tstarted\t%s\n' "${st_got##*/}" "$st_got" "$rname-${st_got##*/}"
+      exit 0
+    fi
+    # a USR1 that landed before the pane's wait began is lost; send it again
+    [ $((st_i % 5)) -ne 0 ] || [ ! -f "$st_file" ] || kill -USR1 "$st_pid" 2>/dev/null
+  done
+  rm -f "$st_file"
+  warn "$st_req did not start within ${CLAUDE_PEER_START_WAIT:-60}s; its pane shows why"
+  exit 1
+}
+
+# Every Claude profile directory a registry could be in: the caller's
+# CLAUDE_CONFIG_DIR, Claude Code's own default (what an unset one means, so a
+# profile that stays there is found whatever the mapping says) and each
+# claude.profile.* value. No other line names one.
+profile_dirs() {
+  { printf '%s\n%s\n' "${CLAUDE_CONFIG_DIR-}" "$HOME/.claude"
+    git config --get-regexp '^claude\.profile\.' 2>/dev/null | cut -d' ' -f2-
+  } | while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        case $d in "~/"*) d="$HOME/${d#\~/}";; esac
+        [ -d "$d" ] && printf '%s\n' "$d"
+      done | awk '!seen[$0]++'
+}
+
+# pid -> every descendant pid, one per line
+descendants() {
+  ps -Ao pid=,ppid= 2>/dev/null | awk -v r="$1" '
+    { pp[$1] = $2 }
+    END { for (;;) { ch = 0
+            for (p in pp) if (!(p in d) && (pp[p] == r || (pp[p] in d))) { d[p] = 1; ch = 1 }
+            if (!ch) break }
+          for (p in d) print p }'
+}
+
+# <slot> [--force]
+cmd_stop() {
+  [ $# -ge 1 ] && [ $# -le 2 ] || usage
+  sp_slot=$1 sp_force=0
+  if [ $# -eq 2 ]; then [ "$2" = --force ] || usage; sp_force=1; fi
+  slot_ok "$sp_slot" || die "'$sp_slot' is not a slot name (lowercase letters, digits, - and _)"
+  repo=$(repo_root) || exit 1
+  sp_wt=$repo/.claude/worktrees/$sp_slot
+  if ! claim_live "$sp_wt"; then
+    printf '%s\t%s\tnot-running\n' "$sp_slot" "$sp_wt"
+    exit 3
+  fi
+  sp_who=$(log_who) # before the kill: the claim that makes this Lead goes with it
+  sp_claim=$(sed -n 1p "$(claim_file "$sp_wt")")
+  sp_kids=$(descendants "$sp_claim")
+  sp_target= sp_status=
+  for sp_pid in $sp_kids; do
+    for sp_d in $(profile_dirs); do
+      [ -f "$sp_d/sessions/$sp_pid.json" ] || continue
+      sp_target=$sp_pid
+      sp_status=$(sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$sp_d/sessions/$sp_pid.json" | sed -n 1p)
+      break 2
+    done
+  done
+  if [ "$sp_force" = 0 ] && [ "$sp_status" != idle ]; then
+    warn "$sp_slot is ${sp_status:-unknown}; stop --force to stop it anyway"
+    exit 5
+  fi
+  if [ -n "$sp_target" ]; then kill -TERM "$sp_target" 2>/dev/null
+  else for sp_pid in $sp_kids; do kill -TERM "$sp_pid" 2>/dev/null; done; fi
+  sp_limit=$(( ${CLAUDE_PEER_STOP_WAIT:-15} * 5 )); sp_i=0
+  while [ "$sp_i" -lt "$sp_limit" ]; do
+    claim_live "$sp_wt" || { log_add "$sp_who" stop "$(label_of "$sp_slot") by $sp_who" 2>/dev/null; printf '%s\t%s\tstopped\n' "$sp_slot" "$sp_wt"; exit 0; }
+    sleep 0.2
+    sp_i=$((sp_i + 1))
+  done
+  warn "$sp_slot did not exit within ${CLAUDE_PEER_STOP_WAIT:-15}s"
+  exit 1
+}
+
+# [<dir>] -> slot<TAB>running|waiting<TAB>worktree<TAB>pid<TAB>leader<TAB>session name
+cmd_slots() {
+  [ $# -le 1 ] || usage
+  [ -z "${1-}" ] || cd -- "$1" 2>/dev/null || exit 0
+  repo=$(repo_root_q) || exit 0
+  rname=$(rname_of "$repo")
+  { cmd_peers "$repo" | while IFS='	' read -r w p l _; do
+      printf '%s\trunning\t%s\t%s\t%s\t%s\n' "${w##*/}" "$w" "$p" "$l" "$rname-${w##*/}"
+    done
+    waiters "$repo" | while IFS='	' read -r sl p l; do
+      printf '%s\twaiting\t%s\t%s\t%s\t%s\n' "$sl" "$repo/.claude/worktrees/$sl" "$p" "$l" "$rname-$sl"
+    done
+  } | LC_ALL=C sort
+}
+
+# --- the coordination log -------------------------------------------------------
+# <git common dir>/claude-peer.log: append-only, one line per entry,
+# <UTC time> TAB <who> TAB <kind> TAB <text> [TAB <path>...]; kind is claim, note,
+# done, start or stop. A claim is open until the same who logs done, or a stop
+# line for that label follows it. Advisory: nothing here ever blocks.
+
+log_file() { c=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && printf '%s/claude-peer.log\n' "$c"; }
+
+log_clean() { printf '%s' "$*" | tr '\t\n\r' '   '; }
+
+# who is acting from here: the label of a live slot worktree, else Lead when a
+# live claim names this directory as its leader, else the directory's name
+log_who() {
+  if claim_live "$PWD"; then
+    lw=$(sed -n 3p "$(claim_file "$PWD")")
+    [ -z "$lw" ] || { printf '%s\n' "$lw"; return; }
+  fi
+  lw_here=$(pwd -P)
+  lw_top=$(cd "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null && pwd -P)
+  if cmd_peers "$PWD" | awk -F'\t' -v h="$lw_here" -v t="${lw_top:-$lw_here}" '$3 == h || $3 == t { f = 1 } END { exit !f }'; then
+    echo Lead
+  else basename "$PWD"; fi
+}
+
+log_add() { # who kind text [TAB path...]
+  f=$(log_file) || return 1
+  printf '%s\t%s\t%s\t%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(log_clean "$1")" "$2" "$(log_clean "$3")" "${4-}" >>"$f"
+}
+
+# path -> relative to the repository top, no ./ or trailing /, . for the top
+# ponytail: .. is not resolved; add when a session is seen passing one
+log_rel() {
+  p=$(log_clean "$1")
+  case $p in
+    /*) if [ "$p" = "$lg_top" ]; then p=; else case $p in "$lg_top"/*) p=${p#"$lg_top"/};; esac; fi;;
+    *) p=$lg_pre$p;;
+  esac
+  while :; do case $p in ./*) p=${p#./};; */) p=${p%/};; .) p=;; *) break;; esac; done
+  printf '%s\n' "${p:-.}"
+}
+
+# the log on stdin; mode overlap prints the open claims of anyone but $LG_ME that
+# share a path with $LG_MINE (tab-separated); mode show prints every open claim
+# and the notes stamped at or after $LG_CUT
+log_scan() { # mode
+  awk -F'\t' -v mode="$1" '
+    function ov(a, b) { return a == b || a == "." || b == "." || index(a "/", b "/") == 1 || index(b "/", a "/") == 1 }
+    { n++; line[n] = $0; kind[n] = $3; who[n] = $2; ts[n] = $1
+      if ($3 == "claim") open[n] = 1
+      else if ($3 == "done" || $3 == "stop") {
+        l = $2; if ($3 == "stop") { l = $4; sub(/ .*/, "", l) }
+        for (i = 1; i < n; i++) if (who[i] == l && kind[i] == "claim") open[i] = 0 } }
+    END {
+      nm = split(ENVIRON["LG_MINE"], mine, "\t")
+      for (i = 1; i <= n; i++) {
+        if (mode == "show") {
+          if (kind[i] == "claim" ? open[i] : (kind[i] == "note" && ts[i] >= ENVIRON["LG_CUT"])) print line[i]
+          continue }
+        if (!open[i] || who[i] == ENVIRON["LG_ME"]) continue
+        split(line[i], f, "\t")
+        for (k = 5; k in f; k++) for (m = 1; m <= nm; m++)
+          if (mine[m] != "" && ov(f[k], mine[m])) { printf "overlap\t%s\t%s\t%s\n", f[2], f[k], f[4]; break }
+      } }'
+}
+
+# [--as <name>] claim <task> [-- <path>...] | note <text> | done [<text>] | show [--all]
+cmd_log() {
+  lg_as=
+  if [ "${1-}" = --as ]; then [ $# -ge 2 ] || usage; lg_as=$2; shift 2; fi
+  [ $# -ge 1 ] || usage
+  lg_verb=$1; shift
+  case $lg_verb in claim|note|done|show) ;; *) usage;; esac
+  lg_file=$(log_file) || { [ "$lg_verb" = show ] && exit 0; die "not inside a git repository"; }
+  lg_me=${lg_as:-$(log_who)}
+  case $lg_verb in
+    show)
+      [ $# -eq 0 ] || { [ "$1" = --all ] && [ $# -eq 1 ]; } || usage
+      [ -f "$lg_file" ] || exit 0
+      if [ "${1-}" = --all ]; then cat "$lg_file"
+      else
+        lg_t=$(( $(date -u +%s) - 86400 ))
+        LG_CUT=$(date -u -d "@$lg_t" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$lg_t" +%Y-%m-%dT%H:%M:%SZ) \
+          log_scan show <"$lg_file"
+      fi;;
+    note) [ $# -ge 1 ] || usage; log_add "$lg_me" note "$*";;
+    done) log_add "$lg_me" done "$*";;
+    claim)
+      lg_task=
+      while [ $# -gt 0 ] && [ "$1" != -- ]; do lg_task=${lg_task:+$lg_task }$1; shift; done
+      [ -n "$lg_task" ] || usage
+      [ $# -eq 0 ] || shift
+      lg_top=$(git rev-parse --show-toplevel) lg_pre=$(git rev-parse --show-prefix)
+      lg_tab=$(printf '\t') lg_paths= lg_mine=
+      for lg_p in "$@"; do
+        lg_r=$(log_rel "$lg_p")
+        lg_paths=$lg_paths$lg_tab$lg_r lg_mine=${lg_mine:+$lg_mine$lg_tab}$lg_r
+      done
+      log_add "$lg_me" claim "$lg_task" "$lg_paths" || exit 1
+      [ -n "$lg_mine" ] && LG_ME=$lg_me LG_MINE=$lg_mine log_scan overlap <"$lg_file"
+      exit 0;;
+  esac
 }
 
 cmd_path() {
@@ -365,7 +899,7 @@ peer_py() {
   python3 -I - "$@" <<'PYEOF'
 import copy, json, plistlib, subprocess, sys
 
-GROUP, NAME, BUILTIN = "claudePeer.workgroup", "Claude Peers", "builtin.claudeCode"
+GROUP, NAME, HGROUP, BUILTIN = "claudePeer.workgroup", "Claude Peers", "claudePeer.h", "builtin.claudeCode"
 mode, kind, path = sys.argv[1:4]
 ENTER = "iTermEnterWorkgroupTrigger"
 
@@ -398,37 +932,84 @@ def session(ident, name, kind, command="", items=None, parent=None):
         s["parentID"] = parent
     return s
 
-def build(groups):
-    builtin = next((g for g in groups if g.get("uniqueIdentifier") == BUILTIN), {})
-    def pick(i):
-        return next((s for s in builtin.get("sessions", []) if s.get("uniqueIdentifier") == i), None)
-    main = session("claudePeer.main", "Chat", "root",
-                   items=[{"kind": "modeSwitcher"}, {"kind": "gitStatus"}])
-    if pick(BUILTIN + ".main"):
-        main["toolbarItems"] = copy.deepcopy(pick(BUILTIN + ".main")["toolbarItems"])
-    diff = copy.deepcopy(pick(BUILTIN + ".diff"))
-    if not diff:
-        diff = session("", "Diff", "peer", "git difftool -y -x vimdiff \\(gitBase)", [
-            {"kind": "modeSwitcher"}, {"kind": "changedFileSelector"}, {"kind": "gitBaseSelector"},
-            {"kind": "navigation",
-             "reloadShortcut": {"serialized": "0x72-0x100000-0xf"},
-             "forwardShortcut": {"serialized": "0xf703-0x340000-0x7c"},
-             "backShortcut": {"serialized": "0xf702-0x340000-0x7b"}}])
-        diff.update(mode="diff", perFileCommand="git difftool -y -x vimdiff \\(gitBase) -- \\(file)")
-    diff.update(uniqueIdentifier="claudePeer.diff", parentID="claudePeer.main")
-    chats = [session("claudePeer.chat%d" % n, "Chat %d" % n, "peer", "claude-peer run",
-                     parent="claudePeer.main") for n in (2, 3, 4)]
-    hermes = session("claudePeer.hermes", "Hermes", "peer", "claude-peer hermes",
-                     parent="claudePeer.main")
-    return {"uniqueIdentifier": GROUP, "name": NAME, "sessions": [main, diff] + chats + [hermes]}
+def build_base(prefix):
+    """Lead and the three slot panes, ids under prefix. A pane waits (--wait):
+    nothing starts in it until Return or `claude-peer start`."""
+    root = prefix + ".main"
+    return [session(root, "Lead", "root", items=[{"kind": "modeSwitcher"}, {"kind": "gitStatus"}])] + [
+        session("%s.%s" % (prefix, slot), slot.capitalize(), "peer",
+                "claude-peer run --as %s --wait" % slot, parent=root)
+        for slot in ("alpha", "beta", "gamma")]
 
-def enter_triggers(pl):
-    """(profile name, trigger dict) for every Enter Workgroup trigger aimed at
-    either workgroup; other workgroups' triggers are not ours to move."""
+def with_hermes(group):
+    """The twin of a definition with a Hermes pane: id <id>.h (claudePeer.h for
+    the base), name "<name> + Hermes", every session id moved under the new id."""
+    gid = HGROUP if group["uniqueIdentifier"] == GROUP else group["uniqueIdentifier"] + ".h"
+    old = next(s for s in group["sessions"] if s["kind"] == {"kind": "root"})["uniqueIdentifier"][:-len(".main")]
+    twin = copy.deepcopy(group)
+    twin.update(uniqueIdentifier=gid, name=group["name"] + " + Hermes")
+    for s in twin["sessions"]:
+        s["uniqueIdentifier"] = gid + s["uniqueIdentifier"][len(old):]
+        if "parentID" in s:
+            s["parentID"] = gid + s["parentID"][len(old):]
+    twin["sessions"].append(session(gid + ".hermes", "Hermes", "peer", "claude-peer hermes --wait",
+                                    parent=gid + ".main"))
+    return twin
+
+def build():
+    """[Claude Peers, Claude Peers + Hermes]"""
+    base = {"uniqueIdentifier": GROUP, "name": NAME, "sessions": build_base("claudePeer")}
+    return [base, with_hermes(base)]
+
+VAR = "user.claudePeerEnter"
+VAR_ENTER = 115  # iTermTriggerMatchTypeEventVariableChanged
+
+def key_of(gid):
+    """The key the wrapper sends to enter a workgroup (claude() sets the variable
+    to <key>:<nonce>); None for an id that is not one of ours."""
+    if gid == GROUP:
+        return "base"
+    if gid == HGROUP:
+        return "base/hermes"
+    if gid.startswith("claudePeer.v."):
+        name = gid[len("claudePeer.v."):]
+        return name[:-2] + "/hermes" if name.endswith(".h") else name
+    return None
+
+def is_var(t):
+    return t.get("action") == ENTER and (t.get("eventParams") or {}).get("variableName") == VAR
+
+def job_triggers(pl):
+    """(profile dict, job trigger) for every Enter Workgroup trigger that fires on
+    the claude job and is aimed at the builtin or Claude Peers; the variable
+    triggers and other workgroups' triggers are not ours to move."""
     for b in pl.get("New Bookmarks", []):
         for t in b.get("Triggers", []) or []:
-            if t.get("action") == ENTER and t.get("parameter") in (BUILTIN, GROUP):
-                yield b.get("Name", "?"), t
+            if t.get("action") == ENTER and not is_var(t) and t.get("parameter") in (BUILTIN, GROUP):
+                yield b, t
+
+def var_trigger(gid, key):
+    return {"action": ENTER, "matchType": VAR_ENTER, "parameter": gid,
+            "eventParams": {"variableName": VAR, "variableValueRegex": "^%s:" % key},
+            "disabled": 0, "regex": "", "contentregex": "", "partial": False}
+
+def sync_var_triggers(pl, groups):
+    """In every profile that has the job trigger, make the variable triggers one
+    per installed workgroup of ours, nothing else touched. Returns the ids of the
+    profiles it changed."""
+    want = [(g["uniqueIdentifier"], key_of(g["uniqueIdentifier"])) for g in groups
+            if str(g.get("uniqueIdentifier", "")).startswith("claudePeer") and key_of(g["uniqueIdentifier"])]
+    changed = set()
+    for b in {id(b): b for b, _ in job_triggers(pl)}.values():
+        trig = b.setdefault("Triggers", [])
+        keep = [t for t in trig if not is_var(t)]
+        have = {t.get("parameter"): t for t in trig if is_var(t)}
+        mine = [have.get(gid) if have.get(gid) and have[gid]["eventParams"].get("variableValueRegex") == "^%s:" % key
+                else var_trigger(gid, key) for gid, key in want]
+        if [t for t in trig if is_var(t)] != mine:
+            changed.add(id(b))
+        b["Triggers"] = keep + mine
+    return changed
 
 def save(pl, was_binary):
     data = plistlib.dumps(pl, fmt=plistlib.FMT_BINARY if was_binary else plistlib.FMT_XML)
@@ -440,49 +1021,64 @@ def save(pl, was_binary):
 
 if mode == "status":
     try:
-        pl, _ = load("domain", "")
+        pl, _ = load(kind, path)
     except Exception as e:
-        fail("cannot read the iTerm2 preferences domain: %s" % e)
+        fail("cannot read the iTerm2 preferences (%s): %s" % (kind, e))
     try:
         groups = groups_of(pl)
     except (ValueError, TypeError):
         groups = None
-    mine = next((g for g in groups or [] if g.get("uniqueIdentifier") == GROUP), None)
+    def shape(g):
+        return [(s.get("uniqueIdentifier"), s.get("displayName"), s.get("command"))
+                for s in g.get("sessions", [])]
     if groups is None:
         print("workgroup: unreadable (Workgroups is not JSON; install refuses until it is fixed)")
-    elif mine:
-        def shape(g):
-            return [(s.get("uniqueIdentifier"), s.get("displayName"), s.get("command"))
-                    for s in g.get("sessions", [])]
-        names = [s.get("displayName", "?") for s in mine.get("sessions", [])]
-        want = [n or "?" for _, n, _ in shape(build(groups))]
-        if shape(mine) == shape(build(groups)):
-            print("workgroup: installed (%d sessions: %s)" % (len(names), ", ".join(names)))
-        else:
-            print("workgroup: installed, out of date (%d sessions: %s); this version defines %d (%s) — claude-peer install (with iTerm2 quit)"
-                  % (len(names), ", ".join(names), len(want), ", ".join(want)))
     else:
-        print("workgroup: not installed — claude-peer install (with iTerm2 quit)")
-    if any(g.get("uniqueIdentifier") == BUILTIN for g in groups or []):
-        print("builtin: builtin.claudeCode present")
-    else:
-        print("builtin: builtin.claudeCode absent (the Diff would be the template)")
-    found = list(enter_triggers(pl))
-    peers = sum(1 for _, t in found if t["parameter"] == GROUP)
-    if not found:
+        for label, want in zip(("workgroup", "hermes"), build()):
+            mine = next((g for g in groups if g.get("uniqueIdentifier") == want["uniqueIdentifier"]), None)
+            names = [s.get("displayName", "?") for s in (mine or {}).get("sessions", [])]
+            wnames = [s["displayName"] for s in want["sessions"]]
+            if not mine:
+                print("%s: not installed — claude-peer install (with iTerm2 quit)" % label)
+            elif shape(mine) == shape(want):
+                print("%s: installed (%d sessions: %s)" % (label, len(names), ", ".join(names)))
+            else:
+                print("%s: installed, out of date (%d sessions: %s); this version defines %d (%s) — claude-peer install (with iTerm2 quit)"
+                      % (label, len(names), ", ".join(names), len(wnames), ", ".join(wnames)))
+    prof = {}
+    for b, t in job_triggers(pl):
+        st = prof.setdefault(b.get("Name", "?"), [])
+        st.append(t)
+    def state(b_name, ts):
+        b = next(x for x in pl["New Bookmarks"] if x.get("Name", "?") == b_name)
+        vs = [t for t in b.get("Triggers", []) or [] if is_var(t)]
+        if all(t.get("disabled") for t in ts) and vs:
+            return "peers"
+        if not any(t.get("disabled") for t in ts) and not vs and all(t["parameter"] == BUILTIN for t in ts):
+            return "builtin"
+        return "mixed"
+    states = {n: state(n, ts) for n, ts in prof.items()}
+    npeers = sum(1 for v in states.values() if v == "peers")
+    kinds = {t.get("parameter") for b in pl.get("New Bookmarks", []) for t in b.get("Triggers", []) or [] if is_var(t)}
+    if not states:
+        overall = "none"
         print("default: no profile enters a workgroup on a claude job")
-    elif peers == len(found):
-        print("default: peers (%d profiles enter Claude Peers)" % peers)
-    elif peers == 0:
-        print("default: builtin (%d profiles enter Claude Code)" % len(found))
+    elif npeers == len(states):
+        overall = "peers"
+        print("default: peers (%d profiles, %d workgroups by variable)" % (npeers, len(kinds)))
+    elif npeers == 0 and all(v == "builtin" for v in states.values()):
+        overall = "builtin"
+        print("default: builtin (%d profiles enter Claude Code)" % len(states))
     else:
-        print("default: mixed (%d of %d profiles enter Claude Peers) — claude-peer default peers|builtin" % (peers, len(found)))
+        overall = "mixed"
+        print("default: mixed (%d of %d profiles enter by variable) — claude-peer default peers|builtin" % (npeers, len(states)))
+    filed = len(sys.argv) > 4 and sys.argv[4] == "peers"
+    if filed and overall != "peers":
+        print("default: the enter file says peers but the triggers do not (iTerm2's Reinstall rewrites them) — claude-peer default peers")
+    elif overall == "peers" and not filed:
+        print("default: the triggers say peers but the enter file is missing, so claude() sends no key and nothing enters — claude-peer default peers")
 elif mode == "workgroup":
-    try:
-        groups = groups_of(load(kind, path)[0])
-    except Exception:
-        groups = []   # unreadable store: the templates stand in
-    print(json.dumps(build(groups), indent=2, sort_keys=True))
+    print(json.dumps(build()[0], indent=2, sort_keys=True))
 elif mode == "install":
     try:
         pl, was_binary = load(kind, path)
@@ -492,44 +1088,66 @@ elif mode == "install":
         groups = groups_of(pl)
     except (ValueError, TypeError) as e:
         fail("the Workgroups value is not a JSON list (%s); nothing written" % e)
-    wg = build(groups)
-    idx = next((i for i, g in enumerate(groups) if g.get("uniqueIdentifier") == GROUP), None)
-    if idx is None:
-        groups.append(wg)
-    else:
-        groups[idx] = wg
+    done = []
+    for wg in build():
+        idx = next((i for i, g in enumerate(groups) if g.get("uniqueIdentifier") == wg["uniqueIdentifier"]), None)
+        if idx is None:
+            groups.append(wg)
+        else:
+            groups[idx] = wg
+        done.append('"%s" %s' % (wg["name"], "written" if idx is None else "replaced"))
     pl["Workgroups"] = json.dumps(groups, separators=(",", ":")).encode("utf-8")
+    if len(sys.argv) > 4 and sys.argv[4] == "peers":
+        n = len(sync_var_triggers(pl, groups))
+        extra = "; variable triggers changed in %d profiles" % n
+    else:
+        extra = ""
     save(pl, was_binary)
-    print("written" if idx is None else "replaced")
+    print(" and ".join(done) + extra)
 elif mode == "default":
-    target = GROUP if sys.argv[4] == "peers" else BUILTIN
+    peers = sys.argv[4] == "peers"
     try:
         pl, was_binary = load(kind, path)
     except Exception as e:
         fail("cannot read the preferences: %s" % e)
-    if target == GROUP:
+    groups = []
+    if peers:
         try:
-            ok = any(g.get("uniqueIdentifier") == GROUP for g in groups_of(pl))
+            groups = groups_of(pl)
+            ok = any(g.get("uniqueIdentifier") == GROUP for g in groups)
         except (ValueError, TypeError):
             ok = False
         if not ok:
             fail("Claude Peers is not installed; run claude-peer install first, nothing written")
-    found = list(enter_triggers(pl))
+    found = list(job_triggers(pl))
     if not found:
         fail("no profile has an Enter Workgroup trigger for Claude Code; set up iTerm2's Claude Code integration first")
-    moved = [n for n, t in found if t["parameter"] != target]
+    moved = {id(b) for b, t in found if bool(t.get("disabled")) != peers or (not peers and t["parameter"] != BUILTIN)}
     for _, t in found:
-        t["parameter"] = target
+        t["disabled"] = 1 if peers else 0
+        if not peers:
+            t["parameter"] = BUILTIN
+    moved |= sync_var_triggers(pl, groups)
     if moved:
         save(pl, was_binary)
-    print("%d of %d profiles changed" % (len(moved), len(found)))
+    print("%d of %d profiles changed" % (len(moved), len({id(b) for b, _ in found})))
 PYEOF
+}
+
+# The file `default peers` writes and claude() looks for before it sends a key:
+# without it the wrapper stays silent, so a stale trigger enters nothing.
+enter_file() { printf '%s/claude-peer/enter\n' "${XDG_STATE_HOME:-$HOME/.local/state}"; }
+enter_state() { [ -r "$(enter_file)" ] && sed -n 1p "$(enter_file)"; return 0; }
+
+# The key the wrapper sends for this directory: the workgroup to enter.
+cmd_here() {
+  [ $# -eq 0 ] || usage
+  printf 'base\n'
 }
 
 cmd_workgroup() {
   [ $# -eq 0 ] || usage
-  prefs_store
-  peer_py workgroup "$skind" "$spath"
+  peer_py workgroup domain ""
 }
 
 cmd_install() {
@@ -537,9 +1155,9 @@ cmd_install() {
   need_macos install
   proc_running iTerm2 && die "quit iTerm2 first — it rewrites its preferences at quit and would overwrite this"
   prefs_store
-  r=$(peer_py install "$skind" "$spath") || exit 1
+  r=$(peer_py install "$skind" "$spath" "$(enter_state)") || exit 1
   [ "$skind" = folder ] && where=$spath || where="the com.googlecode.iterm2 domain"
-  printf 'claude-peer: workgroup "Claude Peers" (claudePeer.workgroup) %s in %s; start iTerm2, then Shell > Workgroups > Claude Peers in a plain tab\n' "$r" "$where"
+  printf 'claude-peer: %s in %s; start iTerm2, then Shell > Workgroups > Claude Peers in a plain tab\n' "$r" "$where"
 }
 
 cmd_default() {
@@ -549,8 +1167,14 @@ cmd_default() {
   proc_running iTerm2 && die "quit iTerm2 first — it rewrites its preferences at quit and would overwrite this"
   prefs_store
   r=$(peer_py default "$skind" "$spath" "$1") || exit 1
-  [ "$1" = peers ] && what="Claude Peers (Chat 2-4 and Hermes start with every claude tab)" || what="Claude Code"
-  printf 'claude-peer: a claude job now enters %s; %s\n' "$what" "$r"
+  f=$(enter_file)
+  if [ "$1" = peers ]; then
+    mkdir -p "${f%/*}" && printf 'peers\n' >"$f" || die "cannot write $f"
+    printf 'claude-peer: claude() now picks the workgroup of each tab (Claude Peers: Alpha, Beta and Gamma wait until started); the claude job trigger is disabled; %s\n' "$r"
+  else
+    rm -f "$f"
+    printf 'claude-peer: a claude job now enters Claude Code; the variable triggers are gone; %s\n' "$r"
+  fi
 }
 
 cmd_status() {
@@ -559,27 +1183,29 @@ cmd_status() {
   prefs_store
   if [ "$skind" = folder ]; then printf 'store: folder %s\n' "$spath"; else printf 'store: domain\n'; fi
   if proc_running iTerm2; then printf 'iterm2: running\n'; else printf 'iterm2: not running (install allowed)\n'; fi
-  peer_py status "$skind" "$spath"
-  scratch_summary
+  # the store that is true now: iTerm2's memory (the domain) while it runs, the
+  # folder file it only writes at quit otherwise
+  if proc_running iTerm2; then peer_py status domain "" "$(enter_state)"; else peer_py status "$skind" "$spath" "$(enter_state)"; fi
+  peers_summary
 }
 
-# One line on the peer-N worktrees of the repository the caller stands in; none
-# outside one. In use is a live claim; free is what scratch_checkout would take
-# over; the rest are kept (dirty, on a branch, or the directory is gone).
-scratch_summary() {
+# peers: how many Claudes run and how many panes wait in the repository the
+# caller stands in, with the running labels; leftover: peer-N worktrees from the
+# retired scratch layout, which nothing uses or removes any more. Nothing
+# outside a repository.
+peers_summary() {
   repo=$(repo_root_q) || return 0
-  list=$(git -C "$repo" worktree list --porcelain | sed -n 's/^worktree //p')
-  n_all=0 n_use=0 n_kept=0 n_free=0
-  while IFS= read -r wt; do
-    case $wt in "$repo"/.claude/worktrees/peer-[0-9]*) ;; *) continue;; esac
-    n_all=$((n_all + 1))
-    if claim_live "$wt"; then n_use=$((n_use + 1))
-    elif reusable "$wt"; then n_free=$((n_free + 1))
-    else n_kept=$((n_kept + 1)); fi
-  done <<EOF
-$list
-EOF
-  printf 'scratch: %d peer-N worktrees in %s (%d in use, %d kept: dirty, on a branch or directory gone, %d free)\n' "$n_all" "$repo" "$n_use" "$n_kept" "$n_free"
+  live=$(cmd_peers "$repo")
+  nw=$(waiters "$repo" | grep -c .)
+  if [ -n "$live" ]; then
+    printf '%s\n' "$live" | awk -F'\t' -v repo="$repo" -v w="$nw" '{ n = split($1, p, "/"); r = r (NR > 1 ? ", " : "") $4 " (" p[n] ")" }
+      END { printf "peers: %d running, %d waiting in %s: %s\n", NR, w, repo, r }'
+  else printf 'peers: 0 running, %d waiting in %s\n' "$nw" "$repo"; fi
+  left=$(git -C "$repo" worktree list --porcelain | sed -n 's/^worktree //p' |
+    awk -v pre="$repo/.claude/worktrees/peer-" 'index($0, pre) == 1 && substr($0, length(pre) + 1) ~ /^[0-9]/ { n = split($0, p, "/"); printf "%s%s", (c++ ? ", " : ""), p[n] } END { printf "\t%d", c }')
+  k=${left##*	}
+  [ "$k" -gt 0 ] && printf 'leftover: %d peer-N worktrees from the retired scratch layout (%s); git worktree remove <path> for each\n' "$k" "${left%	*}"
+  return 0
 }
 
 [ $# -ge 1 ] || usage
@@ -588,8 +1214,13 @@ case $cmd in
   run) cmd_run "$@";;
   hermes) cmd_hermes "$@";;
   peers) cmd_peers "$@";;
+  start) cmd_start "$@";;
+  stop) cmd_stop "$@";;
+  slots) cmd_slots "$@";;
+  log) cmd_log "$@";;
   path) cmd_path "$@";;
   plan) cmd_plan "$@";;
+  here) cmd_here "$@";;
   workgroup) cmd_workgroup "$@";;
   install) cmd_install "$@";;
   default) cmd_default "$@";;

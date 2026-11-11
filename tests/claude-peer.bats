@@ -1,13 +1,15 @@
 #!/usr/bin/env bats
 
-# ~/bin/claude-peer: make or reuse a worktree for a branch under
-# <repo>/.claude/worktrees/<slug> (or a detached scratch one, peer-N, when no
-# branch is given), cd into it and start claude through the shell. A stub shell stands in for $SHELL so nothing starts a real claude.
+# ~/bin/claude-peer: make or reuse a worktree for a slot or a branch under
+# <repo>/.claude/worktrees/<name>, cd into it and run claude through the shell as
+# a child, with a claim that lasts as long as the session. A stub shell stands in
+# for $SHELL so nothing starts a real claude.
 # Everything runs in a sandboxed HOME against fixture repos with invented names.
 
 setup() {
   BIN="$BATS_TEST_DIRNAME/../bin/executable_claude-peer"
   export HOME="$BATS_TEST_TMPDIR/home"
+  export XDG_STATE_HOME="$HOME/.local/state"
   mkdir -p "$HOME" "$BATS_TEST_TMPDIR/bin"
   export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig"
   export GIT_CONFIG_SYSTEM=/dev/null
@@ -21,11 +23,17 @@ setup() {
 #!/bin/sh
 echo "pwd=$PWD"
 echo "peer=${CLAUDE_PEER_WORKTREE-unset}"
+echo "hermeswait=${CLAUDE_PEER_HERMES_WAIT-unset}"
 echo "args=$*"
+[ -z "${FAKE_SHELL_LOG-}" ] || echo "pwd=$PWD args=$*" >>"$FAKE_SHELL_LOG"
+[ -z "${FAKE_SHELL_PID-}" ] || echo $$ >"$FAKE_SHELL_PID"
+[ -z "${FAKE_SHELL_LAST-}" ] || { for last; do :; done; printf '%s' "$last" >"$FAKE_SHELL_LAST"; echo $# >"$FAKE_SHELL_LAST.n"; }
 [ -z "${FAKE_SHELL_SLEEP-}" ] || sleep "$FAKE_SHELL_SLEEP"
 STUB
   chmod +x "$BATS_TEST_TMPDIR/bin/fakeshell"
   export SHELL="$BATS_TEST_TMPDIR/bin/fakeshell"
+  export FAKE_SHELL_LOG="$BATS_TEST_TMPDIR/shell.log"
+  PANES=
   mkdir -p "$BATS_TEST_TMPDIR/proj"
   REPO=$(cd "$BATS_TEST_TMPDIR/proj" && pwd -P)
   git -C "$REPO" init -q
@@ -35,12 +43,17 @@ STUB
   cd "$REPO"
 }
 
+teardown() {
+  local p
+  for p in $PANES; do kill "$p" 2>/dev/null || true; done
+}
+
 @test "run: creates the worktree, cd's into it, execs an interactive shell" {
   run sh "$BIN" run feat/x
   [ "$status" -eq 0 ]
   [[ "$output" == *"feat/x"$'\t'"$REPO/.claude/worktrees/feat-x"$'\t'"created"* ]]
   [[ "$output" == *"pwd=$REPO/.claude/worktrees/feat-x"* ]]
-  [[ "$output" == *'args=-i -c claude "$@" claude-peer'* ]]
+  [[ "$output" == *'args=-i -c n=$1; shift; claude -n "$n" "$@" claude-peer proj-feat-x'* ]]
   git worktree list | grep -F "$REPO/.claude/worktrees/feat-x" | grep -F '[feat/x]'
   [ "$(grep -cxF '**/.claude/worktrees/' "$REPO/.git/info/exclude")" -eq 1 ]
 }
@@ -48,7 +61,7 @@ STUB
 @test "run: arguments after -- reach claude" {
   run sh "$BIN" run feat/x -- --continue
   [ "$status" -eq 0 ]
-  [[ "$output" == *'args=-i -c claude "$@" claude-peer --continue' ]]
+  [[ "$output" == *'claude -n "$n" "$@" claude-peer proj-feat-x --continue' ]]
 }
 
 @test "run: a second run reuses the worktree and still execs in it" {
@@ -91,40 +104,6 @@ STUB
   [[ "$output" == *"not inside a non-bare git repository"* ]]
 }
 
-@test "run: no branch gives a detached scratch worktree at the base, no prompt" {
-  git clone -q --bare "$REPO" "$BATS_TEST_TMPDIR/remote.git"
-  git remote add origin "$BATS_TEST_TMPDIR/remote.git"
-  git fetch -q origin
-  git remote set-head origin -a >/dev/null
-  echo two >"$REPO/tracked.txt"
-  git commit -qam 'local only'
-  run sh "$BIN" run </dev/null
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"(detached)	$REPO/.claude/worktrees/peer-1	created"* ]]
-  [[ "$output" == *"pwd=$REPO/.claude/worktrees/peer-1"* ]]
-  ! git -C "$REPO/.claude/worktrees/peer-1" symbolic-ref -q HEAD
-  [ "$(git -C "$REPO/.claude/worktrees/peer-1" rev-parse HEAD)" = "$(git rev-parse origin/HEAD)" ]
-  [ "$(git branch --list | wc -l)" -eq 1 ]
-}
-
-@test "run: a clean detached peer worktree is reused, a dirty or branched one is skipped" {
-  sh "$BIN" run >/dev/null
-  run sh "$BIN" run
-  [[ "$output" == *"peer-1	reused"* ]]
-  [[ "$output" == *"pwd=$REPO/.claude/worktrees/peer-1"* ]]
-  echo dirty >"$REPO/.claude/worktrees/peer-1/tracked.txt"
-  run sh "$BIN" run
-  [[ "$output" == *"peer-2	created"* ]]
-  git -C "$REPO/.claude/worktrees/peer-2" checkout -q -b feat/mine
-  run sh "$BIN" run
-  [[ "$output" == *"peer-3	created"* ]]
-  rm -rf "$REPO/.claude/worktrees/peer-3"
-  run sh "$BIN" run
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"peer-4	created"* ]]
-  [ "$(git worktree list | grep -c peer-)" -eq 4 ]
-}
-
 @test "path prints the worktree path; plan flags a conflict and exits 1" {
   run sh "$BIN" path feat/x
   [ "$status" -eq 0 ]
@@ -152,94 +131,202 @@ STUB
   [ "$(git rev-parse feat/b)" != "$(git rev-parse HEAD)" ]
 }
 
-# --- scratch peers as the default: claim, lock, settle, soft landing, peers -------
+# --- slots: claim, lock, soft landing, peers ----------------------------------------
 
 # claim_of <worktree>: the claim file inside the worktree's git directory
 claim_of() { echo "$(git -C "$1" rev-parse --absolute-git-dir)/claude-peer.claim"; }
 
-@test "run: exports CLAUDE_PEER_WORKTREE, on the scratch path and on the branch path" {
-  run sh "$BIN" run
-  [[ "$output" == *"peer=$REPO/.claude/worktrees/peer-1"* ]]
+# wait_claim <worktree>: until a backgrounded run has written its claim
+wait_claim() {
+  local i
+  for i in $(seq 1 100); do
+    [ -f "$(claim_of "$1" 2>/dev/null)" ] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+# remote_head: an origin whose HEAD differs from the local one
+remote_head() {
+  git clone -q --bare "$REPO" "$BATS_TEST_TMPDIR/remote.git"
+  git remote add origin "$BATS_TEST_TMPDIR/remote.git"
+  git fetch -q origin
+  git remote set-head origin -a >/dev/null
+  echo two >"$REPO/tracked.txt"
+  git commit -qam 'local only'
+}
+
+@test "run --as: a new slot is a detached worktree at origin/HEAD, the session is named for it" {
+  remote_head
+  run sh "$BIN" run --as alpha </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"alpha"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"created"* ]]
+  [[ "$output" == *"pwd=$REPO/.claude/worktrees/alpha"* ]]
+  [[ "$output" == *"peer=$REPO/.claude/worktrees/alpha"* ]]
+  [[ "$output" == *'claude -n "$n" "$@" claude-peer proj-alpha' ]]
+  ! git -C "$REPO/.claude/worktrees/alpha" symbolic-ref -q HEAD
+  [ "$(git -C "$REPO/.claude/worktrees/alpha" rev-parse HEAD)" = "$(git rev-parse origin/HEAD)" ]
+  [ "$(git branch --list | wc -l)" -eq 1 ]
+  [ "$(grep -cxF '**/.claude/worktrees/' "$REPO/.git/info/exclude")" -eq 1 ]
+}
+
+@test "run --as: arguments after -- reach claude, after the session name" {
+  run sh "$BIN" run --as alpha -- --continue
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'claude-peer proj-alpha --continue' ]]
+}
+
+@test "run --as: a slot is reused in whatever state it was left" {
+  sh "$BIN" run --as alpha >/dev/null
+  wt=$REPO/.claude/worktrees/alpha
+  echo dirty >"$wt/tracked.txt"
+  run sh "$BIN" run --as alpha
+  [[ "$output" == *"alpha"$'\t'"$wt"$'\t'"reused"* ]]
+  [[ "$output" == *"pwd=$wt"* ]]
+  [ "$(cat "$wt/tracked.txt")" = dirty ]
+  git -C "$wt" stash -q
+  git -C "$wt" checkout -q -b feat/mine
+  echo more >"$wt/untracked.txt"
+  run sh "$BIN" run --as alpha
+  [[ "$output" == *"reused"* ]]
+  [ "$(git -C "$wt" symbolic-ref --short HEAD)" = feat/mine ]
+  [ -f "$wt/untracked.txt" ]
+}
+
+@test "run --as: the claim has three lines while the session runs and is gone after" {
+  FAKE_SHELL_SLEEP=2 sh "$BIN" run --as alpha >/dev/null &
+  rpid=$!
+  wt=$REPO/.claude/worktrees/alpha
+  wait_claim "$wt"
+  c=$(claim_of "$wt")
+  [ "$(sed -n 1p "$c")" = "$rpid" ]
+  [ "$(sed -n 2p "$c")" = "$REPO" ]
+  [ "$(sed -n 3p "$c")" = Alpha ]
+  [ "$(wc -l <"$c" | tr -d ' ')" -eq 3 ]
+  run sh "$BIN" peers
+  [ "$output" = "$wt"$'\t'"$rpid"$'\t'"$REPO"$'\t'"Alpha" ]
+  wait "$rpid"
+  [ ! -e "$c" ]
+  run sh "$BIN" peers
+  [ -z "$output" ]
+}
+
+@test "run <branch>: the claim carries the slug and the directory it was started from" {
+  mkdir "$REPO/sub"
+  cd "$REPO/sub"
+  FAKE_SHELL_SLEEP=2 sh "$BIN" run feat/x >/dev/null &
+  rpid=$!
+  wt=$REPO/.claude/worktrees/feat-x
+  wait_claim "$wt"
+  c=$(claim_of "$wt")
+  [ "$(sed -n 1p "$c")" = "$rpid" ]
+  [ "$(sed -n 2p "$c")" = "$(pwd -P)" ]
+  [ "$(sed -n 3p "$c")" = feat-x ]
+  wait "$rpid"
+  [ ! -e "$c" ]
+}
+
+@test "run: exports CLAUDE_PEER_WORKTREE, on the slot path and on the branch path" {
+  run sh "$BIN" run --as alpha
+  [[ "$output" == *"peer=$REPO/.claude/worktrees/alpha"* ]]
   run sh "$BIN" run feat/x
   [[ "$output" == *"peer=$REPO/.claude/worktrees/feat-x"* ]]
 }
 
-@test "run: writes a claim with its pid and the directory it was started from" {
-  mkdir "$REPO/sub"
-  cd "$REPO/sub"
-  FAKE_SHELL_SLEEP=1 sh "$BIN" run >/dev/null &
+@test "run --as: a slot with a live claim exits 3 and starts nothing" {
+  FAKE_SHELL_SLEEP=2 sh "$BIN" run --as alpha >/dev/null &
   rpid=$!
-  sleep 0.5
-  c=$(claim_of "$REPO/.claude/worktrees/peer-1")
-  [ "$(sed -n 1p "$c")" = "$rpid" ]
-  [ "$(sed -n 2p "$c")" = "$(pwd -P)" ]
+  wait_claim "$REPO/.claude/worktrees/alpha"
+  run sh "$BIN" run --as alpha
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"in use by the peers of $REPO (pid $rpid)"* ]]
+  [[ "$output" != *"pwd="* ]]
+  [ "$(git worktree list | grep -c alpha)" -eq 1 ]
   wait "$rpid"
-  sh "$BIN" run feat/x >/dev/null
-  [ "$(sed -n 2p "$(claim_of "$REPO/.claude/worktrees/feat-x")")" = "$(pwd -P)" ]
 }
 
-@test "run: a clean peer worktree with a live claim is skipped, reused once the claim is dead" {
-  sh "$BIN" run >/dev/null
-  sleep 300 & spid=$!
-  printf '%s\n%s\n' "$spid" "$REPO" >"$(claim_of "$REPO/.claude/worktrees/peer-1")"
-  run sh "$BIN" run
-  [[ "$output" == *"peer-2	created"* ]]
-  kill "$spid"; wait "$spid" 2>/dev/null || true
-  run sh "$BIN" run
-  [[ "$output" == *"peer-1	reused"* ]]
-}
-
-@test "run: three simultaneous scratch peers land in peer-1, peer-2 and peer-3 once each" {
-  for i in 1 2 3; do
-    FAKE_SHELL_SLEEP=2 sh "$BIN" run >"$BATS_TEST_TMPDIR/out$i" 2>&1 &
-    pids="$pids $!"
-  done
-  for p in $pids; do wait "$p"; done
-  [ "$(cat "$BATS_TEST_TMPDIR"/out? | grep -c "created")" -eq 3 ]
-  for n in 1 2 3; do
-    [ "$(cat "$BATS_TEST_TMPDIR"/out? | grep -c "peer-$n	created")" -eq 1 ]
-  done
+@test "run --as: two different slots started together get one worktree each" {
+  FAKE_SHELL_SLEEP=1 sh "$BIN" run --as alpha >"$BATS_TEST_TMPDIR/out1" 2>&1 &
+  p1=$!
+  FAKE_SHELL_SLEEP=1 sh "$BIN" run --as beta >"$BATS_TEST_TMPDIR/out2" 2>&1 &
+  p2=$!
+  wait "$p1"; wait "$p2"
+  grep -q "alpha"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"created" "$BATS_TEST_TMPDIR/out1"
+  grep -q "beta"$'\t'"$REPO/.claude/worktrees/beta"$'\t'"created" "$BATS_TEST_TMPDIR/out2"
+  [ "$(git worktree list | grep -c -e '/alpha ' -e '/beta ')" -eq 2 ]
   [ ! -e "$REPO/.git/claude-peer.lock" ]
 }
 
-@test "run: a lock left by a dead pid is broken; one held by a live pid times out" {
-  ln -s 2147483646 "$REPO/.git/claude-peer.lock"
+@test "run --as: a registered worktree whose directory is gone, and a plain directory, are refused" {
+  sh "$BIN" run --as alpha >/dev/null
+  rm -rf "$REPO/.claude/worktrees/alpha"
+  run sh "$BIN" run --as alpha
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"registered but missing"* ]]
+  [[ "$output" == *"git worktree prune"* ]]
+  [[ "$output" != *"pwd="* ]]
+  git worktree prune
+  run sh "$BIN" run --as alpha
+  [[ "$output" == *"alpha"$'\t'*$'\t'"created"* ]]
+  mkdir -p "$REPO/.claude/worktrees/gamma"
+  run sh "$BIN" run --as gamma
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"exists but is not a git worktree"* ]]
+}
+
+@test "run --as: a bad slot name, and a slot with a branch, are refused, nothing created" {
+  run sh "$BIN" run --as 'Bad Slot'
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"'Bad Slot' is not a slot name"* ]]
+  run sh "$BIN" run --as Alpha
+  [ "$status" -eq 1 ]
+  run sh "$BIN" run --as alpha feat/x
+  [ "$status" -eq 2 ]
+  run sh "$BIN" run --as
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"pwd="* ]]
+  [ ! -e "$REPO/.claude/worktrees" ]
+}
+
+@test "run: bare, in a repository or not, is one line and a plain shell, nothing created" {
   run sh "$BIN" run
   [ "$status" -eq 0 ]
-  [[ "$output" == *"peer-1	created"* ]]
+  [[ "$output" == *"predates named slots; quit iTerm2 and run claude-peer install. Plain shell."* ]]
+  [[ "$output" == *'args=-i' ]]
+  [[ "$output" == *"peer=unset"* ]]
+  [ ! -e "$REPO/.claude/worktrees" ]
+  mkdir "$BATS_TEST_TMPDIR/norepo"
+  cd "$BATS_TEST_TMPDIR/norepo"
+  run sh "$BIN" run --
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"predates named slots"* ]]
+  [[ "$output" == *'args=-i' ]]
+}
+
+@test "run --as: a lock left by a dead pid is broken; one held by a live pid times out" {
+  ln -s 2147483646 "$REPO/.git/claude-peer.lock"
+  run sh "$BIN" run --as alpha
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"alpha"$'\t'*$'\t'"created"* ]]
   [ ! -e "$REPO/.git/claude-peer.lock" ]
   ln -s "$$" "$REPO/.git/claude-peer.lock"
-  CLAUDE_PEER_LOCK_WAIT=1 run sh "$BIN" run
+  CLAUDE_PEER_LOCK_WAIT=1 run sh "$BIN" run --as beta
   [ "$status" -eq 1 ]
   [[ "$output" == *"could not lock"*"held by pid $$"* ]]
   [[ "$output" != *"pwd="* ]]
 }
 
-@test "run: the settle delay applies to a scratch peer, not to a branch peer" {
-  cat >"$BATS_TEST_TMPDIR/bin/sleep" <<'STUB'
-#!/bin/sh
-echo "$*" >>"$SLEEP_LOG"
-STUB
-  chmod +x "$BATS_TEST_TMPDIR/bin/sleep"
-  export PATH="$BATS_TEST_TMPDIR/bin:$PATH" SLEEP_LOG="$BATS_TEST_TMPDIR/sleep.log"
-  CLAUDE_PEER_SETTLE=3 sh "$BIN" run >/dev/null
-  [ "$(cat "$SLEEP_LOG")" = 3 ]
-  CLAUDE_PEER_SETTLE=3 sh "$BIN" run feat/x >/dev/null
-  [ "$(cat "$SLEEP_LOG")" = 3 ]
-}
-
-@test "run: no branch outside a repository is a plain shell, not a failure" {
-  mkdir "$BATS_TEST_TMPDIR/norepo"
-  cd "$BATS_TEST_TMPDIR/norepo"
-  run sh "$BIN" run
+@test "run --as: from inside a slot worktree the next slot lands under the main checkout" {
+  sh "$BIN" run --as alpha >/dev/null
+  cd "$REPO/.claude/worktrees/alpha"
+  run sh "$BIN" run --as beta
   [ "$status" -eq 0 ]
-  [[ "$output" == *"claude-peer: not in a git repository, so there is no worktree to give this peer; plain shell"* ]]
-  [[ "$output" == *"args=-i"* ]]
-  [[ "$output" == *"peer=unset"* ]]
+  [[ "$output" == *"pwd=$REPO/.claude/worktrees/beta"* ]]
+  [ ! -e "$REPO/.claude/worktrees/alpha/.claude" ]
 }
 
-@test "peers: lists live claims, drops dead ones, filters by leader, silent outside a repository" {
-  sh "$BIN" run >/dev/null
+@test "peers: lists live claims with labels, drops dead ones, filters by leader, silent outside a repository" {
+  sh "$BIN" run --as alpha >/dev/null
   sh "$BIN" run feat/x >/dev/null
   run sh "$BIN" peers
   [ "$status" -eq 0 ]
@@ -247,19 +334,19 @@ STUB
   sleep 300 & s1=$!
   sleep 300 & s2=$!
   mkdir "$BATS_TEST_TMPDIR/lead"
-  printf '%s\n%s\n' "$s1" "$REPO" >"$(claim_of "$REPO/.claude/worktrees/peer-1")"
+  printf '%s\n%s\n%s\n' "$s1" "$REPO" Alpha >"$(claim_of "$REPO/.claude/worktrees/alpha")"
   printf '%s\n%s\n' "$s2" "$BATS_TEST_TMPDIR/lead" >"$(claim_of "$REPO/.claude/worktrees/feat-x")"
   run sh "$BIN" peers
   [ "$status" -eq 0 ]
-  [ "$output" = "$REPO/.claude/worktrees/feat-x	$s2	$BATS_TEST_TMPDIR/lead"$'\n'"$REPO/.claude/worktrees/peer-1	$s1	$REPO" ]
+  [ "$output" = "$REPO/.claude/worktrees/alpha	$s1	$REPO	Alpha"$'\n'"$REPO/.claude/worktrees/feat-x	$s2	$BATS_TEST_TMPDIR/lead	-" ]
   run sh "$BIN" peers --leader "$REPO"
-  [ "$output" = "$REPO/.claude/worktrees/peer-1	$s1	$REPO" ]
+  [ "$output" = "$REPO/.claude/worktrees/alpha	$s1	$REPO	Alpha" ]
   run sh "$BIN" peers --leader "$BATS_TEST_TMPDIR/nonexistent"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
   kill "$s1"; wait "$s1" 2>/dev/null || true
   run sh "$BIN" peers "$REPO/.claude/worktrees/feat-x"
-  [ "$output" = "$REPO/.claude/worktrees/feat-x	$s2	$BATS_TEST_TMPDIR/lead" ]
+  [ "$output" = "$REPO/.claude/worktrees/feat-x	$s2	$BATS_TEST_TMPDIR/lead	-" ]
   kill "$s2"
   cd "$BATS_TEST_TMPDIR"
   mkdir norepo; cd norepo
@@ -268,24 +355,499 @@ STUB
   [ -z "$output" ]
 }
 
-@test "status: the scratch line counts in-use, kept and free peer worktrees" {
+@test "status: the peers line counts running slots and waiting panes; leftover names peer-N worktrees from the old layout" {
   stubs
   mkprefs "$BATS_TEST_TMPDIR/domain.plist"
   export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist" FAKE_LOAD=0
   run sh "$BIN" status
-  [[ "$output" == *"scratch: 0 peer-N worktrees in $REPO (0 in use, 0 kept"* ]]
-  sh "$BIN" run >/dev/null
-  echo dirty >"$REPO/.claude/worktrees/peer-1/tracked.txt"
-  sh "$BIN" run >/dev/null
-  sleep 300 & spid=$!
-  printf '%s\n%s\n' "$spid" "$REPO" >"$(claim_of "$REPO/.claude/worktrees/peer-2")"
-  sh "$BIN" run >/dev/null
+  [[ "$output" == *"peers: 0 running, 0 waiting in $REPO"* ]]
+  [[ "$output" != *"leftover:"* ]]
+  git worktree add -q --detach "$REPO/.claude/worktrees/peer-1"
+  git worktree add -q --detach "$REPO/.claude/worktrees/peer-2"
   run sh "$BIN" status
-  kill "$spid"
-  [[ "$output" == *"scratch: 3 peer-N worktrees in $REPO (1 in use, 1 kept: dirty, on a branch or directory gone, 1 free)"* ]]
+  [[ "$output" == *"leftover: 2 peer-N worktrees from the retired scratch layout (peer-1, peer-2); git worktree remove <path> for each"* ]]
+  git worktree remove "$REPO/.claude/worktrees/peer-1"
+  git worktree remove "$REPO/.claude/worktrees/peer-2"
+  FAKE_SHELL_SLEEP=3 sh "$BIN" run --as alpha >/dev/null &
+  rpid=$!
+  wait_claim "$REPO/.claude/worktrees/alpha"
+  run sh "$BIN" status
+  [[ "$output" == *"peers: 1 running, 0 waiting in $REPO: Alpha (alpha)"* ]]
+  [[ "$output" != *"leftover:"* ]]
+  wait "$rpid"
+  pane beta
+  run sh "$BIN" status
+  [[ "$output" == *"peers: 0 running, 1 waiting in $REPO"* ]]
   cd "$BATS_TEST_TMPDIR"; mkdir norepo; cd norepo
   run sh "$BIN" status
-  [[ "$output" != *"scratch:"* ]]
+  [[ "$output" != *"peers:"* ]]
+}
+
+# --- waiting panes, start, stop, slots ------------------------------------------------
+# A pane runs in the background with a FIFO for its terminal; `press` types a line
+# into it. The stub shell logs to $FAKE_SHELL_LOG and sleeps FAKE_SHELL_SLEEP, so a
+# session lasts long enough for `start` to see its claim.
+
+# until_ok '<command>': retry for ten seconds
+until_ok() {
+  local i
+  for i in $(seq 1 100); do
+    eval "$1" && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+# pane <slot> [<dir> [<tag>]]: a waiting pane started in <dir> (default $REPO);
+# its terminal is the FIFO tty-<tag> (tag defaults to the slot), or $PANE_TTY.
+pane() {
+  local s=$1 d=${2:-$REPO} t=${3:-$1}
+  local tty=$BATS_TEST_TMPDIR/tty-$t
+  [ -p "$tty" ] || mkfifo "$tty"
+  ( cd "$d" && export CLAUDE_PEER_TTY="${PANE_TTY:-$tty}" &&
+    exec sh "$BIN" run --as "$s" --wait >"$BATS_TEST_TMPDIR/pane-$t.out" 2>&1 3>&- ) &
+  LAST_PANE=$!
+  PANES="$PANES $LAST_PANE"
+  until_ok "[ -f '$REPO/.git/claude-peer.wait/$s.$LAST_PANE' ]"
+}
+
+# press <tag> <text>: type a line into that pane's terminal
+press() {
+  ( printf '%s\n' "$2" >"$BATS_TEST_TMPDIR/tty-$1" ) 3>&- &
+  PANES="$PANES $!"
+}
+
+shell_runs() { [ -f "$FAKE_SHELL_LOG" ] && grep -c . "$FAKE_SHELL_LOG" || echo 0; }
+
+# hold <slot> [<dir>]: a session in <slot> from another leader, for a while
+hold() {
+  mkdir -p "${2:-$REPO/sub}"
+  ( cd "${2:-$REPO/sub}" && FAKE_SHELL_LOG=/dev/null FAKE_SHELL_SLEEP=${HOLD:-8} exec sh "$BIN" run --as "$1" >/dev/null 2>&1 3>&- ) &
+  PANES="$PANES $!"
+  wait_claim "$REPO/.claude/worktrees/$1"
+}
+
+@test "run --as --wait: a waiting pane makes no worktree, claim, lock or shell" {
+  pane alpha
+  run sh "$BIN" slots
+  [ "$status" -eq 0 ]
+  [ "$output" = "alpha"$'\t'"waiting"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"$LAST_PANE"$'\t'"$REPO"$'\t'"proj-alpha" ]
+  [ ! -e "$REPO/.claude/worktrees" ]
+  [ ! -e "$REPO/.git/claude-peer.lock" ]
+  [ "$(shell_runs)" -eq 0 ]
+  run sh "$BIN" peers
+  [ -z "$output" ]
+  grep -q "^Alpha: Return starts a Claude here, c continues the last session, q leaves a shell$" "$BATS_TEST_TMPDIR/pane-alpha.out"
+}
+
+@test "run --as --wait: Return starts a session, and the pane waits again when it ends" {
+  FAKE_SHELL_SLEEP=1 pane alpha
+  press alpha ''
+  until_ok 'grep -q "pwd=$REPO/.claude/worktrees/alpha args=.*claude-peer proj-alpha\$" "$FAKE_SHELL_LOG"'
+  run sh "$BIN" slots
+  [[ "$output" == "alpha"$'\t'"running"$'\t'* ]]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  [ -z "$(sh "$BIN" peers)" ]
+  [ "$(find "$REPO/.git" -name claude-peer.claim | wc -l | tr -d ' ')" -eq 0 ]
+  [ "$(grep -c "Return starts a Claude here" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 2 ]
+}
+
+@test "run --as --wait: c continues, q leaves a shell, anything else asks again" {
+  FAKE_SHELL_SLEEP=1 pane alpha
+  press alpha c
+  until_ok 'grep -q "claude-peer proj-alpha --continue\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  press alpha x
+  until_ok '[ "$(grep -c "Return starts a Claude here" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 3 ]'
+  [ "$(shell_runs)" -eq 1 ]
+  press alpha q
+  until_ok '[ "$(tail -n 1 "$FAKE_SHELL_LOG")" = "pwd=$REPO args=-i" ]'
+  [ -z "$(sh "$BIN" slots)" ]
+  ! ls "$REPO/.git/claude-peer.wait/" | grep .
+}
+
+@test "run --as --wait: outside a repository it is one line and a plain shell" {
+  mkdir "$BATS_TEST_TMPDIR/norepo"
+  cd "$BATS_TEST_TMPDIR/norepo"
+  run sh "$BIN" run --as alpha --wait
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not in a git repository, so there is no worktree to give this peer; plain shell"* ]]
+  [[ "$output" == *'args=-i' ]]
+}
+
+@test "start: wakes the pane; the prompt arrives as one final argument" {
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  run sh "$BIN" start alpha fix the thing
+  [ "$status" -eq 0 ]
+  [ "$output" = "alpha"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"started"$'\t'"proj-alpha" ]
+  # the claim exists a moment before the shell has run
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = "fix the thing" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/last.n")" -eq 6 ]
+  grep -q "claude-peer proj-alpha fix the thing\$" "$FAKE_SHELL_LOG"
+}
+
+@test "start: a prompt from stdin arrives byte for byte" {
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  want=$'say "hi" $HOME `x` \'y\' \\n\nsecond line'
+  run sh -c 'printf "%s" "$1" | sh "$2" start alpha -' _ "$want" "$BIN"
+  [ "$status" -eq 0 ]
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = "$want" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/last.n")" -eq 6 ]
+}
+
+@test "start: --continue goes before the prompt; with no prompt it is the only extra argument" {
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  run sh "$BIN" start alpha --continue go on
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha --continue go on\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  : >"$FAKE_SHELL_LOG"; rm -f "$BATS_TEST_TMPDIR/last.n"
+  run sh "$BIN" start alpha --continue
+  [ "$status" -eq 0 ]
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  grep -q "claude-peer proj-alpha --continue\$" "$FAKE_SHELL_LOG"
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = "--continue" ]
+}
+
+@test "start: no waiting pane is 4, a running slot is 3, a prompt that begins with - is 2" {
+  run sh "$BIN" start alpha
+  [ "$status" -eq 4 ]
+  [[ "$output" == *"no pane is waiting in this repository"* ]]
+  hold alpha
+  run sh "$BIN" start alpha
+  [ "$status" -eq 3 ]
+  [ "$output" = "alpha"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"running"$'\t'"proj-alpha" ]
+  run sh "$BIN" start beta -- -x
+  [ "$status" -eq 2 ]
+  run sh "$BIN" start beta -x
+  [ "$status" -eq 2 ]
+  run sh "$BIN" start 'Bad Slot'
+  [ "$status" -eq 1 ]
+  [ "$(shell_runs)" -eq 0 ]
+}
+
+@test "start: two leaders' panes for one slot, --leader picks one, an unrelated directory neither" {
+  FAKE_SHELL_SLEEP=2 pane alpha "$REPO" a
+  mkdir "$REPO/sub" "$REPO/other"
+  FAKE_SHELL_SLEEP=2 pane alpha "$REPO/sub" b
+  pb=$LAST_PANE
+  cd "$REPO/other"
+  run sh "$BIN" start alpha
+  [ "$status" -eq 4 ]
+  [[ "$output" == *"$REPO"*"$REPO/sub"* ]]
+  [ "$(sh "$BIN" slots | grep -c waiting)" -eq 2 ]
+  run sh "$BIN" start alpha --leader "$REPO/sub"
+  [ "$status" -eq 0 ]
+  run sh "$BIN" peers
+  [ "$(printf '%s' "$output" | cut -f2,3)" = "$pb"$'\t'"$REPO/sub" ]
+  [ "$(sh "$BIN" slots | grep -c waiting)" -eq 1 ]
+}
+
+@test "start: a pane with no terminal still starts on a request" {
+  FAKE_SHELL_SLEEP=2 PANE_TTY=/nonexistent pane alpha
+  run sh "$BIN" start alpha
+  [ "$status" -eq 0 ]
+  [[ "$output" == *$'\t'"started"$'\t'"proj-alpha" ]]
+}
+
+@test "start: a slot the pane did not start with is still started in it" {
+  FAKE_SHELL_SLEEP=2 pane alpha
+  run sh "$BIN" start beta
+  [ "$status" -eq 0 ]
+  [ "$output" = "beta"$'\t'"$REPO/.claude/worktrees/beta"$'\t'"started"$'\t'"proj-beta" ]
+  [ ! -e "$REPO/.claude/worktrees/alpha" ]
+}
+
+@test "stop: TERMs an idle session, refuses a busy one, --force stops anything under the claim" {
+  cfg=$BATS_TEST_TMPDIR/cfg
+  mkdir -p "$cfg/sessions"
+  export CLAUDE_CONFIG_DIR=$cfg
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 3 ]
+  [ "$output" = "alpha"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"not-running" ]
+  FAKE_SHELL_SLEEP=30 FAKE_SHELL_PID="$BATS_TEST_TMPDIR/shpid" pane alpha
+  sh "$BIN" start alpha >/dev/null
+  until_ok '[ -s "$BATS_TEST_TMPDIR/shpid" ]'
+  sp=$(cat "$BATS_TEST_TMPDIR/shpid")
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"alpha is unknown; stop --force to stop it anyway"* ]]
+  printf '{"pid": %s, "status": "busy"}\n' "$sp" >"$cfg/sessions/$sp.json"
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"alpha is busy; stop --force"* ]]
+  kill -0 "$sp"
+  printf '{"pid": %s, "status": "idle"}\n' "$sp" >"$cfg/sessions/$sp.json"
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  [ "$output" = "alpha"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"stopped" ]
+  ! kill -0 "$sp" 2>/dev/null
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  [ -d "$REPO/.claude/worktrees/alpha" ]
+}
+
+@test "stop: the default config directory is searched with no CLAUDE_CONFIG_DIR and no profile mapping" {
+  unset CLAUDE_CONFIG_DIR
+  mkdir -p "$HOME/.claude/sessions"
+  FAKE_SHELL_SLEEP=30 FAKE_SHELL_PID="$BATS_TEST_TMPDIR/shpid" pane alpha
+  sh "$BIN" start alpha >/dev/null
+  until_ok '[ -s "$BATS_TEST_TMPDIR/shpid" ]'
+  sp=$(cat "$BATS_TEST_TMPDIR/shpid")
+  printf '{"pid": %s, "status": "idle"}\n' "$sp" >"$HOME/.claude/sessions/$sp.json"
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  [[ "$output" == *$'\t'"stopped" ]]
+  ! kill -0 "$sp" 2>/dev/null
+}
+
+@test "stop --force: no registry record, every process under the claim is stopped" {
+  export CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/empty
+  FAKE_SHELL_SLEEP=30 FAKE_SHELL_PID="$BATS_TEST_TMPDIR/shpid" pane alpha
+  sh "$BIN" start alpha >/dev/null
+  until_ok '[ -s "$BATS_TEST_TMPDIR/shpid" ]'
+  sp=$(cat "$BATS_TEST_TMPDIR/shpid")
+  run sh "$BIN" stop alpha --force
+  [ "$status" -eq 0 ]
+  [[ "$output" == *$'\t'"stopped" ]]
+  ! kill -0 "$sp" 2>/dev/null
+}
+
+@test "claude-peer.start = auto: the pane starts a session after the settle delay, then waits" {
+  git config claude-peer.start auto
+  mkfifo "$BATS_TEST_TMPDIR/tty-alpha"
+  CLAUDE_PEER_SETTLE=2 FAKE_SHELL_SLEEP=1 CLAUDE_PEER_TTY="$BATS_TEST_TMPDIR/tty-alpha" \
+    sh "$BIN" run --as alpha --wait >"$BATS_TEST_TMPDIR/pane-alpha.out" 2>&1 3>&- &
+  PANES="$PANES $!"
+  sleep 0.5
+  [ "$(shell_runs)" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  [ "$(shell_runs)" -eq 1 ]
+}
+
+@test "the pool: a taken name sends the pane to the pool's fourth, and says so" {
+  hold alpha
+  pane alpha
+  press alpha ''
+  until_ok 'grep -q "claude-peer proj-delta\$" "$FAKE_SHELL_LOG"'
+  grep -qF "Delta (this pane's Alpha is in use by the peers of $REPO/sub)" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  [ ! -e "$REPO/.claude/worktrees/beta" ]
+}
+
+@test "the pool: a pane takes its own slot when free, whatever order the panes start in" {
+  FAKE_SHELL_SLEEP=3 pane gamma
+  press gamma ''
+  until_ok 'grep -q "claude-peer proj-gamma\$" "$FAKE_SHELL_LOG"'
+  ! grep -q "Gamma (" "$BATS_TEST_TMPDIR/pane-gamma.out"
+}
+
+@test "the pool: with every name held the pane says so and goes on waiting" {
+  git config claude-peer.slots 'alpha beta'
+  hold alpha
+  hold beta
+  pane alpha
+  press alpha ''
+  until_ok 'grep -q "all 2 slots are in use in $REPO" "$BATS_TEST_TMPDIR/pane-alpha.out"'
+  until_ok '[ "$(grep -c "Return tries again" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 1 ]'
+  [ "$(sh "$BIN" slots | grep -c waiting)" -eq 1 ]
+  [ "$(shell_runs)" -eq 0 ]
+}
+
+@test "the pool: a configured pool falls back to a free one of the first three" {
+  git config claude-peer.slots 'alpha beta gamma delta'
+  hold alpha
+  hold delta
+  pane alpha
+  press alpha ''
+  until_ok 'grep -q "claude-peer proj-beta\$" "$FAKE_SHELL_LOG"'
+}
+
+@test "start next: the pane's own slot when free, else by the pool; all held is 3" {
+  FAKE_SHELL_SLEEP=2 pane alpha
+  run sh "$BIN" start next
+  [ "$status" -eq 0 ]
+  [ "$output" = "alpha"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"started"$'\t'"proj-alpha" ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  git config claude-peer.slots 'alpha beta'
+  hold alpha
+  hold beta
+  run sh "$BIN" start next
+  [ "$status" -eq 3 ]
+  [[ "$output" == *"all 2 slots are in use"* ]]
+}
+
+@test "a waiting pane's stale files are cleared by the next pane that registers" {
+  mkdir -p "$REPO/.git/claude-peer.wait"
+  w=$REPO/.git/claude-peer.wait
+  : >"$w/alpha.2147483646"; : >"$w/alpha.2147483646.key"; : >"$w/beta.2147483646.start"
+  pane gamma
+  ! ls "$w" | grep 2147483646
+  [ "$(sh "$BIN" slots | cut -f1)" = gamma ]
+}
+
+@test "a killed pane takes its reader and its wait file with it" {
+  pane alpha
+  pp=$LAST_PANE
+  kids=$(ps -Ao pid=,ppid= | awk -v p="$pp" '$2 == p { print $1 }')
+  [ -n "$kids" ]
+  kill "$pp"
+  until_ok '! kill -0 $pp 2>/dev/null'
+  for k in $kids; do until_ok "! kill -0 $k 2>/dev/null"; done
+  [ -z "$(ls "$REPO/.git/claude-peer.wait")" ]
+}
+
+@test "hermes --wait: asks hermes_peer to wait for Return, unless claude-peer.start is auto" {
+  run sh "$BIN" hermes --wait
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"hermeswait=1"* ]]
+  run sh "$BIN" hermes
+  [[ "$output" == *"hermeswait=unset"* ]]
+  git config claude-peer.start auto
+  run sh "$BIN" hermes --wait -- --foo
+  [[ "$output" == *"hermeswait=unset"* ]]
+  [[ "$output" == *' claude-peer --foo' ]]
+}
+
+# --- the coordination log ---------------------------------------------------------
+
+# slot_wt <slot> <Label>: a slot worktree with a live claim (the test's own pid),
+# led from $REPO
+slot_wt() {
+  git worktree add -q --detach "$REPO/.claude/worktrees/$1" HEAD
+  printf '%s\n%s\n%s\n' "$$" "$REPO" "$2" >"$(claim_of "$REPO/.claude/worktrees/$1")"
+}
+
+LOG=.git/claude-peer.log
+
+@test "log claim: a shared path is one overlap line, the exit is 0, and the claim is in the log" {
+  slot_wt alpha Alpha; slot_wt beta Beta
+  mkdir -p "$REPO/lib/sub"
+  cd "$REPO/.claude/worktrees/alpha"
+  run sh "$BIN" log claim rework the lib -- lib/sub
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  cd "$REPO/.claude/worktrees/beta"
+  run sh "$BIN" log claim tidy the helpers -- lib/sub/x.sh docs
+  [ "$status" -eq 0 ]
+  [ "$output" = "overlap"$'\t'"Alpha"$'\t'"lib/sub"$'\t'"rework the lib" ]
+  [ "$(wc -l <"$REPO/$LOG" | tr -d ' ')" -eq 2 ]
+  [ "$(cut -f2,3,4,5 "$REPO/$LOG" | sed -n 2p)" = "Beta"$'\t'"claim"$'\t'"tidy the helpers"$'\t'"lib/sub/x.sh" ]
+  [[ "$(cut -f1 "$REPO/$LOG" | sed -n 1p)" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+}
+
+@test "log claim: a directory overlaps what is under it, both ways; paths are taken from the cwd or absolute; the top overlaps all" {
+  slot_wt alpha Alpha; slot_wt beta Beta
+  cd "$REPO/.claude/worktrees/alpha"
+  mkdir -p bin
+  sh "$BIN" log claim a -- bin/tool
+  cd "$REPO/.claude/worktrees/beta"
+  run sh "$BIN" log claim b -- bin/
+  [ "$output" = "overlap"$'\t'"Alpha"$'\t'"bin/tool"$'\t'"a" ]
+  run sh "$BIN" log claim c -- bin/tool2
+  [ -z "$output" ]
+  mkdir -p bin; cd bin
+  run sh "$BIN" log claim d -- tool
+  [ "$output" = "overlap"$'\t'"Alpha"$'\t'"bin/tool"$'\t'"a" ]
+  run sh "$BIN" log claim e -- "$REPO/.claude/worktrees/beta/bin/tool"
+  [[ "$output" == *"overlap"$'\t'"Alpha"$'\t'"bin/tool"* ]]
+  cd "$REPO/.claude/worktrees/beta"
+  run sh "$BIN" log claim f -- .
+  [ "$output" = "overlap"$'\t'"Alpha"$'\t'"bin/tool"$'\t'"a" ]
+  run sh "$BIN" log claim no paths at all
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "log: done closes the caller's claims, a stop line closes that label's, claims of nobody else are touched" {
+  slot_wt alpha Alpha; slot_wt beta Beta
+  cd "$REPO/.claude/worktrees/alpha"
+  sh "$BIN" log claim a -- lib
+  cd "$REPO/.claude/worktrees/beta"
+  sh "$BIN" log claim b -- other
+  run sh "$BIN" log claim c -- lib
+  [ "$(printf '%s\n' "$output" | grep -c '^overlap')" -eq 1 ]
+  cd "$REPO/.claude/worktrees/alpha"
+  sh "$BIN" log done finished
+  cd "$REPO/.claude/worktrees/beta"
+  run sh "$BIN" log claim d -- lib
+  [ -z "$output" ]
+  # a stop line for Beta closes Beta's claims, whoever wrote it
+  cd "$REPO"
+  sh "$BIN" log --as Gamma claim g -- other
+  printf '2000-01-01T00:00:00Z\tLead\tstop\tBeta by Lead\n' >>"$REPO/$LOG"
+  run sh "$BIN" log --as Gamma claim h -- lib
+  [ -z "$output" ]
+  run sh "$BIN" log show
+  [ "$(printf '%s\n' "$output" | cut -f2,3 | sort | tr '\n' ' ')" = "Gamma"$'\t'"claim Gamma"$'\t'"claim " ]
+}
+
+@test "log: who is the slot's label in a claimed worktree, Lead where a live claim names the cwd, the directory name elsewhere, and --as wins" {
+  slot_wt alpha Alpha
+  cd "$REPO/.claude/worktrees/alpha"
+  mkdir sub; cd sub
+  sh "$BIN" log note from a slot
+  cd "$REPO"
+  sh "$BIN" log note from the leader
+  mkdir "$BATS_TEST_TMPDIR/elsewhere"; git -C "$REPO" worktree add -q --detach "$BATS_TEST_TMPDIR/elsewhere/other" HEAD
+  cd "$BATS_TEST_TMPDIR/elsewhere/other"
+  sh "$BIN" log note from nowhere
+  sh "$BIN" log --as Zed note overridden
+  [ "$(cut -f2,3,4 "$REPO/$LOG")" = "Alpha"$'\t'"note"$'\t'"from a slot"$'\n'"Lead"$'\t'"note"$'\t'"from the leader"$'\n'"other"$'\t'"note"$'\t'"from nowhere"$'\n'"Zed"$'\t'"note"$'\t'"overridden" ]
+}
+
+@test "log: a tab or newline in text or a path is written as a space, one line per entry" {
+  cd "$REPO"
+  sh "$BIN" log --as X note "$(printf 'one\ttwo\nthree')"
+  sh "$BIN" log --as X claim "$(printf 'a\tb\nc')" -- "$(printf 'p\tq')"
+  [ "$(wc -l <"$REPO/$LOG" | tr -d ' ')" -eq 2 ]
+  [ "$(sed -n 1p "$REPO/$LOG" | cut -f4)" = "one two three" ]
+  [ "$(sed -n 2p "$REPO/$LOG" | cut -f4,5 | tr '\t' '|')" = "a b c|p q" ]
+}
+
+@test "log show: open claims and the last day's notes; --all is the file; outside a repository nothing, exit 0" {
+  cd "$REPO"
+  printf '2000-01-01T00:00:00Z\tOld\tnote\tancient\n2000-01-01T00:00:00Z\tOld\tclaim\tstill open\tlib\n' >"$REPO/$LOG"
+  sh "$BIN" log --as New note recent
+  run sh "$BIN" log show
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | cut -f2,3,4 | tr '\t' '|')" = "Old|claim|still open"$'\n'"New|note|recent" ]
+  run sh "$BIN" log show --all
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 3 ]
+  cd "$BATS_TEST_TMPDIR"; mkdir -p norepo; cd norepo
+  run sh "$BIN" log show
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run sh "$BIN" log note x
+  [ "$status" -eq 1 ]
+}
+
+@test "log: every worktree reads the one file in the common git directory; a bad verb is usage" {
+  slot_wt alpha Alpha
+  cd "$REPO/.claude/worktrees/alpha"
+  sh "$BIN" log note hello
+  [ ! -e "$(git rev-parse --absolute-git-dir)/claude-peer.log" ]
+  [ -f "$REPO/$LOG" ]
+  run sh "$BIN" log bogus
+  [ "$status" -eq 2 ]
+  run sh "$BIN" log claim
+  [ "$status" -eq 2 ]
+}
+
+@test "start and stop each append their line, and the prompt is passed on untouched" {
+  cfg=$BATS_TEST_TMPDIR/cfg
+  mkdir -p "$cfg/sessions"
+  export CLAUDE_CONFIG_DIR=$cfg
+  FAKE_SHELL_SLEEP=30 FAKE_SHELL_PID="$BATS_TEST_TMPDIR/shpid" FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  sh "$BIN" start alpha some words >/dev/null
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = "some words" ]
+  sp=$(cat "$BATS_TEST_TMPDIR/shpid")
+  [ "$(cut -f2,3,4 "$REPO/$LOG")" = "Lead"$'\t'"start"$'\t'"Alpha by Lead" ]
+  printf '{"pid": %s, "status": "idle"}\n' "$sp" >"$cfg/sessions/$sp.json"
+  sh "$BIN" stop alpha >/dev/null
+  [ "$(cut -f2,3,4 "$REPO/$LOG" | sed -n 2p)" = "Lead"$'\t'"stop"$'\t'"Alpha by Lead" ]
 }
 
 # --- workgroup / install / status ----------------------------------------------
@@ -349,32 +911,42 @@ groups() {
 # pyget <json> <python expression over g>
 pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(eval(sys.argv[2]))' "$1" "$2"; }
 
-@test "workgroup: six sessions in order, the builtin Diff copied, chat peers run claude-peer, Hermes last" {
+@test "workgroup: Claude Peers is four sessions in order, Lead the root, no Diff, no Hermes" {
   mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist" run sh "$BIN" workgroup
   [ "$status" -eq 0 ]
   [ "$(pyget "$output" '[g["uniqueIdentifier"], g["name"]]')" = "['claudePeer.workgroup', 'Claude Peers']" ]
-  [ "$(pyget "$output" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.main', 'claudePeer.diff', 'claudePeer.chat2', 'claudePeer.chat3', 'claudePeer.chat4', 'claudePeer.hermes']" ]
+  [ "$(pyget "$output" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.main', 'claudePeer.alpha', 'claudePeer.beta', 'claudePeer.gamma']" ]
+  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma']" ]
   [ "$(pyget "$output" 'g["sessions"][0]["kind"]')" = "{'kind': 'root'}" ]
-  [ "$(pyget "$output" '[i["kind"] for i in g["sessions"][0]["toolbarItems"]]')" = "['modeSwitcher', 'gitStatus', 'fixtureItem']" ]
-  [ "$(pyget "$output" 'g["sessions"][1]["command"]')" = 'fixture-diff \(gitBase)' ]
-  [ "$(pyget "$output" 'g["sessions"][1]["parentID"]')" = "claudePeer.main" ]
-  [ "$(pyget "$output" 'g["sessions"][1]["toolbarItems"][1]["reloadShortcut"]["serialized"]')" = "0x1-0x2-0x3" ]
-  [ "$(pyget "$output" '[s["command"] for s in g["sessions"][2:5]]')" = "['claude-peer run', 'claude-peer run', 'claude-peer run']" ]
-  [ "$(pyget "$output" '[s["toolbarItems"] for s in g["sessions"][2:]][0]')" = "[{'kind': 'modeSwitcher'}]" ]
-  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"][2:5]]')" = "['Chat 2', 'Chat 3', 'Chat 4']" ]
-  [ "$(pyget "$output" '[g["sessions"][5][k] for k in ("uniqueIdentifier", "displayName", "command", "parentID", "toolbarItems")]')" = "['claudePeer.hermes', 'Hermes', 'claude-peer hermes', 'claudePeer.main', [{'kind': 'modeSwitcher'}]]" ]
-  [ "$(pyget "$output" 'g["sessions"][5]["kind"]')" = "{'kind': 'peer'}" ]
+  [ "$(pyget "$output" '[s["command"] for s in g["sessions"]]')" = "['', 'claude-peer run --as alpha --wait', 'claude-peer run --as beta --wait', 'claude-peer run --as gamma --wait']" ]
+  # the fixture builtin's root has a third item; nothing is copied from it
+  [ "$(pyget "$output" '[i["kind"] for i in g["sessions"][0]["toolbarItems"]]')" = "['modeSwitcher', 'gitStatus']" ]
+  [ "$(pyget "$output" '[s["toolbarItems"] for s in g["sessions"][1:]]')" = "[[{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}]]" ]
+  [ "$(pyget "$output" '[s["kind"]["kind"] for s in g["sessions"][1:]]')" = "['peer', 'peer', 'peer']" ]
+  [ "$(pyget "$output" '[s["parentID"] for s in g["sessions"][1:]]')" = "['claudePeer.main', 'claudePeer.main', 'claudePeer.main']" ]
+  [ "$(pyget "$output" 'any(s["mode"] != "regular" or "profileGUID" in s or s["urlString"] or s["perFileCommand"] or "hermes" in s["command"] for s in g["sessions"])')" = False ]
 }
 
-@test "workgroup: with no builtin in the store the templates stand in" {
-  mkprefs "$BATS_TEST_TMPDIR/prefs.plist" empty
-  CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist" run sh "$BIN" workgroup
+@test "workgroup: reads no store, so none needs to exist" {
+  CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/absent.plist" run sh "$BIN" workgroup
   [ "$status" -eq 0 ]
-  [ "$(pyget "$output" 'g["sessions"][1]["command"]')" = 'git difftool -y -x vimdiff \(gitBase)' ]
-  [ "$(pyget "$output" 'g["sessions"][1]["mode"]')" = "diff" ]
-  [ "$(pyget "$output" '[i["kind"] for i in g["sessions"][0]["toolbarItems"]]')" = "['modeSwitcher', 'gitStatus']" ]
-  [ "$(pyget "$output" '[i["kind"] for i in g["sessions"][1]["toolbarItems"]]')" = "['modeSwitcher', 'changedFileSelector', 'gitBaseSelector', 'navigation']" ]
+  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma']" ]
+}
+
+@test "install: Claude Peers + Hermes is the same four under claudePeer.h plus Hermes last" {
+  stubs
+  mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
+  CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist" sh "$BIN" install >/dev/null
+  g=$(groups "$BATS_TEST_TMPDIR/prefs.plist")
+  h=$(python3 -I -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1])[2]))' "$g")
+  [ "$(pyget "$h" '[g["uniqueIdentifier"], g["name"]]')" = "['claudePeer.h', 'Claude Peers + Hermes']" ]
+  [ "$(pyget "$h" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.h.main', 'claudePeer.h.alpha', 'claudePeer.h.beta', 'claudePeer.h.gamma', 'claudePeer.h.hermes']" ]
+  [ "$(pyget "$h" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Hermes']" ]
+  [ "$(pyget "$h" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.h.main'}" ]
+  [ "$(pyget "$h" 'g["sessions"][-1]["command"]')" = "claude-peer hermes --wait" ]
+  [ "$(pyget "$h" '[s["command"] for s in g["sessions"][1:4]]')" = "['claude-peer run --as alpha --wait', 'claude-peer run --as beta --wait', 'claude-peer run --as gamma --wait']" ]
+  [ "$(pyget "$h" 'g["sessions"][0]["kind"]')" = "{'kind': 'root'}" ]
 }
 
 @test "install: refused while iTerm2 runs, the store untouched" {
@@ -387,21 +959,23 @@ pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(ev
   cmp "$BATS_TEST_TMPDIR/prefs.plist" "$BATS_TEST_TMPDIR/before.plist"
 }
 
-@test "install: folder store gains the workgroup after the builtin; a second run replaces it" {
+@test "install: folder store gains both workgroups after the builtin, which is untouched; a second run replaces them" {
   stubs
   mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
   export CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist"
+  before=$(pyget "$(groups "$CLAUDE_PEER_PREFS")" 'json.dumps(g[0], sort_keys=True)')
   run sh "$BIN" install
   [ "$status" -eq 0 ]
-  [[ "$output" == *"claudePeer.workgroup) written in $CLAUDE_PEER_PREFS"* ]]
+  [[ "$output" == *'"Claude Peers" written and "Claude Peers + Hermes" written in '"$CLAUDE_PEER_PREFS"* ]]
   g=$(groups "$CLAUDE_PEER_PREFS")
-  [ "$(pyget "$g" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup']" ]
+  [ "$(pyget "$g" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup', 'claudePeer.h']" ]
+  [ "$(pyget "$g" 'json.dumps(g[0], sort_keys=True)')" = "$before" ]
   grep -q '<?xml' "$CLAUDE_PEER_PREFS"
   [ "$(python3 -I -c 'import plistlib, sys; print(plistlib.load(open(sys.argv[1], "rb"))["Ponies"])' "$CLAUDE_PEER_PREFS")" = sentinel ]
   run sh "$BIN" install
   [ "$status" -eq 0 ]
-  [[ "$output" == *"replaced"* ]]
-  [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" 'len(g)')" = 2 ]
+  [[ "$output" == *'"Claude Peers" replaced and "Claude Peers + Hermes" replaced'* ]]
+  [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" 'len(g)')" = 3 ]
   # a binary plist stays binary
   mkprefs "$BATS_TEST_TMPDIR/bin.plist" binary
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/bin.plist" run sh "$BIN" install
@@ -416,7 +990,7 @@ pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(ev
   run sh "$BIN" install
   [ "$status" -eq 0 ]
   [[ "$output" == *"written in the com.googlecode.iterm2 domain"* ]]
-  [ "$(pyget "$(groups "$FAKE_DOMAIN")" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup']" ]
+  [ "$(pyget "$(groups "$FAKE_DOMAIN")" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup', 'claudePeer.h']" ]
 }
 
 @test "install: a Workgroups value that is not JSON is refused, nothing written" {
@@ -429,48 +1003,69 @@ pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(ev
   cmp "$BATS_TEST_TMPDIR/prefs.plist" "$BATS_TEST_TMPDIR/before.plist"
 }
 
-@test "status: store, iTerm2, workgroup and builtin lines; off macOS it refuses" {
+@test "status: store, iTerm2, workgroup and hermes lines, no builtin line; off macOS it refuses" {
   stubs
   mkprefs "$BATS_TEST_TMPDIR/domain.plist"
   mkdir "$BATS_TEST_TMPDIR/prefsdir"
+  mkprefs "$BATS_TEST_TMPDIR/prefsdir/com.googlecode.iterm2.plist"
   export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist" FAKE_LOAD=1 FAKE_FOLDER="$BATS_TEST_TMPDIR/prefsdir"
   run sh "$BIN" status
   [ "$status" -eq 0 ]
   [[ "$output" == *"store: folder $BATS_TEST_TMPDIR/prefsdir/com.googlecode.iterm2.plist"* ]]
   [[ "$output" == *"iterm2: not running (install allowed)"* ]]
   [[ "$output" == *"workgroup: not installed"* ]]
-  [[ "$output" == *"builtin: builtin.claudeCode present"* ]]
+  [[ "$output" == *"hermes: not installed"* ]]
+  [[ "$output" != *"builtin:"* ]]
   FAKE_PROCS=iTerm2 run sh "$BIN" status
   [[ "$output" == *"iterm2: running"* ]]
-  CLAUDE_PEER_PREFS="$FAKE_DOMAIN" sh "$BIN" install >/dev/null
+  sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (6 sessions: Chat, Review, Chat 2, Chat 3, Chat 4, Hermes)"* ]]
+  [[ "$output" == *"workgroup: installed (4 sessions: Lead, Alpha, Beta, Gamma)"* ]]
+  [[ "$output" == *"hermes: installed (5 sessions: Lead, Alpha, Beta, Gamma, Hermes)"* ]]
   FAKE_OS=Linux run sh "$BIN" status
   [[ "$output" == *"status needs macOS"* ]]
   FAKE_OS=Linux run sh "$BIN" install
   [ "$status" -eq 2 ]
 }
 
-@test "status: a workgroup older than this version says out of date; install clears it" {
+@test "status: the six-session definition of v3 says out of date and hermes not installed; install clears both" {
   stubs
   mkprefs "$BATS_TEST_TMPDIR/domain.plist"
   export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist"
-  CLAUDE_PEER_PREFS="$FAKE_DOMAIN" sh "$BIN" install >/dev/null
   python3 -I - "$FAKE_DOMAIN" <<'PY'
 import json, plistlib, sys
 pl = plistlib.load(open(sys.argv[1], "rb"))
 groups = json.loads(pl["Workgroups"])
-next(g for g in groups if g["uniqueIdentifier"] == "claudePeer.workgroup")["sessions"].pop()
+names = ["Chat", "Diff", "Chat 2", "Chat 3", "Chat 4", "Hermes"]
+groups.append({"uniqueIdentifier": "claudePeer.workgroup", "name": "Claude Peers", "sessions": [
+    {"uniqueIdentifier": "claudePeer.s%d" % i, "displayName": n, "command": "claude-peer run"}
+    for i, n in enumerate(names)]})
 pl["Workgroups"] = json.dumps(groups).encode()
 plistlib.dump(pl, open(sys.argv[1], "wb"))
 PY
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed, out of date (5 sessions: Chat, Review, Chat 2, Chat 3, Chat 4)"* ]]
-  [[ "$output" == *"this version defines 6 (Chat, Review, Chat 2, Chat 3, Chat 4, Hermes)"* ]]
+  [[ "$output" == *"workgroup: installed, out of date (6 sessions: Chat, Diff, Chat 2, Chat 3, Chat 4, Hermes); this version defines 4 (Lead, Alpha, Beta, Gamma)"* ]]
+  [[ "$output" == *"hermes: not installed"* ]]
   CLAUDE_PEER_PREFS="$FAKE_DOMAIN" sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (6 sessions: "* ]]
+  [[ "$output" == *"workgroup: installed (4 sessions: "* ]]
+  [[ "$output" == *"hermes: installed (5 sessions: "* ]]
   [[ "$output" != *"out of date"* ]]
+}
+
+@test "status: reads the store that is true: the folder while iTerm2 is quit, the domain while it runs" {
+  stubs
+  mkprefs "$BATS_TEST_TMPDIR/domain.plist"
+  mkdir "$BATS_TEST_TMPDIR/prefsdir"
+  mkprefs "$BATS_TEST_TMPDIR/prefsdir/com.googlecode.iterm2.plist"
+  export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist" FAKE_LOAD=1 FAKE_FOLDER="$BATS_TEST_TMPDIR/prefsdir"
+  # install into the folder with iTerm2 quit; the domain stays as it was
+  sh "$BIN" install >/dev/null
+  run sh "$BIN" status
+  [[ "$output" == *"workgroup: installed (4 sessions: Lead, Alpha, Beta, Gamma)"* ]]
+  FAKE_PROCS=iTerm2 run sh "$BIN" status
+  [[ "$output" == *"workgroup: not installed"* ]]
+  [[ "$output" == *"hermes: not installed"* ]]
 }
 
 # --- hermes ----------------------------------------------------------------------
@@ -538,27 +1133,116 @@ open(p, "wb").write(plistlib.dumps(pl, fmt=plistlib.FMT_BINARY if raw.startswith
 PY
 }
 
-# params <path>: each profile's Enter Workgroup parameter, space separated
+# params <path>: each profile's Enter Workgroup triggers as name:parameter:state
+# (j = the job trigger, v = a variable trigger; * = disabled), space separated
 params() {
-  python3 -I -c 'import plistlib, sys; pl = plistlib.load(open(sys.argv[1], "rb")); print(" ".join(t["parameter"] for b in pl["New Bookmarks"] for t in b["Triggers"] if t["action"] == "iTermEnterWorkgroupTrigger"))' "$1"
+  python3 -I -c '
+import plistlib, sys
+pl = plistlib.load(open(sys.argv[1], "rb"))
+out = []
+for b in pl["New Bookmarks"]:
+    for t in b["Triggers"]:
+        if t["action"] == "iTermEnterWorkgroupTrigger":
+            v = "variableName" in (t.get("eventParams") or {})
+            out.append("%s:%s:%s%s" % (b["Name"], t["parameter"], "v" if v else "j", "*" if t.get("disabled") else ""))
+print(" ".join(out))' "$1"
 }
 
-@test "default: peers moves every builtin trigger, leaves other workgroups alone; builtin moves them back" {
+enter_file() { echo "$XDG_STATE_HOME/claude-peer/enter"; }
+
+@test "default: peers disables the job trigger and adds one variable trigger per workgroup; builtin restores the starting state" {
+  stubs
+  mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
+  addprofiles "$BATS_TEST_TMPDIR/prefs.plist"
+  export CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist"
+  before=$(params "$CLAUDE_PEER_PREFS")
+  sh "$BIN" install >/dev/null
+  [ ! -e "$(enter_file)" ]
+  run sh "$BIN" default peers
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"picks the workgroup of each tab"*"2 of 2 profiles changed"* ]]
+  [ "$(cat "$(enter_file)")" = peers ]
+  [ "$(params "$CLAUDE_PEER_PREFS")" = "One:builtin.claudeCode:j* One:claudePeer.workgroup:v One:claudePeer.h:v Two:builtin.claudeCode:j* Two:claudePeer.workgroup:v Two:claudePeer.h:v Other:someone.else:j" ]
+  # the trigger as iTerm2 holds it (L9)
+  python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
+import plistlib, sys
+pl = plistlib.load(open(sys.argv[1], "rb"))
+vs = [t for b in pl["New Bookmarks"][:1] for t in b["Triggers"] if "eventParams" in t]
+assert vs[0] == {"action": "iTermEnterWorkgroupTrigger", "matchType": 115, "parameter": "claudePeer.workgroup",
+    "eventParams": {"variableName": "user.claudePeerEnter", "variableValueRegex": "^base:"},
+    "disabled": 0, "regex": "", "contentregex": "", "partial": False}, vs[0]
+assert vs[1]["eventParams"]["variableValueRegex"] == "^base/hermes:", vs[1]
+assert pl["Ponies"] == "sentinel"
+PY
+  run sh "$BIN" default peers
+  [[ "$output" == *"0 of 2 profiles changed"* ]]
+  [ "$(params "$CLAUDE_PEER_PREFS" | wc -w)" -eq 7 ]
+  run sh "$BIN" default builtin
+  [ "$status" -eq 0 ]
+  [ ! -e "$(enter_file)" ]
+  [ "$(params "$CLAUDE_PEER_PREFS")" = "$before" ]
+}
+
+@test "default: a trigger it did not write survives both directions, and a job trigger left at Claude Peers by the old default goes back to the builtin" {
+  stubs
+  mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
+  addprofiles "$BATS_TEST_TMPDIR/prefs.plist"
+  export CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist"
+  python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
+import plistlib, sys
+p = sys.argv[1]; pl = plistlib.load(open(p, "rb"))
+pl["New Bookmarks"][0]["Triggers"].append({"action": "iTermEnterWorkgroupTrigger", "matchType": 115, "parameter": "someone.else",
+    "eventParams": {"variableName": "user.somethingElse", "variableValueRegex": "^x"}, "disabled": 0, "regex": ""})
+pl["New Bookmarks"][1]["Triggers"][0]["parameter"] = "claudePeer.workgroup"
+plistlib.dump(pl, open(p, "wb"))
+PY
+  sh "$BIN" install >/dev/null
+  sh "$BIN" default peers >/dev/null
+  [[ "$(params "$CLAUDE_PEER_PREFS")" == *"One:someone.else:v "* ]]
+  sh "$BIN" default builtin >/dev/null
+  [ "$(params "$CLAUDE_PEER_PREFS")" = "One:builtin.claudeCode:j One:someone.else:v Two:builtin.claudeCode:j Other:someone.else:j" ]
+}
+
+@test "install: with the enter file present it adds the trigger of a new workgroup and removes that of a pruned one" {
   stubs
   mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
   addprofiles "$BATS_TEST_TMPDIR/prefs.plist"
   export CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist"
   sh "$BIN" install >/dev/null
-  run sh "$BIN" default peers
+  sh "$BIN" default peers >/dev/null
+  python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
+import json, plistlib, sys
+p = sys.argv[1]; pl = plistlib.load(open(p, "rb"))
+g = json.loads(pl["Workgroups"])
+g.append({"uniqueIdentifier": "claudePeer.v.web", "name": "Claude Peers: web", "sessions": []})
+g = [x for x in g if x["uniqueIdentifier"] != "claudePeer.h"]
+pl["Workgroups"] = json.dumps(g).encode()
+plistlib.dump(pl, open(p, "wb"))
+PY
+  python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
+import plistlib, sys
+p = sys.argv[1]; pl = plistlib.load(open(p, "rb"))
+for b in pl["New Bookmarks"]:
+    b["Triggers"] = [t for t in b["Triggers"] if (t.get("eventParams") or {}).get("variableValueRegex") != "^base/hermes:"] + [
+        {"action": "iTermEnterWorkgroupTrigger", "matchType": 115, "parameter": "claudePeer.gone",
+         "eventParams": {"variableName": "user.claudePeerEnter", "variableValueRegex": "^gone:"}, "disabled": 0, "regex": ""}] if b["Name"] != "Other" else b["Triggers"]
+plistlib.dump(pl, open(p, "wb"))
+PY
+  run sh "$BIN" install
   [ "$status" -eq 0 ]
-  [[ "$output" == *"enters Claude Peers"*"2 of 2 profiles changed"* ]]
-  [ "$(params "$CLAUDE_PEER_PREFS")" = "claudePeer.workgroup claudePeer.workgroup someone.else" ]
-  [ "$(python3 -I -c 'import plistlib, sys; print(plistlib.load(open(sys.argv[1], "rb"))["Ponies"])' "$CLAUDE_PEER_PREFS")" = sentinel ]
-  run sh "$BIN" default peers
-  [[ "$output" == *"0 of 2 profiles changed"* ]]
-  run sh "$BIN" default builtin
-  [ "$status" -eq 0 ]
-  [ "$(params "$CLAUDE_PEER_PREFS")" = "builtin.claudeCode builtin.claudeCode someone.else" ]
+  [[ "$output" == *"variable triggers changed in 2 profiles"* ]]
+  [ "$(params "$CLAUDE_PEER_PREFS")" = "One:builtin.claudeCode:j* One:claudePeer.workgroup:v One:claudePeer.v.web:v One:claudePeer.h:v Two:builtin.claudeCode:j* Two:claudePeer.workgroup:v Two:claudePeer.v.web:v Two:claudePeer.h:v Other:someone.else:j" ]
+}
+
+@test "install: without the enter file it touches no trigger" {
+  stubs
+  mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
+  addprofiles "$BATS_TEST_TMPDIR/prefs.plist"
+  export CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist"
+  before=$(params "$CLAUDE_PEER_PREFS")
+  run sh "$BIN" install
+  [[ "$output" != *"variable triggers"* ]]
+  [ "$(params "$CLAUDE_PEER_PREFS")" = "$before" ]
 }
 
 @test "default: refused while iTerm2 runs, before install, without triggers, or with a bad argument" {
@@ -572,6 +1256,7 @@ params() {
   run sh "$BIN" default peers
   [ "$status" -eq 1 ]; [[ "$output" == *"not installed"* ]]
   cmp "$BATS_TEST_TMPDIR/prefs.plist" "$BATS_TEST_TMPDIR/before.plist"
+  [ ! -e "$(enter_file)" ]
   run sh "$BIN" default sideways
   [ "$status" -eq 2 ]
   mkprefs "$BATS_TEST_TMPDIR/bare.plist"
@@ -579,23 +1264,37 @@ params() {
   [ "$status" -eq 1 ]; [[ "$output" == *"no profile has an Enter Workgroup trigger"* ]]
 }
 
-@test "status: the default line reads builtin, peers or mixed from the profiles" {
+@test "here: prints the key for the base workgroup" {
+  run sh "$BIN" here
+  [ "$status" -eq 0 ]
+  [ "$output" = base ]
+  run sh "$BIN" here extra
+  [ "$status" -eq 2 ]
+}
+
+@test "status: the default line reads builtin, peers or mixed from the profiles, and says when the enter file disagrees" {
   stubs
   mkprefs "$BATS_TEST_TMPDIR/domain.plist"
   addprofiles "$BATS_TEST_TMPDIR/domain.plist"
   export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist" FAKE_LOAD=0
   run sh "$BIN" status
   [[ "$output" == *"default: builtin (2 profiles enter Claude Code)"* ]]
+  [[ "$output" != *"enter file"* ]]
   sh "$BIN" install >/dev/null
   sh "$BIN" default peers >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"default: peers (2 profiles enter Claude Peers)"* ]]
+  [[ "$output" == *"default: peers (2 profiles, 2 workgroups by variable)"* ]]
+  [[ "$output" != *"enter file"* ]]
+  rm "$(enter_file)"
+  run sh "$BIN" status
+  [[ "$output" == *"the triggers say peers but the enter file is missing"* ]]
+  printf 'peers\n' >"$(enter_file)"
   python3 -I - "$FAKE_DOMAIN" <<'PY'
 import plistlib, sys
 p = sys.argv[1]; pl = plistlib.load(open(p, "rb"))
-pl["New Bookmarks"][0]["Triggers"][0]["parameter"] = "builtin.claudeCode"
+pl["New Bookmarks"][0]["Triggers"][0]["disabled"] = 0
 plistlib.dump(pl, open(p, "wb"))
 PY
   run sh "$BIN" status
-  [[ "$output" == *"default: mixed (1 of 2 profiles enter Claude Peers)"* ]]
+  [[ "$output" == *"default: mixed (1 of 2 profiles enter by variable)"* ]]
 }

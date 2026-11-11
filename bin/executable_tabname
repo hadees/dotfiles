@@ -1,13 +1,20 @@
 #!/bin/sh
 # tabname — the label a terminal tab or session row shows for a directory.
 #
-#   tabname [dir]      print the label for dir (default .), one line
+#   tabname [--role] [dir]   print the label for dir (default .), one line;
+#                            with --role, "<role><TAB><label>"
 #
 # The git toplevel's name; for a linked worktree "<repo>@<worktree>", so the
 # several worktrees of one repo stay told apart. Outside a git work tree
 # (not a repo, inside a .git directory, no git) it prints nothing and exits 1
 # — never 0 with empty output, since a caller that writes the label as a
 # title would otherwise blank it.
+#
+# Role: a directory with a live claude-peer claim (<git dir>/claude-peer.claim,
+# line 1 a pid, line 2 the leader's directory, line 3 the label) is a "peer";
+# a directory a live claim names as its leader is a "lead"; anything else is
+# "plain". A claim is read here, not through claude-peer, so the label works
+# where only tabname is deployed.
 #
 # A script rather than a zsh function because more than one caller wants the
 # same answer: the cc-status shim naming a session, and any other tab or
@@ -17,44 +24,95 @@
 # one: its git dir sits under <super>/.git/modules/, and it is labelled by its
 # own toplevel like any repo.
 #
-# The worktree format is machine-local policy: `git config
-# tabname.worktree-format '{repo} <glyph>{worktree}'` (repo-local or global).
-# The default is ASCII on purpose — a private-use glyph is a tofu box in any
-# surface that does not render with a patched font.
+# Formats are machine-local policy, `git config tabname.<key> '<format>'`
+# (repo-local or global). worktree-format labels a linked worktree (default
+# '{repo}@{worktree}'), peer-format a peer ('{repo} · {peer}'), lead-format a
+# leader ('{name} ▸ Lead'). Placeholders: {repo} {worktree} {peer} (the claim's
+# label) {name} (the plain label). The worktree default is ASCII on purpose — a
+# private-use glyph is a tofu box in any surface that does not render with a
+# patched font; the two role defaults are ordinary Unicode.
 set -u
 
+want_role=
+if [ "${1:-}" = --role ]; then want_role=1; shift; fi
 dir="${1:-.}"
 
-out=$(git -C "$dir" rev-parse --path-format=absolute --show-toplevel --git-common-dir 2>/dev/null) || exit 1
+out=$(git -C "$dir" rev-parse --path-format=absolute --show-toplevel --git-common-dir --absolute-git-dir 2>/dev/null) || exit 1
 {
 	IFS= read -r top
 	IFS= read -r common
+	IFS= read -r gitdir
 } <<EOF_PATHS
 $out
 EOF_PATHS
 [ -n "$top" ] && [ -n "$common" ] || exit 1
 
-label=${top##*/}
+repo=${top##*/}
+worktree=
+linked=
 parent=${common%/*}
 if [ "${common##*/}" = .git ] && [ "$parent" != "$top" ]; then
 	repo=${parent##*/}
 	worktree=${top##*/}
-	fmt=$(git -C "$dir" config --get tabname.worktree-format 2>/dev/null) || fmt=
-	[ -n "$fmt" ] || fmt='{repo}@{worktree}'
-	# Substitute with case/${#}, not sed or awk: a directory name may hold the
-	# replacement metacharacters (& | \) those would interpret.
-	label=
-	while [ -n "$fmt" ]; do
-		case $fmt in
-			'{repo}'*) label=$label$repo; fmt=${fmt#'{repo}'} ;;
-			'{worktree}'*) label=$label$worktree; fmt=${fmt#'{worktree}'} ;;
-			*) rest=${fmt#?}; label=$label${fmt%"$rest"}; fmt=$rest ;;
+	linked=1
+fi
+
+# expand <format>: the placeholders filled in, in $res. A case loop, not sed or
+# awk: a directory name may hold the replacement metacharacters (& | \) those
+# would interpret.
+expand() {
+	res= f=$1
+	while [ -n "$f" ]; do
+		case $f in
+			'{repo}'*) res=$res$repo; f=${f#'{repo}'} ;;
+			'{worktree}'*) res=$res$worktree; f=${f#'{worktree}'} ;;
+			'{peer}'*) res=$res$peer; f=${f#'{peer}'} ;;
+			'{name}'*) res=$res$name; f=${f#'{name}'} ;;
+			*) rest=${f#?}; res=$res${f%"$rest"}; f=$rest ;;
 		esac
 	done
+}
+
+# format <key> <default>: the configured format, or the default.
+format() { fmt=$(git -C "$dir" config --get "tabname.$1" 2>/dev/null) || fmt=; [ -n "$fmt" ] || fmt=$2; }
+
+# claim_live <file>: line 1 answers kill -0.
+claim_live() {
+	p=$(sed -n 1p "$1" 2>/dev/null)
+	case $p in ''|*[!0-9]*) return 1;; esac
+	kill -0 "$p" 2>/dev/null
+}
+
+peer=
+role=plain
+if [ -n "$gitdir" ] && claim_live "$gitdir/claude-peer.claim"; then
+	peer=$(sed -n 3p "$gitdir/claude-peer.claim")
+	[ -n "$peer" ] && role=peer
 fi
+if [ "$role" = plain ]; then
+	here=$(cd "$dir" 2>/dev/null && pwd -P) || here=$top
+	for c in "$common"/worktrees/*/claude-peer.claim; do
+		[ -e "$c" ] && claim_live "$c" || continue
+		l=$(sed -n 2p "$c")
+		if [ "$l" = "$here" ] || [ "$l" = "$top" ]; then role=lead; break; fi
+	done
+fi
+
+name=$repo
+if [ -n "$linked" ]; then
+	format worktree-format '{repo}@{worktree}'
+	expand "$fmt"
+	name=$res
+fi
+label=$name
+case $role in
+	peer) format peer-format '{repo} · {peer}'; expand "$fmt"; label=$res ;;
+	lead) format lead-format '{name} ▸ Lead'; expand "$fmt"; label=$res ;;
+esac
 
 # A control character in a name must not end or corrupt the OSC the caller
 # wraps this in.
 label=$(printf '%s' "$label" | tr -d '\000-\037\177')
 [ -n "$label" ] || exit 1
+if [ -n "$want_role" ]; then printf '%s\t' "$role"; fi
 printf '%s\n' "$label"

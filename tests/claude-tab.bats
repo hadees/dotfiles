@@ -416,7 +416,7 @@ sid-o omega /dev/ttys009 other -" ]
   [ "$(sed -n 2p "$f" | cut -f1,3)" = "$(printf '%s\t%s' "$HOME/.claude-personal" "$g")" ]
 }
 
-@test "save recognises a peer by its worktree name when claude-peer is absent" {
+@test "save: without claude-peer nothing is a peer, whatever the worktree is called" {
   a=$(make_repo alpha); mkdir -p "$a/.claude/worktrees/peer-2"
   export CLAUDE_TAB_PEER="$BATS_TEST_TMPDIR/nowhere"
   live_pid; make_session "$HOME/.claude" "$LIVE" "$a" n1 idle sid-1; tty_of "$LIVE" ttys001
@@ -424,8 +424,8 @@ sid-o omega /dev/ttys009 other -" ]
   f="$BATS_TEST_TMPDIR/saved.tsv"
   run --separate-stderr sh "$CT" save "$f"
   [ "$status" -eq 0 ]
-  [[ "$stderr" == *"saved 1 sessions"*"1 peers"* ]]
-  [ "$(tail -n +2 "$f" | cut -f2)" = sid-1 ]
+  [[ "$stderr" == *"saved 2 sessions"* && "$stderr" == *"0 peers"* ]]
+  [ "$(tail -n +2 "$f" | cut -f2 | sort | paste -sd' ' -)" = "sid-1 sid-2" ]
 }
 
 @test "save defaults to the XDG state file, rotates the old one to .prev, and works off macOS" {
