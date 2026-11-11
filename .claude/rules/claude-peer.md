@@ -1,6 +1,7 @@
 ---
 paths:
   - "**/bin/executable_claude-peer"
+  - "**/dot_config/claude-peer/**"
   - "**/tests/claude-peer.bats"
 ---
 
@@ -252,6 +253,15 @@ unknown), the context name or `-`, the task line (at most 80 characters) or `-`,
 and the start time in epoch seconds; lines 1-3, `peers` and the session name are
 unchanged. The pane's header line is the slot's label, then ` · started by <by>`
 (not for Return) and ` · <task>`.
+
+The public source ships seven top-level contexts, `dot_config/claude-peer/contexts/NN-<name>.ctx`
+(`ask`, `look-at`, `plan`, `prs`, `audit`, `catch-up`, `team`), which deploy on every class but
+`ephemeral`. They name no account, organisation, person or private repository or skill; an
+overlay's file of the same name at the owner or repository level replaces one (the personal
+overlay does this for `audit`). A context is a launcher: it points at a skill or a document
+and restates no procedure. `{owner}` and `{repo}` in `40-prs.ctx` are gh's own placeholders,
+typed literally, and only `{input}` is substituted. The lookup rule is the one above: top,
+`<owner>/`, `<owner>/<repo>/`, a deeper file wins by name.
 
 **The Hermes peer** exists only in `Claude Peers + Hermes`, and is a plain shell
 unless a Hermes profile routes the directory; the gate below is now the second

@@ -245,12 +245,13 @@ shared_templates() {
 @test "the shared memory carries the Claude Peers rule: ask before start/stop, warn and never block, small" {
   # The mechanics live in the claude-peer rule file; the shared memory loads
   # in every session, so it holds only the behaviour and may not grow into a
-  # manual (26457 characters before this section; at most 700 more).
+  # manual (26457 characters before this section; at most 700 more, then 500
+  # more for the peer-contexts bullet).
   local shared
   shared="$(tr '\n' ' ' < "$BATS_TEST_DIRNAME/../dot_claude-shared/CLAUDE.md" | tr -s ' ')"
   grep -q 'only when I ask' <<< "$shared" || { echo "shared memory: no ask-first rule for start/stop"; false; }
   grep -q 'Warn, never block' <<< "$shared" || { echo "shared memory: no warn-never-block rule"; false; }
   grep -q 'log claim' "$BATS_TEST_DIRNAME/../.claude/rules/claude-peer.md" || { echo "claude-peer.md: no log claim"; false; }
   n="$(wc -m < "$BATS_TEST_DIRNAME/../dot_claude-shared/CLAUDE.md")"
-  [ "$n" -le 27157 ] || { echo "shared memory is $n characters, limit 27157"; false; }
+  [ "$n" -le 27650 ] || { echo "shared memory is $n characters, limit 27650"; false; }
 }

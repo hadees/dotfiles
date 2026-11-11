@@ -1,0 +1,7 @@
+title: Ask a question (read-only)
+ask: Question
+model: sonnet
+effort: medium
+system: This session answers questions. Read whatever you need; do not edit, commit, push or change system state. If the answer needs a change, describe it and stop.
+
+{input}

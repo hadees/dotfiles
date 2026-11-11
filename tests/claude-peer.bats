@@ -1464,6 +1464,19 @@ names() { printf '%s\n' "$output" | cut -f1 | tr '\n' ' '; }
   [ "$output" = "$BATS_TEST_TMPDIR/xdg/claude-peer/contexts" ]
 }
 
+@test "context: the shipped catalogue lists seven rows, shows the value last, keeps {owner}, and audit carries its system line" {
+  export CLAUDE_PEER_CONTEXTS="$BATS_TEST_DIRNAME/../dot_config/claude-peer/contexts"
+  run --separate-stderr sh "$BIN" context list --all
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | wc -l)" -eq 7 ]
+  [ -z "$stderr" ]
+  run sh "$BIN" context show prs 12 13
+  [[ "$output" == *"12 13" ]]
+  [[ "$output" == *"repos/{owner}/{repo}/rules/branches/"* ]]
+  run sh "$BIN" context show audit
+  [[ "$output" == *"flag: --append-system-prompt"* ]]
+}
+
 # --- start --context ---------------------------------------------------------------
 
 # hello: every flag a context can set, and a body that takes the value

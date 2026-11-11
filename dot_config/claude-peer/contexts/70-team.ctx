@@ -1,0 +1,16 @@
+title: What is everyone else doing in this repository?
+model: sonnet
+effort: low
+system: Read-only session: look with gh and git; change nothing, push nothing, comment on nothing. Running git fetch is allowed.
+
+Tell me what other people are doing in this repository. Leave my own work out except where it collides with theirs. I am whoever `gh api user --jq .login` prints.
+
+Report in this order, and say "none" for an empty section:
+
+1. Their open pull requests: number, author, what it is for in one line, review state, checks.
+2. Branches someone else pushed in the last two weeks that have no pull request.
+3. What was merged since my last commit on the default branch, and by whom.
+4. What is waiting on me: reviews requested from me, issues assigned to me.
+5. Overlap: any of their pull requests or branches touching files changed on the branches my tabs are on (`git worktree list` shows them), or paths an open claim in `claude-peer log show` names.
+
+End with the one thing I should look at first.
