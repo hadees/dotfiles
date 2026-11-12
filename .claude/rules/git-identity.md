@@ -24,8 +24,9 @@ missing signer. Each machine opts in via untracked files:
   just selectors.
 
 **Which key authenticates a `git@github.com:` remote** is the same question
-for ssh that the credential helper answers for https, and it has the same
-answer: `bin/git-ssh-pinned`, installed as `core.sshCommand` by the
+for ssh that the credential helper answers for https (which it does for
+`github.com` and `gist.github.com` only, and declines silently for any other
+host or for plain http), and it has the same answer: `bin/git-ssh-pinned`, installed as `core.sshCommand` by the
 overlays. With several GitHub keys in one agent, ssh offers them in the
 agent's order and GitHub takes the first that authenticates — so a plain
 `git@github.com:` URL lands on whichever account owns *that* key, and every
