@@ -256,3 +256,31 @@ setup() {
   [[ "$(finder fdfind)" == "fdfind --type f"*"|fdfind --type f"*"|fdfind --type d"* ]]
   [ "$(finder neither)" = "unset|unset|unset" ]
 }
+
+@test "diff is the system's, the word diff is worddiff, and fs stays the overmind alias" {
+  cd "$BATS_TEST_DIRNAME/.."
+  run zsh -c 'source ./dot_aliases; source ./dot_functions
+    print -r -- "diff:$(whence -w diff)"
+    print -r -- "worddiff:$(whence -w worddiff)"
+    print -r -- "fsize:$(whence -w fsize)"
+    print -r -- "fs:$(whence -w fs)"' 2>/dev/null
+  [[ "$output" != *"diff:diff: function"* ]] || { echo "diff is still a function: $output"; false; }
+  [[ "$output" == *"worddiff:worddiff: function"* ]] || { echo "no worddiff function: $output"; false; }
+  [[ "$output" == *"fsize:fsize: function"* ]] || { echo "no fsize function: $output"; false; }
+  [[ "$output" == *"fs:fs: alias"* ]] || { echo "fs is not the alias: $output"; false; }
+}
+
+@test "json pretty-prints a pipe with jq, else python3, and needs no bare python" {
+  cd "$BATS_TEST_DIRNAME/.."
+  zsh_bin="$(command -v zsh)"
+  mkdir -p "$BATS_TEST_TMPDIR/jq" "$BATS_TEST_TMPDIR/py"
+  # PATH holds one tool each, so neither run can fall back on the other.
+  printf '#!/bin/sh\nexec %s "$@"\n' "$(command -v jq)" > "$BATS_TEST_TMPDIR/jq/jq"
+  printf '#!/bin/sh\nexec %s "$@"\n' "$(command -v python3)" > "$BATS_TEST_TMPDIR/py/python3"
+  chmod +x "$BATS_TEST_TMPDIR/jq/jq" "$BATS_TEST_TMPDIR/py/python3"
+  for d in jq py; do
+    run "$zsh_bin" -c "source ./dot_functions; PATH='$BATS_TEST_TMPDIR/$d'; print '{\"a\":1}' | json"
+    [ "$status" -eq 0 ] || { echo "$d: status $status: $output"; false; }
+    [[ "$output" == *'"a"'* ]] || { echo "$d: $output"; false; }
+  done
+}

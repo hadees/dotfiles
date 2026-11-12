@@ -49,8 +49,8 @@ function targz() {
 	echo "${tmpFile}.gz ($((zippedSize / 1000)) kB) created successfully.";
 }
 
-# Determine size of a file or total size of a directory
-function fs() {
+# Print the size of a file or the total size of a directory (the alias `fs` is overmind's)
+function fsize() {
 	if du -b /dev/null > /dev/null 2>&1; then
 		local arg=-sbh;
 	else
@@ -63,9 +63,9 @@ function fs() {
 	fi;
 }
 
-# Use Git’s colored diff when available
+# Git’s colored word diff of two files, when git is available
 	if (( $+commands[git] )); then
-		function diff() {
+		function worddiff() {
 			git diff --no-index --color-words "$@";
 		}
 fi;
@@ -106,13 +106,15 @@ function gz() {
 	printf "gzip: %d bytes (%2.2f%%)\n" "$gzipsize" "$ratio";
 }
 
-# Syntax-highlight JSON strings or files
+# Pretty-print JSON strings or files: jq when installed (it colours on a terminal), else python3
 # Usage: `json '{"foo":42}'` or `echo '{"foo":42}' | json`
 function json() {
+	local -a pretty
+	if (( $+commands[jq] )); then pretty=(jq .); else pretty=(python3 -m json.tool); fi
 	if [ -t 0 ]; then # argument
-		python -mjson.tool <<< "$*" | pygmentize -l javascript;
+		"${pretty[@]}" <<< "$*";
 	else # pipe
-		python -mjson.tool | pygmentize -l javascript;
+		"${pretty[@]}";
 	fi;
 }
 
