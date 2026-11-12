@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 
 # Ensure ~/bin is on the PATH, keeping entries unique. -g matters: without
-# it, sourcing this file from inside a function (e.g. bootstrap.sh's doIt)
+# it, sourcing this file from inside a function
 # makes path/PATH function-local and empty, breaking every external command
 # for the rest of the file.
 typeset -gU path PATH
@@ -73,8 +73,9 @@ _killall_completion() {
 compdef _killall_completion killall
 
 # Runtime environment managers.
-# asdf is the preferred multi-language manager; the per-language managers below
-# are no-ops when not installed, so both setups coexist safely.
+# asdf is the preferred multi-language manager. The per-language managers'
+# inits below run after the asdf line, so where one has a shim for a command,
+# it answers first; each block does nothing when its manager is not installed.
 if (( $+commands[asdf] )); then
 	export PATH="${ASDF_DATA_DIR:-$HOME/.asdf}/shims:$PATH"
 fi
@@ -141,8 +142,9 @@ unset _zsh_plugin_dir _zsh_plugin_dirs
 # Commit signing uses SSH-format signatures via 1Password's op-ssh-sign
 # (gpg.format=ssh + gpg.ssh.program in ~/.gitconfig.local) — no gpg-agent needed.
 # The signing key's private half lives in 1Password; the repo only references
-# the .pub. On a machine without 1Password, forward your local 1Password SSH
-# agent or disable signing there (git config commit.gpgsign false).
+# the .pub. Without the overlay signing is never enabled, so nothing needs
+# disabling; to sign on a remote, forward the agent and set user.signingkey to
+# the literal public key (see .claude/rules/git-identity.md).
 
 # Increase how many files can be opened at once.
 ulimit -n 10480 2>/dev/null
