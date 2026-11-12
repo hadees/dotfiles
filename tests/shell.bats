@@ -182,3 +182,24 @@ setup() {
   [ "$(grep -c 'setopt EXTENDED_GLOB' dot_zshrc)" -eq 0 ] || { echo "dot_zshrc still sets EXTENDED_GLOB"; false; }
   zsh -n dot_zshrc
 }
+
+@test "exports fill in LANG only when it is missing and the locale exists, and never force LC_ALL" {
+  cd "$BATS_TEST_DIRNAME/.."
+  home="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$home" "$BATS_TEST_TMPDIR/bare" "$BATS_TEST_TMPDIR/rich" "$BATS_TEST_TMPDIR/upper"
+  printf '#!/bin/sh\nprintf "C\\nC.utf8\\nPOSIX\\n"\n' > "$BATS_TEST_TMPDIR/bare/locale"
+  printf '#!/bin/sh\nprintf "C\\nen_US.utf8\\nPOSIX\\n"\n' > "$BATS_TEST_TMPDIR/rich/locale"
+  printf '#!/bin/sh\nprintf "C\\nen_US.UTF-8\\nPOSIX\\n"\n' > "$BATS_TEST_TMPDIR/upper/locale"
+  chmod +x "$BATS_TEST_TMPDIR"/{bare,rich,upper}/locale
+  zsh_bin="$(command -v zsh)"
+  loc() { # $1 stub dir, $2 OSTYPE, then optional VAR=value for the environment
+    local dir="$1" ostype="$2"; shift 2
+    env -i HOME="$home" PATH="$dir:/usr/bin:/bin" "$@" "$zsh_bin" -c \
+      "OSTYPE=$ostype; source ./dot_exports; print -r -- \"\${LANG-unset}|\${LC_ALL-unset}\"" 2>/dev/null
+  }
+  [ "$(loc "$BATS_TEST_TMPDIR/bare" linux-gnu)" = "unset|unset" ]
+  [ "$(loc "$BATS_TEST_TMPDIR/rich" linux-gnu)" = "en_US.UTF-8|unset" ]
+  [ "$(loc "$BATS_TEST_TMPDIR/upper" linux-gnu)" = "en_US.UTF-8|unset" ]
+  [ "$(loc "$BATS_TEST_TMPDIR/bare" linux-gnu LANG=de_DE.UTF-8)" = "de_DE.UTF-8|unset" ]
+  [ "$(loc "$BATS_TEST_TMPDIR/bare" darwin23.0)" = "en_US.UTF-8|unset" ]
+}
