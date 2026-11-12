@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -23,7 +26,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
       - name: Install Bats on Ubuntu
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -50,7 +53,7 @@ jobs:
       # tests/finicky.bats and tests/chrome-pairing.bats run the .ts routing
       # config under Node (>= 22.6 strips types natively); NODE_TESTS_REQUIRED
       # (below) makes a missing or old Node fail them instead of skipping.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Check that the fzf on PATH is the pinned one
@@ -71,7 +74,7 @@ jobs:
     steps:
       - name: Install dependencies
         run: apt-get update && apt-get install -y curl git zsh rsync ca-certificates
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
       - name: One-shot bootstrap from a copy of this checkout
         # --one-shot purges the SOURCE directory after applying, so it must
         # run against a copy — pointing it at $GITHUB_WORKSPACE deletes the
@@ -120,12 +123,12 @@ jobs:
         # assertion instead of a missing package. procps-ng is missing too
         # (no ps), which claude-peer needs to find the sessions it stops.
         run: dnf install -y git zsh rsync diffutils procps-ng
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
       - name: Install tmux for the screen tests
         run: dnf install -y tmux
       - name: Install Bats and chezmoi
         run: |
-          git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats-core
+          git clone --depth 1 --branch v1.14.0 https://github.com/bats-core/bats-core.git /tmp/bats-core
           /tmp/bats-core/install.sh /usr/local
           sh -c "$(curl -fsLS get.chezmoi.io)" -- -b /usr/local/bin
       - name: Install the pinned fzf
@@ -154,7 +157,7 @@ jobs:
       - name: Force LF line endings on checkout
         shell: pwsh
         run: git config --global core.autocrlf false
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
       - uses: Vampire/setup-wsl@v5
         with:
           distribution: Ubuntu-24.04
