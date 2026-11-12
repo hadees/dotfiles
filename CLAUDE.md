@@ -64,9 +64,14 @@ bats tests/chezmoi.bats
 `bats` must run under **bash ≥ 4**: macOS's `/bin/bash` 3.2 does not fail a
 test on a failing `[[ ]]` unless it is the test's last command, so mid-test
 assertions are silently skipped. `tests/shell.bats` refuses to run under it.
-A shell that sourced `.exports` already has Homebrew's `bin` first on PATH
-(so its bash 5 wins), and CI's macOS job does the same; elsewhere use
-`PATH="$(brew --prefix)/bin:$PATH" bats tests`.
+In a zsh from these dotfiles a bare `bats tests` is enough: `.exports` puts
+Homebrew's `bin` ahead of the system dirs (so its bash 5 wins), and the
+version-manager shims `dot_zshrc` prepends afterwards (asdf, pyenv, …)
+shadow no bash. CI's macOS job adds Homebrew's `bin` itself; elsewhere use
+`PATH="$(brew --prefix)/bin:$PATH" bats tests`. A test that fakes `HOME` and
+needs `python3` must pin the real interpreter in `setup()` before it does,
+because an asdf shim cannot resolve a version under a fake `HOME` and exits
+126 (`tests/claude-peer.bats` does not pin yet).
 
 To *run* the dotfiles rather than test them — render a machine class into a
 sandbox `$HOME`, drive the resulting zsh (prompt, wrappers, doctors) one-shot

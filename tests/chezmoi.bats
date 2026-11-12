@@ -70,6 +70,7 @@ teardown() {
   [ ! -e "$TMPHOME/.extra" ]
   [ ! -e "$TMPHOME/.gitconfig.local" ]
   [ ! -e "$TMPHOME/.claude" ]
+  [ ! -e "$TMPHOME/.config/claude-peer" ]
   # Repo-level files never deploy
   [ ! -e "$TMPHOME/CLAUDE.md" ]
   [ ! -e "$TMPHOME/com.googlecode.iterm2.plist" ]
@@ -205,6 +206,8 @@ teardown() {
   [ -x "$TMPHOME/bin/tailnet" ]
   # Machine-local memory is created when missing
   [ -f "$TMPHOME/.claude/CLAUDE.local.md" ]
+  # The seven shipped peer contexts
+  [ "$(ls "$TMPHOME"/.config/claude-peer/contexts/*.ctx | wc -l)" -eq 7 ]
 }
 
 @test "wsl class renders shell config cleanly" {

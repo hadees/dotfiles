@@ -15,6 +15,12 @@
 bats_require_minimum_version 1.5.0
 
 setup() {
+  # Pin python3 while HOME is still real: an asdf shim first on PATH finds no
+  # version under the fake HOME and exits 126 instead of running.
+  if py="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null)"; then
+    mkdir -p "$BATS_TEST_TMPDIR/pybin" && ln -s "$py" "$BATS_TEST_TMPDIR/pybin/python3"
+    export PATH="$BATS_TEST_TMPDIR/pybin:$PATH"
+  fi
   STUB="$BATS_TEST_TMPDIR/utilities"
   mkdir -p "$STUB"
   printf '#!/bin/sh\necho "${ITERM2_COOKIE-unset}" > "%s/fed_cookie"\ncat > "%s/fed"\n' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$STUB/cc-status"

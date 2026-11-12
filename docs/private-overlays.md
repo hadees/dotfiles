@@ -488,6 +488,40 @@ agent forwarded from the laptop — so it needs no alias, and "forward my agent
 to hex" means nothing when you are already on hex. The signers fragments
 deploy everywhere, because verifying a signature is not machine-shaped.
 
+### Peer contexts — `~/.config/claude-peer/contexts/`
+
+`claude-peer` starts a peer from a **context**: a small text file whose header
+says how to start (title, what to ask for, agent, model, effort, one line of
+system prompt, fresh or continue) and whose body is the first prompt. The
+public source ships the general ones at the top; the overlays add the ones that
+name an owner, a repository or a private skill, at lower levels:
+
+```
+~/.config/claude-peer/contexts/NN-<name>.ctx                  public          every repository
+~/.config/claude-peer/contexts/<owner>/NN-<name>.ctx          an overlay      every repository of that owner
+~/.config/claude-peer/contexts/<owner>/<repo>/NN-<name>.ctx   an overlay      that repository
+~/.config/claude-peer/contexts/<owner>/<repo>/90-<name>.ctx   machine-local   the picker's save or a session's draft, until promoted
+```
+
+- `<owner>/<repo>` is the origin slug, lowercase. An overlay never writes at
+  the top level, and an owner directory appears only in the overlay that pins
+  that owner (`credential.https://github.com/<owner>.username`). A deeper file
+  replaces a shallower one of the same name.
+- Source file names always begin `NN-`: a digit-first name is never read as a
+  chezmoi attribute, where `private_x.ctx` or `empty_x.ctx` would be. A
+  repository whose name begins with a dot is `dot_<rest>` in the source; one
+  beginning with an attribute word needs `literal_`.
+- `90-` is reserved for files not yet promoted. Promotion is a copy into the
+  owning overlay's source under a lower number, a commit there, and an apply.
+- Deleting a source file leaves the deployed one in place; add its target path
+  to that overlay's `.chezmoiremove`.
+- A `title:` is at most 40 characters; the picker shows it beside the name
+  and grows wider for a longer one.
+- A context is a launcher: it points at a skill or a document in the
+  repository ("the way this repository documents") and restates no procedure.
+  For a repository some profile on the machine is denied, this is a rule, not a
+  style: the file is readable where the repository is not.
+
 ### Link routing (Finicky) — `~/.config/finicky/personal.ts` / `work.ts`
 
 Per-account/per-company rules and Chrome profile display names — the personal

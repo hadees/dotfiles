@@ -1,0 +1,15 @@
+title: Review all PRs, merge mine when safe
+model: sonnet
+effort: medium
+
+Work through this repository's open pull requests, or only the ones numbered below when numbers are given.
+
+First find out two things and tell me both. Who I am here: `gh api user --jq .login`. And whether the base branch has required status checks: `gh api repos/{owner}/{repo}/rules/branches/<base>` lists a rule of type `required_status_checks` when a ruleset requires any, and `gh api repos/{owner}/{repo}/branches/<base> --jq .protection.required_status_checks` has a non-empty `contexts` or `checks` when classic branch protection does. If neither names a check, or either call fails, then as far as you can tell there are no required checks: say "no required checks, not merging" once, and merge nothing in this session.
+
+Review each pull request with the code-review skill.
+
+When I am the author and it is not a draft: fix what the review found on that pull request's own branch, in this worktree, following this repository's commit conventions; push; wait for its checks. If the branch is checked out in another worktree, do not touch it: report the findings and move on. Merge it, by this repository's merge conventions, only when all of these hold: the base branch has required checks, every one of them is green on the latest push, a fresh review of the final diff is clean, and there is no conflict.
+
+When someone else is the author, or it is a draft: review and report only. Never push to it, comment on it, approve it or merge it.
+
+A red check or a merge conflict ends work on that pull request: do not retry and do not force anything; tell me what failed. Finish with one line per pull request: reviewed, fixed, merged, or why not.
