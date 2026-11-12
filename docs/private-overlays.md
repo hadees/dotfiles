@@ -488,6 +488,55 @@ agent forwarded from the laptop — so it needs no alias, and "forward my agent
 to hex" means nothing when you are already on hex. The signers fragments
 deploy everywhere, because verifying a signature is not machine-shaped.
 
+### Composed file: iTerm2's preferences
+
+iTerm2 rewrites its preferences file at every quit, so this one is composed by
+*merge*, not by include or concatenation: `bin/iterm2-prefs` merges per-owner
+fragments into a machine-local store with a three-way rule against a record of
+the last compose (`.claude/rules/iterm2-prefs.md` has the mechanism).
+
+```
+~/.config/iterm2/prefs.d/10-base.plist       public    theme, fonts, keys, the Default profile
+~/.config/iterm2/prefs.d/20-personal.plist   personal  only its own keys (optional)
+~/.config/iterm2/prefs.d/30-work.plist       work      only its own keys (optional)
+~/.local/state/iterm2/prefs/com.googlecode.iterm2.plist
+                                             COMPOSED, machine-local; iTerm2's custom folder
+~/.local/state/iterm2/prefs-sourced.plist    the composer's record of the last compose
+```
+
+The switch-over has not happened yet: until `iterm2-prefs install` is run by
+hand with iTerm2 quit, iTerm2 still loads the tracked plist in the public
+clone, and `dotfiles` composes nothing.
+
+What an overlay implements, all of it:
+
+1. Optional. An overlay with no iTerm2 key of its own ships nothing and the
+   machine composes the base alone.
+2. One file in its own chezmoi source, `dot_config/iterm2/prefs.d/NN-<name>.plist`,
+   deploying to the fragments directory. By convention `20-personal.plist` and
+   `30-work.plist`, shifted by one from the ssh fragments because `10-` is the
+   public base. The name is digit-first, so chezmoi reads no attribute from it.
+3. macOS only: add `.config/iterm2` to the overlay's own `.chezmoiignore` off
+   Darwin, as for its ssh fragment.
+4. Content: an XML plist of iTerm2 preference keys holding only keys that are
+   that overlay's own. The later fragment wins a key both set, so work
+   outranks personal; nothing overlaps today. Reserved keys (`Workgroups`, a
+   profile's `Triggers`, keys iTerm2 does not sync, `Dynamic Profile*`) are
+   ignored and counted.
+5. How keys get there: the overlay's own session runs `iterm2-prefs capture
+   --file <its worktree>/dot_config/iterm2/prefs.d/NN-<name>.plist <unit>...`
+   and commits. Its own tests may run `iterm2-prefs lint <file>`.
+6. A whole profile of an overlay's own can instead be a Dynamic Profiles file,
+   which iTerm2 includes natively (`worktabs install` does this).
+7. The peer bar label is not a fragment key: it stays the git config entry
+   (`claude-peer.<owner>/<repo>.label`), because `Workgroups` is reserved.
+
+The two commands an owner needs: `iterm2-prefs capture --file <fragment path>
+<unit>...` in its own worktree, then `dotfiles`; with iTerm2 quit,
+`iterm2-prefs compose` applies what `dotfiles` reported as waiting. The
+composed store names every owner at once, so it lives in no repository;
+`iterm2-prefs install` refuses a folder inside one.
+
 ### Peer contexts — `~/.config/claude-peer/contexts/`
 
 `claude-peer` starts a peer from a **context**: a small text file whose header

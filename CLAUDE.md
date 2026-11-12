@@ -264,6 +264,7 @@ rule first.
 | `routes` | the fleet routing table |
 | `workset` | working sets, the profile rule, the guard hooks |
 | `iterm2-skill` | the iTerm2 skill's stamp and `verify.sh`, the tracked plist |
+| `iterm2-prefs` | iTerm2's composed preferences: fragments, compose, capture, install |
 | `cc-status-shim` | Session Status rows, seat colours, row names, terminal titles |
 | `dot-functions` | what else lives in `dot_functions`, and `emulate -L zsh` |
 
