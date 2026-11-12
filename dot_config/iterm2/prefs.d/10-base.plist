@@ -26,8 +26,6 @@
 	<string>claude-opus-4-8</string>
 	<key>AiResponseMaxTokens</key>
 	<integer>128000</integer>
-	<key>AitermURL</key>
-	<string>https://api.anthropic.com/v1/messages</string>
 	<key>AllowClipboardAccess</key>
 	<true/>
 	<key>AutoHideTmuxClientSession</key>

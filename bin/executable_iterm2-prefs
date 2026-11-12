@@ -219,7 +219,7 @@ def lint_file(path, public):
                 elif isinstance(leaf, str):
                     if "/Users/" in leaf or "/home/" in leaf:
                         probs.append("home path in " + text)
-                    if u != ("top", "AitermURL") and (leaf.startswith(("/", "~/")) or "://" in leaf):
+                    if leaf.startswith(("/", "~/")) or "://" in leaf:
                         probs.append("path or URL in " + text)
                     if "@" in leaf:
                         probs.append("address in " + text)

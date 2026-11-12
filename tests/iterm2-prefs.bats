@@ -135,7 +135,7 @@ has() { grep -Fxq -- "$1" <<<"$output"; }
   [ "$output" = "$FRAGS/10-one.plist: profile Guid AAAA-1 appears twice" ]
 }
 
-@test "lint --public: a data value, a date, a home path, a path, a URL outside AitermURL, an at-sign and a non-empty Bound Hosts each fail; a URL in AitermURL passes" {
+@test "lint --public: a data value, a date, a home path, a path, a URL, an at-sign and a non-empty Bound Hosts each fail, AitermURL included" {
   f="$FRAGS/10-one.plist"
   frag 10-one '{"Blob": b"x", "When": datetime.datetime(2020, 1, 1), "Dir": "/" + "home/fixture/x",
     "Where": "/opt/fixture", "Link": "https://example.invalid/x", "Mail": "fixture" + chr(64) + "example.invalid",
@@ -151,13 +151,14 @@ has() { grep -Fxq -- "$1" <<<"$output"; }
   has "$f: path or URL in Dir"
   has "$f: path or URL in Where"
   has "$f: path or URL in Link"
+  has "$f: path or URL in AitermURL"
   has "$f: address in Mail"
   has "$f: profile/AAAA-1/Bound Hosts must be empty or absent"
-  [ "$(grep -c . <<<"$output")" -eq 8 ]
+  [ "$(grep -c . <<<"$output")" -eq 9 ]
   frag 10-two '{"AitermURL": "https://example.invalid/v1"}'
   run sh "$BIN" lint --public "$FRAGS/10-two.plist"
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
+  [ "$status" -eq 1 ]
+  [ "$output" = "$FRAGS/10-two.plist: path or URL in AitermURL" ]
 }
 
 @test "compose --print: one fragment gives its keys back, typed as they went in" {
@@ -900,6 +901,10 @@ BASE="$BATS_TEST_DIRNAME/../dot_config/iterm2/prefs.d/10-base.plist"
 
 @test "the public base has no data element" {
   [ "$(grep -c '<data>' "$BASE")" = 0 ]
+}
+
+@test "the public base sets no AitermURL" {
+  [ "$(pget "$BASE" '"AitermURL" in d')" = False ]
 }
 
 @test "the public base alone composes into a store with its default profile" {

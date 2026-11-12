@@ -100,7 +100,10 @@ Tests match these.
 
 - `lint [--public] <file>...`: problems on stderr as `<file>: <problem>`, exit 1
   on any. `--public` adds data and date values, home paths, paths and URLs
-  (except the top-level `AitermURL`), at-signs, and non-empty `Bound Hosts`,
+  anywhere (no key is exempt: the base leaves `AitermURL` out, since
+  `UseRecommendedAIModel` with `AIVendor` already selects the vendor's endpoint,
+  and a machine with an endpoint of its own keeps it local or in its overlay's
+  fragment), at-signs, and non-empty `Bound Hosts`,
   `Command`, `Initial Text`, `Badge Text`, `Tags`.
 - `compose [--auto] [--reset] [--print]`: summary `iterm2-prefs: <a> units
   applied from <n> fragments; <k> kept as changed in iTerm2 (iterm2-prefs
