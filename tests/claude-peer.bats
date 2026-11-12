@@ -2220,6 +2220,132 @@ fzf_header() { sed -n '/^--header=/,/^--print-query$/p' "$FAKE_FZF_LOG" | sed '$
   [ "$(grep -c $'\033\\[38;' "$BATS_TEST_TMPDIR/pane-beta.out")" -eq 0 ]
 }
 
+# tick_of: the timer's script, cut out of the logged fzf arguments (it is the last one)
+tick_of() { sed -n '/^--bind=every(1):bg-transform:/,$p' "$FAKE_FZF_LOG" | sed '1s/^--bind=every(1):bg-transform://'; }
+
+@test "sleeper moves: the timer's arguments come last, five frame files, and the tick picks the pose" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  CLAUDE_PEER_SIZE='40 120' FAKE_FZF_SLEEP=30 pane alpha
+  until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+  grep -qxF -- '--with-shell=sh -c' "$FAKE_FZF_LOG"
+  grep -qxF -- '--bind=change,focus:rebind(every(1))' "$FAKE_FZF_LOG"
+  [ "$(grep -c '^--bind=every(1):bg-transform:' "$FAKE_FZF_LOG")" -eq 1 ]
+  [ "$(tick_of | sed 1d | grep -c '^--')" -eq 0 ]
+  f=$REPO/.git/claude-peer.wait/alpha.$LAST_PANE.frame
+  for k in 0 1 2 3 still; do
+    [ "$(grep -o '▬' "$f.$k" | wc -l | tr -d ' ')" -eq 4 ]
+  done
+  [ "$(cat "$f.0")" != "$(cat "$f.2")" ]
+  [ "$(grep -c $'\033\\[1mZ\\|\033\\[38;5;250mz\\|\033\\[2mz' "$f.3")" -eq 0 ]
+  [ "$(fzf_header | sed '1s/^--header=//')" = "$(cat "$f.0")" ]
+  tick=$(tick_of)
+  export CLAUDE_PEER_FRAMES=$f CLAUDE_PEER_ART_SECONDS=20
+  [ "$(FZF_IDLE_TIME_MS=1200 sh -c "$tick")" = "change-header:$(cat "$f.1")" ]
+  [ "$(FZF_IDLE_TIME_MS=6700 sh -c "$tick")" = "change-header:$(cat "$f.3")" ]
+  [ "$(FZF_IDLE_TIME_MS=25000 sh -c "$tick")" = "unbind(every(1))+change-header:$(cat "$f.still")" ]
+  still=$(cat "$f.still")
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  # the still frame is A1's header: what the pane shows when it never moves
+  git config --global claude-peer.art-seconds 0
+  fzfsize '40 120'
+  [ "$(fzf_header | sed '1s/^--header=//')" = "$still" ]
+}
+
+@test "sleeper moves: with art-seconds 0, with the art off, and at 15 rows there is no timer and no frame file" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  local how
+  for how in 'seconds 40 120' 'off 40 120' 'small 15 120'; do
+    set -- $how
+    git config --global --unset claude-peer.art-seconds || true
+    git config --global --unset claude-peer.art || true
+    case $1 in seconds) git config --global claude-peer.art-seconds 0;; off) git config --global claude-peer.art false;; esac
+    rm -f "$FAKE_FZF_LOG" "$FAKE_FZF_LOG.calls"
+    CLAUDE_PEER_SIZE="$2 $3" FAKE_FZF_SLEEP=30 pane alpha
+    until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+    [ "$(grep -c 'every(1)' "$FAKE_FZF_LOG")" -eq 0 ]
+    [ "$(grep -c -- '--with-shell' "$FAKE_FZF_LOG")" -eq 0 ]
+    [ "$(ls "$REPO/.git/claude-peer.wait" | grep -c frame)" -eq 0 ]
+    kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  done
+}
+
+# before <file> <fixed-a> <fixed-b>: a's first line comes before b's
+before() {
+  local x y
+  x=$(grep -nF -- "$2" "$1" | sed -n '1s/:.*//p'); y=$(grep -nF -- "$3" "$1" | sed -n '1s/:.*//p')
+  [ -n "$x" ] && [ -n "$y" ] && [ "$x" -lt "$y" ]
+}
+
+@test "wake: a canned pick opens the eyes above the pane's header, which stays alone on its line" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  COLORTERM=truecolor CLAUDE_PEER_SIZE='40 120' FAKE_FZF_OUT=$'\n\nhello\thello     Hello\n' FAKE_SHELL_SLEEP=2 pane alpha
+  pane_says alpha 'Who: '
+  typeline alpha World
+  o=$BATS_TEST_TMPDIR/pane-alpha.out
+  until_ok 'grep -qx "Alpha · hello: World" "$o"'
+  grep -qF $'48;2;15;15;15' "$o"
+  before "$o" $'\033[9A' 'Alpha · hello: World'
+}
+
+@test "wake: a start from outside while fzf is open wakes the same way" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  COLORTERM=truecolor CLAUDE_PEER_SIZE='40 120' FAKE_FZF_SLEEP=30 FAKE_SHELL_SLEEP=2 pane alpha
+  until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+  CLAUDE_PEER_START_WAIT=10 run sh "$BIN" start alpha hello
+  [ "$status" -eq 0 ]
+  o=$BATS_TEST_TMPDIR/pane-alpha.out
+  until_ok 'grep -qx "Alpha · started by Lead · hello" "$o"'
+  grep -qF $'48;2;15;15;15' "$o"
+  before "$o" $'\033[9A' 'Alpha · started by Lead · hello'
+}
+
+@test "wake: not with the list, not at an unknown size, and not for a refused slot" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker list
+  COLORTERM=truecolor CLAUDE_PEER_SIZE='40 120' FAKE_SHELL_SLEEP=1 pane alpha
+  pane_says alpha "$LISTHINT"
+  typeline alpha ''
+  # the FIFO echoes no Return: the header shares the prompt's line, so wait for the session
+  until_ok 'grep -q "^args=" "$BATS_TEST_TMPDIR/pane-alpha.out"'
+  [ "$(grep -c '48;2;15;15;15' "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 0 ]
+  git config --global claude-peer.picker fzf
+  COLORTERM=truecolor FAKE_FZF_OUT=$'\n\n@fresh\tfresh     A new session, no prompt\n' FAKE_SHELL_SLEEP=1 pane beta
+  until_ok 'grep -qx "Beta" "$BATS_TEST_TMPDIR/pane-beta.out"'
+  [ "$(grep -c '48;2;15;15;15' "$BATS_TEST_TMPDIR/pane-beta.out")" -eq 0 ]
+  # one slot in the pool, held by another leader: the pick is refused and nothing wakes
+  git config --global claude-peer.slots gamma
+  hold gamma
+  rm -f "$FAKE_FZF_LOG.calls"
+  COLORTERM=truecolor CLAUDE_PEER_SIZE='40 120' FAKE_FZF_OUT=$'\n\n@fresh\tfresh     A new session, no prompt\n' pane gamma "$REPO" g2
+  until_ok 'grep -q "slots are in use" "$BATS_TEST_TMPDIR/pane-g2.out"'
+  [ "$(grep -c '48;2;15;15;15' "$BATS_TEST_TMPDIR/pane-g2.out")" -eq 0 ]
+}
+
+@test "sleeper moves: a killed pane takes its fzf, its frame files and its wait file with it" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  CLAUDE_PEER_SIZE='40 120' FAKE_FZF_SLEEP=30 pane alpha
+  pp=$LAST_PANE
+  until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+  [ -f "$REPO/.git/claude-peer.wait/alpha.$pp.frame.still" ]
+  kids=$(ps -Ao pid=,ppid= | awk -v p="$pp" '$2 == p { print $1 }')
+  [ -n "$kids" ]
+  kill "$pp"
+  until_ok '! kill -0 $pp 2>/dev/null'
+  for k in $kids; do until_ok "! kill -0 $k 2>/dev/null"; done
+  [ -z "$(ls "$REPO/.git/claude-peer.wait")" ]
+}
+
 @test "sleeper: a repository name too long for the block is cut, the label never" {
   local long=a-repository-name-of-forty-characters-x
   long=${long}y

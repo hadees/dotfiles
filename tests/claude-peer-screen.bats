@@ -76,6 +76,8 @@ setup() {
   git config --global init.defaultBranch main
   # the sleeper's own tests unset this; the others keep their bare screens
   git config --global claude-peer.art false
+  # and a figure that holds still; the tests of its movement set a limit of their own
+  git config --global claude-peer.art-seconds 0
   cat >"$BATS_TEST_TMPDIR/bin/fakeshell" <<'STUB'
 #!/bin/sh
 echo "pwd=$PWD"
@@ -771,4 +773,102 @@ below_args() { printf '%s\n' "$SCREEN" | sed -n "$((ARGS_AT + 1)),\$p"; }
   [ "$(indent_of '^ *1  fresh')" -eq 27 ] || { screen_show; false; }
   [ "$(lineno_of '^ *1  fresh')" -eq 11 ] || { screen_show; false; }
   [ "$(printf '%s\n' "$SCREEN" | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ] || { screen_show; false; }
+}
+
+# --- the sleeper moves, and wakes ----------------------------------------------------------------
+
+# art_matches <left> <row-5 text> <row-6 text> [art arguments…]: lines 1 to 9, less their
+# first left + 2 columns, are that frame of `claude-peer art`, the texts beside rows 5 and 6
+art_matches() {
+  local left=$1 t5=$2 t6=$3 art i want got; shift 3
+  art=$(art_rows alpha "$@")
+  for i in $(seq 1 9); do
+    want=$(printf '%s\n' "$art" | sed -n "${i}p")
+    [ "$i" -ne 5 ] || [ -z "$t5" ] || want="$(printf '%-27s' "$want")  $t5"
+    [ "$i" -ne 6 ] || [ -z "$t6" ] || want="$(printf '%-27s' "$want")  $t6"
+    got=$(from_col 1 $((left + 2)) | sed -n "${i}p")
+    [ "$got" = "$want" ] || { echo "art line $i"; screen_show; return 1; }
+  done
+}
+
+top9() { printf '%s\n' "$SCREEN" | sed -n 1,9p; }
+
+# fzf_kids: the children of the pane's fzf (its timer's shells)
+fzf_kids() { local f; f=$(pgrep -P "$PANE_PID" -x fzf) || { echo 'no fzf under the pane'; return 1; }; pgrep -P "$f" || true; }
+
+@test "sleeper: it moves, keeps what is typed, stops at the limit, and a key starts it again" {
+  need tmux fzf
+  git config --global --unset claude-peer.art
+  git config --global claude-peer.art-seconds 3
+  local first still
+  screen_open 80 24
+  screen_wait 'esc hide'
+  first=$(top9)
+  until_ok 'screen_grab; [ "$(top9)" != "$first" ]' || { screen_show; false; }
+  screen_type pr
+  screen_wait 'Alpha ▸ pr$'
+  screen_still 5 0.5
+  art_matches 11 '✻ Alpha · proj' 'waiting · ⏎ pick a context'
+  [ -z "$(fzf_kids)" ] || { fzf_kids; false; }
+  still=$(top9)
+  screen_type s
+  until_ok 'screen_grab; [ "$(top9)" != "$still" ]' || { screen_show; false; }
+}
+
+@test "sleeper: with art-seconds 0 it never moves" {
+  need tmux fzf
+  git config --global --unset claude-peer.art
+  screen_open 80 24
+  screen_wait 'esc hide'
+  screen_still 5 0.5
+  art_matches 11 '✻ Alpha · proj' 'waiting · ⏎ pick a context'
+  [ -z "$(fzf_kids)" ] || { fzf_kids; false; }
+}
+
+# woke <header>: the figure above the session's header is awake, drawn once
+woke() {
+  art_matches 11 '✻ Alpha · proj' '' --frame wake-2 --z none
+  local t; t=$(top9)
+  [ "$(printf '%s' "$t" | grep -c '[▬Zz]')" -eq 0 ] || { screen_show; return 1; }
+  [ -n "$(line 1)" ] || { screen_show; return 1; }
+  [[ "$SCREEN_E" == *'48;2;15;15;15'* ]] || { screen_show; return 1; }
+  [ "$(count_lines '✻')" -eq 1 ] || { screen_show; return 1; }
+  [ "$(line 10)" = "$1" ] || { screen_show; return 1; }
+  [ "$(count_lines 'esc hide')" -eq 0 ] || { screen_show; return 1; }
+  [ "$(count_lines 'A new session, no prompt')" -eq 0 ] || { screen_show; return 1; }
+}
+
+@test "wake: picking a row opens the eyes above the session line" {
+  need tmux fzf
+  git config --global --unset claude-peer.art
+  screen_open 80 24 FAKE_SHELL_SLEEP=6
+  screen_wait 'esc hide'
+  screen_keys Enter
+  screen_wait '^Alpha$'
+  screen_still
+  woke Alpha
+}
+
+@test "wake: a start from outside wakes the same way" {
+  need tmux fzf
+  git config --global --unset claude-peer.art
+  screen_open 80 24 FAKE_SHELL_SLEEP=6
+  screen_wait 'esc hide'
+  run sh "$BIN" start alpha hello
+  [ "$status" -eq 0 ]
+  screen_wait '^Alpha · started by Lead · hello$'
+  screen_still
+  woke 'Alpha · started by Lead · hello'
+}
+
+@test "wake: the list starts a session without one" {
+  need tmux
+  git config --global --unset claude-peer.art
+  git config --global claude-peer.picker list
+  screen_open 110 30 FAKE_SHELL_SLEEP=4
+  screen_wait 'q shell$'
+  screen_keys Enter
+  screen_wait '^Alpha$'
+  [ "$(printf '%s\n' "$SCREEN" | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ] || { screen_show; false; }
+  [[ "$SCREEN_E" != *'48;2;15;15;15'* ]] || { screen_show; false; }
 }
