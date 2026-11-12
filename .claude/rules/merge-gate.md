@@ -57,6 +57,7 @@ that push, and back.
 
 ## Where it does not apply
 
-The private overlays are private repositories on a plan without rulesets and
-have no workflow to require. There the rule is the habit: one pull request at
-a time, its branch containing the base, its tests green on that head.
+A private overlay may have no such gate: rulesets on a private repository
+depend on the owner's plan, and an overlay may carry no CI. There the rule is
+the habit: one pull request at a time, its branch containing the base, its
+tests green on that head.

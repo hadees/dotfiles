@@ -21,9 +21,20 @@ contexts() {
   ruleset '"\n".join(c["context"] for c in r["rules"][0]["parameters"]["required_status_checks"])'
 }
 
-# The job ids of the workflow, one per line.
-job_ids() {
-  awk '/^jobs:/ {on=1; next} on && /^  [A-Za-z0-9_-]+:$/ {sub(/^  /, ""); sub(/:$/, ""); print}' "$WORKFLOW"
+# The check names the workflow reports, one per line, sorted: `job (value)` for
+# each value of a job's own inline matrix list, else `job`.
+# ponytail: one inline `key: [a, b]` list per matrix; a second key or an
+# `include:` needs the cross product spelled out here.
+reported() {
+  awk '
+    /^jobs:/ { on = 1; next }
+    !on { next }
+    /^  [A-Za-z0-9_-]+:$/ { job = $0; sub(/^  /, "", job); sub(/:$/, "", job); seen[job] = 1; inm = 0; next }
+    /^ *matrix:$/ { inm = 1; ind = match($0, /[^ ]/); next }
+    inm && NF && match($0, /[^ ]/) <= ind { inm = 0 }
+    inm && /: \[.*\]$/ { v = $0; sub(/^[^[]*\[/, "", v); sub(/\]$/, "", v); k = split(v, a, /, */); for (i = 1; i <= k; i++) print job " (" a[i] ")"; mat[job] = 1 }
+    END { for (j in seen) if (!(j in mat)) print j }
+  ' "$WORKFLOW" | sort
 }
 
 @test "the ruleset targets the default branch, is active and has no bypass" {
@@ -40,23 +51,16 @@ job_ids() {
   [ -n "$(contexts)" ]
 }
 
-@test "every required check names a job of the workflow, and its matrix value appears there" {
-  local ctx job val
-  while IFS= read -r ctx; do
-    job="${ctx%% (*}"
-    job_ids | grep -qxF "$job" || { echo "$ctx: no job '$job' in the workflow"; false; }
-    if [ "$ctx" != "$job" ]; then
-      val="${ctx#*(}"; val="${val%)}"
-      grep -qw -- "$val" "$WORKFLOW" || { echo "$ctx: '$val' is not in the workflow"; false; }
-    fi
-  done < <(contexts)
+@test "every required check is one the workflow reports" {
+  local extra
+  extra="$(comm -23 <(contexts | sort) <(reported))"
+  [ -z "$extra" ] || { echo ".github/rulesets/main.json requires a check the workflow does not report: $extra"; false; }
 }
 
-@test "every job of the workflow is a required check" {
-  local job
-  while IFS= read -r job; do
-    contexts | sed 's/ (.*//' | grep -qxF "$job" || { echo "job '$job' is not a required check"; false; }
-  done < <(job_ids)
+@test "every check the workflow reports is required" {
+  local missing
+  missing="$(comm -13 <(contexts | sort) <(reported))"
+  [ -z "$missing" ] || { echo ".github/rulesets/main.json does not require: $missing"; false; }
 }
 
 @test "the workflow runs on every pull request, so no required check goes unreported" {
