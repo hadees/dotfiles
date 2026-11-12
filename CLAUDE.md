@@ -71,7 +71,7 @@ shadow no bash. CI's macOS job adds Homebrew's `bin` itself; elsewhere use
 `PATH="$(brew --prefix)/bin:$PATH" bats tests`. A test that fakes `HOME` and
 needs `python3` must pin the real interpreter in `setup()` before it does,
 because an asdf shim cannot resolve a version under a fake `HOME` and exits
-126 (`tests/claude-peer.bats` does not pin yet).
+126.
 
 To *run* the dotfiles rather than test them — render a machine class into a
 sandbox `$HOME`, drive the resulting zsh (prompt, wrappers, doctors) one-shot
@@ -83,7 +83,7 @@ Skill directories are dot-prefixed, so chezmoi never deploys them.
 CI (`.github/workflows/tests.yml`) runs the suite on `ubuntu-latest`,
 `macos-latest`, Rocky Linux 9 (container), and WSL Ubuntu (windows runner), plus a container
 job that runs the one-shot install end to end.
-The macOS job additionally executes `.macos` for real and asserts settings
+A separate macOS job, `test-macos-apply`, executes `.macos` for real and asserts settings
 stuck (`tests/macos-apply.bats`) — safe there because runners are throwaway
 VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 
@@ -137,6 +137,12 @@ these run in every repo on the machine:
   non-fast-forward push of a protected branch (`main` and `master` unless
   configured). `GIT_PUSH_CHECK=0` bypasses both for one push; the
   `hook.pre-push.run` chain still runs.
+- **Merge** is gated on GitHub: the `main` ruleset
+  (`.github/rulesets/main.json`) requires the six CI checks on a branch that
+  contains main's tip, so `gh pr merge` refuses a stale or red pull request
+  and `--auto` waits for it. The review a merge here needs is
+  `public-clone-advocate` on the final diff; merging main into the branch
+  does not void it, a new commit of the branch's own does.
 - **Signing** is SSH-format through 1Password and machine-local: the
   tracked `.gitconfig` never enables it. A signature that fails is nearly
   always the app locked or an approval unanswered. Unlock, approve, retry
@@ -165,7 +171,12 @@ Add `~/.extra` (from the private overlay, or hand-written) for per-machine overr
 **This repo is public and must stay identity-free.** Anything that names a
 person, an account, an organization, or a private repo lives in **private
 chezmoi overlays** — additional chezmoi configs in `~/.config/chezmoi/*.toml`,
-each pointing at its own source clone. `docs/private-overlays.md` is the
+each pointing at its own source clone. One exception: the GitHub login that
+owns this repository is public by construction (the clone URL, the install
+one-liner, the Homebrew tap and the personal profile's directory name all
+carry it), and the personal overlay is referred to by its slug under that
+login; nothing else about a person, and nothing about a work account,
+organization or repository, may appear. `docs/private-overlays.md` is the
 full manual (building an overlay, loading it, what goes where, the leak
 test, the add-an-account checklist); this section is the summary. Ownership
 follows content:
@@ -230,6 +241,7 @@ rule first.
 | --- | --- |
 | `git-hooks` | the identity, branch and push gates, the `hook.<name>.run` chain |
 | `git-identity` | signing setup, `bin/git-ssh-pinned`, credential routing |
+| `merge-gate` | the `main` ruleset, how it is applied and changed |
 | `onepassword` | the three 1Password channels, `onepassword-doctor`, the skill's `VERSIONS` |
 | `packages` | Brewfile and apt lists, the install scripts, `update()` |
 | `composed-identity-files` | ssh config fragments, `allowed_signers`, first-wins against last-wins |

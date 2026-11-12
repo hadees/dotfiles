@@ -60,8 +60,7 @@ if (( $+commands[fzf] )); then
 fi
 
 # Homebrew preferences. -gU, not -U: a bare typeset localizes (and empties)
-# path/PATH when this file is sourced from inside a function, e.g. via
-# bootstrap.sh's doIt.
+# path/PATH when this file is sourced from inside a function.
 #
 # Homebrew's bin AND sbin go first (what `brew shellenv` does). Apple's
 # path_helper only appends /opt/homebrew/bin, after /usr/bin and /bin, so
