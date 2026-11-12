@@ -610,3 +610,52 @@ EOF")"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
+
+# --- a cd moves what a later relative path is relative to ----------------------
+@test "cd: a relative path after cd into the code directory is refused" {
+  mkdir -p "$HOME/elsewhere"
+  run hook "$(evt "$HOME/elsewhere" "cd $HOME/code && cat octo-secret/x")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]]
+}
+
+@test "cd: a recursive search of . after cd is refused" {
+  mkdir -p "$HOME/elsewhere"
+  run hook "$(evt "$HOME/elsewhere" "cd $HOME/code; grep -r gizmo .")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]]
+}
+
+@test "cd: pushd is followed like cd" {
+  mkdir -p "$HOME/elsewhere"
+  run hook "$(evt "$HOME/elsewhere" "pushd $HOME/code >/dev/null && wc -l octo-secret/x")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]]
+}
+
+@test "cd: a relative cd target is joined to the directory it starts from" {
+  run hook "$(evt "$HOME/code/octo-alpha" "cd .. && cat octo-secret/x")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]]
+}
+
+@test "cd controls: a subshell's cd still leaves its directory in play" {
+  mkdir -p "$HOME/elsewhere"
+  run hook "$(evt "$HOME/code" "(cd $HOME/elsewhere && ls); cat octo-secret/x")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]]
+}
+
+@test "cd controls: a cd to a harmless directory stays silent" {
+  mkdir -p "$HOME/elsewhere"
+  run hook "$(evt "$HOME/elsewhere" "cd $HOME/code/octo-alpha && cat README")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || { echo "refused: $output"; false; }
+}
+
+@test "cd controls: cd - and a cd to a variable add no directory" {
+  mkdir -p "$HOME/elsewhere"
+  run hook "$(evt "$HOME/elsewhere" 'cd - && cd $WORK && ls')"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || { echo "refused: $output"; false; }
+}

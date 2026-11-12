@@ -109,6 +109,7 @@ import time
 
 HOME = os.environ.get("HOME", "")
 GLOB_CHARS = set("*?[")
+MAX_BASES = 8  # directories one command line is followed through (scan)
 # A command word that is recursive by nature — no flag needed.
 DEFAULT_RECURSIVE = {
     "find", "fd", "rg", "ag", "ack", "du", "tree", "tar", "zip", "rsync",
@@ -466,6 +467,24 @@ def token_variants(raw_tok):
     return out
 
 
+def cd_targets(words, command_word, bases):
+    """The absolute directories a `cd`/`pushd` simple command can leave the
+    shell in, one per entry of `bases` for a relative target (none for a
+    target unknown at scan time: `$...`, a backtick, or `-`). With no target
+    word, home."""
+    if command_word not in ("cd", "pushd"):
+        return []
+    target = next((w for w in words[1:] if w == "-" or not w.startswith("-")), None)
+    if target == "-" or (target and ("$" in target or "`" in target)):
+        return []
+    target = substitute_home(target) if target else HOME
+    if not target:
+        return []
+    if target.startswith("/"):
+        return [os.path.normpath(target)]
+    return [os.path.normpath(os.path.join(b, target)) for b in bases]
+
+
 def glob_reach(cand, prefix):
     """How an absolute glob-bearing `cand` can reach the denied `prefix`:
     "inside" (it can name the tree or something in it), "ancestor" (only a
@@ -492,12 +511,18 @@ def scan(text, cwd, rules):
     """First rule this text trips, as (fragment, rule, reason) — or None.
     A recursion signal only counts within the SAME simple command as the
     candidate token (`segments_of`); a data heredoc body never counts as
-    one, so an ancestor guess never fires there — only a direct hit does."""
+    one, so an ancestor guess never fires there — only a direct hit does.
+    `bases` are the directories a relative token may be relative to: the
+    cwd, then every directory a `cd`/`pushd` earlier in the text could have
+    left the shell in. It only grows (capped at MAX_BASES) — a subshell's
+    `cd` is not undone, the strict reading."""
+    bases = [cwd]
     for words, command_word, _is_heredoc, is_data in segments_of(text):
         recursive = False if is_data else recursion_signal(words, command_word)
         for raw_tok in words:
             for tok, cand, has_glob in [
-                c for v in token_variants(raw_tok) for c in candidate_of_token(v, cwd)
+                c for v in token_variants(raw_tok) for b in bases
+                for c in candidate_of_token(v, b)
             ]:
                 if has_glob:
                     for rule in rules:
@@ -535,6 +560,9 @@ def scan(text, cwd, rules):
                         "name the file under it directly, or drop the "
                         "recursive flag" % (tok, rule.raw, command_word)
                     )
+        for d in cd_targets(words, command_word, bases):
+            if d not in bases and len(bases) < MAX_BASES:
+                bases.append(d)
     return None
 
 

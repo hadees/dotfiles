@@ -29,7 +29,8 @@ coverage to every command that names a denied path in its literal text
 `-exec` argument, a heredoc body — the whole command string is scanned), to
 a glob that could expand into a denied tree, to a path attached to an
 option (`--opt=PATH`, `key=PATH` as `dd` writes it, `@PATH` as `curl` does),
-to a relative path or `cd` target resolved against the hook's cwd, to a symlink whose target is
+to a relative path resolved against the hook's cwd and against every directory a `cd` or
+`pushd` earlier in the command line could have left the shell in, to a symlink whose target is
 denied, and to a session whose cwd already is one. `denyguard check
 --profile DIR PATH...` exposes the same boundary test for anything else
 that needs it (a working-set opener, for one), and `denyguard settings`
@@ -83,8 +84,21 @@ the scan stopped at the marker: whatever followed `<<` on that line went
 unread, here-strings and shifts included, which let `cat <<EOF > <denied
 path>` through — the most common way an agent writes a file.
 
+**A `cd` becomes a further base for what follows.** `scan` keeps `bases`,
+starting as `[cwd]`; a `cd` or `pushd` simple command adds its target
+(`cd_targets`: absolute as written, else joined to each base already
+listed, `~` or no argument being home), and every later token is resolved
+against every base, so `cd ~/code && cat octo-secret/x` from elsewhere
+refuses. The list only grows, capped at 8: a subshell's `cd` is not undone
+at its closing parenthesis, because modelling that could resolve a later
+token against the wrong directory, and keeping every directory the line
+ever stood in is the strict reading. A target containing `$` or a backtick,
+and `cd -`, add nothing.
+
 **What it cannot see.** This is a lexical guard, not a sandbox: a shell
-variable other than `$HOME`, `$(...)` output, a script file's own
+variable other than `$HOME` (so a `cd` to one, too), `$(...)` output
+(likewise a `cd` to a command substitution), a per-command directory flag
+such as `-C <dir>`, a script file's own
 contents, `find <parent> -exec` without a recursive tell, `eval`, base64,
 or any program that computes the path at run time all pass through unseen.
 Heredoc reading has two soft spots of its own: a `<<WORD` inside a quoted
