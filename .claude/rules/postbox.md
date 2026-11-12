@@ -115,9 +115,13 @@ senders selectively, so nothing but a Claude Code session can usefully
 speak it. So `postbox courier` (a `PostToolUse` hook on the two sending
 tools) makes the courier a Claude Code session: for each recipient that is
 a live *idle* session, in whatever profile, it starts a detached headless
-`claude -p` in that profile (`--strict-mcp-config`, `--allowedTools
-SendMessage`, a small model) whose one job is a native `SendMessage` saying
-"you have mail". Busy and waiting sessions are left to their own Stop hook.
+`claude -p` in that profile (`--strict-mcp-config`, `--tools SendMessage`
+and `--allowedTools SendMessage`, a small model) whose one job is a native
+`SendMessage` saying "you have mail". The relay's prompt names who and where
+(recipient, sender, project key), never what: no subject, because a subject is
+text the sending agent wrote and the relay turns it into a prompt in another
+profile. `--tools` restricts the relay to that one built-in tool;
+`--allowedTools` alone only pre-approves it. Busy and waiting sessions are left to their own Stop hook.
 `postbox.courier false` switches it off; `postbox.courier.model` and
 `.mode` pick the relay's model and permission mode, which should match the
 one your sessions run in, since a peer message from a different mode is

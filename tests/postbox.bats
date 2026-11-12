@@ -906,13 +906,14 @@ SEND='{"tool_name":"mcp__postbox__send_message","tool_input":{"to":["GreenCastle
   [ -z "$output" ]
   wait_relays 1
   # Run as the recipient's profile, headless, MCP excluded, only SendMessage allowed.
-  grep -q "^$HOME/.claude-other	-p --output-format text --max-turns 3 --model haiku --permission-mode auto --strict-mcp-config --allowedTools SendMessage$" "$CLAUDE_LOG"
-  # Told to message that session, about this mail, as delivered (the
-  # response's subject, not the request's).
+  grep -q "^$HOME/.claude-other	-p --output-format text --max-turns 3 --model haiku --permission-mode auto --strict-mcp-config --tools SendMessage --allowedTools SendMessage$" "$CLAUDE_LOG"
+  # Told to message that session about who sent mail to whom, never what the
+  # sender wrote: neither the response's subject nor the request's.
   grep -q 'SendMessage tool (not any MCP tool) exactly once: to="other-project-x9"' "$CLAUDE_LOG.stdin"
-  grep -q "new mail for GreenCastle from RedStone — 'please review the plan'" "$CLAUDE_LOG.stdin"
+  grep -q "new mail for GreenCastle from RedStone\\." "$CLAUDE_LOG.stdin"
   grep -q "fetch_inbox as GreenCastle in project $HOME/code" "$CLAUDE_LOG.stdin"
-  ! grep -q 'asked subject' "$CLAUDE_LOG.stdin" || { echo "the relay prompt carries the subject"; false; }
+  ! grep -q 'please review the plan' "$CLAUDE_LOG.stdin" || { echo "the relay prompt carries the delivered subject"; false; }
+  ! grep -q 'asked subject' "$CLAUDE_LOG.stdin" || { echo "the relay prompt carries the requested subject"; false; }
   grep -q 'courier: RedStone -> GreenCastle (other-project-x9) via' "$POSTBOX_STATE/logs/courier.log"
 }
 
@@ -958,7 +959,8 @@ SEND='{"tool_name":"mcp__postbox__send_message","tool_input":{"to":["GreenCastle
   grep -q 'to="other-a"' "$CLAUDE_LOG.stdin"
   grep -q 'to="third-b"' "$CLAUDE_LOG.stdin"
   ! grep -q 'to="me"' "$CLAUDE_LOG.stdin" || { echo "the relay prompt addresses to=\"me\""; false; }
-  grep -q "new mail for BlueLake from RedStone — 'all hands'" "$CLAUDE_LOG.stdin"
+  grep -q "new mail for BlueLake from RedStone\\." "$CLAUDE_LOG.stdin"
+  ! grep -q 'all hands' "$CLAUDE_LOG.stdin" || { echo "the relay prompt carries the subject"; false; }
 }
 
 @test "courier: a reply wakes whoever the server actually delivered to" {
@@ -970,7 +972,7 @@ SEND='{"tool_name":"mcp__postbox__send_message","tool_input":{"to":["GreenCastle
   run payload '{"cwd":"'"$WORK"'","tool_name":"mcp__postbox__reply_message","tool_input":{"message_id":9,"body_md":"ok"},"tool_response":{"deliveries":[{"payload":{"id":10,"to":["GreenCastle"],"subject":"Re: the plan"}}]}}' courier
   wait_relays 1
   grep -q 'to="other-a"' "$CLAUDE_LOG.stdin"
-  grep -q "'Re: the plan'" "$CLAUDE_LOG.stdin"
+  ! grep -q 'Re: the plan' "$CLAUDE_LOG.stdin" || { echo "the relay prompt carries the reply's subject"; false; }
 }
 
 @test "courier: no live session for the recipient, another tool, or the courier switched off — nothing runs" {

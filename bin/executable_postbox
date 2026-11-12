@@ -972,11 +972,12 @@ REG
   done
 }
 
-relay() { # profile-dir session-name recipient sender subject
-  r_dir=$1 r_session=$2 r_to=$3 r_from=$4 r_subject=$5
-  r_msg="postbox: new mail for $r_to from $r_from"
-  [ -n "$r_subject" ] && r_msg="$r_msg — '$r_subject'"
-  r_msg="$r_msg. Use fetch_inbox as $r_to in project $(project), act or reply as the message warrants, then mark_message_read."
+relay() { # profile-dir session-name recipient sender
+  r_dir=$1 r_session=$2 r_to=$3 r_from=$4
+  # Who and where, never what: the names come from the server's closed
+  # vocabulary, but a subject is whatever the sending agent wrote, and this
+  # text becomes a prompt in the recipient's profile.
+  r_msg="postbox: new mail for $r_to from $r_from. Use fetch_inbox as $r_to in project $(project), act or reply as the message warrants, then mark_message_read."
   r_prompt="Use the built-in SendMessage tool (not any MCP tool) exactly once: to=\"$r_session\", message=\"$r_msg\". Then stop. Do nothing else."
   mkdir -p "$STATE/logs" 2>/dev/null
   printf '%s courier: %s -> %s (%s) via %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$r_from" "$r_to" "$r_session" "$r_dir" >> "$STATE/logs/courier.log" 2>/dev/null
@@ -985,7 +986,7 @@ relay() { # profile-dir session-name recipient sender subject
   ( cd "$STATE" 2>/dev/null || cd /
     printf '%s' "$r_prompt" | as_profile "$r_dir" nohup claude -p --output-format text --max-turns 3 \
       --model "$(courier_model)" --permission-mode "$(courier_mode)" --strict-mcp-config \
-      --allowedTools SendMessage >> "$STATE/logs/courier.log" 2>&1 &
+      --tools SendMessage --allowedTools SendMessage >> "$STATE/logs/courier.log" 2>&1 &
   ) </dev/null >/dev/null 2>&1
 }
 
@@ -1001,7 +1002,7 @@ cmd_courier() {
   esac
   cwd=$(json_field cwd); [ -n "$cwd" ] && [ -d "$cwd" ] || cwd=$PWD
   sender=$(name_of "$cwd" 2>/dev/null) || exit 0
-  # Recipients and subject as actually delivered (the tool's response), else
+  # Recipients as actually delivered (the tool's response), else
   # as asked (a reply's `to` defaults to the original sender server-side).
   info=$(printf '%s' "$PAYLOAD" | python3 -c '
 import json, sys
@@ -1018,7 +1019,7 @@ if isinstance(resp, list):
     txt = "".join(x.get("text", "") for x in resp if isinstance(x, dict) and x.get("type") == "text")
     try: resp = json.loads(txt)
     except Exception: resp = None
-names, subject = [], ""
+names = []
 payloads = []
 if isinstance(resp, dict):
     for dlv in resp.get("deliveries") or []:
@@ -1034,16 +1035,11 @@ for p in src:
         for n in v:
             n = str(n).strip()
             if n and n not in names: names.append(n)
-    if not subject and isinstance(p.get("subject"), str):
-        subject = p["subject"]
-subject = subject.replace("\n", " ").replace("\"", "").replace("\x27", "").strip()[:120]
-print("\n".join(names))
-print("SUBJECT\t" + subject)' 2>/dev/null)
+print("\n".join(names))' 2>/dev/null)
   [ -n "$info" ] || exit 0
-  subject=$(printf '%s\n' "$info" | awk -F'\t' '$1 == "SUBJECT" { print $2; exit }')
   sessions=$(all_sessions)
   [ -n "$sessions" ] || exit 0
-  printf '%s\n' "$info" | grep -v '^SUBJECT	' | while IFS= read -r to; do
+  printf '%s\n' "$info" | while IFS= read -r to; do
     [ -n "$to" ] && [ "$to" != "$sender" ] || continue
     printf '%s\n' "$sessions" | while IFS="$(printf '\t')" read -r sdir spid sname sstatus scwd; do
       [ -n "$scwd" ] || continue
@@ -1051,7 +1047,7 @@ print("SUBJECT\t" + subject)' 2>/dev/null)
       case $sstatus in idle|shell|-) ;; *) continue ;; esac
       n=$(name_of "$scwd" 2>/dev/null) || continue
       [ "$n" = "$to" ] || continue
-      relay "$sdir" "$sname" "$to" "$sender" "$subject"
+      relay "$sdir" "$sname" "$to" "$sender"
     done
   done
   exit 0
