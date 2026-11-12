@@ -60,9 +60,6 @@ jobs:
         run: sh .github/install-fzf.sh --check
       - name: Run tests
         run: NODE_TESTS_REQUIRED=1 SCREEN_TESTS_REQUIRE='tmux fzf' bats tests
-      - name: 'Trial: serial against --jobs'
-        timeout-minutes: 150
-        run: NODE_TESTS_REQUIRED=1 SCREEN_TESTS_REQUIRE='tmux fzf' sh .github/bats-parallel-trial.sh
 
   # .macos applied for real and read back (tests/macos-apply.bats). Its own job
   # so its ~5 minutes run beside the suite instead of after it on the macOS job.
@@ -159,11 +156,6 @@ jobs:
         env:
           LANG: C.UTF-8
         run: SCREEN_TESTS_REQUIRE='tmux fzf' bats tests
-      - name: 'Trial: serial against --jobs'
-        timeout-minutes: 150
-        env:
-          LANG: C.UTF-8
-        run: SCREEN_TESTS_REQUIRE='tmux fzf' sh .github/bats-parallel-trial.sh
 
   test-wsl:
     runs-on: windows-2025
@@ -181,7 +173,12 @@ jobs:
       - uses: Vampire/setup-wsl@v5
         with:
           distribution: Ubuntu-24.04
-          additional-packages: bats zsh rsync curl tmux parallel
+          additional-packages: zsh rsync curl tmux parallel
+      - name: Install Bats from source
+        run: |
+          git clone --depth 1 --branch v1.14.0 https://github.com/bats-core/bats-core.git /tmp/bats-core
+          /tmp/bats-core/install.sh /usr/local
+          bats --version
       - name: Install chezmoi
         run: sh -c "$(curl -fsLS get.chezmoi.io)" -- -b /usr/local/bin
       - name: Install the pinned fzf
@@ -194,5 +191,5 @@ jobs:
         # WSL is intended (NODE_TESTS_REQUIRED stays unset).
         run: SCREEN_TESTS_REQUIRE='tmux fzf' bats tests
       - name: 'Trial: serial against --jobs'
-        timeout-minutes: 150
+        timeout-minutes: 100
         run: SCREEN_TESTS_REQUIRE='tmux fzf' sh .github/bats-parallel-trial.sh
