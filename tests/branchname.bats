@@ -157,7 +157,11 @@ record() { printf '%s' "$2" >"$1/claude-peer.base"; }
 
 @test "only the renderers and the gate mention branchname" {
   allowed=" bin/executable_branchname bin/executable_claude-peer dot_zsh_prompt dot_git-hooks/executable_pre-commit dot_functions "
+  # A container checkout is owned by another uid ("dubious ownership"); a
+  # git error must fail here, not pass as a list of "files".
+  git config --global safe.directory '*'
   run git -C "$ROOT" grep -lw branchname -- bin dot_git-hooks dot_local dot_functions dot_zsh_prompt
+  [ "$status" -eq 0 ]
   for f in $output; do
     [[ "$allowed" == *" $f "* ]] || { echo "unexpected: $f"; return 1; }
   done
