@@ -83,7 +83,7 @@ follows `hermes.worktree` and is not forced, and a refusal (profile mapped but
 not created, retired launcher pin) is the wrapper's own. With
 `CLAUDE_PEER_HERMES_WAIT=1` (exported by `claude-peer hermes --wait`) a routed
 directory first waits: on a terminal under Hermes's caduceus (`claude-peer art
---hermes --wait`, `claude-peer.md` has it), else, or when that has no figure to
+--hermes --wait`, `claude-peer-caduceus.md` has it), else, or when that has no figure to
 draw, it loops `Hermes (<profile>): Return starts hermes here, q leaves
 a shell`: Return runs `hermes`, `q` returns, anything else asks again; an
 unrouted directory prints its one line without asking, and a `hermes_peer`
