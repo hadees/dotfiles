@@ -2801,3 +2801,126 @@ STUB
   until_ok 'grep -q "^pwd=$OV2/.claude/worktrees/overlay profile=unset\$" "$FAKE_SHELL_LOG"'
   grep -q "^Fake-b: Return" "$BATS_TEST_TMPDIR/pane-one.out"
 }
+
+# ov_prefs: the stubs, a chezmoi stub and a fixture store with iTerm2 quit
+ov_prefs() {
+  stubs
+  overlay_stub
+  mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
+  export CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist"
+  OV_STATE="$XDG_STATE_HOME/claude-peer/overlays"
+}
+
+@test "install overlays: with none configured it is today's install, and no state file exists" {
+  ov_prefs
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [ "$output" = "claude-peer: \"Claude Peers\" written and \"Claude Peers + Hermes\" written in $CLAUDE_PEER_PREFS; start iTerm2, then Shell > Workgroups > Claude Peers in a plain tab" ]
+  [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup', 'claudePeer.h']" ]
+  [ ! -e "$OV_STATE" ]
+  [ ! -e "$BATS_TEST_TMPDIR/chezmoi.log" ]
+}
+
+@test "install overlays: two overlays add the pair, one pane each after the others, and a state file" {
+  ov_prefs
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg fake2.toml "$OV2"
+  overlay_cfg fake1.toml "$OV1"
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"Claude Peers + Overlays" written and "Claude Peers + Hermes + Overlays" written in '* ]]
+  g=$(groups "$CLAUDE_PEER_PREFS")
+  [ "$(pyget "$g" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup', 'claudePeer.h', 'claudePeer.v.overlays', 'claudePeer.v.overlays.h']" ]
+  o=$(pyget "$g" 'json.dumps(g[3])'); oh=$(pyget "$g" 'json.dumps(g[4])'); h=$(pyget "$g" 'json.dumps(g[2])')
+  [ "$(pyget "$o" 'g["name"]')" = "Claude Peers + Overlays" ]
+  [ "$(pyget "$oh" 'g["name"]')" = "Claude Peers + Hermes + Overlays" ]
+  [ "$(pyget "$o" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Fake1', 'Fake2']" ]
+  [ "$(pyget "$oh" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Hermes', 'Fake1', 'Fake2']" ]
+  [ "$(pyget "$o" 'all(s["uniqueIdentifier"].startswith(g["uniqueIdentifier"] + ".") for s in g["sessions"])')" = True ]
+  [ "$(pyget "$oh" 'all(s["uniqueIdentifier"].startswith(g["uniqueIdentifier"] + ".") for s in g["sessions"])')" = True ]
+  [ "$(pyget "$o" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.v.overlays.main'}" ]
+  [ "$(pyget "$oh" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.v.overlays.h.main'}" ]
+  [ "$(pyget "$oh" '[s["uniqueIdentifier"] for s in g["sessions"]][4:]')" = "['claudePeer.v.overlays.h.hermes', 'claudePeer.v.overlays.h.o.fake1', 'claudePeer.v.overlays.h.o.fake2']" ]
+  [ "$(pyget "$oh" '[s["command"] for s in g["sessions"]][:5]')" = "$(pyget "$h" '[s["command"] for s in g["sessions"]]')" ]
+  [ "$(pyget "$o" '[s["command"] for s in g["sessions"]][4:]')" = "['claude-peer overlay fake1', 'claude-peer overlay fake2']" ]
+  [ "$(pyget "$oh" '[s["command"] for s in g["sessions"]][5:]')" = "['claude-peer overlay fake1', 'claude-peer overlay fake2']" ]
+  [ "$(pyget "$o" 'set(s["kind"]["kind"] for s in g["sessions"][1:])')" = "{'peer'}" ]
+  [ "$(pyget "$o" 'g["sessions"][-1]["toolbarItems"]')" = "[{'kind': 'modeSwitcher'}]" ]
+  [ "$(cat "$OV_STATE")" = "fake1 fake2" ]
+  # a second install replaces the pair
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"Claude Peers + Overlays" replaced and "Claude Peers + Hermes + Overlays" replaced'* ]]
+  [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" 'len(g)')" = 5 ]
+  # the plain definitions are what they were
+  run sh "$BIN" workgroup
+  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma']" ]
+}
+
+@test "install overlays: a smaller set rebuilds the pair, none removes it and the state file" {
+  ov_prefs
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg fake1.toml "$OV1"
+  overlay_cfg fake2.toml "$OV2"
+  sh "$BIN" install >/dev/null
+  rm "$HOME/.config/chezmoi/fake1.toml"
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"Claude Peers + Overlays" replaced'* ]]
+  g=$(groups "$CLAUDE_PEER_PREFS")
+  [ "$(pyget "$g" '[s["displayName"] for s in g[3]["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Fake2']" ]
+  [ "$(cat "$OV_STATE")" = fake2 ]
+  rm "$HOME/.config/chezmoi/fake2.toml"
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"Claude Peers + Overlays" removed and "Claude Peers + Hermes + Overlays" removed'* ]]
+  [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup', 'claudePeer.h']" ]
+  [ ! -e "$OV_STATE" ]
+}
+
+@test "install overlays: with the enter file the pair gets its triggers, and loses them with the overlays" {
+  ov_prefs
+  addprofiles "$CLAUDE_PEER_PREFS"
+  OV1=$(overlay_repo ov1)
+  sh "$BIN" install >/dev/null
+  sh "$BIN" default peers >/dev/null
+  before=$(params "$CLAUDE_PEER_PREFS")
+  overlay_cfg fake1.toml "$OV1"
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"variable triggers changed in 2 profiles"* ]]
+  [ "$(params "$CLAUDE_PEER_PREFS")" = "One:builtin.claudeCode:j* One:claudePeer.workgroup:v One:claudePeer.h:v One:claudePeer.v.overlays:v One:claudePeer.v.overlays.h:v Two:builtin.claudeCode:j* Two:claudePeer.workgroup:v Two:claudePeer.h:v Two:claudePeer.v.overlays:v Two:claudePeer.v.overlays.h:v Other:someone.else:j" ]
+  python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
+import plistlib, sys
+pl = plistlib.load(open(sys.argv[1], "rb"))
+rx = {t["parameter"]: t["eventParams"]["variableValueRegex"] for t in pl["New Bookmarks"][0]["Triggers"] if "eventParams" in t}
+assert rx["claudePeer.v.overlays"] == "^overlays:", rx
+assert rx["claudePeer.v.overlays.h"] == "^overlays/hermes:", rx
+PY
+  rm "$HOME/.config/chezmoi/fake1.toml"
+  run sh "$BIN" install
+  [[ "$output" == *"variable triggers changed in 2 profiles"* ]]
+  [ "$(params "$CLAUDE_PEER_PREFS")" = "$before" ]
+}
+
+@test "install overlays: a store that cannot be written leaves no state file" {
+  ov_prefs
+  mkprefs "$CLAUDE_PEER_PREFS" junk
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  run sh "$BIN" install
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"not a JSON list"* ]]
+  [ ! -e "$OV_STATE" ]
+}
+
+@test "install overlays: a skipped config reaches the operator's stderr and gets no pane" {
+  ov_prefs
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  overlay_cfg fake2.toml "$BATS_TEST_TMPDIR/nowhere"
+  run --separate-stderr sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [[ "$stderr" == *"overlay config fake2.toml: chezmoi names no source directory; skipped"* ]]
+  [ "$(cat "$OV_STATE")" = fake1 ]
+}

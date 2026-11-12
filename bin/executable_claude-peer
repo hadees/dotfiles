@@ -126,7 +126,11 @@
 #                            (Lead, Alpha, Beta, Gamma) that install would write
 #   install                  write that and "Claude Peers + Hermes" (the same
 #                            plus a Hermes pane) into iTerm2's preferences;
-#                            iTerm2 must be quit
+#                            iTerm2 must be quit. With private overlays on this
+#                            machine, also "Claude Peers + Overlays" and
+#                            "Claude Peers + Hermes + Overlays" (one pane per
+#                            overlay, after the others) and the overlays state
+#                            file; with none, it removes both
 #   here                     the key claude() sends to choose the workgroup for
 #                            this directory (base)
 #   default <peers|builtin>  peers: disable the claude job trigger in every
@@ -1782,7 +1786,7 @@ prefs_store() {
   skind=folder; spath=${f%/}/com.googlecode.iterm2.plist
 }
 
-# peer_py <workgroup|install|status|default> <folder|domain> <plist path> [peers|builtin]
+# peer_py <workgroup|install|status|default> <folder|domain> <plist path> [peers|builtin [overlay names]]
 # The stdlib only: plistlib for the store, json for the Workgroups value (an
 # NSData holding a JSON array), defaults for the domain.
 peer_py() {
@@ -1850,6 +1854,31 @@ def build():
     """[Claude Peers, Claude Peers + Hermes]"""
     base = {"uniqueIdentifier": GROUP, "name": NAME, "sessions": build_base("claudePeer")}
     return [base, with_hermes(base)]
+
+OGROUP, OHGROUP = "claudePeer.v.overlays", "claudePeer.v.overlays.h"
+
+def with_overlays(group, gid, name, ovs):
+    """A copy of a definition under id gid and name, every session id moved under
+    gid, and one pane per overlay name appended after the others."""
+    old = next(s for s in group["sessions"] if s["kind"] == {"kind": "root"})["uniqueIdentifier"][:-len(".main")]
+    out = copy.deepcopy(group)
+    out.update(uniqueIdentifier=gid, name=name)
+    for s in out["sessions"]:
+        s["uniqueIdentifier"] = gid + s["uniqueIdentifier"][len(old):]
+        if "parentID" in s:
+            s["parentID"] = gid + s["parentID"][len(old):]
+    out["sessions"] += [session("%s.o.%s" % (gid, o), o.capitalize(), "peer", "claude-peer overlay " + o,
+                                parent=gid + ".main") for o in ovs]
+    return out
+
+def build_overlays(ovs):
+    """[] for no overlays, else [Claude Peers + Overlays, Claude Peers + Hermes + Overlays];
+    Hermes keeps its place, so the second is built from the Hermes twin."""
+    if not ovs:
+        return []
+    base, hermes_twin = build()
+    return [with_overlays(base, OGROUP, "Claude Peers + Overlays", ovs),
+            with_overlays(hermes_twin, OHGROUP, "Claude Peers + Hermes + Overlays", ovs)]
 
 VAR = "user.claudePeerEnter"
 VAR_ENTER = 115  # iTermTriggerMatchTypeEventVariableChanged
@@ -1979,13 +2008,18 @@ elif mode == "install":
     except (ValueError, TypeError) as e:
         fail("the Workgroups value is not a JSON list (%s); nothing written" % e)
     done = []
-    for wg in build():
+    ovs = sys.argv[5].split() if len(sys.argv) > 5 else []
+    for wg in build() + build_overlays(ovs):
         idx = next((i for i, g in enumerate(groups) if g.get("uniqueIdentifier") == wg["uniqueIdentifier"]), None)
         if idx is None:
             groups.append(wg)
         else:
             groups[idx] = wg
         done.append('"%s" %s' % (wg["name"], "written" if idx is None else "replaced"))
+    if not ovs:  # no overlay on this machine: a pair installed earlier goes
+        for g in [g for g in groups if g.get("uniqueIdentifier") in (OGROUP, OHGROUP)]:
+            groups.remove(g)
+            done.append('"%s" removed' % g.get("name"))
     pl["Workgroups"] = json.dumps(groups, separators=(",", ":")).encode("utf-8")
     if len(sys.argv) > 4 and sys.argv[4] == "peers":
         n = len(sync_var_triggers(pl, groups))
@@ -2045,7 +2079,15 @@ cmd_install() {
   need_macos install
   proc_running iTerm2 && die "quit iTerm2 first — it rewrites its preferences at quit and would overwrite this"
   prefs_store
-  r=$(peer_py install "$skind" "$spath" "$(enter_state)") || exit 1
+  ovs=$(overlay_names)
+  r=$(peer_py install "$skind" "$spath" "$(enter_state)" "$ovs") || exit 1
+  # after peer_py succeeded: `here` answers overlays only for a definition that is there
+  ovf=$(overlays_file)
+  if [ -n "$ovs" ]; then
+    mkdir -p "${ovf%/*}" && printf '%s\n' "$ovs" >"$ovf" || die "cannot write $ovf"
+  else
+    rm -f "$ovf"
+  fi
   [ "$skind" = folder ] && where=$spath || where="the com.googlecode.iterm2 domain"
   printf 'claude-peer: %s in %s; start iTerm2, then Shell > Workgroups > Claude Peers in a plain tab\n' "$r" "$where"
 }
