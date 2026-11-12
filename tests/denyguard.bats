@@ -659,3 +659,46 @@ EOF")"
   [ "$status" -eq 0 ]
   [ -z "$output" ] || { echo "refused: $output"; false; }
 }
+
+# --- past the limit on directories followed, denyguard refuses -----------------
+@test "cd: a hit is found behind three relative cds of padding" {
+  mkdir -p "$HOME/elsewhere"
+  run hook "$(evt "$HOME/elsewhere" "cd p1; cd p2; cd p3; cd $HOME/code; cat octo-secret/x")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]]
+  [[ "$output" == *"is inside Read(~/code/octo-secret/**)"* ]]
+}
+
+@test "cd: a seventh relative cd is refused with the limit as the reason and the log column" {
+  mkdir -p "$HOME/elsewhere"
+  run hook "$(evt "$HOME/elsewhere" "cd q1; cd q2; cd q3; cd q4; cd q5; cd q6; cd q7; ls")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]]
+  [[ "$output" == *"limit 64"* ]]
+  [ "$(tail -n 1 "$DENYGUARD_LOG" | cut -f3)" = "(cd limit)" ]
+}
+
+@test "cd controls: six relative cds are followed in full and stay silent" {
+  mkdir -p "$HOME/elsewhere"
+  run hook "$(evt "$HOME/elsewhere" "cd q1; cd q2; cd q3; cd q4; cd q5; cd q6; ls")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || { echo "refused: $output"; false; }
+}
+
+@test "cd controls: seven relative cds with no deny rules are not refused" {
+  mkdir -p "$HOME/elsewhere"
+  fixture_rules '[]'
+  run hook "$(evt "$HOME/elsewhere" "cd q1; cd q2; cd q3; cd q4; cd q5; cd q6; cd q7; ls")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || { echo "refused: $output"; false; }
+}
+
+@test "cd controls: the same directory twenty times is counted once" {
+  mkdir -p "$HOME/elsewhere"
+  cmd=""
+  for _ in {1..20}; do cmd+="cd $HOME/elsewhere; "; done
+  cmd+="ls"
+  run hook "$(evt "$HOME/elsewhere" "$cmd")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || { echo "refused: $output"; false; }
+}

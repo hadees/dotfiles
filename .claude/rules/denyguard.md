@@ -89,11 +89,21 @@ starting as `[cwd]`; a `cd` or `pushd` simple command adds its target
 (`cd_targets`: absolute as written, else joined to each base already
 listed, `~` or no argument being home), and every later token is resolved
 against every base, so `cd ~/code && cat octo-secret/x` from elsewhere
-refuses. The list only grows, capped at 8: a subshell's `cd` is not undone
-at its closing parenthesis, because modelling that could resolve a later
-token against the wrong directory, and keeping every directory the line
-ever stood in is the strict reading. A target containing `$` or a backtick,
-and `cd -`, add nothing.
+refuses. The list only grows: a subshell's `cd` is not undone at its
+closing parenthesis, because modelling that could resolve a later token
+against the wrong directory, and keeping every directory the line ever
+stood in is the strict reading. A target containing `$` or a backtick, and
+`cd -`, add nothing. A relative `cd` is joined to every base already
+listed, so the list doubles at each one (after `cd a; cd b` a shell is in
+`a/b`, after `(cd a); cd b` in `b`, and the scan cannot tell which), and
+`MAX_BASES = 64` holds six descending relative `cd`s; sibling hops
+(`cd ../b`) collapse when normalised, an absolute target adds one, and a
+directory already listed is counted once. A command line that would take
+the list past 64 is refused, not followed part of the way: the denial
+reads "changes directory in more ways than denyguard follows (limit 64)"
+and its log line has `(cd limit)` in the rule column, which makes the
+limit countable. A profile with no deny rules is never refused for it.
+Every resolved path is judged once, however many bases produce it.
 
 **What it cannot see.** This is a lexical guard, not a sandbox: a shell
 variable other than `$HOME` (so a `cd` to one, too), `$(...)` output
@@ -138,6 +148,9 @@ object, and any internal error: exit 2, which blocks the tool call
 outright (hooks reference §3 — exit 2 blocks unconditionally, with or
 without JSON on stdout). An ABSENT `permissions.deny` reads as zero rules
 and allows — that is the correct reading of an empty list, not a failure.
+A command line that changes directory in more ways than the scan follows
+(`MAX_BASES`, above) is refused too, as an ordinary JSON deny: the scan
+knows it has stopped looking, and silence there would be the same lie.
 The one way this still fails open is documented by Claude Code itself and
 cannot be fixed from here: a hook that TIMES OUT does not block ("don't
 count on a stalled hook to act as a gate" — hooks reference §4). So the

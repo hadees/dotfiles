@@ -109,7 +109,10 @@ import time
 
 HOME = os.environ.get("HOME", "")
 GLOB_CHARS = set("*?[")
-MAX_BASES = 8  # directories one command line is followed through (scan)
+# Directories one command line is followed through (scan). A relative `cd`
+# is joined to every directory already listed, so the list doubles at each
+# one: 64 holds six descending relative `cd`s. Past it scan refuses.
+MAX_BASES = 64
 # A command word that is recursive by nature — no flag needed.
 DEFAULT_RECURSIVE = {
     "find", "fd", "rg", "ag", "ack", "du", "tree", "tar", "zip", "rsync",
@@ -514,16 +517,24 @@ def scan(text, cwd, rules):
     one, so an ancestor guess never fires there — only a direct hit does.
     `bases` are the directories a relative token may be relative to: the
     cwd, then every directory a `cd`/`pushd` earlier in the text could have
-    left the shell in. It only grows (capped at MAX_BASES) — a subshell's
-    `cd` is not undone, the strict reading."""
+    left the shell in. It only grows — a subshell's `cd` is not undone, the
+    strict reading — and a `cd` that would take it past MAX_BASES is refused
+    (rule None), not dropped. No rules, nothing to protect: None at once."""
+    if not rules:
+        return None
     bases = [cwd]
     for words, command_word, _is_heredoc, is_data in segments_of(text):
         recursive = False if is_data else recursion_signal(words, command_word)
         for raw_tok in words:
-            for tok, cand, has_glob in [
-                c for v in token_variants(raw_tok) for b in bases
-                for c in candidate_of_token(v, b)
-            ]:
+            seen = set()
+            cands = []
+            for v in token_variants(raw_tok):
+                for b in bases:
+                    for c in candidate_of_token(v, b):
+                        if c[1:] not in seen:
+                            seen.add(c[1:])
+                            cands.append(c)
+            for tok, cand, has_glob in cands:
                 if has_glob:
                     for rule in rules:
                         if not rule.evaluable or rule.prefix is None:
@@ -561,8 +572,16 @@ def scan(text, cwd, rules):
                         "recursive flag" % (tok, rule.raw, command_word)
                     )
         for d in cd_targets(words, command_word, bases):
-            if d not in bases and len(bases) < MAX_BASES:
-                bases.append(d)
+            if d in bases:
+                continue
+            if len(bases) >= MAX_BASES:
+                return " ".join(words), None, (
+                    "this command line changes directory in more ways than "
+                    "denyguard follows (limit %d), so a relative path after "
+                    "it cannot be checked; split the command, or use "
+                    "absolute paths" % MAX_BASES
+                )
+            bases.append(d)
     return None
 
 
@@ -613,7 +632,7 @@ def deny(dir_, rule, fragment, reason):
             "permissionDecisionReason": reason,
         }
     }) + "\n")
-    log_denial(dir_, rule.raw, fragment)
+    log_denial(dir_, rule.raw if rule else "(cd limit)", fragment)
 
 
 def cmd_hook():
