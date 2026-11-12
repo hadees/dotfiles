@@ -1,8 +1,16 @@
 #!/usr/bin/env zsh
 
-# Preferred editors.
-export EDITOR='code --wait'
-export GEM_EDITOR='code'
+# Preferred editors: VS Code when installed, else vim, else vi.
+if command -v code >/dev/null 2>&1; then
+	export EDITOR='code --wait'
+	export GEM_EDITOR='code'
+elif command -v vim >/dev/null 2>&1; then
+	export EDITOR='vim'
+	export GEM_EDITOR='vim'
+else
+	export EDITOR='vi'
+	export GEM_EDITOR='vi'
+fi
 
 # Enable persistent REPL history for `node`.
 export NODE_REPL_HISTORY="$HOME/.node_history"

@@ -155,3 +155,18 @@ setup() {
   run env -i HOME="$home" PATH="/usr/bin:/bin" "$(command -v bash)" -ic 'echo marker-$((6*7))' </dev/null
   [[ "$output" == *"marker-42"* ]] || { echo "bash -ic dropped its command: $output"; false; }
 }
+
+@test "exports pick code, else vim, else vi for the editors" {
+  cd "$BATS_TEST_DIRNAME/.."
+  home="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$home" "$BATS_TEST_TMPDIR/code" "$BATS_TEST_TMPDIR/vim" "$BATS_TEST_TMPDIR/none"
+  touch "$BATS_TEST_TMPDIR/code/code" "$BATS_TEST_TMPDIR/vim/vim"
+  chmod +x "$BATS_TEST_TMPDIR/code/code" "$BATS_TEST_TMPDIR/vim/vim"
+  zsh_bin="$(command -v zsh)"
+  ed() {
+    env -i HOME="$home" PATH="$1" "$zsh_bin" -c 'source ./dot_exports; print -r -- "$EDITOR|$GEM_EDITOR"' 2>/dev/null
+  }
+  [ "$(ed "$BATS_TEST_TMPDIR/code")" = "code --wait|code" ]
+  [ "$(ed "$BATS_TEST_TMPDIR/vim")" = "vim|vim" ]
+  [ "$(ed "$BATS_TEST_TMPDIR/none")" = "vi|vi" ]
+}
