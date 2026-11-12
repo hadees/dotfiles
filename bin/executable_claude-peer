@@ -286,6 +286,25 @@ worktree_checkout() {
 # failure still shows git's fatal: line.
 git_immune() { ( trap '' HUP TERM; exec git "$@" ) >/dev/null; }
 
+# A slot's base is recorded in <git dir of the worktree>/claude-peer.base: line 1
+# the name (main), line 2 the full ref. bin/branchname reads it to label a
+# detached slot. Written once, from origin/HEAD, or on creation from the main
+# checkout's branch; never rewritten, and a failed write is not an error.
+base_file() { d=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) && printf '%s/claude-peer.base\n' "$d"; }
+
+write_base() { # repo wt created|reused
+  f=$(base_file "$2") || return 0
+  [ -f "$f" ] && return 0
+  if ref=$(git -C "$1" symbolic-ref --quiet refs/remotes/origin/HEAD); then
+    name=${ref#refs/remotes/origin/}
+  elif [ "$3" = created ] && ref=$(git -C "$1" symbolic-ref --quiet HEAD); then
+    name=${ref#refs/heads/}
+  else return 0
+  fi
+  { printf '%s\n%s\n' "$name" "$ref" >"$f"; } 2>/dev/null ||
+    warn "$(basename "$2"): could not record the base; the status line will show the commit"
+}
+
 # repo slot label -> slot<TAB>wt<TAB>created|reused, claimed. The slot's
 # worktree is the slot's: a registered one is reused as it was left (no checkout,
 # no status or branch test); a new one is detached at the base (origin/HEAD, else
@@ -318,6 +337,7 @@ slot_pick() {
     git_immune -C "$1" worktree add -q --detach "$wt" "$base" || die "$2: git worktree add failed"
     act=created
   fi
+  write_base "$1" "$wt" "$act"
   write_claim "$wt" "$3"
   printf '%s\t%s\t%s\n' "$2" "$wt" "$act"
 }

@@ -17,7 +17,11 @@ through an interactive shell, so it is the `.functions` wrapper and, being a
 directory no other session is in, raises no second-session question. A slot is a
 name (`alpha`, `beta`, …; lowercase letters, digits, `-` and `_`), and its
 worktree is the slot's: new, it is detached at `origin/HEAD` (the branch is
-Claude's to create once it knows what it is working on); afterwards it is
+Claude's to create once it knows what it is working on), and the base is
+recorded in `claude-peer.base` beside the claim, once (from `origin/HEAD`;
+at creation with no remote, the main checkout's branch; delete the file to
+have it written again on the next start), and `branchname.md` says what reads
+it; afterwards it is
 reused in whatever state it was left, dirty or on a branch, with nothing
 reset. `run <branch>` does the same on `<repo>/.claude/worktrees/<slug>` and a
 branch, by `workset checkout`'s rules (ported from `worktabs`). `path` and
