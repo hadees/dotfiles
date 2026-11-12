@@ -85,6 +85,10 @@ which home, without the names. The note stays unplaced until an audit
 marks it kept, and the audit's `private` column shows it. `names_private`
 errs toward yes: the answer counts as private when its probability of
 being private is at least `PRIVATE_AT` (0.5), so an unsure `no` is a yes.
+Its exemptions are narrow on purpose: only roles, generic words and this
+repository's own tools and files named by their path inside it are not
+private; a `~` path is judged by what follows the `~`, so a directory named
+after an organisation, an account, a host or another repository is private.
 
 The index is never refused, only warned about: a refused index edit
 strands a note. `BLOCK_AT` is a starting value, not a calibrated one;

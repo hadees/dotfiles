@@ -134,6 +134,12 @@ assert r["v"] == 1
 assert sorted(r["questions"]["destination"]["criteria"]) == sorted(
     ["memory","shared-memory","rule","claude-md","docs","overlay","nowhere"])
 assert sorted(r["questions"]["private"]["criteria"]) == ["no","yes"]
+pq = r["questions"]["private"]
+assert "but what follows can be" in pq["instructions"]
+assert "When unsure, answer yes" in pq["instructions"]
+assert "with ~ name nothing private" not in pq["instructions"]
+assert "this repository'"'"'s own tools, scripts and files only" in pq["criteria"]["no"]
+assert "repository names only" not in pq["criteria"]["no"]
 assert list(r["questions"]) == ["destination","private","place"]
 assert sorted(r["questions"]["place"]["criteria"]) == sorted(
     ["none","claude-md:Layout","rule:frobnicate","doc:docs/watch.md"]), r["questions"]["place"]["criteria"]
@@ -272,13 +278,13 @@ assert c["argv"] == ["-p","--agent","decide-haiku","--output-format","json","--n
   export STUB_ANSWER; STUB_ANSWER="$(answer rule 0.9)"
   run "$MG" selftest
   [ "$status" -eq 0 ]
-  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 8 ]
-  [[ "$output" == *"valid 7/7  matched 1/5  private 5/7 (missed 2)  median "* ]]
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 10 ]
+  [[ "$output" == *"valid 9/9  matched 2/6  private 6/9 (missed 3)  median "* ]]
   [[ "$output" == *"mode lean" ]]
   [ ! -e "$LOG" ]
   STUB_EXIT=1 run "$MG" selftest
   [ "$status" -eq 1 ]
-  [[ "$output" == *"valid 0/7"* ]]
+  [[ "$output" == *"valid 0/9"* ]]
 }
 
 @test "log counts outcomes and the blocks a later keep reversed" {
@@ -920,4 +926,10 @@ hook_start() { run "$MG" hook start <<< "$(start_payload "$@")"; }
 @test "the source no longer tells a session to reword a note or to put its text in its home" {
   ! grep -qi 'reword it to pass' "$MG" || false
   ! grep -qi 'put the text in its home' "$MG" || false
+}
+
+@test "the private question's old exemptions and the old header sentence are gone from the source" {
+  ! grep -q 'with ~ name nothing private' "$MG" || false
+  ! grep -q 'repository names only' "$MG" || false
+  ! head -20 "$MG" | grep -q 'whose answer is not' || false
 }

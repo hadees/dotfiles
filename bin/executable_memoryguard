@@ -6,8 +6,11 @@
 # repository facts there has existed since 2026-09 without holding.
 # memoryguard asks two typed questions of the note's text — which of seven
 # homes does it belong in, and does it name anything private — and `hook pre`
-# refuses a write whose answer is not `memory`, naming the
-# destination. It writes nothing itself except its own log.
+# refuses a write that confidently belongs somewhere other than memory and
+# names nothing private, naming the destination. A note that names something
+# private, or whose home is unclear, is saved with a note to the session;
+# only a note not worth saving is refused whatever it names. It writes
+# nothing itself except its own log.
 #
 # Subcommands: the decision (`decide`), its backends, the log and the
 # cache (`log`), a self-test of the real backend (`selftest`), the gate on
@@ -96,7 +99,7 @@ import subprocess
 import sys
 import time
 
-RUBRIC_V = 3
+RUBRIC_V = 4
 BLOCK_AT = 0.75
 PRIVATE_AT = 0.5
 BACKEND_TIMEOUT = 20
@@ -173,13 +176,18 @@ PRIVATE_INSTRUCTIONS = (
     "person, an account or login, an organisation, a host or machine name, a "
     "network address or port, a private repository, a path that is specific "
     "to one machine or user, or where a secret is kept? A role or a generic "
-    "word (the operator, the work account, a host, the overlay), the name of "
-    "a tool, script, file or agent of the repository, and a path written from "
-    "the home directory with ~ name nothing private."
+    "word (the operator, the work account, a host, the overlay) names "
+    "nothing private, and neither does a tool, script, file or agent of this "
+    "repository named by its path inside the repository. Writing ~ for the "
+    "home directory is not private in itself, and neither is a standard "
+    "directory under it such as ~/.config, ~/.ssh or ~/bin, but what follows "
+    "can be: a directory named after a person, an account, an organisation, "
+    "a host, or a repository other than this one is private. When unsure, "
+    "answer yes."
 )
 PRIVATE_CRITERIA = {
-    "yes": "It names at least one such thing.",
-    "no": "It names none: roles, generic words and repository names only.",
+    "yes": "It names at least one such thing, anywhere, including inside a path.",
+    "no": "It names none: roles, generic words, and this repository's own tools, scripts and files only.",
 }
 # Homes a note's general point may be written into, and which may be public.
 PUBLIC_HOMES = ("shared-memory", "rule", "claude-md", "docs")
@@ -203,11 +211,16 @@ SELFTEST = [
     ("The operator wants the staging box left running over the weekend of "
      "the demo, because the client will try it. Revisit after the demo.",
      "memory"),
-    # No expected destination; these name something private (invented names).
+    # No expected destination: each of these names something private (invented names).
     ("The frobnicate mount works as user jdoe on host nas-attic.example.net, "
      "port 2222; StrictModes has to be off on that box.", None),
     ("For repositories of the examplecorp organisation, open pull requests "
      "from the jdoe-examplecorp account, never the personal one.", None),
+    ("The frobnicate cache for the billing work lives in "
+     "~/code/examplecorp-billing/.cache; clear it there before a rerun.", None),
+    # A home-relative path that names nothing private.
+    ("The frobnicate script reads its cache size from "
+     "~/.config/frobnicate/config.toml; the default is 64.", "rule"),
 ]
 
 # Side channel of the last claude-backend run (tokens, model, mode), for the
@@ -690,10 +703,10 @@ def cmd_selftest(argv):
     right = sum(1 for r in rows if r[1] and r[7] == r[8])
     missed = sum(1 for r in rows if r[1] and r[8] == "yes" and r[7] == "no")
     median = times[len(times) // 2] if times else 0
-    print("valid %d/7  matched %d/5  private %d/7 (missed %d)  median %d ms  max %d ms  model %s  mode %s" % (
+    print("valid %d/9  matched %d/6  private %d/9 (missed %d)  median %d ms  max %d ms  model %s  mode %s" % (
         valid, matched, right, missed, median, times[-1] if times else 0, model,
         MODE_OVERRIDE or LAST.get("mode") or os.environ.get("MEMORYGUARD_CLAUDE_MODE") or git_config("memoryguard.claudeMode") or CLAUDE_MODE_DEFAULT))
-    return 0 if valid == 7 else 1
+    return 0 if valid == 9 else 1
 
 
 def cmd_log(argv):
