@@ -818,3 +818,57 @@ EOF")"
   [ "$status" -eq 0 ]
   [ -z "$output" ] || { echo "refused: $output"; false; }
 }
+
+# --- canonical paths: one spelling for symlinks, slashes, case and the firmlink ---
+@test "canonical: a rule written through a symlinked ancestor binds the real spelling, in a hook and in check" {
+  mkdir -p "$HOME/realcode/octo-hidden"
+  echo secret > "$HOME/realcode/octo-hidden/x"
+  ln -s "$HOME/realcode" "$HOME/linkcode"
+  fixture_rules '["Read(~/linkcode/octo-hidden/**)"]'
+  run hook "$(evt "$HOME/code" "cat $HOME/realcode/octo-hidden/x")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]] || { echo "silent: $output"; false; }
+  run "$DG" check --profile "$HOME/.claude-fixture" "$HOME/realcode/octo-hidden"
+  [ "$status" -eq 1 ]
+}
+
+@test "canonical: a path that does not exist yet is resolved through a symlink too" {
+  run hook "$(evt "$HOME/code" "echo x > $HOME/link/new-file")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]] || { echo "silent: $output"; false; }
+}
+
+@test "canonical: a leading double slash names the same path, existing or new" {
+  for name in x new-file; do
+    run hook "$(evt "$HOME/code" "cat /$HOME/code/octo-secret/$name")"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'"permissionDecision": "deny"'* ]] || { echo "$name silent: $output"; false; }
+  done
+}
+
+@test "canonical: on macOS case and the Data-volume firmlink spelling name the same path" {
+  [ "$(uname)" = Darwin ] || skip "case-insensitive volume and firmlinks are macOS"
+  upper="$(printf '%s' "$HOME/code/octo-secret/x" | tr 'a-z' 'A-Z')"
+  for path in "$HOME/CODE/octo-secret/x" "$upper" \
+              "/System/Volumes/Data$HOME/code/octo-secret/x" \
+              "/System/Volumes/Data$HOME/code/octo-secret/new-file"; do
+    run hook "$(evt "$HOME/code" "cat $path")"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'"permissionDecision": "deny"'* ]] || { echo "$path silent: $output"; false; }
+  done
+}
+
+@test "canonical: on macOS an any-depth rule matches a case-changed spelling; lowercase is refused everywhere" {
+  fixture_rules '["Read(**/*.pem)"]'
+  echo k > "$HOME/code/octo-alpha/key.pem"
+  run hook "$(evt "$HOME/code" "cat $HOME/code/octo-alpha/key.pem")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]] || { echo "lowercase silent: $output"; false; }
+  run hook "$(evt "$HOME/code" "cat $HOME/code/octo-alpha/KEY.PEM")"
+  [ "$status" -eq 0 ]
+  if [ "$(uname)" = Darwin ]; then
+    [[ "$output" == *'"permissionDecision": "deny"'* ]] || { echo "uppercase silent: $output"; false; }
+  else
+    [ -z "$output" ] || { echo "uppercase refused off macOS: $output"; false; }
+  fi
+}

@@ -58,7 +58,7 @@ all false positives of the OLD, whole-command version of this check
 **A glob is matched component by component, not by its literal prefix.**
 `glob_reach` walks the glob's path and a denied rule's prefix together: a
 component with a glob character must `fnmatchcase` the rule's component
-(case-sensitive on purpose), a literal one must equal it, and a component
+(both sides already folded, below), a literal one must equal it, and a component
 that is exactly `**` reaches the tree at once. Running out of the rule's
 components first, or both together, is "inside" — the pattern can name the
 denied tree or something in it — and is refused ("may expand into"), so
@@ -138,12 +138,33 @@ and its log line has `(cd limit)` in the rule column, which makes the
 limit countable. A profile with no deny rules is never refused for it.
 Every resolved path is judged once, however many bases produce it.
 
+**Paths are compared in one canonical spelling.** `canon` normalises a path,
+collapses a leading double slash (POSIX `normpath` keeps exactly two), and
+on macOS drops the Data-volume firmlink prefix (`/System/Volumes/Data`,
+which `realpath` does not resolve) and folds case (`fold`: the default APFS
+volume is case-insensitive; on a case-sensitive one that over-refuses, the
+strict side). Every comparison goes through it: the direct and ancestor
+tests and the glob walk in `scan`, the implicit-cwd test, `cwd_hit`, both
+branches of `check`, and an any-depth rule (`Rule.pattern_key`, the pattern
+folded and matched with `fnmatchcase`, so case is `fold`'s alone). A rule
+holds two keys, its prefix and the `realpath` of it (`Rule.keys`), so a rule
+written through a symlinked ancestor binds the real spelling too; the cost is
+one `realpath` per rule per call. A candidate also gets a `realpath` variant
+whether or not it exists yet, resolved as far as it does, so a `>` redirect
+or a `cat` of a new name under a symlink into a denied tree is read like an
+existing one. `denyguard rules` still prints each rule as written, never
+folded. Until 2026-11-12 a path that did not exist had no `realpath` variant
+at all, and an any-depth rule was compared case-sensitively on macOS.
+
 **What it cannot see.** This is a lexical guard, not a sandbox: a shell
 variable other than `$HOME` (so a `cd` to one, too), `$(...)` output
 (likewise a `cd` to a command substitution), a per-command directory flag
 such as `-C <dir>`, a script file's own
 contents, `find <parent> -exec` without a recursive tell, `eval`, base64,
 or any program that computes the path at run time all pass through unseen.
+So does a path assembled by shell quoting, backslashes or brace expansion
+(`~/co''de/...`, `~/code/octo-{secret,x}`), and a case-insensitive mount on
+Linux or WSL (case is folded on macOS only).
 Heredoc reading has two soft spots of its own: a `<<WORD` inside a quoted
 string still counts as an opener when a later line happens to be exactly
 `WORD` (and its lines get the data reading if that line starts with

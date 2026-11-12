@@ -211,8 +211,31 @@ def load_deny(dir_):
     return (data.get("permissions") or {}).get("deny") or []
 
 
+FIRMLINK = "/System/Volumes/Data"
+
+
+def fold(text):
+    """The case a comparison is made in: the default macOS volume is case-
+    insensitive, so two spellings of one path differ only in case there.
+    On a case-sensitive volume that over-refuses, the strict side."""
+    return text.casefold() if sys.platform == "darwin" else text
+
+
+def canon(path):
+    """One spelling for two spellings of a path: normalised, a leading
+    double slash (which normpath keeps) collapsed, the Data-volume firmlink
+    prefix (which realpath does not resolve) dropped on macOS, then folded."""
+    path = os.path.normpath(path)
+    if path.startswith("//"):
+        path = path[1:]
+    if sys.platform == "darwin" and path.startswith(FIRMLINK + "/"):
+        path = path[len(FIRMLINK):]
+    return fold(path)
+
+
 class Rule:
-    __slots__ = ("tool", "raw", "anchor", "prefix", "kind", "pattern", "evaluable")
+    __slots__ = ("tool", "raw", "anchor", "prefix", "kind", "pattern",
+                 "evaluable", "keys", "pattern_key")
 
     def __init__(self, tool, raw, anchor, prefix, kind, pattern, evaluable):
         self.tool = tool
@@ -222,6 +245,22 @@ class Rule:
         self.kind = kind
         self.pattern = pattern
         self.evaluable = evaluable
+        # prefix and pattern stay as written, for display; comparisons use
+        # these. The prefix as written and its realpath: a rule named
+        # through a symlinked ancestor binds the real spelling too.
+        self.keys = () if prefix is None else tuple(dict.fromkeys(
+            (canon(prefix), canon(os.path.realpath(prefix)))))
+        self.pattern_key = fold(pattern)
+
+
+def inside(key, rule):
+    """Is the canonical `key` one of the rule's trees, or under one?"""
+    return any(key == k or key.startswith(os.path.join(k, "")) for k in rule.keys)
+
+
+def ancestor_of(key, rule):
+    """Is the canonical `key` a strict ancestor of one of the rule's trees?"""
+    return any(k != key and k.startswith(os.path.join(key, "")) for k in rule.keys)
 
 
 def strip_recursive_suffix(s):
@@ -295,9 +334,10 @@ def parse_deny_list(deny_list, cwd):
 
 
 def match_any_depth(path, pattern):
-    if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, "*/" + pattern):
+    """Both arguments already canonical (case is fold's business alone)."""
+    if fnmatch.fnmatchcase(path, pattern) or fnmatch.fnmatchcase(path, "*/" + pattern):
         return True
-    return any(fnmatch.fnmatch(part, pattern) for part in path.split(os.sep) if part)
+    return any(fnmatch.fnmatchcase(part, pattern) for part in path.split(os.sep) if part)
 
 
 def split_words(text):
@@ -442,12 +482,13 @@ def substitute_home(text):
 
 
 def candidate_of_token(raw_tok, cwd, recursive=False):
-    """`raw_tok`, resolved against `cwd`, plus a realpath variant where the
-    resolved path exists (deny rules apply to a symlink and its target
-    alike — doc, "Symlinks"). Each item is (raw_token, resolved_absolute_
-    path, has_glob_chars); empty when the token is a bare word matching no
-    file (just a word, not a path) — except a slash-less glob under a
-    recursive command, which names whatever it matches there."""
+    """`raw_tok`, resolved against `cwd`, plus a realpath variant (deny rules
+    apply to a symlink and its target alike — doc, "Symlinks"); a path that
+    does not exist yet gets one too, resolved as far as it exists. Each
+    item is (raw_token, resolved_absolute_path, has_glob_chars); empty when
+    the token is a bare word matching no file (just a word, not a path) —
+    except a slash-less glob under a recursive command, which names
+    whatever it matches there."""
     tok = substitute_home(raw_tok)
     has_glob = any(c in tok for c in GLOB_CHARS)
     if tok.startswith("/"):
@@ -460,7 +501,7 @@ def candidate_of_token(raw_tok, cwd, recursive=False):
             return []
         resolved = os.path.normpath(candidate)
     out = [(raw_tok, resolved, has_glob)]
-    if not has_glob and os.path.exists(resolved):
+    if not has_glob:
         rp = os.path.realpath(resolved)
         if rp != resolved:
             out.append((raw_tok, rp, False))
@@ -613,31 +654,28 @@ def scan(text, cwd, rules):
                             seen.add(c[1:])
                             cands.append(c)
             for tok, cand, has_glob in cands:
+                key = canon(cand)
                 if has_glob:
                     for rule in rules:
-                        if not rule.evaluable or rule.prefix is None:
-                            continue
-                        reach = glob_reach(cand, rule.prefix)
-                        if reach == "inside":
-                            return tok, rule, "%s may expand into %s" % (tok, rule.raw)
-                        if reach == "ancestor" and recursive:
-                            return tok, rule, (
-                                "%s is an ancestor of %s and %s recurses here; "
-                                "name the file under it directly, or drop the "
-                                "recursive flag" % (tok, rule.raw, command_word)
-                            )
+                        for k in rule.keys:
+                            reach = glob_reach(key, k)
+                            if reach == "inside":
+                                return tok, rule, "%s may expand into %s" % (tok, rule.raw)
+                            if reach == "ancestor" and recursive:
+                                return tok, rule, (
+                                    "%s is an ancestor of %s and %s recurses here; "
+                                    "name the file under it directly, or drop the "
+                                    "recursive flag" % (tok, rule.raw, command_word)
+                                )
                     continue
                 for rule in rules:
                     if rule.anchor == "any-depth":
-                        if match_any_depth(cand, rule.pattern):
+                        if match_any_depth(key, rule.pattern_key):
                             return tok, rule, "%s is inside %s" % (tok, rule.raw)
                         continue
-                    if not rule.evaluable or rule.prefix is None:
-                        continue
-                    if cand == rule.prefix or cand.startswith(rule.prefix + os.sep):
+                    if inside(key, rule):
                         return tok, rule, "%s is inside %s" % (tok, rule.raw)
-                    if not recursive or cand == rule.prefix \
-                            or not rule.prefix.startswith(cand + os.sep):
+                    if not recursive or not ancestor_of(key, rule):
                         continue
                     return tok, rule, (
                         "%s is an ancestor of %s and %s recurses here; "
@@ -649,8 +687,7 @@ def scan(text, cwd, rules):
                 and not names_root(words, command_word, bases):
             for b in bases:
                 for rule in rules:
-                    if rule.evaluable and rule.prefix is not None \
-                            and rule.prefix.startswith(os.path.join(b, "")):
+                    if ancestor_of(canon(b), rule):
                         return " ".join(words), rule, (
                             "%s recurses from %s, an ancestor of %s; name an "
                             "existing directory under it, after the pattern%s"
@@ -673,12 +710,10 @@ def scan(text, cwd, rules):
 
 
 def cwd_hit(cwd, rules):
-    cands = {os.path.normpath(cwd), os.path.realpath(cwd)}
+    cands = {canon(cwd), canon(os.path.realpath(cwd))}
     for rule in rules:
-        if rule.anchor == "any-depth" or not rule.evaluable or rule.prefix is None:
-            continue
         for cand in cands:
-            if cand == rule.prefix or cand.startswith(rule.prefix + os.sep):
+            if inside(cand, rule):
                 return rule
     return None
 
@@ -792,14 +827,12 @@ def cmd_check(argv):
 
     found = False
     for p in paths:
-        rp = os.path.realpath(os.path.expanduser(p))
+        rp = canon(os.path.realpath(os.path.expanduser(p)))
         for rule in rules:
-            if rule.prefix is None:
-                continue
-            if rp == rule.prefix or rp.startswith(rule.prefix + os.sep):
+            if inside(rp, rule):
                 sys.stderr.write("%s is inside %s\n" % (p, rule.raw))
                 found = True
-            elif rule.prefix == rp or rule.prefix.startswith(rp + os.sep):
+            elif ancestor_of(rp, rule):
                 sys.stderr.write("%s contains %s's region\n" % (p, rule.raw))
                 found = True
     sys.exit(1 if found else 0)
