@@ -109,7 +109,11 @@ STUB
   chmod +x "$BATS_TEST_TMPDIR/bin/claude"
   export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
   SOCK="cps$$-$BATS_TEST_NUMBER"
-  printf '%s\n' 'set -g status off' 'set -g remain-on-exit on' 'set -g default-shell /bin/sh' 'set -g window-size manual' >"$BATS_TEST_TMPDIR/tmux.conf"
+  # three lines, and a fourth for a tmux older than 3.3 only (tmux_old says why)
+  printf '%s\n' 'set -g status off' 'set -g remain-on-exit on' 'set -g default-shell /bin/sh' >"$BATS_TEST_TMPDIR/tmux.conf"
+  if tmux_old "$(tmux -V 2>/dev/null)"; then
+    echo 'set -g window-size manual' >>"$BATS_TEST_TMPDIR/tmux.conf"
+  fi
   : "${SCREEN_FZF_OPTS=--height 40% --layout=reverse --border --color=bg+:#262626,bg:#1a1a1a,header:#747369,pointer:#f2777a,prompt:#f2777a}"
 }
 
@@ -129,6 +133,19 @@ until_ok() {
 }
 
 # --- the harness ------------------------------------------------------------------------
+
+# tmux_old "<what tmux -V prints>": a tmux of 2.9 to 3.2a. That tmux sizes a detached
+# session by the terminal of the client that made it (80x24 when it has none), whatever
+# -x and -y say, unless window-size is manual. From 3.3 on -x and -y are honoured without
+# it, and 3.3 to 3.6a must not be given it: a new window under a global
+# `window-size manual` reads a window that is not there yet, and the server dies
+# ("server exited unexpectedly"; tmux issue 4849, fixed in 3.7).
+tmux_old() {
+  case $1 in
+    'tmux 2.9'*|'tmux 3.'[012]|'tmux 3.'[012][!0-9]*) return 0;;
+    *) return 1;;
+  esac
+}
 
 # Every tmux call: our own socket (-L: a short name under /tmp/tmux-<uid>/), our own
 # config, never the caller's server, and never bats' descriptor 3 (a server would hold it).
@@ -266,6 +283,14 @@ line() { printf '%s\n' "$SCREEN" | sed -n "$1p"; }
 
 @test "harness: a pane of the asked size, its own shell and colours, captured as drawn" {
   need tmux
+  # which tmux gets the fourth config line: 2.9 to 3.2a, and no other
+  local v
+  for v in 'tmux 2.9' 'tmux 2.9a' 'tmux 3.0a' 'tmux 3.1c' 'tmux 3.2' 'tmux 3.2a'; do
+    tmux_old "$v" || { echo "tmux_old says no to: $v"; false; }
+  done
+  for v in 'tmux 3.3' 'tmux 3.3a' 'tmux 3.4' 'tmux 3.5a' 'tmux 3.6' 'tmux 3.6a' 'tmux 3.8' 'tmux 3.10' 'tmux 3.20a' 'tmux 4.0' 'tmux next-3.9' 'tmux master' ''; do
+    if tmux_old "$v"; then echo "tmux_old says yes to: $v"; false; fi
+  done
   # the matching in this file reads a glyph as one character; in the C locale GNU grep
   # reads a set of glyphs as a set of bytes, and no_border finds a border in `▸`
   [ "$(locale charmap 2>/dev/null)" = UTF-8 ] || {
