@@ -2419,3 +2419,58 @@ quiet_erases() {
   quiet_erases '40 120' ''
   ! grep -qE "${ESC}\[[0-9]+A" "$out"
 }
+
+# hermes_banner [body]: an installed Hermes whose banner holds a small invented
+# figure (never the real one), in the shape Hermes writes it: rich colour tags,
+# one triple-quoted string. With an argument, that is the file instead.
+hermes_banner() {
+  local d=$HOME/.hermes/hermes-agent/hermes_cli
+  mkdir -p "$d"
+  if [ $# -gt 0 ]; then printf '%s' "$1" >"$d/banner.py"; return; fi
+  printf '%s\n' 'OTHER = """x"""' \
+    'HERMES_CADUCEUS = """[#CD7F32]⢀⣿⡀[/]' \
+    "[bold]⣿⣿⣿⣿[/]"$'\033[31m' \
+    '⠈⣿⠁"""' 'def f(): pass' >"$d/banner.py"
+}
+
+plain() { sed $'s/\033\\[[0-9;?]*[A-Za-z]//g'; }
+
+@test "art --hermes: the installed figure, tags and control bytes gone, dark bronze, the waiting line" {
+  hermes_banner
+  run --separate-stderr sh "$BIN" art --hermes --truecolor
+  [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
+  [ "$(printf '%s\n' "$output" | plain)" = "$(printf '  %s\n' '⢀⣿⡀' '⣿⣿⣿⣿' '⠈⣿⠁'; echo; printf '  waiting · ⏎ to start Hermes')" ]
+  [[ "$output" == *'38;2;150;92;36'* ]]
+  [[ "$output" != *'255;214;150'* ]]
+  [[ "$output" != *$'\033[31m'* ]]
+  [[ "$output" != *[Zz]* ]]
+}
+
+@test "art --hermes --at: the band's centre is the shine; --256 draws in 256 colours only" {
+  hermes_banner
+  run sh "$BIN" art --hermes --truecolor --at 6
+  [[ "$output" == *'38;2;255;214;150m⢀'* ]]
+  run sh "$BIN" art --hermes --256 --at 6
+  [ "$status" -eq 0 ]
+  [[ "$output" != *'38;2;'* ]]
+  [[ "$output" == *'38;5;'* ]]
+}
+
+@test "art --hermes: no Hermes, no figure in it, or an empty one is status 3 and prints nothing" {
+  run --separate-stderr sh "$BIN" art --hermes
+  [ "$status" -eq 3 ] && [ -z "$output" ] && [ -z "$stderr" ]
+  hermes_banner 'BANNER = """x"""'
+  run --separate-stderr sh "$BIN" art --hermes
+  [ "$status" -eq 3 ] && [ -z "$output" ] && [ -z "$stderr" ]
+  hermes_banner 'HERMES_CADUCEUS = """[gold][/]
+"""'
+  run --separate-stderr sh "$BIN" art --hermes
+  [ "$status" -eq 3 ] && [ -z "$output" ] && [ -z "$stderr" ]
+}
+
+@test "art --hermes --wait: off a terminal it is status 3 and silent" {
+  hermes_banner
+  run --separate-stderr sh "$BIN" art --hermes --wait </dev/null
+  [ "$status" -eq 3 ] && [ -z "$output" ] && [ -z "$stderr" ]
+}
