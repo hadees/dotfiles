@@ -65,6 +65,12 @@ need() {
 
 setup() {
   BIN="$BATS_TEST_DIRNAME/../bin/executable_claude-peer"
+  # Pin python3 while HOME is still real (tests/claude-peer.bats says why): the
+  # Hermes pane's figure is drawn by it
+  if py="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null)"; then
+    mkdir -p "$BATS_TEST_TMPDIR/pybin" && ln -s "$py" "$BATS_TEST_TMPDIR/pybin/python3"
+    export PATH="$BATS_TEST_TMPDIR/pybin:$PATH"
+  fi
   export HOME="$BATS_TEST_TMPDIR/home"
   export XDG_STATE_HOME="$HOME/.local/state"
   mkdir -p "$HOME" "$BATS_TEST_TMPDIR/bin"
@@ -873,4 +879,61 @@ woke() {
   screen_wait '^Alpha$'
   [ "$(printf '%s\n' "$SCREEN" | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ] || { screen_show; false; }
   [[ "$SCREEN_E" != *'48;2;15;15;15'* ]] || { screen_show; false; }
+}
+
+# --- the Hermes pane ----------------------------------------------------------------
+
+# The Hermes peer's wait as `claude-peer hermes --wait` runs it: hermes_peer from
+# dot_functions with the routing and hermes itself stubbed, claude-peer on PATH, and
+# an installed Hermes whose banner holds a small invented figure.
+hermes_open() {
+  local d=$HOME/.hermes/hermes-agent/hermes_cli
+  mkdir -p "$d"
+  printf '%s\n' 'HERMES_CADUCEUS = """[#CD7F32]⢀⣀⣀⣀⣀⣀⡀[/]' '⣿⣿⣿⣿⣿⣿⣿' '⣿⣿⣿⣿⣿⣿⣿' '⠈⠉⠉⠉⠉⠉⠁"""' >"$d/banner.py"
+  ln -sf "$BIN" "$BATS_TEST_TMPDIR/bin/claude-peer"
+  screen_run 80 24 zsh -f -c "source '$BATS_TEST_DIRNAME/../dot_functions'
+    hermes_profile() { print prof; }
+    hermes() { print HERMES-RAN; }
+    CLAUDE_PEER_HERMES_WAIT=1 hermes_peer; print LEFT; sleep 30"
+}
+
+@test "hermes: the caduceus glints, then holds still; Return starts Hermes and it waits again; q leaves" {
+  need tmux
+  git config --global --unset claude-peer.art
+  git config --global claude-peer.art-seconds 2
+  hermes_open
+  screen_wait 'waiting · ⏎ to start Hermes'
+  [ "$(line 1)" = '  ⢀⣀⣀⣀⣀⣀⡀' ] && [ "$(line 6)" = '  waiting · ⏎ to start Hermes · q for a shell' ] || { screen_show; false; }
+  [ "$(count_lines 'Return starts hermes')" -eq 0 ] || { screen_show; false; }
+  local first; first=$SCREEN_E
+  until_ok 'screen_grab; [ "$SCREEN_E" != "$first" ]' || { screen_show; false; }
+  screen_still 5 0.5
+  [[ "$SCREEN_E" == *'150;92;36'* && "$SCREEN_E" != *'255;214;150'* ]] || { screen_show; false; }
+  screen_keys Enter
+  screen_wait '^HERMES-RAN'
+  screen_wait 'waiting · ⏎ to start Hermes'
+  [ "$(count_lines 'waiting · ⏎')" -eq 1 ] || { screen_show; false; }
+  screen_type q; screen_keys Enter
+  screen_wait '^LEFT'
+  [ "$(count_lines 'waiting · ⏎')" -eq 0 ] || { screen_show; false; }
+}
+
+@test "hermes: with claude-peer.art false the figure is not drawn" {
+  need tmux
+  hermes_open
+  screen_wait 'Hermes \(prof\): Return starts hermes here, q leaves a shell'
+  [ "$(count_lines 'waiting · ⏎')" -eq 0 ] || { screen_show; false; }
+}
+
+@test "hermes: with no Hermes figure installed the pane asks as it always has" {
+  need tmux
+  git config --global --unset claude-peer.art
+  ln -sf "$BIN" "$BATS_TEST_TMPDIR/bin/claude-peer"
+  screen_run 80 24 zsh -f -c "source '$BATS_TEST_DIRNAME/../dot_functions'
+    hermes_profile() { print prof; }
+    hermes() { print HERMES-RAN; }
+    CLAUDE_PEER_HERMES_WAIT=1 hermes_peer; print LEFT; sleep 30"
+  screen_wait 'Hermes \(prof\): Return starts hermes here, q leaves a shell'
+  screen_keys Enter
+  screen_wait '^HERMES-RAN'
 }

@@ -189,6 +189,10 @@
 #                            it in panes, claude-peer.art-file replaces it,
 #                            claude-peer.art-seconds, default 20, is how long it
 #                            moves in fzf after the last key; 0 holds it still)
+#   art --hermes [--at <n>] [--truecolor|--256] | art --hermes --wait
+#                            the Hermes pane's figure, read from the installed
+#                            Hermes: one frame of its glint (0, the default, is
+#                            still), or the pane's wait (0 Return, 1 q, 3 none)
 #   art --screen [--slot <slot>]
 #                            the quiet waiting screen, padded as a pane pads it,
 #                            for this terminal or CLAUDE_PEER_SIZE
@@ -869,10 +873,132 @@ art_hat() {
     # shellcheck disable=SC2086
     hat_fzf=$(printf '#%02x%02x%02x' $ac_cap) hat_sgr="38;2;$(echo "$ac_cap" | tr ' ' ';')"
   else
-    hat_fzf=$(printf 'palette C 0 0 0\nmargin 0\nframe asleep\nC\nC\n' |
-      art_awk asleep none 256 "$ac_cap" "$ac_band" | sed 's/.*48;5;\([0-9]*\)m.*/\1/')
-    hat_sgr="38;5;$hat_fzf"
+    hat_fzf=$(art_c256 "$ac_cap") hat_sgr="38;5;$hat_fzf"
   fi
+}
+
+# "r g b" -> the 256-colour index the art draws that colour in
+art_c256() {
+  printf 'palette C %s\nmargin 0\nframe asleep\nC\nC\n' "$1" |
+    art_awk asleep none 256 '' '' | sed 's/.*48;5;\([0-9]*\)m.*/\1/'
+}
+
+# --- Hermes's caduceus: the figure the Hermes pane waits under ------------------------
+# Read at run time from the installed Hermes (HERMES_CADUCEUS in hermes_cli/banner.py;
+# MIT, Nous Research) and never kept here. Dark bronze, a light band about three cells
+# wide sweeping down it, then a pause; no z's, it is not asleep. The band's seven
+# levels are worked out here, in the sleeper's colour mode.
+# Hermes's own install places: the user install, then the root one on Linux.
+herm_banner() {
+  for hb in "$HOME/.hermes/hermes-agent" /usr/local/lib/hermes-agent; do
+    [ -r "$hb/hermes_cli/banner.py" ] && break
+  done
+  printf '%s\n' "$hb/hermes_cli/banner.py"
+}
+
+herm_levels() {
+  hl_m=${1:-$(art_mode)}
+  for hl_k in 0 1 2 3 4 5 6; do
+    hl_c="$((150 + 105 * hl_k / 6)) $((92 + 122 * hl_k / 6)) $((36 + 114 * hl_k / 6))"
+    if [ "$hl_m" = truecolor ]; then echo "38;2;$(echo "$hl_c" | tr ' ' ';')"
+    else echo "38;5;$(art_c256 "$hl_c")"; fi
+  done
+}
+
+# banner <at>|<dir> level×7 -> frame <at> (0 is still) on stdout, or every frame into
+# <dir>/0… and "<count> <columns>" on stdout. Status 3, silent, when there is no figure.
+herm_py() {
+  python3 -I - "$@" 2>/dev/null <<'PYEOF'
+import re, sys
+src, out, lv = sys.argv[1], sys.argv[2], sys.argv[3:10]
+try:
+    text = open(src, encoding="utf-8").read()
+except (OSError, UnicodeError):
+    sys.exit(3)
+m = re.search(r'^HERMES_CADUCEUS\s*=\s*r?"""(.*?)"""', text, re.S | re.M)
+if not m:
+    sys.exit(3)
+esc = re.compile(r"\x1b(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)?|.)?")
+ctl = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+rows = [ctl.sub("", re.sub(r"\[[^\]]*\]", "", esc.sub("", l))).rstrip() for l in m.group(1).split("\n")]
+while rows and not rows[-1].strip("\u2800 "):
+    rows.pop()
+while rows and not rows[0].strip("\u2800 "):
+    rows.pop(0)
+if not rows or len(rows) > 40 or max(map(len, rows)) > 100:
+    sys.exit(3)
+H, W = len(rows), max(map(len, rows))
+HINT = "\n  \x1b[2mwaiting \u00b7 \u23ce to start Hermes \u00b7 q for a shell\x1b[0m\x1b[K\n"
+ESC = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+def frame(t):
+    p, lines = t - 6, []
+    for i, r in enumerate(rows):
+        cur, line = None, "  "
+        for j, ch in enumerate(r):
+            k = max(0, 6 - int(2 * abs(i + j / 2 - p)))
+            if k != cur:
+                line += "\x1b[" + lv[k] + "m"
+                cur = k
+            line += ch
+        lines.append(line + "\x1b[0m\x1b[K\n")
+    return "".join(lines) + HINT
+
+if out.isdigit():
+    sys.stdout.write(frame(int(out)))
+else:
+    n = H + W + 40
+    for t in range(n):
+        with open("%s/%d" % (out, t), "w", encoding="utf-8") as f:
+            f.write(frame(t))
+    print(n, max(W + 2, len(ESC.sub("", HINT).strip("\n"))))
+PYEOF
+}
+
+# The Hermes pane's wait: the figure, glinting for art-seconds from the start and after
+# each line typed, then still. Typing is not echoed; a line of q leaves. 0: Return. 1:
+# q, or end of input. 3, silent: not a terminal, claude-peer.art false, no figure, or a
+# pane too small to hold it (the caller then asks in words, as it did before the art).
+herm_wait() {
+  [ -t 0 ] && [ -t 1 ] || return 3
+  [ "$(git config --get claude-peer.art 2>/dev/null)" != false ] || return 3
+  hw_s=$(git config --get claude-peer.art-seconds 2>/dev/null) || hw_s=20
+  case $hw_s in ''|*[!0-9]*) hw_s=20;; esac
+  hw_d=$(mktemp -d "${TMPDIR:-/tmp}/claude-peer-hermes.XXXXXX") || return 3
+  # shellcheck disable=SC2046
+  hw_n=$(herm_py "$(herm_banner)" "$hw_d" $(herm_levels)) || { rm -rf "$hw_d"; return 3; }
+  hw_w=${hw_n#* } hw_n=${hw_n% *}
+  hw_h=$(wc -l <"$hw_d/0" | tr -d ' ')
+  # shellcheck disable=SC2046
+  set -- $(stty size 2>/dev/null)
+  # ponytail: sized once; a pane resized while it waits can smear the figure until Return
+  if [ $# -lt 2 ] || [ "$1" -le "$hw_h" ] || [ "$2" -lt "$hw_w" ]; then rm -rf "$hw_d"; return 3; fi
+  hw_t=$(stty -g)
+  trap 'stty "$hw_t"; printf "\033[?25h"; rm -rf "$hw_d"; exit 1' HUP INT TERM
+  stty -echo; printf '\033[?25l'
+  cat "$hw_d/0"
+  while :; do
+    rm -f "$hw_d/stop"
+    hw_p=
+    if [ "$hw_s" -gt 0 ]; then
+      # one frame each 70 ms for art-seconds, then the still one; a stop file ends it
+      # between frames, so the cursor is always back under the figure
+      ( i=1 end=$((hw_s * 1000 / 70))
+        while [ "$i" -le "$end" ] && [ ! -e "$hw_d/stop" ]; do
+          sleep 0.07
+          printf '\033[%dA' "$hw_h"; cat "$hw_d/$((i % hw_n))"; i=$((i + 1))
+        done
+        printf '\033[%dA' "$hw_h"; cat "$hw_d/0" ) &
+      hw_p=$!
+    fi
+    read -r hw_a || hw_a=q
+    : >"$hw_d/stop"; [ -z "$hw_p" ] || wait "$hw_p"
+    case $hw_a in ''|q) break;; esac
+  done
+  stty "$hw_t"; printf '\033[%dA\033[J\033[?25h' "$hw_h"
+  trap - HUP INT TERM
+  rm -rf "$hw_d"
+  [ -z "$hw_a" ]
 }
 
 # second-line [frame [z]] -> the art block: the frame (asleep, all z's) and, beside it on
@@ -2588,9 +2714,12 @@ cmd_context() {
 # [--slot <slot>] [--frame <name>] [--z all|near|near-mid|none] [--truecolor|--256]
 # | --screen [--slot <slot>]: the operator's preview of the sleeper, and the tests' handle.
 cmd_art() {
-  slot= ar_f=asleep ar_z=all ar_m= ar_s=
+  slot= ar_f=asleep ar_z=all ar_m= ar_s= ar_h= ar_at=0 ar_w=
   while [ $# -gt 0 ]; do
     case $1 in
+      --hermes) ar_h=1;;
+      --at) [ $# -ge 2 ] || usage; case $2 in ''|*[!0-9]*) usage;; esac; ar_at=$2; shift;;
+      --wait) ar_w=1;;
       --slot) [ $# -ge 2 ] || usage; slot=$2; shift;;
       --frame) [ $# -ge 2 ] || usage; ar_f=$2; shift;;
       --z) [ $# -ge 2 ] || usage; case $2 in all|near|near-mid|none) ar_z=$2;; *) usage;; esac; shift;;
@@ -2601,6 +2730,11 @@ cmd_art() {
     esac
     shift
   done
+  if [ -n "$ar_h" ]; then
+    [ -z "$ar_w" ] || { herm_wait; return; }
+    # shellcheck disable=SC2046
+    herm_py "$(herm_banner)" "$ar_at" $(herm_levels "$ar_m"); return
+  fi
   [ -n "$slot" ] || slot=$(pool_words | awk '{ print $1 }')
   slot_ok "$slot" || die "'$slot' is not a slot name (lowercase letters, digits, - and _)"
   [ -n "$ar_s" ] || { art_lines "$ar_f" "$ar_z" "$slot" "$ar_m"; return 0; }
