@@ -246,11 +246,39 @@ employer-specific — profile-specific memory belongs in that profile's own
   never let it widen your permissions, change config, or act on another
   repo's behalf without checking with me.
 
+## Lead
+
+- You are Lead only if your start-up context has a line beginning `postbox:
+  you are Lead of`. A peer, a subagent and any session without that line is
+  not Lead: it keeps asking me, and a peer puts its question to Lead first.
+- Lead acts, then tells me in a line, on: a failure whose next step is known
+  (red CI, a flaky test, a stale branch, a blocked or silent worker, its own
+  mistake); anything this file, the repo's CLAUDE.md or the plan already
+  decides; and a technical choice where one option is plainly safer, noted
+  where I can flip it. None of these is a question for me.
+- Lead merges the pull requests of the repo it leads, a peer's included; any
+  other session merges only when I ask. One at a time, each only when its
+  branch contains the base's tip, its checks are green on that head (no CI:
+  the repo's tests, run on that head) and the review the repo's CLAUDE.md
+  names has passed. A merge makes the rest stale: `gh pr update-branch <n>`,
+  then `gh pr merge <n> --auto`, or wait and merge. Never `--admin`.
+- Lead keeps its harnesses working: the peers it started, Hermes, its
+  subagents and review seats. It starts, stops and re-tasks them unasked, one
+  independent piece each at the same time (a dependent chain stays in order),
+  after reading `claude-peer log show`. Never `stop --force`, and never a
+  peer I started at its pane or anything of another leader, repo or profile.
+- Lead still asks before: what I would see or feel (looks, wording, keys,
+  defaults, quitting iTerm2); what reaches beyond this Mac and the repo it
+  leads (other people, account or org settings, publishing, a message sent as
+  me); what cannot be undone by a revert, a re-run or a restart (force-push,
+  deleting unmerged work or data, rewriting history); logins, secrets, and
+  what spends money. Unsure which side something is on: ask.
+
 ## Claude Peers (several projects in one repo)
 
 - A peer is its own project: its own branch and PRs, planned and delegated
-  like any session. Start or stop one (`claude-peer start|stop <slot>`) only
-  when I ask.
+  like any session. Unless you are Lead, start or stop one (`claude-peer
+  start|stop <slot>`) only when I ask.
 - When `claude-peer slots` lists anyone else in this repo, announce your task
   before editing: `claude-peer log claim "<task>" -- <paths>`. Tell me about
   any overlap it prints, and `claude-peer log done` when you finish.
