@@ -278,7 +278,11 @@ setup() {
   printf '#!/bin/sh\nexec %s "$@"\n' "$(command -v jq)" > "$BATS_TEST_TMPDIR/jq/jq"
   printf '#!/bin/sh\nexec %s "$@"\n' "$(command -v python3)" > "$BATS_TEST_TMPDIR/py/python3"
   chmod +x "$BATS_TEST_TMPDIR/jq/jq" "$BATS_TEST_TMPDIR/py/python3"
-  for d in jq py; do
+  legs=()
+  command -v jq >/dev/null 2>&1 && legs+=(jq)
+  command -v python3 >/dev/null 2>&1 && legs+=(py)
+  (( ${#legs[@]} )) || skip "neither jq nor python3 installed"
+  for d in "${legs[@]}"; do
     run "$zsh_bin" -c "source ./dot_functions; PATH='$BATS_TEST_TMPDIR/$d'; print '{\"a\":1}' | json"
     [ "$status" -eq 0 ] || { echo "$d: status $status: $output"; false; }
     [[ "$output" == *'"a"'* ]] || { echo "$d: $output"; false; }
