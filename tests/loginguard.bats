@@ -8,6 +8,8 @@
 # real login are never touched). Fixture UUIDs only (see CLAUDE.md); the
 # fixtures carry no organization name and no email on purpose.
 
+bats_require_minimum_version 1.5.0
+
 PINNED=11111111-2222-4333-8444-555555555555
 OTHER=99999999-8888-4777-8666-555555555555
 
@@ -26,7 +28,8 @@ setup() {
   # A pinned session (where these tests are usually run from) hands its
   # variables down; the real CLI must never be the one asked.
   unset CLAUDE_CODE_EXECPATH CLAUDE_CONFIG_DIR CLAUDE_LOGIN_CHECK \
-    CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY XDG_STATE_HOME
+    CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY XDG_STATE_HOME \
+    CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_ORGANIZATION_UUID
   export LOGINGUARD_LOG="$BATS_TEST_TMPDIR/events.log"
 
   # An asdf-style shim resolves relative to $HOME, which is sandboxed here.
@@ -541,4 +544,199 @@ field() { # n of the TAB-separated $output
   [ -z "$output" ]
   [ "$(logouts)" -eq 0 ]
   [ "$(grep -c "$(printf '\tinternal-error\t')" "$LOGINGUARD_LOG")" -eq 4 ]
+}
+
+# ---- Claude Desktop's Code tab ------------------------------------------
+# "Desktop" = CLAUDE_CODE_ENTRYPOINT=claude-desktop plus a status whose
+# authMethod is oauth_token. Hooks run with CLAUDE_CONFIG_DIR, the rest with
+# --profile.
+
+desktop_no_org() {
+  pin '~/.claude-alpha' "$PINNED" "Fixture Org"
+  export CLAUDE_CODE_ENTRYPOINT=claude-desktop
+  echo '{"loggedIn":true,"authMethod":"oauth_token","loginExpiresAt":null}' > "$STATUS_FIXTURE"
+}
+
+no_internal_error() {
+  ! grep -q internal-error "$LOGINGUARD_LOG" 2>/dev/null || { echo "internal-error in the log"; false; }
+}
+
+@test "desktop: a token with no organization gives verdict desktop, exit 0" {
+  desktop_no_org
+  run "$LG" verdict --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 0 ]
+  [ "$(field 1)" = desktop ]
+  [ "$(field 3)" = - ]
+  [ "$(field 5)" = desktop:no-org ]
+}
+
+@test "desktop: hook prompt warns with a systemMessage on stdout, exit 0, every time" {
+  desktop_no_org
+  export CLAUDE_CONFIG_DIR="$HOME/.claude-alpha"
+  run --separate-stderr "$LG" hook prompt
+  [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
+  [ "$(printf '%s\n' "$output" | wc -l)" -eq 1 ]
+  printf '%s' "$output" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert list(d)==["systemMessage"]'
+  msg=$(printf '%s' "$output" | python3 -c 'import json,sys; print(json.load(sys.stdin)["systemMessage"])')
+  [[ $msg == "loginguard: not checked:"* ]]
+  [[ $msg == *"Claude Desktop"* ]]
+  [[ $msg == *"~/.claude-alpha"* ]]
+  [[ $msg == *"$PINNED"* ]]
+  [ "$(grep -c "warned-prompt" "$LOGINGUARD_LOG")" -eq 1 ]
+  [ "$(grep warned-prompt "$LOGINGUARD_LOG" | awk -F'\t' '{print NF" "$6}')" = "6 desktop:no-org" ]
+  run --separate-stderr "$LG" hook prompt
+  [ "$status" -eq 0 ]
+  [ "$(grep -c "warned-prompt" "$LOGINGUARD_LOG")" -eq 2 ]
+  no_internal_error
+}
+
+@test "desktop: launch, with or without --attended, warns and exits 0" {
+  desktop_no_org
+  for args in "" "--attended"; do
+    run "$LG" launch --profile "$HOME/.claude-alpha" $args
+    [ "$status" -eq 0 ]
+    [[ $output == *"claude: WARNING:"* ]]
+    [[ $output == *"Claude Desktop"* ]]
+    ! [[ $output == *REFUSED* ]] || { echo "launch refused a Desktop session"; false; }
+  done
+  [ "$(grep -c "warned-launch" "$LOGINGUARD_LOG")" -eq 2 ]
+  no_internal_error
+}
+
+@test "desktop: after-login and hook auth do nothing, and never log out" {
+  desktop_no_org
+  run "$LG" after-login --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  CLAUDE_CONFIG_DIR="$HOME/.claude-alpha" run "$LG" hook auth
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$(logouts)" -eq 0 ]
+}
+
+@test "desktop: the organization variable equal to the pin is ok and silent" {
+  desktop_no_org
+  export CLAUDE_CODE_ORGANIZATION_UUID="$PINNED"
+  run "$LG" verdict --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 0 ]
+  [ "$(field 1)" = ok ]
+  [ "$(field 3)" = "$PINNED" ]
+  [ "$(field 5)" = desktop:env-org ]
+  export CLAUDE_CONFIG_DIR="$HOME/.claude-alpha"
+  run --separate-stderr "$LG" hook prompt
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ -z "$stderr" ]
+  [ ! -e "$LOGINGUARD_LOG" ]
+  run "$LG" explain --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 0 ]
+  [[ $output == "ok:"* ]]
+  [[ $output == *"Claude Desktop"* ]]
+}
+
+@test "desktop: the organization variable differing from the pin is a mismatch, blocked, never logged out" {
+  desktop_no_org
+  export CLAUDE_CODE_ORGANIZATION_UUID="$OTHER"
+  run "$LG" verdict --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 3 ]
+  [ "$(field 1)" = mismatch ]
+  [ "$(field 3)" = "$OTHER" ]
+  [ "$(field 5)" = desktop:env-org ]
+  export CLAUDE_CONFIG_DIR="$HOME/.claude-alpha"
+  run --separate-stderr "$LG" hook prompt
+  [ "$status" -eq 2 ]
+  [ -z "$output" ]
+  [[ $stderr == "loginguard:"* ]]
+  [[ $stderr == *"Claude Desktop"* ]]
+  [[ $stderr == *"$PINNED"* ]]
+  [[ $stderr == *"$OTHER"* ]]
+  [[ $stderr == *"CLAUDE_LOGIN_CHECK=0"* ]]
+  ! [[ $stderr == *"claude auth login"* ]] || { echo "Desktop advice mentions claude auth login"; false; }
+  [ "$(grep -c blocked-prompt "$LOGINGUARD_LOG")" -eq 1 ]
+  unset CLAUDE_CONFIG_DIR
+  run "$LG" launch --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 3 ]
+  [[ $output == *REFUSED* ]]
+  run "$LG" after-login --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 3 ]
+  [[ $output == *"nothing removed"* ]]
+  CLAUDE_CONFIG_DIR="$HOME/.claude-alpha" run "$LG" hook auth
+  [ "$status" -eq 0 ]
+  [ "$(logouts)" -eq 0 ]
+  no_internal_error
+}
+
+@test "desktop: an organization in the status beats the variable" {
+  desktop_no_org
+  set_status "$PINNED" "" oauth_token
+  export CLAUDE_CODE_ORGANIZATION_UUID="$OTHER"
+  run "$LG" verdict --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 0 ]
+  [ "$(field 1)" = ok ]
+  [ "$(field 5)" = desktop:status-org ]
+  set_status "$OTHER" "" oauth_token
+  export CLAUDE_CODE_ORGANIZATION_UUID="$PINNED"
+  run "$LG" verdict --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 3 ]
+  [ "$(field 1)" = mismatch ]
+  [ "$(field 3)" = "$OTHER" ]
+  [ "$(field 5)" = desktop:status-org ]
+}
+
+@test "desktop: an organization variable that is not a UUID counts as absent" {
+  desktop_no_org
+  export CLAUDE_CODE_ORGANIZATION_UUID=not-a-uuid
+  run "$LG" verdict --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 0 ]
+  [ "$(field 1)" = desktop ]
+  [ "$(field 5)" = desktop:no-org ]
+}
+
+@test "not Desktop: a token with no organization is unverifiable whatever else is set" {
+  desktop_no_org
+  export CLAUDE_CODE_ORGANIZATION_UUID="$PINNED"
+  for entry in unset cli claude-desktop-3p local-agent; do
+    if [ "$entry" = unset ]; then unset CLAUDE_CODE_ENTRYPOINT; else export CLAUDE_CODE_ENTRYPOINT=$entry; fi
+    run "$LG" verdict --profile "$HOME/.claude-alpha"
+    [ "$status" -eq 4 ]
+    [ "$(field 5)" = auth-method:oauth_token ]
+    CLAUDE_CONFIG_DIR="$HOME/.claude-alpha" run "$LG" hook prompt
+    [ "$status" -eq 2 ]
+  done
+}
+
+@test "desktop: other statuses follow the rules of main" {
+  desktop_no_org
+  set_status "$OTHER"
+  run "$LG" verdict --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 3 ]
+  [ "$(field 1)" = mismatch ]
+  [ "$(field 5)" = - ]
+  echo '{"loggedIn":true,"authMethod":"api_key"}' > "$STATUS_FIXTURE"
+  run "$LG" verdict --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 4 ]
+  [ "$(field 5)" = auth-method:api_key ]
+  echo 'not json' > "$STATUS_FIXTURE"
+  CLAUDE_CONFIG_DIR="$HOME/.claude-alpha" run "$LG" hook prompt
+  [ "$status" -eq 2 ]
+}
+
+@test "desktop: CLAUDE_LOGIN_CHECK=0 lets the prompt through with a bypassed line and no warning" {
+  desktop_no_org
+  export CLAUDE_LOGIN_CHECK=0 CLAUDE_CONFIG_DIR="$HOME/.claude-alpha"
+  run --separate-stderr "$LG" hook prompt
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$(grep -c bypassed "$LOGINGUARD_LOG")" -eq 1 ]
+  ! grep -q warned-prompt "$LOGINGUARD_LOG" || { echo "a bypassed prompt was also warned"; false; }
+}
+
+@test "desktop: explain says it was not checked, with the pin and its label" {
+  desktop_no_org
+  run "$LG" explain --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 0 ]
+  [[ $output == "DESKTOP (not checked):"* ]]
+  [[ $output == *"$PINNED"* ]]
+  [[ $output == *"Fixture Org"* ]]
 }
