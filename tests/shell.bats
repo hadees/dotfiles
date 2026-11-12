@@ -143,3 +143,15 @@ setup() {
   [ "$status" -eq 0 ]
   [ "$output" = "sys sys" ]
 }
+
+@test "bash -ic runs its command instead of handing over to zsh" {
+  # dot_bash_profile used to exec zsh for every interactive bash, so a tool's
+  # `$SHELL -ilc CMD` (or `bash -ic CMD`) lost its command and zsh read stdin.
+  cd "$BATS_TEST_DIRNAME/.."
+  home="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$home"
+  cp dot_bashrc "$home/.bashrc"
+  cp dot_bash_profile "$home/.bash_profile"
+  run env -i HOME="$home" PATH="/usr/bin:/bin" "$(command -v bash)" -ic 'echo marker-$((6*7))' </dev/null
+  [[ "$output" == *"marker-42"* ]] || { echo "bash -ic dropped its command: $output"; false; }
+}
