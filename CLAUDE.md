@@ -83,7 +83,7 @@ Skill directories are dot-prefixed, so chezmoi never deploys them.
 CI (`.github/workflows/tests.yml`) runs the suite on `ubuntu-latest`,
 `macos-latest`, Rocky Linux 9 (container), and WSL Ubuntu (windows runner), plus a container
 job that runs the one-shot install end to end.
-The macOS job additionally executes `.macos` for real and asserts settings
+A separate macOS job, `test-macos-apply`, executes `.macos` for real and asserts settings
 stuck (`tests/macos-apply.bats`) — safe there because runners are throwaway
 VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 
@@ -138,7 +138,7 @@ these run in every repo on the machine:
   configured). `GIT_PUSH_CHECK=0` bypasses both for one push; the
   `hook.pre-push.run` chain still runs.
 - **Merge** is gated on GitHub: the `main` ruleset
-  (`.github/rulesets/main.json`) requires the five CI checks on a branch that
+  (`.github/rulesets/main.json`) requires the six CI checks on a branch that
   contains main's tip, so `gh pr merge` refuses a stale or red pull request
   and `--auto` waits for it. The review a merge here needs is
   `public-clone-advocate` on the final diff; merging main into the branch
@@ -248,9 +248,11 @@ rule first.
 | `claude-profiles` | `claude()`, per-repo pins, the second-session question, agent stubs |
 | `browser-routing` | `open-as`, `chrome-pairing`, the iTerm2 browser tab, Finicky |
 | `denyguard` | the Bash deny hook, what it cannot see, why it fails closed |
+| `memoryguard` | the memory-write hook, the placement decision and its seat, stopgaps, the audit |
 | `loginguard` | the org pin per profile, the prompt hook, the removal after a wrong login, why it fails closed |
 | `worktabs` | the iTerm2 tab launcher, `workspace.*` config, the Alfred workflow |
-| `claude-peer` | Workgroup peers, named slot worktrees, claims, the Hermes peer |
+| `claude-peer` | Workgroup peers, named slot worktrees, claims, the Hermes peer, overlay peers |
+| `claude-peer-handoff` | Lead and its name, `start --handoff`, `log idle`, the stop mark |
 | `claude-tab` | `claude-tab` list, focus, save, restore; `tabname` |
 | `branchname` | the branch label a prompt or status line shows, the detached-slot base record |
 | `postbox` | cross-profile session mail, its hooks, the courier, the roll-call |

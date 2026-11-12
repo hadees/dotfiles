@@ -30,6 +30,11 @@ directory cannot render them at all. It has no access to these templates. So
 the same bodies are also deployed, once, to `~/.claude-shared/agents`, and
 such a profile symlinks its `agents` directory at that — the
 public-machinery/private-profile split the shared `CLAUDE.md` already uses.
+A sixth definition, `decide-haiku`, is a decision seat: its reply is one
+JSON object read by `memoryguard`, so it ends with a `## Decision contract`
+instead of `## Report`. `tools: Read` exists only because the allowlist may not
+be empty; the caller runs it with no tools. It is never spawned from a
+conversation.
 `tests/claude-agents.bats` discovers the stub directories rather than listing
 them, and pins the shared copy's existence, because a hardcoded list is what
 hid an overlay profile having no `agents` directory at all. Each profile's `CLAUDE.md` is
@@ -111,7 +116,16 @@ to, `claude()` writes an OSC 1337 `SetUserVar=claudePeerEnter=<base64 of
 directory). Nothing is sent without `$ITERM_SESSION_ID`, inside a peer
 (`$CLAUDE_PEER_WORKTREE`), or without the state file `claude-peer default peers`
 writes. `claude-doctor`'s `workgroup:` line shows the key or why there is none.
-The mechanism is in `claude-peer.md`.
+The mechanism is in `claude-peer.md`. On a launch that sent the key, the tab
+is Lead's, so the launch becomes `claude -n <claude-peer name lead> …` (so
+`<repo>-lead`, `--continue` and `--resume` included, which is what keeps the
+name across `claude-tab restore`) unless an argument is `-n`, `--name` or
+`--name=…`, or a live session in this directory already has that name: two
+sessions with one name make a bare name undeliverable. The session list is now
+read once per attended launch, whether or not the second-session question is
+on, and shared with it. postbox finds Lead by process, never by this name; a
+launch not made through the wrapper keeps Claude Code's own name, and a name
+set with `/rename` is replaced at the next wrapper launch of that session.
 
 **The wrapper says when hooks will spawn osascript.** On an attended launch
 with `$ITERM_SESSION_ID` set and `~/.config/iterm2/it2` present, a state other

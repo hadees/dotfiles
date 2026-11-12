@@ -56,6 +56,15 @@
 # where. It is advisory: `log claim` warns of overlap and never fails on it.
 # When a pane's session ends, the pane logs `end`: `<Label> ended after <dur>`
 # and its task, which closes that label's claims as `stop` does.
+# Overlay peers: a machine with private overlays (chezmoi configs other than
+# chezmoi.toml whose source is a git repository) gets two more Workgroups, the two
+# above plus one pane per overlay, entered only by a tab of the public chezmoi
+# source and only once `install` has written the overlays state file. A pane is
+# stored by position, `Overlay <N>` running `overlay <N>`: iTerm2's preferences can
+# be a tracked file, so no overlay's name goes into them. The names are in the
+# state file; `overlay <N>` reads the N-th, cd's into that overlay's main
+# checkout and is a waiting pane of that repository, slot `overlay`, led from
+# where it started.
 # `install` edits the preferences while iTerm2 is quit because iTerm2 writes
 # its preferences back at quit (and, with a custom prefs folder, replaces the
 # domain from the folder at launch); an edit made while it runs is lost.
@@ -76,14 +85,18 @@
 #                            the same on <repo>/.claude/worktrees/<slug> and
 #                            <branch>
 #   run [--]                 a pane of an older definition: one line, a shell
-#   start <slot|next> [--continue] [--leader <dir>] [--context <name>] [--] [words...]
+#   start <slot|next> [--continue] [--leader <dir>] [--context <name>] [--handoff] [--] [words...]
 #                            wake a waiting pane to run claude in <slot> (next:
 #                            whatever the pane would take; words - reads stdin);
 #                            with --context the words are the value of that
 #                            start context (a context carries its own mode, so
 #                            --continue with it is exit 2; ask without a value
 #                            is 2, an unknown context 1, a pane that predates
-#                            contexts 4)
+#                            contexts 4); --handoff (Lead's, from a Claude
+#                            session) appends the hand-off note, so the peer
+#                            reports with log done and its turn ends and exit
+#                            reach Lead (2 without a prompt or context, from a
+#                            peer, or without CLAUDE_PID; 4 for an older pane)
 #                            -> slot<TAB>worktree<TAB>started<TAB>session name;
 #                            exit 3 already running or no slot free, 4 no pane
 #                            waiting, 1 not started in CLAUDE_PEER_START_WAIT s
@@ -98,6 +111,16 @@
 #                            shell that runs hermes_peer (hermes where a profile
 #                            routes here, else a one-line notice); no
 #                            repository or worktree needed
+#   overlays                 name<TAB>root<TAB>state<TAB>leader<TAB>pid per
+#                            private overlay of this machine (a chezmoi config
+#                            whose source is a git repository); state is idle,
+#                            waiting or running in a tab of another repository
+#   overlay <name|N>         a waiting pane of the overlay <name>, or of the N-th
+#                            overlay pane `install` wrote (the N-th name of the
+#                            overlays state file, not the N-th row of `overlays`):
+#                            enters its main checkout and takes the slot
+#                            `overlay` there; an unknown one is one line and a
+#                            plain shell
 #   peers [--leader <dir>] [<dir>]
 #                            worktree<TAB>pid<TAB>leader<TAB>label per live
 #                            claim in the repository of <dir> (default $PWD), sorted;
@@ -108,6 +131,17 @@
 #                            open claim of another that shares a path; exit 0
 #   log [--as <name>] note <text> | done [<text>]
 #                            a note; the end of your open claims
+#   log [--as <name>] idle [<text>]
+#                            written by the Stop hook of a handed-over peer: a
+#                            turn that ended without a done or note (--as: the
+#                            line as given, <text> required)
+#   name <slot|lead> [<dir>] the session name that role gets in <dir>:
+#                            <repo>-<slot>; <repo>-lead in the main checkout,
+#                            <repo>-<worktree>-lead in a linked one
+#   claim [<dir>]            key<TAB>value for the live claim of <dir>: pid,
+#                            leader, label, by, context, task, started,
+#                            handoff, lead-pid, lead-sid (- when missing);
+#                            exit 1 without one
 #   log show [--all]         open claims and the last 24 hours of notes (--all:
 #                            the file), from <git common dir>/claude-peer.log
 #   path <branch>            print the worktree path for <branch> (nothing
@@ -118,14 +152,26 @@
 #                            (Lead, Alpha, Beta, Gamma) that install would write
 #   install                  write that and "Claude Peers + Hermes" (the same
 #                            plus a Hermes pane) into iTerm2's preferences;
-#                            iTerm2 must be quit
+#                            iTerm2 must be quit. With private overlays on this
+#                            machine, also "Claude Peers + Overlays" and
+#                            "Claude Peers + Hermes + Overlays" (one pane per
+#                            overlay, after the others, stored by position,
+#                            `Overlay <N>` running `overlay <N>`, never a name)
+#                            and the overlays state file, which holds the names;
+#                            with none, it removes both
 #   here                     the key claude() sends to choose the workgroup for
-#                            this directory (base)
+#                            this directory (base; overlays in the public
+#                            chezmoi source once install wrote the overlay
+#                            panes)
 #   default <peers|builtin>  peers: disable the claude job trigger in every
 #                            profile and add one variable trigger per
 #                            workgroup (claude() sends the key); builtin: the
 #                            job enters Claude Code again; iTerm2 quit
-#   status                   store, iTerm2, workgroup, hermes and default state
+#   status                   store, iTerm2, workgroup, hermes and default state;
+#                            with private overlays (or their workgroups) also
+#                            what is installed against what this machine has,
+#                            which pane is which overlay, and who is in each
+#                            overlay's pane
 #   context list [--all] [<dir>]
 #                            name<TAB>title<TAB>ask<TAB>flags<TAB>path per start
 #                            context of the repository of <dir> (default $PWD):
@@ -219,7 +265,9 @@ ensure_exclude() { # dir
 # --- claims and the lock ---------------------------------------------------------
 # A claim is <git dir of the worktree>/claude-peer.claim: line 1 the pid of the
 # `claude-peer run` that owns the worktree, line 2 the leader's directory, line 3
-# the label. Live while the pid answers signal 0; `run` removes it when its
+# the label; a pane's start adds 4 by, 5 context, 6 task, 7 start epoch, 8
+# `handoff` or -, 9 the handing-over session's pid or -, 10 its session id or -.
+# Live while the pid answers signal 0; `run` removes it when its
 # claude returns, so a live claim means a Claude is running there now.
 
 claim_file() { d=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) && printf '%s/claude-peer.claim\n' "$d"; }
@@ -231,8 +279,14 @@ claim_live() { # worktree
   kill -0 "$p" 2>/dev/null
 }
 
+# The turn mark of a handed-over peer: one UTC stamp beside the claim.
+turn_file() { d=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) && printf '%s/claude-peer.turn\n' "$d"; }
+# The stop mark: who asked `stop`, written before the signal, read by the pane.
+stop_file() { d=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) && printf '%s/claude-peer.stop\n' "$d"; }
+
 write_claim() { # worktree label
   f=$(claim_file "$1") || die "$(basename "$1"): cannot find its git directory"
+  rm -f "$(turn_file "$1")" "$(stop_file "$1")"
   printf '%s\n%s\n%s\n' "$$" "$LEADER" "$2" >"$f"
   [ "$(sed -n 1p "$f")" = "$$" ] || die "$(basename "$1"): claimed by another peer"
 }
@@ -290,6 +344,25 @@ worktree_checkout() {
 # failure still shows git's fatal: line.
 git_immune() { ( trap '' HUP TERM; exec git "$@" ) >/dev/null; }
 
+# A slot's base is recorded in <git dir of the worktree>/claude-peer.base: line 1
+# the name (main), line 2 the full ref. bin/branchname reads it to label a
+# detached slot. Written once, from origin/HEAD, or on creation from the main
+# checkout's branch; never rewritten, and a failed write is not an error.
+base_file() { d=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) && printf '%s/claude-peer.base\n' "$d"; }
+
+write_base() { # repo wt created|reused
+  f=$(base_file "$2") || return 0
+  [ -f "$f" ] && return 0
+  if ref=$(git -C "$1" symbolic-ref --quiet refs/remotes/origin/HEAD); then
+    name=${ref#refs/remotes/origin/}
+  elif [ "$3" = created ] && ref=$(git -C "$1" symbolic-ref --quiet HEAD); then
+    name=${ref#refs/heads/}
+  else return 0
+  fi
+  { printf '%s\n%s\n' "$name" "$ref" >"$f"; } 2>/dev/null ||
+    warn "$(basename "$2"): could not record the base; the status line will show the commit"
+}
+
 # repo slot label -> slot<TAB>wt<TAB>created|reused, claimed. The slot's
 # worktree is the slot's: a registered one is reused as it was left (no checkout,
 # no status or branch test); a new one is detached at the base (origin/HEAD, else
@@ -322,6 +395,7 @@ slot_pick() {
     git_immune -C "$1" worktree add -q --detach "$wt" "$base" || die "$2: git worktree add failed"
     act=created
   fi
+  write_base "$1" "$wt" "$act"
   write_claim "$wt" "$3"
   printf '%s\t%s\t%s\n' "$2" "$wt" "$act"
 }
@@ -336,7 +410,7 @@ run_session() {
     CLAUDE_PEER_WORKTREE=$rs_wt; export CLAUDE_PEER_WORKTREE
     exec "${SHELL:-/bin/sh}" -i -c 'n=$1; shift; claude -n "$n" "$@"' claude-peer "$rs_name" "$@" )
   rs_rc=$?
-  rm -f "$(claim_file "$rs_wt")"
+  rm -f "$(claim_file "$rs_wt")" "$(turn_file "$rs_wt")"
   return $rs_rc
 }
 
@@ -346,7 +420,11 @@ POOL_DEFAULT='alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu
 
 # LC_ALL=C: in a UTF-8 locale [a-z] also matches capitals. `next` is the word
 # `start` uses for "whatever the pane would take", so it is not a slot.
-slot_ok() { [ "$1" != next ] && printf '%s\n' "$1" | LC_ALL=C grep -Eq '^[a-z][a-z0-9_-]*$'; }
+# next is `start`'s word for "whatever the pane would take"; lead is Lead's
+# name; claude and hermes are kept free for an agent segment in names later.
+slot_ok() { case $1 in next|lead|claude|hermes) return 1;; esac; printf '%s\n' "$1" | LC_ALL=C grep -Eq '^[a-z][a-z0-9_-]*$'; }
+# The one place a session name is composed: <repo>-<slot>. Needs rname.
+session_name() { printf '%s-%s\n' "$rname" "$1"; }
 label_of() { printf '%s%s' "$(printf '%s' "$1" | cut -c1 | tr a-z A-Z)" "$(printf '%s' "$1" | cut -c2-)"; }
 rname_of() { printf '%s' "${1##*/}" | tr -c 'A-Za-z0-9._-' '-'; }
 settle() { st=${CLAUDE_PEER_SETTLE:-2}; [ "$st" -gt 0 ] && sleep "$st"; return 0; }
@@ -459,6 +537,12 @@ dur_of() {
   elif [ "$1" -lt 86400 ]; then echo "$(( $1 / 3600 ))h"; else echo "$(( $1 / 86400 ))d"; fi
 }
 
+# What a hand-off adds to the peer's prompt, printed literally.
+handoff_note() {
+  # shellcheck disable=SC2016
+  printf '%s\n' 'Hand-off from Lead. When you finish, or cannot go on, write your report to a file under ${TMPDIR:-/tmp}/claude-reports/<this repository'"'"'s directory name>/ and then run: claude-peer log done "<DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT>: <one line; the commit or pull request; the report'"'"'s path>". That line reaches Lead by itself. A report left only in this pane reaches nobody.'
+}
+
 # One line of at most 80 characters, tabs as spaces, for a claim and the pane's
 # header.
 task_line() { printf '%s\n' "$1" | sed -n 1p | tr '\t\r' '  ' | cut -c1-80; }
@@ -466,11 +550,13 @@ task_line() { printf '%s\n' "$1" | sed -n 1p | tr '\t\r' '  ' | cut -c1-80; }
 # mode(fresh|continue|resume) slot(or -) prompt claude-args...: take a slot, run one
 # session in it, return. Never exits: a refusal is printed and the pane waits on.
 # The caller sets PG_CTX (a context path), PG_CTXNAME, PG_BY (who started it) and
-# PG_TASK (one line); they are read, and cleared, here.
+# PG_TASK (one line), and for a hand-off PG_HANDOFF (1), PG_LEADPID, PG_LEADSID;
+# they are read, and cleared, here.
 pane_go() {
   pg_mode=$1 pg_req=$2 pg_prompt=$3; shift 3
   pg_ctx=${PG_CTX-} pg_ctxname=${PG_CTXNAME-} pg_by=${PG_BY-} pg_task=${PG_TASK-} pg_wake=${PG_WAKE-}
-  PG_CTX= PG_CTXNAME= PG_BY= PG_TASK= PG_WAKE=
+  pg_ho=${PG_HANDOFF-} pg_lpid=${PG_LEADPID-} pg_lsid=${PG_LEADSID-}
+  PG_CTX= PG_CTXNAME= PG_BY= PG_TASK= PG_WAKE= PG_HANDOFF= PG_LEADPID= PG_LEADSID=
   if [ "$pg_req" != - ]; then
     out=$(slot_checkout "$repo" "$pg_req" "$(label_of "$pg_req")"); pg_rc=$?
   else
@@ -492,7 +578,11 @@ pane_go() {
   [ -z "$pg_wake" ] || [ "${pn_lay:-none}" = none ] || art_wake
   echo "$pg_msg"
   pg_t0=$(date +%s)
-  printf '%s\n%s\n%s\n%s\n' "${pg_by:--}" "${pg_ctxname:--}" "${pg_task:--}" "$pg_t0" >>"$(claim_file "$pg_wt")"
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "${pg_by:--}" "${pg_ctxname:--}" "${pg_task:--}" "$pg_t0" \
+    "$([ "$pg_ho" = 1 ] && echo handoff || echo -)" "${pg_lpid:--}" "${pg_lsid:--}" >>"$(claim_file "$pg_wt")"
+  if [ "$pg_ho" = 1 ] && [ -n "$pg_prompt" ]; then pg_prompt="$pg_prompt
+
+$(handoff_note)"; fi
   [ "$pg_mode" != continue ] || set -- --continue "$@"
   if [ -n "$pg_ctx" ]; then
     for pg_k in agent model effort; do
@@ -502,11 +592,22 @@ pane_go() {
   fi
   [ -z "$pg_prompt" ] || set -- "$@" "$pg_prompt"
   [ "$pg_mode" != resume ] || set -- "$@" --resume   # no value: Claude's own list chooses
-  run_session "$pg_wt" "$rname-$pg_taken" "$@"
+  run_session "$pg_wt" "$(session_name "$pg_taken")" "$@"
   # only after a session ran: a refused start returned above, and its `end`
   # would close a live peer's claims
+  # A requested stop says who asked and wakes nobody; a hand-off that ended by
+  # itself is `gone` and tells Lead; anything else is a plain end.
   pg_l=$(label_of "$pg_taken")
-  ( cd -- "$repo" && log_add "$pg_l" end "$pg_l ended after $(dur_of $(( $(date +%s) - pg_t0 )))${pg_task:+ ($pg_task)}" ) 2>/dev/null
+  pg_txt="$pg_l ended after $(dur_of $(( $(date +%s) - pg_t0 )))${pg_task:+ ($pg_task)}"
+  pg_sf=$(stop_file "$pg_wt")
+  if [ -f "$pg_sf" ]; then
+    pg_sw=$(sed -n 1p "$pg_sf"); rm -f "$pg_sf"
+    ( cd -- "$repo" && log_add "$pg_l" end "$pg_txt (stopped by ${pg_sw:--})" ) 2>/dev/null
+  elif [ "$pg_ho" = 1 ]; then
+    ( cd -- "$repo" && log_add "$pg_l" gone "$pg_txt" ) 2>/dev/null && tell_lead "$LEADER" "$pg_lpid" "$pg_lsid"
+  else
+    ( cd -- "$repo" && log_add "$pg_l" end "$pg_txt" ) 2>/dev/null
+  fi
   [ ! -t 1 ] || printf '\033]21337;status=;indicator=;status-color=;detail=\a'
   return 0
 }
@@ -1277,7 +1378,7 @@ pane() {
   pn_show=1 pn_state=picker
   while :; do
     pane_reap "$pn_wd"
-    printf '%s\n2\n' "$LEADER" >"$pn_me"
+    printf '%s\n3\n' "$LEADER" >"$pn_me"
     [ "$pn_pick" != off ] || pn_state=quiet
     pn_ev=
     while [ -z "$pn_ev" ]; do
@@ -1308,14 +1409,17 @@ pane() {
         pn_prompt=$(sed -n '3,$p' "$pn_me.start")
         pn_by=$(sed -n 's/^by=//p' "$pn_me.meta" 2>/dev/null | sed -n 1p)
         pn_cx=$(sed -n 's/^context=//p' "$pn_me.meta" 2>/dev/null | sed -n 1p)
+        pn_ho=$(sed -n 's/^handoff=//p' "$pn_me.meta" 2>/dev/null | sed -n 1p)
+        pn_lp=$(sed -n 's/^lead_pid=//p' "$pn_me.meta" 2>/dev/null | sed -n 1p)
+        pn_ls=$(sed -n 's/^lead_sid=//p' "$pn_me.meta" 2>/dev/null | sed -n 1p)
         rm -f "$pn_me.start" "$pn_me.meta" "$pn_me"
         slot_ok "$pn_req" || pn_req=-
-        PG_BY=$pn_by PG_WAKE=$pn_cut pn_cut=
+        PG_BY=$pn_by PG_WAKE=$pn_cut pn_cut= PG_HANDOFF=$pn_ho PG_LEADPID=$pn_lp PG_LEADSID=$pn_ls
         if [ -z "$pn_cx" ]; then
           PG_TASK=$(task_line "$pn_prompt")
         else
           # the file can have gone since `start` looked; the reason is printed and the pane waits on
-          pn_cxp=$(ctx_find "$pn_cx" "$(origin_slug)") && ctx_check "$pn_cxp" || { PG_BY= PG_WAKE=; pn_show=1; continue; }
+          pn_cxp=$(ctx_find "$pn_cx" "$(origin_slug)") && ctx_check "$pn_cxp" || { PG_BY= PG_WAKE= PG_HANDOFF= PG_LEADPID= PG_LEADSID=; pn_show=1; continue; }
           PG_CTX=$pn_cxp PG_CTXNAME=$pn_cx
           PG_TASK=$(task_line "$pn_cx${pn_prompt:+: $pn_prompt}")
           pn_prompt=$(ctx_prompt "$pn_cxp" "$pn_prompt")
@@ -1363,11 +1467,12 @@ cmd_run() {
   rname=$(rname_of "$repo")
   if [ -n "$slot" ]; then
     out=$(slot_checkout "$repo" "$slot" "$label") || exit $?
-    name=$rname-$slot
+    name=$(session_name "$slot")
   else
     valid_branch "$b"
+    [ "$(slug_of "$b")" != lead ] || die "'$b' is not a branch a peer can run on: lead is Lead's name"
     out=$(worktree_checkout "$repo" "$b") || exit 1
-    name=$rname-$(slug_of "$b")
+    name=$(session_name "$(slug_of "$b")")
   fi
   printf '%s\n' "$out"
   wt=$(printf '%s\n' "$out" | cut -f2)
@@ -1428,10 +1533,11 @@ cmd_start() {
   [ $# -ge 1 ] || usage
   st_req=$1; shift
   [ "$st_req" = next ] || slot_ok "$st_req" || die "'$st_req' is not a slot name (lowercase letters, digits, - and _)"
-  st_mode=fresh st_leader= st_cont=0 st_cx=
+  st_mode=fresh st_leader= st_cont=0 st_cx= st_ho=0
   while [ $# -gt 0 ]; do
     case $1 in
       --continue) st_mode=continue st_cont=1; shift;;
+      --handoff) st_ho=1; shift;;
       --leader) [ $# -ge 2 ] || usage; st_leader=$2; shift 2;;
       --context) [ $# -ge 2 ] || usage; st_cx=$2; shift 2;;
       --) shift; break;;
@@ -1443,6 +1549,14 @@ cmd_start() {
     -*) usage;;
     *) st_prompt="$*";;
   esac
+  st_cpid=${CLAUDE_PID-}; case $st_cpid in ''|*[!0-9]*) st_cpid=;; esac
+  if [ "$st_ho" = 1 ]; then
+    [ -n "$st_prompt$st_cx" ] || { warn "--handoff needs something to hand over"; exit 2; }
+    [ -z "${CLAUDE_PEER_WORKTREE-}" ] || { warn "--handoff is Lead's; a peer tells Lead with claude-peer log"; exit 2; }
+    [ -n "$st_cpid" ] || { warn "--handoff needs a Claude session to tell; run it from one"; exit 2; }
+  fi
+  st_csid=-
+  case ${CLAUDE_CODE_SESSION_ID-} in ''|*[!A-Za-z0-9-]*) ;; *) st_csid=$CLAUDE_CODE_SESSION_ID;; esac
   if [ -n "$st_cx" ]; then
     [ "$st_cont" = 0 ] || { warn "--context carries its own mode; --continue cannot go with it"; exit 2; }
     st_cxp=$(ctx_find "$st_cx" "$(origin_slug)") && ctx_check "$st_cxp" || exit 1
@@ -1455,7 +1569,7 @@ cmd_start() {
   if [ "$st_req" != next ]; then
     st_wt=$repo/.claude/worktrees/$st_req
     if claim_live "$st_wt"; then
-      printf '%s\t%s\trunning\t%s\n' "$st_req" "$st_wt" "$rname-$st_req"
+      printf '%s\t%s\trunning\t%s\n' "$st_req" "$st_wt" "$(session_name "$st_req")"
       exit 3
     fi
   fi
@@ -1475,8 +1589,13 @@ cmd_start() {
   [ -n "$st_pick" ] || st_pick=$(printf '%s\n' "$st_all" | sed -n 1p)
   st_own=$(printf '%s' "$st_pick" | cut -f1); st_pid=$(printf '%s' "$st_pick" | cut -f2)
   st_dir=$(wait_dir "$repo")
-  if [ -n "$st_cx" ] && [ "$(sed -n 2p "$st_dir/$st_own.$st_pid" 2>/dev/null)" != 2 ]; then
+  st_proto=$(sed -n 2p "$st_dir/$st_own.$st_pid" 2>/dev/null); case $st_proto in ''|*[!0-9]*) st_proto=0;; esac
+  if [ -n "$st_cx" ] && [ "$st_proto" -lt 2 ]; then
     warn "the waiting pane (pid $st_pid) predates contexts; reopen its tab"
+    exit 4
+  fi
+  if [ "$st_ho" = 1 ] && [ "$st_proto" -lt 3 ]; then
+    warn "the waiting pane (pid $st_pid) predates hand-offs; reopen its tab"
     exit 4
   fi
   # who is asking: the label of the slot worktree the caller stands in, else Lead
@@ -1501,7 +1620,10 @@ cmd_start() {
   fi
   st_file=$st_dir/$st_own.$st_pid.start
   st_meta=$st_dir/$st_own.$st_pid.meta
-  { printf 'by=%s\n' "$(log_clean "$st_by")"; [ -z "$st_cx" ] || printf 'context=%s\n' "$st_cx"; } >"$st_meta" || die "cannot write the request in $st_dir"
+  { printf 'by=%s\n' "$(log_clean "$st_by")"; [ -z "$st_cx" ] || printf 'context=%s\n' "$st_cx"
+    if [ -n "$st_cpid" ] && [ -z "${CLAUDE_PEER_WORKTREE-}" ]; then printf 'lead_pid=%s\nlead_sid=%s\n' "$st_cpid" "$st_csid"; fi
+    [ "$st_ho" = 0 ] || printf 'handoff=1\n'
+  } >"$st_meta" || die "cannot write the request in $st_dir"
   { printf '%s\n%s\n' "$st_mode" "$([ "$st_req" = next ] && echo - || echo "$st_req")"; printf '%s' "$st_prompt"; } >"$st_file.tmp" &&
     mv "$st_file.tmp" "$st_file" || die "cannot write the request in $st_dir"
   kill -USR1 "$st_pid" 2>/dev/null || { rm -f "$st_file" "$st_meta"; warn "the pane (pid $st_pid) is gone"; exit 4; }
@@ -1513,7 +1635,18 @@ cmd_start() {
     if [ -n "$st_got" ]; then
       st_who=$(log_who)
       log_add "$st_who" start "$(label_of "${st_got##*/}") by $st_who" 2>/dev/null
-      printf '%s\t%s\tstarted\t%s\n' "${st_got##*/}" "$st_got" "$rname-${st_got##*/}"
+      printf '%s\t%s\tstarted\t%s\n' "${st_got##*/}" "$st_got" "$(session_name "${st_got##*/}")"
+      # the stall clock: one detached postbox per hand-off, see postbox handoff-check
+      st_pb=${CLAUDE_PEER_POSTBOX:-$HOME/bin/postbox}
+      st_ld=$(printf '%s' "$st_pick" | cut -f3)
+      st_sm=$(git -C "$st_ld" config --get claude-peer.stall-minutes 2>/dev/null) || st_sm=10
+      case $st_sm in ''|*[!0-9]*) st_sm=0;; esac
+      if [ "$st_ho" = 1 ] && [ "$st_sm" -gt 0 ] && [ -x "$st_pb" ]; then
+        ( "$st_pb" handoff-check "$st_ld" "$st_got" "$st_pid" "$st_cpid" "$st_csid" </dev/null >/dev/null 2>&1 & )
+      fi
+      if [ "$st_ho" = 0 ] && [ -n "$st_prompt$st_cx" ] && [ -n "$st_cpid" ] && [ -z "${CLAUDE_PEER_WORKTREE-}" ]; then
+        warn "not a hand-off: nobody is told when $(label_of "${st_got##*/}") finishes (--handoff)"
+      fi
       exit 0
     fi
     # a USR1 that landed before the pane's wait began is lost; send it again
@@ -1576,6 +1709,7 @@ cmd_stop() {
     warn "$sp_slot is ${sp_status:-unknown}; stop --force to stop it anyway"
     exit 5
   fi
+  printf '%s\n' "$sp_who" >"$(stop_file "$sp_wt")" 2>/dev/null
   if [ -n "$sp_target" ]; then kill -TERM "$sp_target" 2>/dev/null
   else for sp_pid in $sp_kids; do kill -TERM "$sp_pid" 2>/dev/null; done; fi
   sp_limit=$(( ${CLAUDE_PEER_STOP_WAIT:-15} * 5 )); sp_i=0
@@ -1584,6 +1718,7 @@ cmd_stop() {
     sleep 0.2
     sp_i=$((sp_i + 1))
   done
+  rm -f "$(stop_file "$sp_wt")"
   warn "$sp_slot did not exit within ${CLAUDE_PEER_STOP_WAIT:-15}s"
   exit 1
 }
@@ -1595,10 +1730,10 @@ cmd_slots() {
   repo=$(repo_root_q) || exit 0
   rname=$(rname_of "$repo")
   { cmd_peers "$repo" | while IFS='	' read -r w p l _; do
-      printf '%s\trunning\t%s\t%s\t%s\t%s\n' "${w##*/}" "$w" "$p" "$l" "$rname-${w##*/}"
+      printf '%s\trunning\t%s\t%s\t%s\t%s\n' "${w##*/}" "$w" "$p" "$l" "$(session_name "${w##*/}")"
     done
     waiters "$repo" | while IFS='	' read -r sl p l; do
-      printf '%s\twaiting\t%s\t%s\t%s\t%s\n' "$sl" "$repo/.claude/worktrees/$sl" "$p" "$l" "$rname-$sl"
+      printf '%s\twaiting\t%s\t%s\t%s\t%s\n' "$sl" "$repo/.claude/worktrees/$sl" "$p" "$l" "$(session_name "$sl")"
     done
   } | LC_ALL=C sort
 }
@@ -1652,7 +1787,7 @@ log_scan() { # mode
     function ov(a, b) { return a == b || a == "." || b == "." || index(a "/", b "/") == 1 || index(b "/", a "/") == 1 }
     { n++; line[n] = $0; kind[n] = $3; who[n] = $2; ts[n] = $1
       if ($3 == "claim") open[n] = 1
-      else if ($3 == "done" || $3 == "stop" || $3 == "end") {
+      else if ($3 == "done" || $3 == "stop" || $3 == "end" || $3 == "gone") {
         l = $2; if ($3 != "done") { l = $4; sub(/ .*/, "", l) }
         for (i = 1; i < n; i++) if (who[i] == l && kind[i] == "claim") open[i] = 0 } }
     END {
@@ -1668,13 +1803,84 @@ log_scan() { # mode
       } }'
 }
 
-# [--as <name>] claim <task> [-- <path>...] | note <text> | done [<text>] | show [--all]
+# A line by anyone but Lead reaches Lead: postbox lead-news, detached and
+# silent, for the leader of this directory's live claim (and the handing-over
+# session, claim lines 9 and 10), else the main checkout. Always returns 0.
+log_tell() {
+  [ "$lg_me" != Lead ] || return 0
+  lt_lead= lt_pid=- lt_sid=-
+  if claim_live "$PWD"; then
+    lt_f=$(claim_file "$PWD")
+    lt_lead=$(sed -n 2p "$lt_f"); lt_pid=$(sed -n 9p "$lt_f"); lt_sid=$(sed -n 10p "$lt_f")
+  fi
+  [ -n "$lt_lead" ] || lt_lead=$(repo_root_q) || return 0
+  tell_lead "$lt_lead" "$lt_pid" "$lt_sid"
+}
+
+# leader pid sid: postbox lead-news, detached and silent, when postbox is there
+tell_lead() {
+  tl_pb=${CLAUDE_PEER_POSTBOX:-$HOME/bin/postbox}
+  [ -x "$tl_pb" ] || return 0
+  ( "$tl_pb" lead-news "$1" "${2:--}" "${3:--}" </dev/null >/dev/null 2>&1 & )
+  return 0
+}
+
+# <slot|lead> [<dir>]: the session name that role gets in <dir>. Lead's is
+# <repo>-lead in the main checkout and <repo>-<worktree>-lead in a linked one,
+# so two leaders of one repository never share a name.
+cmd_name() {
+  [ $# -ge 1 ] && [ $# -le 2 ] || usage
+  nm_role=$1
+  cd -- "${2:-$PWD}" 2>/dev/null || exit 1
+  repo=$(repo_root_q) || exit 1
+  rname=$(rname_of "$repo")
+  if [ "$nm_role" = lead ]; then
+    nm_top=$(git rev-parse --show-toplevel 2>/dev/null) || exit 1
+    if [ "$(cd "$nm_top" && pwd -P)" = "$(cd "$repo" && pwd -P)" ]; then session_name lead
+    else session_name "$(rname_of "$nm_top")-lead"; fi
+  else
+    slot_ok "$nm_role" || die "'$nm_role' is not a slot name (lowercase letters, digits, - and _)"
+    session_name "$nm_role"
+  fi
+}
+
+# [<dir>]: the live claim's ten lines as key<TAB>value, - for a missing one
+cmd_claim() {
+  [ $# -le 1 ] || usage
+  cc_d=${1:-$PWD}
+  claim_live "$cc_d" || exit 1
+  awk -v OFS='\t' 'BEGIN { split("pid leader label by context task started handoff lead-pid lead-sid", k, " ") }
+    { v[NR] = $0 } END { for (i = 1; i <= 10; i++) print k[i], (v[i] == "" ? "-" : v[i]) }' "$(claim_file "$cc_d")"
+}
+
+# idle without --as: a handed-over peer's turn ended; one line unless it logged
+# done or note since the last mark, and the mark moves to now either way
+log_idle() { # text
+  claim_live "$PWD" || exit 0
+  li_f=$(claim_file "$PWD")
+  [ "$(sed -n 8p "$li_f")" = handoff ] || exit 0
+  li_tf=$(turn_file "$PWD")
+  li_t0=$(sed -n 7p "$li_f"); case $li_t0 in ''|*[!0-9]*) li_t0=$(date +%s);; esac
+  li_mark=$(sed -n 1p "$li_tf" 2>/dev/null)
+  [ -n "$li_mark" ] || li_mark=$(date -u -d "@$li_t0" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$li_t0" +%Y-%m-%dT%H:%M:%SZ)
+  li_now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  if [ -f "$lg_file" ] && awk -F'\t' -v w="$lg_me" -v m="$li_mark" '$2 == w && ($3 == "done" || $3 == "note") && $1 > m { f = 1 } END { exit !f }' "$lg_file"; then
+    printf '%s\n' "$li_now" >"$li_tf"
+    exit 0
+  fi
+  li_txt=$(log_clean "$1" | cut -c1-200)
+  log_add "$lg_me" idle "$lg_me stopped after $(dur_of $(( $(date +%s) - li_t0 ))) without logging done${li_txt:+: $li_txt}" || exit 1
+  printf '%s\n' "$li_now" >"$li_tf"
+  log_tell
+}
+
+# [--as <name>] claim <task> [-- <path>...] | note <text> | done [<text>] | idle [<text>] | show [--all]
 cmd_log() {
   lg_as=
   if [ "${1-}" = --as ]; then [ $# -ge 2 ] || usage; lg_as=$2; shift 2; fi
   [ $# -ge 1 ] || usage
   lg_verb=$1; shift
-  case $lg_verb in claim|note|done|show) ;; *) usage;; esac
+  case $lg_verb in claim|note|done|idle|show) ;; *) usage;; esac
   lg_file=$(log_file) || { [ "$lg_verb" = show ] && exit 0; die "not inside a git repository"; }
   lg_me=${lg_as:-$(log_who)}
   case $lg_verb in
@@ -1687,8 +1893,11 @@ cmd_log() {
         LG_CUT=$(date -u -d "@$lg_t" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$lg_t" +%Y-%m-%dT%H:%M:%SZ) \
           log_scan show <"$lg_file"
       fi;;
-    note) [ $# -ge 1 ] || usage; log_add "$lg_me" note "$*";;
-    done) log_add "$lg_me" done "$*";;
+    note) [ $# -ge 1 ] || usage; log_add "$lg_me" note "$*" && log_tell;;
+    done) log_add "$lg_me" done "$*" && log_tell;;
+    idle)
+      if [ -n "$lg_as" ]; then [ $# -ge 1 ] || usage; log_add "$lg_me" idle "$*" && log_tell
+      else log_idle "$*"; fi;;
     claim)
       lg_task=
       while [ $# -gt 0 ] && [ "$1" != -- ]; do lg_task=${lg_task:+$lg_task }$1; shift; done
@@ -1701,6 +1910,7 @@ cmd_log() {
         lg_paths=$lg_paths$lg_tab$lg_r lg_mine=${lg_mine:+$lg_mine$lg_tab}$lg_r
       done
       log_add "$lg_me" claim "$lg_task" "$lg_paths" || exit 1
+      log_tell
       [ -n "$lg_mine" ] && LG_ME=$lg_me LG_MINE=$lg_mine log_scan overlap <"$lg_file"
       exit 0;;
   esac
@@ -1718,6 +1928,153 @@ cmd_plan() {
   for x in "$@"; do valid_branch "$x"; done
   repo=$(repo_root) || exit 1
   worktree_plan "$repo" "$@"
+}
+
+# --- overlays -----------------------------------------------------------------
+# An overlay is a private chezmoi source of this machine: a ~/.config/chezmoi
+# config other than chezmoi.toml whose `chezmoi --config <cfg> source-path` is in
+# a git repository (the rule dotfiles() applies). This section only finds them and
+# says whether a session runs in one; it reads git metadata and this script's own
+# files, nothing from an overlay's tree. Every compare is on `pwd -P` output.
+
+overlays_file() { printf '%s/claude-peer/overlays\n' "${XDG_STATE_HOME:-$HOME/.local/state}"; }
+
+# dir -> the physical main checkout of the non-bare repository holding dir
+root_of() {
+  ro_c=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  case $ro_c in
+    */.git) ( cd "${ro_c%/.git}" 2>/dev/null && pwd -P );;
+    *) return 1;;
+  esac
+}
+
+# The main checkout of the repository holding `chezmoi source-path`.
+public_root() {
+  command -v chezmoi >/dev/null 2>&1 || return 1
+  pr_s=$(chezmoi source-path 2>/dev/null) || return 1
+  [ -d "$pr_s" ] || return 1
+  root_of "$pr_s"
+}
+
+# config path -> the label source: its base name, lowercase, [a-z0-9_-], starting with a letter
+overlay_name() {
+  on_n=${1##*/}
+  on_n=$(printf '%s' "${on_n%.toml}" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C tr -c 'a-z0-9_-' '-')
+  case $on_n in [a-z]*) ;; *) on_n=o-$on_n;; esac
+  printf '%s\n' "$on_n"
+}
+
+# rows column value -> the config base name of the first row with that value in that column
+overlay_seen() {
+  printf '%s' "$1" | OS_V=$3 awk -F'\t' -v c="$2" '$c == ENVIRON["OS_V"] { n = split($3, p, "/"); print p[n]; exit }'
+}
+
+# name<TAB>root<TAB>config per overlay, sorted by name; a candidate that cannot be
+# one is named on stderr and left out
+overlay_list() {
+  ol_cand=
+  for ol_c in "$HOME"/.config/chezmoi/*.toml; do
+    [ -f "$ol_c" ] || continue
+    [ "${ol_c##*/}" != chezmoi.toml ] || continue
+    ol_cand="$ol_cand$(overlay_name "$ol_c")	$ol_c
+"
+  done
+  [ -n "$ol_cand" ] || return 0
+  command -v chezmoi >/dev/null 2>&1 || { warn "chezmoi is not on PATH; overlays cannot be resolved"; return 0; }
+  ol_pub=$(public_root) || ol_pub=
+  ol_cand=$(printf '%s' "$ol_cand" | LC_ALL=C sort)
+  ol_rows=
+  while IFS='	' read -r ol_n ol_c; do
+    ol_why=
+    ol_s=$(chezmoi --config "$ol_c" source-path 2>/dev/null </dev/null) || ol_s=
+    if [ ! -d "$ol_s" ]; then ol_why='chezmoi names no source directory'
+    elif ! ol_r=$(root_of "$ol_s"); then ol_why="$ol_s is not inside a non-bare git repository"
+    elif [ "$ol_r" = "$ol_pub" ]; then ol_why='its source is the public source'
+    elif ol_o=$(overlay_seen "$ol_rows" 2 "$ol_r") && [ -n "$ol_o" ]; then ol_why="same repository as $ol_o"
+    elif ol_o=$(overlay_seen "$ol_rows" 1 "$ol_n") && [ -n "$ol_o" ]; then ol_why="the name '$ol_n' is already taken by $ol_o"
+    fi
+    if [ -n "$ol_why" ]; then warn "overlay config ${ol_c##*/}: $ol_why; skipped"; continue; fi
+    ol_rows="$ol_rows$ol_n	$ol_r	$ol_c
+"
+    printf '%s\t%s\t%s\n' "$ol_n" "$ol_r" "$ol_c"
+  done <<EOF
+$ol_cand
+EOF
+}
+
+overlay_names() { overlay_list | awk -F'\t' '{ s = s (NR > 1 ? " " : "") $1 } END { print s }'; }
+
+# name -> the root of that overlay; status 1 when none
+overlay_root() {
+  or_r=$(overlay_list 2>/dev/null | OR_A=$1 awk -F'\t' '$1 == ENVIRON["OR_A"] { print $2; exit }')
+  [ -n "$or_r" ] && printf '%s\n' "$or_r"
+}
+
+# N -> the name of the N-th overlay pane install wrote (the N-th name of the state
+# file); status 1 when there is none: no state file, N is 0 or past the last name
+overlay_installed() {
+  oi_n=$(sed -n 1p "$(overlays_file)" 2>/dev/null |
+    OI_N=$1 awk '{ n = ENVIRON["OI_N"] + 0; if (n >= 1 && n <= NF) print $n }')
+  [ -n "$oi_n" ] && printf '%s\n' "$oi_n"
+}
+
+# names (space separated) -> one bar label per name, TAB separated, in order. The
+# label is the position: the names stay out of iTerm2's preferences.
+overlay_labels() { printf '%s\n' "$1" | awk '{ for (i = 1; i <= NF; i++) printf "%sOverlay %d", (i > 1 ? "\t" : ""), i; print "" }'; }
+
+# stdin: rows with a pid in column 2 and a leader in column 3 -> leader<TAB>pid of
+# the first led from outside root (a pane of another repository's tab)
+overlay_foreign() {
+  OF_R=$1 awk -F'\t' 'BEGIN { r = ENVIRON["OF_R"] } $3 != r && index($3, r "/") != 1 { print $3 "\t" $2; exit }'
+}
+
+# root -> state<TAB>leader<TAB>pid
+overlay_state() {
+  os_x=$(cmd_peers "$1" | overlay_foreign "$1")
+  [ -z "$os_x" ] || { printf 'running\t%s\n' "$os_x"; return 0; }
+  os_x=$(waiters "$1" | overlay_foreign "$1")
+  [ -z "$os_x" ] || { printf 'waiting\t%s\n' "$os_x"; return 0; }
+  printf 'idle\t-\t-\n'
+}
+
+cmd_overlays() {
+  [ $# -eq 0 ] || usage
+  overlay_list | while IFS='	' read -r co_n co_r _; do
+    printf '%s\t%s\t%s\n' "$co_n" "$co_r" "$(overlay_state "$co_r")"
+  done
+}
+
+# <name|N>. The pane of an overlay in the public source's workgroup: stands in the
+# overlay's main checkout and is an ordinary waiting pane of that repository,
+# slot `overlay`, led from the directory it started in. N is the N-th pane install
+# wrote (the state file), resolved against the overlays now, so a changed set
+# never re-points a pane. Never ends at iTerm2's restart banner: a missing overlay
+# is one line and a plain shell.
+cmd_overlay() {
+  [ $# -eq 1 ] || usage
+  LEADER=$(pwd -P)
+  co_name=$1
+  case $1 in
+    ''|*[!0-9]*) ;;
+    *) co_name=$(overlay_installed "$1") || {
+         echo "claude-peer: no overlay pane $1 is installed on this machine (claude-peer status says what is; claude-peer install with iTerm2 quit writes them); plain shell"
+         exec "${SHELL:-/bin/sh}" -i
+       };;
+  esac
+  if ! co_root=$(overlay_root "$co_name"); then
+    echo "claude-peer: no overlay '$co_name' on this machine (claude-peer overlays lists them; a changed set needs claude-peer install with iTerm2 quit); plain shell"
+    exec "${SHELL:-/bin/sh}" -i
+  fi
+  unset CLAUDE_PROFILE
+  if ! cd -- "$co_root" 2>/dev/null; then
+    echo "claude-peer: cannot enter $co_root; plain shell"
+    exec "${SHELL:-/bin/sh}" -i
+  fi
+  repo=$co_root
+  rname=$(rname_of "$repo")
+  slot=overlay
+  label=$(label_of "$co_name")
+  pane
 }
 
 # --- the Workgroup ------------------------------------------------------------
@@ -1750,7 +2107,10 @@ prefs_store() {
   skind=folder; spath=${f%/}/com.googlecode.iterm2.plist
 }
 
-# peer_py <workgroup|install|status|default> <folder|domain> <plist path> [peers|builtin]
+# peer_py <workgroup|install|status|default> <folder|domain> <plist path> [peers|builtin [overlay labels]]
+# (the 5th of install is the overlay panes' bar labels, TAB separated, from overlay_labels;
+# install is given no overlay name. status: the 4th is the enter state, then the overlay
+# names now, the state file's first line, and the labels now)
 # The stdlib only: plistlib for the store, json for the Workgroups value (an
 # NSData holding a JSON array), defaults for the domain.
 peer_py() {
@@ -1818,6 +2178,36 @@ def build():
     """[Claude Peers, Claude Peers + Hermes]"""
     base = {"uniqueIdentifier": GROUP, "name": NAME, "sessions": build_base("claudePeer")}
     return [base, with_hermes(base)]
+
+OGROUP, OHGROUP = "claudePeer.v.overlays", "claudePeer.v.overlays.h"
+
+def with_overlays(group, gid, name, labels):
+    """A copy of a definition under id gid and name, every session id moved under
+    gid, and one pane per bar label appended after the others. A pane is stored by
+    position, never by overlay name: the store can be a tracked file."""
+    old = next(s for s in group["sessions"] if s["kind"] == {"kind": "root"})["uniqueIdentifier"][:-len(".main")]
+    out = copy.deepcopy(group)
+    out.update(uniqueIdentifier=gid, name=name)
+    for s in out["sessions"]:
+        s["uniqueIdentifier"] = gid + s["uniqueIdentifier"][len(old):]
+        if "parentID" in s:
+            s["parentID"] = gid + s["parentID"][len(old):]
+    out["sessions"] += [session("%s.o.%d" % (gid, n), label, "peer", "claude-peer overlay %d" % n,
+                                parent=gid + ".main") for n, label in enumerate(labels, 1)]
+    return out
+
+def build_overlays(labels):
+    """[] for no overlays, else [Claude Peers + Overlays, Claude Peers + Hermes + Overlays];
+    Hermes keeps its place, so the second is built from the Hermes twin."""
+    if not labels:
+        return []
+    base, hermes_twin = build()
+    return [with_overlays(base, OGROUP, "Claude Peers + Overlays", labels),
+            with_overlays(hermes_twin, OHGROUP, "Claude Peers + Hermes + Overlays", labels)]
+
+def labels_arg(i):
+    """argv[i] as the overlay panes' bar labels, TAB separated; [] when absent or empty."""
+    return [l for l in sys.argv[i].split("\t") if l] if len(sys.argv) > i else []
 
 VAR = "user.claudePeerEnter"
 VAR_ENTER = 115  # iTermTriggerMatchTypeEventVariableChanged
@@ -1903,6 +2293,35 @@ if mode == "status":
             else:
                 print("%s: installed, out of date (%d sessions: %s); this version defines %d (%s) — claude-peer install (with iTerm2 quit)"
                       % (label, len(names), ", ".join(names), len(wnames), ", ".join(wnames)))
+        # overlays: said only when this machine, the store or the state file has any
+        ovs = sys.argv[5].split() if len(sys.argv) > 5 else []
+        ofile = sys.argv[6].split() if len(sys.argv) > 6 else []
+        labels = labels_arg(7)
+        def paired(bar, names):
+            return ", ".join("%s = %s" % (b, names[i].capitalize() if i < len(names) else "?") for i, b in enumerate(bar))
+        have = [g for g in groups if g.get("uniqueIdentifier") in (OGROUP, OHGROUP)]
+        nowl = ", ".join(o.capitalize() for o in ovs)
+        if ovs and not have:
+            print("overlays: not installed — this machine has %d (%s); claude-peer install (with iTerm2 quit)" % (len(ovs), nowl))
+        elif have:
+            first = have[0]["uniqueIdentifier"]
+            bar = [s.get("displayName", "?") for s in have[0].get("sessions", [])
+                   if str(s.get("uniqueIdentifier", "")).startswith(first + ".o.")]
+            instl = paired(bar, ofile)
+            if not ovs:
+                print("overlays: installed (%s), but this machine has none now — claude-peer install (with iTerm2 quit) removes them" % instl)
+            elif (len(labels) == len(ovs)
+                  and all(shape(next((g for g in have if g["uniqueIdentifier"] == w["uniqueIdentifier"]), {})) == shape(w)
+                          for w in build_overlays(labels))
+                  and (not ofile or ofile == ovs)):
+                print("overlays: installed (%d panes: %s)" % (len(ovs), paired(labels, ovs)))
+            else:
+                print("overlays: installed, out of date (%s); this machine has %d (%s) — claude-peer install (with iTerm2 quit)"
+                      % (instl, len(ovs), paired(labels, ovs)))
+        if ofile and not have:
+            print("overlays: the state file lists %s but no overlay workgroup is installed, so a claude tab in the chezmoi source enters no workgroup — claude-peer install (with iTerm2 quit)" % " ".join(ofile))
+        elif have and not ofile:
+            print("overlays: installed, but the state file is missing, so claude-peer here stays base and no overlay pane finds its overlay — claude-peer install (with iTerm2 quit)")
     prof = {}
     for b, t in job_triggers(pl):
         st = prof.setdefault(b.get("Name", "?"), [])
@@ -1947,13 +2366,18 @@ elif mode == "install":
     except (ValueError, TypeError) as e:
         fail("the Workgroups value is not a JSON list (%s); nothing written" % e)
     done = []
-    for wg in build():
+    labels = labels_arg(5)
+    for wg in build() + build_overlays(labels):
         idx = next((i for i, g in enumerate(groups) if g.get("uniqueIdentifier") == wg["uniqueIdentifier"]), None)
         if idx is None:
             groups.append(wg)
         else:
             groups[idx] = wg
         done.append('"%s" %s' % (wg["name"], "written" if idx is None else "replaced"))
+    if not labels:  # no overlay on this machine: a pair installed earlier goes
+        for g in [g for g in groups if g.get("uniqueIdentifier") in (OGROUP, OHGROUP)]:
+            groups.remove(g)
+            done.append('"%s" removed' % g.get("name"))
     pl["Workgroups"] = json.dumps(groups, separators=(",", ":")).encode("utf-8")
     if len(sys.argv) > 4 and sys.argv[4] == "peers":
         n = len(sync_var_triggers(pl, groups))
@@ -1998,9 +2422,17 @@ enter_file() { printf '%s/claude-peer/enter\n' "${XDG_STATE_HOME:-$HOME/.local/s
 enter_state() { [ -r "$(enter_file)" ] && sed -n 1p "$(enter_file)"; return 0; }
 
 # The key the wrapper sends for this directory: the workgroup to enter.
+# `overlays` only inside the public chezmoi source, only when install has written
+# the state file (so the definitions exist) and only while this machine has an
+# overlay; every other directory, and any failure on the way, is `base`.
 cmd_here() {
   [ $# -eq 0 ] || usage
-  printf 'base\n'
+  he_k=base
+  if [ -s "$(overlays_file)" ] && he_r=$(root_of "$PWD") && he_p=$(public_root) \
+     && [ "$he_r" = "$he_p" ] && [ -n "$(overlay_list 2>/dev/null)" ]; then
+    he_k=overlays
+  fi
+  printf '%s\n' "$he_k"
 }
 
 cmd_workgroup() {
@@ -2013,7 +2445,15 @@ cmd_install() {
   need_macos install
   proc_running iTerm2 && die "quit iTerm2 first — it rewrites its preferences at quit and would overwrite this"
   prefs_store
-  r=$(peer_py install "$skind" "$spath" "$(enter_state)") || exit 1
+  ovs=$(overlay_names)
+  r=$(peer_py install "$skind" "$spath" "$(enter_state)" "$(overlay_labels "$ovs")") || exit 1
+  # after peer_py succeeded: `here` answers overlays only for a definition that is there
+  ovf=$(overlays_file)
+  if [ -n "$ovs" ]; then
+    mkdir -p "${ovf%/*}" && printf '%s\n' "$ovs" >"$ovf" || die "cannot write $ovf"
+  else
+    rm -f "$ovf"
+  fi
   [ "$skind" = folder ] && where=$spath || where="the com.googlecode.iterm2 domain"
   printf 'claude-peer: %s in %s; start iTerm2, then Shell > Workgroups > Claude Peers in a plain tab\n' "$r" "$where"
 }
@@ -2043,8 +2483,19 @@ cmd_status() {
   if proc_running iTerm2; then printf 'iterm2: running\n'; else printf 'iterm2: not running (install allowed)\n'; fi
   # the store that is true now: iTerm2's memory (the domain) while it runs, the
   # folder file it only writes at quit otherwise
-  if proc_running iTerm2; then peer_py status domain "" "$(enter_state)"; else peer_py status "$skind" "$spath" "$(enter_state)"; fi
+  ovs=$(overlay_names)
+  ovs_filed=$(sed -n 1p "$(overlays_file)" 2>/dev/null)
+  ovs_lab=$(overlay_labels "$ovs")
+  if proc_running iTerm2; then peer_py status domain "" "$(enter_state)" "$ovs" "$ovs_filed" "$ovs_lab"; else peer_py status "$skind" "$spath" "$(enter_state)" "$ovs" "$ovs_filed" "$ovs_lab"; fi
   peers_summary
+  [ -n "$ovs" ] || return 0
+  if st_pub=$(public_root); then printf 'overlays: entered from %s\n' "$st_pub"
+  else printf 'overlays: chezmoi names no source directory in a git repository, so no tab enters them\n'; fi
+  overlay_list 2>/dev/null | while IFS='	' read -r st_n st_r _; do
+    overlay_state "$st_r" | ST_N=$st_n ST_R=$st_r awk -F'\t' '
+      $1 == "idle" { printf "overlay: %s idle in %s\n", ENVIRON["ST_N"], ENVIRON["ST_R"]; next }
+      { printf "overlay: %s %s in %s (tab of %s, pid %s)\n", ENVIRON["ST_N"], $1, ENVIRON["ST_R"], $2, $3 }'
+  done
 }
 
 # peers: how many Claudes run and how many panes wait in the repository the
@@ -2305,11 +2756,15 @@ cmd=$1; shift
 case $cmd in
   run) cmd_run "$@";;
   hermes) cmd_hermes "$@";;
+  overlays) cmd_overlays "$@";;
+  overlay) cmd_overlay "$@";;
   peers) cmd_peers "$@";;
   start) cmd_start "$@";;
   stop) cmd_stop "$@";;
   slots) cmd_slots "$@";;
   log) cmd_log "$@";;
+  claim) cmd_claim "$@";;
+  name) cmd_name "$@";;
   path) cmd_path "$@";;
   plan) cmd_plan "$@";;
   here) cmd_here "$@";;

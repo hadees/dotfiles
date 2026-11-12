@@ -1,0 +1,1286 @@
+#!/bin/sh
+# memoryguard — decides where a memory note belongs.
+#
+# Claude Code writes per-project memory notes with the ordinary Write and
+# Edit tools, and an instruction not to put process rules or restated
+# repository facts there has existed since 2026-09 without holding.
+# memoryguard asks two typed questions of the note's text — which of seven
+# homes does it belong in, and does it name anything private — and `hook pre`
+# refuses a write that confidently belongs in a public home (or nowhere) and
+# names nothing private, naming the destination. A note that names something
+# private, or whose home is unclear, is saved with a note to the session;
+# only a note not worth saving is refused whatever it names. It writes
+# nothing itself except its own log.
+#
+# Subcommands: the decision (`decide`), its backends, the log and the
+# cache (`log`), a self-test of the real backend (`selftest`), the gate on
+# Write and Edit (`hook pre`), the gate on Bash writes into a memory directory
+# (`hook bash`), the SessionStart check (`hook start`), the audit of a
+# memory directory (`audit`) and the settings block to paste (`settings`).
+#
+# The decider is shaped as a Jev-style function: a request is one JSON
+# object, `{"v": 1, "state": ..., "questions": {<id>: {"type": "choice",
+# "instructions": ..., "criteria": {<choice id>: <when it applies>}}}}`, and
+# the answer is `{"answers": {<id>: {"choice": ..., "confidence": 0-1,
+# "reason": ...}}}` (protocol v1). The rubric lives on this side of that
+# protocol, so any executable that speaks it can stand in as the backend.
+# Every answer is validated here, whichever backend gave it.
+#
+# Usage:
+#   memoryguard decide [--project DIR] [--json] FILE   FILE `-` is stdin
+#   memoryguard selftest [--mode lean|agent]
+#   memoryguard log [--since DAYS]
+#   memoryguard hook pre          PreToolUse JSON on stdin; always exits 0
+#   memoryguard hook bash         the same, for the Bash tool
+#   memoryguard hook start        SessionStart JSON on stdin; prints at most 3 lines
+#   memoryguard audit [--propose] [--all] [--mark-kept FILE...] [DIR]
+#   memoryguard settings
+# env:
+#   MEMORYGUARD_BACKEND       `claude` or the absolute path of a protocol-v1
+#                             executable (else git config
+#                             memoryguard.backend, else `claude`).
+#   MEMORYGUARD_CLAUDE_MODE   `lean` or `agent` (else git config
+#                             memoryguard.claudeMode, else the default in
+#                             CLAUDE_MODE_DEFAULT below).
+#   MEMORYGUARD_BACKEND_TIMEOUT   seconds; shortens BACKEND_TIMEOUT (tests).
+#   CLAUDE_CONFIG_DIR         the profile directory (else $HOME/.claude).
+#   XDG_STATE_HOME            where the log and the claude backend's
+#                             working directory live.
+set -eu
+
+# A hook reads its payload once, here, so that a write nowhere near a memory
+# directory costs one `sh` start and a string test, and python never starts.
+# The payload then reaches python on fd 3 through an already-unlinked file.
+# A profile that sets autoMemoryDirectory may keep notes where the path has no
+# `/memory/` in it, so for such a profile the string test is skipped.
+case "${1:-}" in
+hook)
+  [ -z "${MEMORYGUARD_DEPTH:-}" ] || exit 0
+  payload=$(cat) || exit 0
+  case "${2:-}" in
+  pre | bash)
+    # A Bash command may `cd` into the directory and name no path with `/memory/` in it.
+    want=/memory/
+    [ "$2" = bash ] && want=/memory
+    case $payload in
+    *"$want"*) ;;
+    *) grep -qs autoMemoryDirectory "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" || exit 0 ;;
+    esac
+    ;;
+  esac
+  tmp=$(mktemp "${TMPDIR:-/tmp}/memoryguard.XXXXXX") || exit 0
+  printf '%s' "$payload" >"$tmp"
+  exec 3<"$tmp"
+  rm -f "$tmp"
+  ;;
+*) exec 3<&0 ;;
+esac
+
+command -v python3 >/dev/null 2>&1 || {
+  printf 'memoryguard: python3 not found\n' >&2
+  case "${1:-}" in hook) exit 0 ;; esac
+  exit 2
+}
+
+# `python3 -` reads its program from the heredoc below, which occupies
+# stdin, so a note piped to `decide -` (or a hook payload) is read from fd 3
+# (denyguard does the same).
+exec python3 - "$@" <<'PY'
+import calendar
+import concurrent.futures
+import hashlib
+import json
+import os
+import re
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+RUBRIC_V = 4
+BLOCK_AT = 0.75
+PRIVATE_AT = 0.5
+BACKEND_TIMEOUT = 20
+NOTE_MAX = 12000
+INDEX_MAX = 8000
+LINE_MAX = 200
+KEEP_MIN = 20
+STOPGAP_MAX_DAYS = 14
+UNPLACED_MIN = 3
+CLAUDE_MODE_DEFAULT = "lean"
+SEAT = "decide-haiku"
+OUTLINE_MAX = 200
+EVIDENCE_MAX = 12
+EVIDENCE_LINE_MAX = 300
+# Outcomes whose newest log line decides a text again without a model call.
+CACHE_ALLOW = ("allow-memory", "audit-memory", "kept-by-audit")
+CACHE_BLOCK = ("block",)
+
+HOME = os.environ.get("HOME", "")
+FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+DESTINATION = {
+    "memory": (
+        "Belongs in per-project memory: a fact about this project, or the "
+        "operator's wishes for it, that no file in the repository, no "
+        "documentation and no commit or pull-request history states, and "
+        "that matters only in this project. Includes in-flight state with "
+        "its reason, a decision the operator made and why, and a pointer to "
+        "something outside the repository."
+    ),
+    "shared-memory": (
+        "A rule about how to work that would hold in any repository: "
+        "sequencing, delegation, when to ask and when to act, how to treat "
+        "other sessions or tools, a standing preference of the operator that "
+        "is not about this project's code."
+    ),
+    "rule": (
+        "Design detail, a gotcha or a how-it-works note about one tool, "
+        "script or file of this repository, useful only while that file is "
+        "being worked on."
+    ),
+    "claude-md": (
+        "A fact every session in this repository needs: layout, "
+        "conventions, commands, a thing never to do in this repository."
+    ),
+    "docs": (
+        "Reference material for people: an evaluation, a how-to, a list of "
+        "things to watch, hardware or vendor notes."
+    ),
+    "overlay": (
+        "Configuration knowledge that names a person, an account, an "
+        "organisation, a host, a private repository or where a secret is "
+        "kept, and that would otherwise be repository documentation."
+    ),
+    "nowhere": (
+        "Not worth saving: it restates what the repository's files, its "
+        "history or a closed pull request already say; or it is task state "
+        "that ends with this session; or it records that something was done "
+        "rather than something a later session must know."
+    ),
+}
+DESTINATION_INSTRUCTIONS = (
+    "A coding assistant is about to save this note into its per-project "
+    "memory, which is loaded into every later session in this one project. "
+    "Decide where the note's content belongs. Judge the content, not its "
+    "wording and not its frontmatter type."
+)
+PLACE_INSTRUCTIONS = (
+    "If the note's content were moved out of memory, which existing place is "
+    "its nearest home? Choose none when nothing listed fits."
+)
+PRIVATE_INSTRUCTIONS = (
+    "Look only at the text under NOTE. Does it name anything private: a "
+    "person, an account or login, an organisation, a host or machine name, a "
+    "network address or port, a private repository, a path that is specific "
+    "to one machine or user, or where a secret is kept? A role or a generic "
+    "word (the operator, the work account, a host, the overlay) names "
+    "nothing private, and neither does a tool, script, file or agent of this "
+    "repository named by its path inside the repository. Writing ~ for the "
+    "home directory is not private in itself, and neither is a standard "
+    "directory under it such as ~/.config, ~/.ssh or ~/bin, but what follows "
+    "can be: a directory named after a person, an account, an organisation, "
+    "a host, or a repository other than this one is private. When unsure, "
+    "answer yes."
+)
+PRIVATE_CRITERIA = {
+    "yes": "It names at least one such thing, anywhere, including inside a path.",
+    "no": "It names none: roles, generic words, and this repository's own tools, scripts and files only.",
+}
+# Homes a note's general point may be written into, and which may be public.
+PUBLIC_HOMES = ("shared-memory", "rule", "claude-md", "docs")
+# Which place-id prefix agrees with which destination.
+PLACE_PREFIX = {
+    "shared-memory": "shared:",
+    "rule": "rule:",
+    "claude-md": "claude-md:",
+    "docs": "doc:",
+}
+
+SELFTEST = [
+    ("Dependent steps run one agent at a time; independent chains may run in "
+     "parallel. This holds in every repository.", "shared-memory"),
+    ("When the operator sounds impatient, do not reorder a sequence already "
+     "stated; say so if the order changes.", "shared-memory"),
+    ("The frobnicate script's --dry-run flag skips the cache write, because "
+     "the cache is keyed on mtime. See bin/frobnicate.", "rule"),
+    ("Pull request 12 merged the parser rewrite on 2026-01-02 and added "
+     "tests in tests/parser.bats.", "nowhere"),
+    ("The operator wants the staging box left running over the weekend of "
+     "the demo, because the client will try it. Revisit after the demo.",
+     "memory"),
+    # No expected destination: each of these names something private (invented names).
+    ("The frobnicate mount works as user jdoe on host nas-attic.example.net, "
+     "port 2222; StrictModes has to be off on that box.", None),
+    ("For repositories of the examplecorp organisation, open pull requests "
+     "from the jdoe-examplecorp account, never the personal one.", None),
+    ("The frobnicate cache for the billing work lives in "
+     "~/code/examplecorp-billing/.cache; clear it there before a rerun.", None),
+    # A home-relative path that names nothing private.
+    ("The frobnicate script reads its cache size from "
+     "~/.config/frobnicate/config.toml; the default is 64.", "rule"),
+]
+
+# Side channel of the last claude-backend run (tokens, model, mode), for the
+# log and the self-test; run_backend's return shape is fixed.
+LAST = {}
+MODE_OVERRIDE = None
+
+
+def config_dir():
+    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
+
+
+def state_dir():
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local", "state")
+    return os.path.join(base, "memoryguard")
+
+
+def log_path():
+    return os.path.join(state_dir(), "decisions.tsv")
+
+
+def git_config(key):
+    try:
+        r = subprocess.run(
+            ["git", "config", "--get", key],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def read_text(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+# ---- note text -----------------------------------------------------------
+
+def split_frontmatter(text):
+    # -> (frontmatter lines, body text); no frontmatter -> ([], text)
+    lines = text.split("\n")
+    if lines and lines[0].strip() == "---":
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                return lines[1:i], "\n".join(lines[i + 1:])
+    return [], text
+
+
+def markers(text):
+    # A `until:` / `keep:` line anywhere in the frontmatter (top level or
+    # indented under `metadata:`), or a body line starting `Until:` /
+    # `Keep:`. Read leniently; the first of each wins.
+    fm, body = split_frontmatter(text)
+    out = {"until": None, "keep": None}
+    pats = ((fm, r"^\s*(until|keep):\s*(.*?)\s*$"), (body.split("\n"), r"^(until|keep):\s*(.*?)\s*$"))
+    for lines, pat in pats:
+        for line in lines:
+            m = re.match(pat, line, re.I)
+            if m and m.group(2) and out[m.group(1).lower()] is None:
+                out[m.group(1).lower()] = m.group(2)
+    return out
+
+
+def body_hash(text):
+    # Claude Code rewrites a note's frontmatter after the write, so the
+    # frontmatter is left out of what identifies a text.
+    _, body = split_frontmatter(text)
+    norm = " ".join(body.split())
+    h = hashlib.sha256(("v1\n%d\n%s" % (RUBRIC_V, norm)).encode()).hexdigest()
+    return h[:16]
+
+
+def name_hash(name):
+    return hashlib.sha256(name.encode()).hexdigest()[:8]
+
+
+# ---- the repository's own homes ------------------------------------------
+
+def repo_root(cwd):
+    d = os.path.abspath(cwd or os.getcwd())
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
+def shared_memory_path():
+    return os.path.join(HOME, ".claude-shared", "CLAUDE.md")
+
+
+def headings(path, levels):
+    # (heading text) for each heading of one of `levels` (e.g. "##"), fenced
+    # code skipped.
+    text = read_text(path)
+    out, fenced = [], False
+    for line in (text or "").split("\n"):
+        if FENCE_RE.match(line):
+            fenced = not fenced
+        elif not fenced:
+            m = re.match(r"^(#{1,6})\s+(.*?)\s*$", line)
+            if m and m.group(1) in levels:
+                out.append(m.group(2))
+    return out
+
+
+def rule_paths(text):
+    fm, _ = split_frontmatter(text)
+    out, on = [], False
+    for line in fm:
+        if re.match(r"^paths:\s*$", line):
+            on = True
+        elif on:
+            m = re.match(r"^\s*-\s*(.*?)\s*$", line)
+            if not m:
+                break
+            out.append(m.group(1).strip("\"'"))
+    return out
+
+
+def outline(root, shared_path):
+    # place id -> description, at most OUTLINE_MAX entries, in this order.
+    out = {}
+    for h in headings(shared_path, ("##",)):
+        out.setdefault("shared:" + h, 'Section "%s" of the shared memory every session loads.' % h)
+    if root:
+        for h in headings(os.path.join(root, "CLAUDE.md"), ("##", "###")):
+            out.setdefault("claude-md:" + h, 'Section "%s" of this repository\'s CLAUDE.md.' % h)
+        rdir = os.path.join(root, ".claude", "rules")
+        for fn in sorted(os.listdir(rdir)) if os.path.isdir(rdir) else []:
+            if fn.endswith(".md"):
+                paths = rule_paths(read_text(os.path.join(rdir, fn)) or "")
+                out["rule:" + fn[:-3]] = "Rule file loaded when working on: %s." % (", ".join(paths) or "-")
+        ddir = os.path.join(root, "docs")
+        for fn in sorted(os.listdir(ddir)) if os.path.isdir(ddir) else []:
+            if fn.endswith(".md"):
+                h = headings(os.path.join(ddir, fn), ("#",))
+                out["doc:docs/" + fn] = "docs/%s: %s" % (fn, h[0] if h else "-")
+    return dict(list(out.items())[:OUTLINE_MAX])
+
+
+def evidence(text, files):
+    # Lines of the given files that share at least two distinct terms with
+    # the note, with the most shared terms first, at most EVIDENCE_MAX.
+    terms = set(t.strip().lower() for t in re.findall(r"`([^`\n]+)`", text))
+    for w in text.split():
+        w = w.strip(".,;:!?()[]{}\"'`*")
+        if len(w) >= 4 and re.search(r"[/_\-0-9]|.[A-Z]", w):
+            terms.add(w.lower())
+    terms.discard("")
+    found = []
+    if len(terms) >= 2:
+        for path in files:
+            body = read_text(path)
+            if body is None:
+                continue
+            label = path.replace(HOME, "~", 1) if HOME and path.startswith(HOME) else path
+            heading, fenced = "-", False
+            for line in body.split("\n"):
+                if FENCE_RE.match(line):
+                    fenced = not fenced
+                m = re.match(r"^#{1,6}\s+(.*?)\s*$", line)
+                if m and not fenced:
+                    heading = m.group(1)
+                    continue
+                low = line.lower()
+                n = sum(1 for t in terms if t in low)
+                if n >= 2:
+                    found.append((n, "%s: %s" % (label, heading), line.strip()[:EVIDENCE_LINE_MAX]))
+    found.sort(key=lambda r: -r[0])  # stable: file order breaks ties
+    return [(lab, ln) for _, lab, ln in found[:EVIDENCE_MAX]]
+
+
+def build_request(name, text, project, outline, evidence):
+    state = "PROJECT: %s\nNOTE FILE: %s\n" % (project, name)
+    state += "ALREADY WRITTEN ELSEWHERE (lines that share terms with the note; may be empty):\n"
+    state += "".join("%s: %s\n" % e for e in evidence)
+    state += "NOTE:\n" + text
+    questions = {
+        "destination": {
+            "type": "choice",
+            "instructions": DESTINATION_INSTRUCTIONS,
+            "criteria": dict(DESTINATION),
+        }
+    }
+    questions["private"] = {"type": "choice", "instructions": PRIVATE_INSTRUCTIONS, "criteria": dict(PRIVATE_CRITERIA)}
+    if outline:
+        criteria = {"none": "Nothing listed fits."}
+        criteria.update(outline)
+        questions["place"] = {"type": "choice", "instructions": PLACE_INSTRUCTIONS, "criteria": criteria}
+    return {"v": 1, "state": state, "questions": questions}
+
+
+# ---- backends ------------------------------------------------------------
+
+def valid_answers(obj, request):
+    # The answer object, or None when it breaks protocol v1.
+    answers = obj.get("answers") if isinstance(obj, dict) else None
+    if not isinstance(answers, dict):
+        return None
+    for qid, q in request["questions"].items():
+        a = answers.get(qid)
+        if not isinstance(a, dict) or a.get("choice") not in q["criteria"]:
+            return None
+        c = a.get("confidence")
+        if isinstance(c, bool) or not isinstance(c, (int, float)) or not 0 <= c <= 1:
+            return None
+    return answers
+
+
+def spawn(cmd, stdin, cwd, env, timeout):
+    # -> (returncode, stdout) or (None, "") on timeout. The child gets its own
+    # process group so a wedged `claude` (or a stub's `sleep`) dies with it.
+    p = subprocess.Popen(
+        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        cwd=cwd, env=env, text=True, start_new_session=True,
+    )
+    try:
+        out, _ = p.communicate(stdin, timeout=timeout)
+        return p.returncode, out
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        p.communicate()
+        return None, ""
+
+
+def seat_file():
+    return os.path.join(config_dir(), "agents", SEAT + ".md")
+
+
+def claude_mode():
+    return MODE_OVERRIDE or os.environ.get("MEMORYGUARD_CLAUDE_MODE") or git_config("memoryguard.claudeMode") or CLAUDE_MODE_DEFAULT
+
+
+def parse_envelope(out):
+    # The reply text of `claude -p --output-format json`, or None.
+    try:
+        env = json.loads(out)
+    except ValueError:
+        return None
+    if isinstance(env, list):
+        env = next((e for e in env if isinstance(e, dict) and e.get("type") == "result"), None)
+    if not isinstance(env, dict) or env.get("is_error") or not isinstance(env.get("result"), str):
+        return None
+    u = env.get("usage") or {}
+    LAST["tokens"] = sum(int(u.get(k) or 0) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+    LAST["api_ms"] = env.get("duration_ms")
+    if isinstance(env.get("modelUsage"), dict) and env["modelUsage"]:
+        LAST["model"] = next(iter(env["modelUsage"]))
+    res = env["result"].strip()
+    res = re.sub(r"^```[A-Za-z]*\s*\n", "", res)
+    return re.sub(r"\n?```$", "", res).strip()
+
+
+def claude_command(mode):
+    # -> (argv, None) or (None, detail)
+    text = read_text(seat_file())
+    if text is None:
+        return None, "nobackend"
+    fm, body = split_frontmatter(text)
+    model = next((m.group(1) for m in (re.match(r"^model:\s*(\S+)", l) for l in fm) if m), "")
+    LAST["model"] = model
+    if mode == "agent":
+        return ["claude", "-p", "--agent", SEAT, "--output-format", "json",
+                "--no-session-persistence", "--strict-mcp-config",
+                "--permission-mode", "dontAsk", "--max-turns", "2"], None
+    return ["claude", "-p", "--safe-mode", "--model", model, "--system-prompt", body.strip(),
+            "--tools", "", "--output-format", "json", "--no-session-persistence",
+            "--max-turns", "1"], None
+
+
+def run_backend(request):
+    # -> (answers or None, detail, ms); detail is "ok" or one of nobackend,
+    # timeout, exit, invalid.
+    LAST.clear()
+    backend = os.environ.get("MEMORYGUARD_BACKEND") or git_config("memoryguard.backend") or "claude"
+    timeout = float(os.environ.get("MEMORYGUARD_BACKEND_TIMEOUT") or BACKEND_TIMEOUT)
+    env = dict(os.environ, MEMORYGUARD_DEPTH="1")
+    start = time.time()
+
+    def ms():
+        return int((time.time() - start) * 1000)
+
+    if backend == "claude":
+        mode = claude_mode()
+        LAST["mode"] = mode
+        cmd, why = claude_command(mode)
+        if why or not shutil.which("claude"):
+            return None, "nobackend", 0
+        cwd = state_dir()
+        os.makedirs(cwd, exist_ok=True)
+    elif os.path.isabs(backend) and os.access(backend, os.X_OK):
+        cmd, cwd = [backend], None
+    else:
+        return None, "nobackend", 0
+
+    rc, out = spawn(cmd, json.dumps(request), cwd, env, timeout)
+    if rc is None:
+        return None, "timeout", ms()
+    if rc != 0:
+        return None, "exit", ms()
+    if backend == "claude":
+        out = parse_envelope(out)
+    try:
+        answers = valid_answers(json.loads(out), request) if out else None
+    except ValueError:
+        answers = None
+    if answers is None:
+        return None, "invalid", ms()
+    return answers, "ok", ms()
+
+
+def names_private(answers):
+    # An unsure "no" counts as yes: the boundary is inclusive both ways.
+    a = answers["private"]
+    c = float(a["confidence"])
+    return (c if a["choice"] == "yes" else 1 - c) >= PRIVATE_AT
+
+
+def verdict(answers):
+    # -> (outcome, choice, confidence, place or None, reason)
+    d = answers["destination"]
+    choice, conf, reason = d["choice"], float(d["confidence"]), str(d.get("reason") or "")
+    place = None
+    p = (answers.get("place") or {}).get("choice")
+    if p and PLACE_PREFIX.get(choice) and p.startswith(PLACE_PREFIX[choice]):
+        place = p
+    if choice == "memory":
+        outcome = "allow-memory"
+    elif choice == "overlay" or (choice in PUBLIC_HOMES and names_private(answers)):
+        outcome = "allow-private"
+    elif conf >= BLOCK_AT:
+        outcome = "block"
+    else:
+        outcome = "allow-unsure"
+    return outcome, choice, conf, place, reason
+
+
+# ---- the log, which is also the cache --------------------------------------
+
+def ledger_rows():
+    text = read_text(log_path())
+    return [l.split("\t") for l in (text or "").split("\n") if l.count("\t") == 9]
+
+
+def ledger_row(sha16):
+    for row in reversed(ledger_rows()):
+        if row[4] == sha16 and row[5] in CACHE_ALLOW + CACHE_BLOCK:
+            return row
+    return None
+
+
+def ledger_get(sha16):
+    row = ledger_row(sha16)
+    return row[5] if row else None
+
+
+def ledger_put(row):
+    os.makedirs(state_dir(), exist_ok=True)
+    clean = [str(f).replace("\t", " ").replace("\n", " ") for f in row]
+    with open(log_path(), "a", encoding="utf-8") as f:
+        f.write("\t".join(clean) + "\n")
+
+
+def log_row(slug, name, sha, outcome, choice="-", conf="-", ms="-", detail="-"):
+    ledger_put([time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), os.path.basename(config_dir().rstrip("/")),
+                slug, name_hash(name) if name else "-", sha, outcome, choice, conf, ms, detail])
+
+
+# ---- commands --------------------------------------------------------------
+
+def place_note(name, text, root, start):
+    # Build the request for one note and ask the backend: (answers, detail, ms).
+    files = [shared_memory_path()]
+    if root:
+        rdir, ddir = os.path.join(root, ".claude", "rules"), os.path.join(root, "docs")
+        files.append(os.path.join(root, "CLAUDE.md"))
+        for d in (rdir, ddir):
+            files += [os.path.join(d, f) for f in sorted(os.listdir(d))] if os.path.isdir(d) else []
+    ev = evidence(text, [f for f in files if f.endswith(".md")])
+    request = build_request(name, text, os.path.basename(root or start), outline(root, shared_memory_path()), ev)
+    return run_backend(request)
+
+
+def cmd_decide(argv):
+    as_json, project, files = False, None, []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--json":
+            as_json = True
+        elif a == "--project" and i + 1 < len(argv):
+            i += 1
+            project = argv[i]
+        elif a.startswith("-") and a != "-":
+            return usage()
+        else:
+            files.append(a)
+        i += 1
+    if len(files) != 1:
+        return usage()
+    if files[0] == "-":
+        name, text = "note.md", os.fdopen(3, encoding="utf-8", errors="replace").read()
+    else:
+        name, text = os.path.basename(files[0]), read_text(files[0])
+        if text is None:
+            sys.stderr.write("memoryguard: cannot read %s\n" % files[0])
+            return 2
+    start = os.path.abspath(project or os.getcwd())
+    root = repo_root(start)
+    slug = re.sub(r"[^A-Za-z0-9]", "-", root or start)
+    sha = body_hash(text)
+
+    cached = ledger_row(sha)
+    if cached:
+        refuse = cached[5] in CACHE_BLOCK
+        outcome = "block-cached" if refuse else "allow-memory"
+        res = {"outcome": outcome, "choice": cached[6], "confidence": cached[7], "place": None,
+               "reason": "-", "private": None, "ms": 0, "cached": True}
+        log_row(slug, name, sha, outcome, cached[6], cached[7])
+        return emit(res, as_json, 0)
+
+    answers, detail, ms = place_note(name, text, root, start)
+    if answers is None:
+        outcome = "allow-nobackend" if detail == "nobackend" else "allow-error"
+        log_row(slug, name, sha, outcome, ms=ms, detail=detail)
+        res = {"outcome": outcome, "choice": None, "confidence": None, "place": None,
+               "reason": detail, "private": None, "ms": ms, "cached": False}
+        return emit(res, as_json, 3)
+    outcome, choice, conf, place, reason = verdict(answers)
+    extra = " ".join("%s=%s" % (k, LAST[k]) for k in ("api_ms", "tokens") if LAST.get(k) is not None)
+    log_row(slug, name, sha, outcome, choice, conf, ms, extra or "-")
+    res = {"outcome": outcome, "choice": choice, "confidence": conf, "place": place,
+           "reason": reason, "private": names_private(answers), "ms": ms, "cached": False}
+    return emit(res, as_json, 0)
+
+
+def emit(res, as_json, code):
+    if as_json:
+        print(json.dumps(res))
+    else:
+        print("%s %s %s %s %s" % tuple("-" if res[k] is None else res[k]
+                                       for k in ("outcome", "choice", "confidence", "place", "reason")))
+    return code
+
+
+def cmd_selftest(argv):
+    global MODE_OVERRIDE
+    if argv[:1] == ["--mode"] and len(argv) == 2 and argv[1] in ("lean", "agent"):
+        MODE_OVERRIDE = argv[1]
+    elif argv:
+        return usage()
+    rows, model = [], "-"
+    for n, (text, expected) in enumerate(SELFTEST, 1):
+        # A fixture with no expected destination is the one that names something private.
+        want = "no" if expected else "yes"
+        answers, detail, ms = run_backend(build_request("selftest-%d.md" % n, text, "selftest", {}, []))
+        if answers is None:
+            rows.append((n, False, detail, expected or "-", "-", ms, "-", "-", want))
+            continue
+        d = answers["destination"]
+        model = LAST.get("model") or model
+        rows.append((n, True, d["choice"], expected or "-", d["confidence"], ms, LAST.get("tokens", "-"),
+                     "yes" if names_private(answers) else "no", want))
+    for n, ok, choice, expected, conf, ms, tok, priv, want in rows:
+        print("\t".join(str(x) for x in (n, "valid" if ok else "invalid", choice, expected, conf, "%dms" % ms, tok,
+                                         "private " + priv, "expected " + want, model)))
+    times = sorted(r[5] for r in rows if r[1])
+    valid = len(times)
+    matched = sum(1 for r in rows if r[1] and r[2] == r[3])
+    right = sum(1 for r in rows if r[1] and r[7] == r[8])
+    missed = sum(1 for r in rows if r[1] and r[8] == "yes" and r[7] == "no")
+    median = times[len(times) // 2] if times else 0
+    print("valid %d/9  matched %d/6  private %d/9 (missed %d)  median %d ms  max %d ms  model %s  mode %s" % (
+        valid, matched, right, missed, median, times[-1] if times else 0, model,
+        MODE_OVERRIDE or LAST.get("mode") or os.environ.get("MEMORYGUARD_CLAUDE_MODE") or git_config("memoryguard.claudeMode") or CLAUDE_MODE_DEFAULT))
+    return 0 if valid == 9 else 1
+
+
+def cmd_log(argv):
+    since = 0.0
+    if argv[:1] == ["--since"] and len(argv) == 2 and argv[1].isdigit():
+        since = time.time() - int(argv[1]) * 86400
+    elif argv:
+        return usage()
+    counts, state = {}, {}
+    later = set()
+    for row in ledger_rows():
+        try:
+            ts = calendar.timegm(time.strptime(row[0], "%Y-%m-%dT%H:%M:%SZ"))
+        except ValueError:
+            continue
+        if ts < since:
+            continue
+        counts[row[5]] = counts.get(row[5], 0) + 1
+        if row[5] == "block":
+            state[row[3]] = "block"
+        elif row[5] == "allow-keep" and state.get(row[3]) == "block":
+            later.add(row[3])
+            state[row[3]] = "kept"
+    for k in sorted(counts):
+        print("%s\t%d" % (k, counts[k]))
+    print("blocks later kept\t%d" % len(later))
+    return 0
+
+
+# ---- the gate on Write and Edit ----------------------------------------------
+
+def under(path, base):
+    rel = os.path.relpath(path, base)
+    return None if rel == ".." or rel.startswith("../") else rel
+
+
+def memory_target(file_path, config_dir, home):
+    # -> ("note" | "index" | "foreign" | None, memory dir). A memory note is a
+    # .md file under <config dir>/projects/<slug>/memory/ or under the
+    # profile's autoMemoryDirectory; "foreign" is the same under another
+    # profile's directory, which is none of this profile's business.
+    if not file_path.endswith(".md"):
+        return None, None
+    path = os.path.realpath(os.path.expanduser(file_path))
+    cfg = os.path.realpath(config_dir)
+    rel = under(path, os.path.join(cfg, "projects"))
+    parts = rel.split("/") if rel else []
+    if len(parts) >= 3 and parts[1] == "memory":
+        return ("index" if parts[2:] == ["MEMORY.md"] else "note"), os.path.join(cfg, "projects", parts[0], "memory")
+    try:
+        with open(os.path.join(cfg, "settings.json"), encoding="utf-8") as f:
+            auto = json.load(f).get("autoMemoryDirectory")
+    except (OSError, ValueError, AttributeError):
+        auto = None
+    if isinstance(auto, str) and auto:
+        auto = os.path.realpath(os.path.expanduser(auto))
+        rel = under(path, auto)
+        if rel:
+            return ("index" if rel == "MEMORY.md" else "note"), auto
+    rel = under(path, os.path.realpath(home))
+    m = re.match(r"^\.claude[^/]*/projects/[^/]+/memory(?=/)", rel or "")
+    return ("foreign", os.path.join(os.path.realpath(home), m.group(0))) if m else (None, None)
+
+
+def resulting_text(tool_name, tool_input):
+    # The note as it will be once the tool call lands, or None when it cannot.
+    if tool_name == "Write":
+        c = tool_input.get("content")
+        return c if isinstance(c, str) else None
+    old, new = tool_input.get("old_string"), tool_input.get("new_string")
+    if tool_name != "Edit" or not isinstance(old, str) or not isinstance(new, str):
+        return None
+    cur = read_text(os.path.expanduser(tool_input.get("file_path") or ""))
+    if cur is None:
+        return new if old == "" else None
+    n = cur.count(old)
+    every = bool(tool_input.get("replace_all"))
+    if n == 0 or (n > 1 and not every):
+        return None
+    return cur.replace(old, new) if every else cur.replace(old, new, 1)
+
+
+def memory_project(memdir):
+    return os.path.basename(os.path.dirname(memdir)) if os.path.basename(memdir) == "memory" else None
+
+
+def main_checkout(root):
+    try:
+        r = subprocess.run(["git", "-C", root, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return os.path.dirname(r.stdout.strip().rstrip("/"))
+    except Exception:
+        pass
+    return root
+
+
+def shared_source():
+    # Where the deployed shared memory comes from, for the session to edit.
+    fallback = "the chezmoi source of ~/.claude-shared/CLAUDE.md"
+    try:
+        r = subprocess.run(["chezmoi", "source-path", shared_memory_path()],
+                           capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL)
+    except Exception:
+        return fallback
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else fallback
+
+
+def describe_home(choice, place, root):
+    sect = place.split(":", 1)[1] if place else None
+    repo = root or "the repository"
+    if choice == "shared-memory":
+        return "shared memory, %s%s" % (shared_source(), ', section "%s"' % sect if sect else "")
+    if choice == "rule":
+        return "%s/.claude/rules/%s.md" % (repo, sect) if sect else "a path-scoped rule file under %s/.claude/rules/" % repo
+    if choice == "claude-md":
+        return "%s/CLAUDE.md%s" % (repo, ', section "%s"' % sect if sect else "")
+    if choice == "docs":
+        return "%s/%s" % (repo, sect) if sect else "%s/docs/" % repo
+    if choice == "overlay":
+        return "a private overlay's own docs"
+    return "no file: do not save it"
+
+
+UNTIL_HINT = ("If it must bridge until that lands, save it again with `until: <YYYY-MM-DD | grep:<text>@<file> | "
+              "a condition in words>` under `metadata:` in its frontmatter; it is kept as a stopgap and flagged when due.")
+KEEP_HINT = "If the operator has said it stays in memory, save it again with `keep: <their reason>` under `metadata:`."
+PRIVATE_THINGS = "a person, an account, an organisation, a host, a private repository, a machine-specific path or port, or where a secret is kept"
+MOVE_HINT = ("Put it there with a normal edit, on that repository's usual branch and pull request. "
+             "Moving it is an edit like any other: write the general point and leave out whatever names " + PRIVATE_THINGS +
+             ". What names such things stays in memory, as a shorter note of its own.")
+EVADE_HINT = "Do not rephrase the note to get it past this check, and do not write it by another route."
+OVERLAY_NOTE = ("memoryguard: saved, because it names something private and memory is private. If it is configuration knowledge "
+                "rather than a note for this project, a private overlay's own docs are its home; it never goes in a public repository.")
+ELSEWHERE_HINT = "That file is in another repository: hand the text to the session there, or work in a worktree of it."
+
+
+def refusal(choice, conf, reason, home, elsewhere):
+    lines = ["memoryguard: not saved. This reads as %s (%d%%)%s" % (choice, round(conf * 100), ": " + reason if reason else "."),
+             "It belongs in %s." % home]
+    if choice != "nowhere":
+        lines.append(MOVE_HINT)
+    lines.append(EVADE_HINT)
+    if elsewhere:
+        lines.append(ELSEWHERE_HINT)
+    return "\n".join(lines + [UNTIL_HINT, KEEP_HINT])
+
+
+def index_entries(text):
+    # (entry lines, how many are over LINE_MAX)
+    entries = [l for l in text.split("\n") if l.lstrip().startswith("- ")]
+    return entries, sum(1 for l in entries if len(l) > LINE_MAX)
+
+
+def index_warning(text, memdir):
+    entries, long = index_entries(text)
+    missing = []
+    for l in entries:
+        for t in re.findall(r"\]\(([^)\s]+)\)", l):
+            t = t.split("#")[0]
+            if t and not re.match(r"^[a-z][a-z0-9+.-]*:", t) and not os.path.exists(os.path.join(memdir, t)):
+                missing.append(t)
+    msgs = []
+    if len(text) > INDEX_MAX or long:
+        msgs.append("memoryguard: MEMORY.md would be %d characters, %d entries over %d. Keep one short line per entry."
+                    % (len(text), long, LINE_MAX))
+    if missing:
+        msgs.append("Entries link missing files: %s." % ", ".join(missing[:3]))
+    return " ".join(msgs)
+
+
+def hook_pre(p):
+    # -> None, or the fields of the hook's answer: a refusal or a note.
+    tool, ti = p.get("tool_name"), p.get("tool_input")
+    fp = ti.get("file_path") if isinstance(ti, dict) else None
+    if tool not in ("Write", "Edit") or not isinstance(fp, str):
+        return None
+    kind, memdir = memory_target(fp, config_dir(), HOME)
+    if not kind:
+        return None
+    name, mproject = os.path.basename(fp), memory_project(memdir)
+    slug = mproject or os.path.basename(memdir)
+
+    def log(outcome, sha="-", choice="-", conf="-", ms="-", detail="-"):
+        try:
+            log_row(slug, name, sha, outcome, choice, conf, ms, detail)
+        except OSError:
+            pass
+
+    def note(msg):
+        return {"additionalContext": msg}
+
+    if kind == "foreign":
+        log("allow-foreign")
+        return None
+    text = resulting_text(tool, ti)
+    if text is None:
+        log("allow-error", detail="noapply")
+        return None
+    sha = body_hash(text)
+    if kind == "index":
+        warn = index_warning(text, memdir)
+        log("index-warn" if warn else "index-ok", sha)
+        return note(warn) if warn else None
+    if len(text) > NOTE_MAX:
+        log("allow-large", sha, detail=str(len(text)))
+        return note("memoryguard: this note is %d characters. A note is a pointer: move the detail to docs or a rule file." % len(text))
+    mk = markers(text)
+    if mk["keep"] and len(mk["keep"]) >= KEEP_MIN:
+        log("allow-keep", sha)
+        return None
+    if mk["until"]:
+        log("allow-stopgap", sha)
+        return None
+    cached = ledger_row(sha)
+    if cached and cached[5] in CACHE_BLOCK:
+        log("block-cached", sha, cached[6], cached[7])
+        msg = "memoryguard: not saved. This text was already placed: %s." % cached[6]
+        lines = [msg] + ([MOVE_HINT] if cached[6] != "nowhere" else []) + [EVADE_HINT, UNTIL_HINT, KEEP_HINT]
+        return {"permissionDecision": "deny", "permissionDecisionReason": "\n".join(lines)}
+    if cached:
+        log("allow-memory", sha, cached[6], cached[7])
+        return None
+
+    start = os.path.abspath(p.get("cwd") or os.getcwd())
+    root = repo_root(start)
+    answers, detail, ms = place_note(name, text, root, start)
+    if answers is None:
+        log("allow-nobackend" if detail == "nobackend" else "allow-error", sha, ms=ms, detail=detail)
+        return note("memoryguard: could not place this note (%s); it was saved unplaced." % detail)
+    outcome, choice, conf, place, reason = verdict(answers)
+    extra = " ".join("%s=%s" % (k, LAST[k]) for k in ("api_ms", "tokens") if LAST.get(k) is not None)
+    log(outcome, sha, choice, conf, ms, extra or "-")
+    if outcome == "allow-memory":
+        return None
+    home = describe_home(choice, place, root)
+    if outcome == "allow-private":
+        if choice == "overlay":
+            return note(OVERLAY_NOTE)
+        return note("memoryguard: saved, because it names something private and memory is private. "
+                    "Its general point reads as %s (%d%%) and would belong in %s. If you write that point there, "
+                    "leave out whatever names %s; then shorten this note to the part that names them."
+                    % (choice, round(conf * 100), home, PRIVATE_THINGS))
+    if outcome == "allow-unsure":
+        if choice == "nowhere":
+            return note("memoryguard: saved, but this may belong in %s (%d%%). If so, move it there and delete the note."
+                        % (home, round(conf * 100)))
+        return note("memoryguard: saved, but this may belong in %s (%d%%). If so, write its general point there, leaving out whatever names %s, and delete the note."
+                    % (home, round(conf * 100), PRIVATE_THINGS))
+    # A repository home is another repository's when the session works elsewhere
+    # than in the project this memory belongs to.
+    elsewhere = bool(mproject) and choice in ("rule", "claude-md", "docs") and (
+        root is None or mproject not in (re.sub(r"[^A-Za-z0-9]", "-", main_checkout(root)),
+                                         re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(main_checkout(root)))))
+    return {"permissionDecision": "deny", "permissionDecisionReason": refusal(choice, conf, reason, home, elsewhere)}
+
+
+# ---- the gate on Bash --------------------------------------------------------
+
+BASH_WRITERS = ("tee", "cp", "mv", "dd", "install", "truncate")
+BASH_PREFIX = ("sudo", "xargs", "exec", "command", "nohup", "time", "env")
+BASH_SEPARATORS = (";", "&&", "||", "|", "&", "(", "{")
+REDIRECT_RE = re.compile(r"(?<![2&>])>(?!&)")
+IN_PLACE_RE = re.compile(r"^(-[a-zA-Z]*i([^a-zA-Z].*)?|--in-place.*)$")
+BASH_REFUSAL = ("memoryguard: write memory notes with the Write or Edit tool, so each is placed before it is saved. "
+                "Reading a note, or deleting one with rm, through Bash is fine.")
+
+
+def bash_writes(command):
+    # Lexical: does the command write a file? A redirect, or a command word that
+    # writes (`sed -i`, `perl -i` included). Reads and rm are not writes.
+    if REDIRECT_RE.search(command):
+        return True
+    try:
+        lex = shlex.shlex(command.replace("\n", " ; "), posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        toks = list(lex)
+    except ValueError:
+        toks = command.split()
+    start, word = True, None
+    for t in toks:
+        if t in BASH_SEPARATORS:
+            start, word = True, None
+        elif start and t in BASH_PREFIX:
+            continue
+        elif start:
+            start, word = False, t
+            if t in BASH_WRITERS:
+                return True
+        elif word in ("sed", "perl") and IN_PLACE_RE.match(t):
+            return True
+    return False
+
+
+def hook_bash(p):
+    # -> None, or a refusal. Never grants anything.
+    ti = p.get("tool_input")
+    cmd = ti.get("command") if isinstance(ti, dict) else None
+    if p.get("tool_name") != "Bash" or not isinstance(cmd, str):
+        return None
+    try:
+        toks = shlex.split(cmd.replace("\n", " "))
+    except ValueError:
+        toks = cmd.split()
+    hit = None
+    for t in toks:
+        t = os.path.expanduser(os.path.expandvars(re.sub(r"^[0-9&]*[<>]+&?", "", t)))
+        # A directory has no .md suffix, so a token is tried as a file and as a directory.
+        for cand in (t, t.rstrip("/") + "/x.md"):
+            kind, memdir = memory_target(cand, config_dir(), HOME) if t else (None, None)
+            if kind in ("note", "index"):
+                hit = memdir
+                break
+        if hit:
+            break
+    if hit and bash_writes(cmd):
+        try:
+            log_row(memory_project(hit) or os.path.basename(hit), None, "-", "bash-block")
+        except OSError:
+            pass
+        return {"permissionDecision": "deny", "permissionDecisionReason": BASH_REFUSAL}
+    return None
+
+
+def cmd_hook(argv):
+    # A hook never fails the tool call: any trouble is silence and exit 0.
+    if argv[:1] not in (["pre"], ["bash"], ["start"]):
+        return 0
+    try:
+        p = json.loads(os.fdopen(3, encoding="utf-8", errors="replace").read())
+        if argv[0] == "start":
+            out = hook_start(p)
+            if out:
+                print(out)
+            return 0
+        out = (hook_pre if argv[0] == "pre" else hook_bash)(p)
+        if out:
+            print(json.dumps({"hookSpecificOutput": dict(hookEventName="PreToolUse", **out)}))
+    except Exception:
+        pass
+    return 0
+
+
+# ---- SessionStart and the audit ----------------------------------------------
+
+# A note is placed when it carries a marker or a log line for its text says so.
+PLACED = ("allow-memory", "audit-memory", "kept-by-audit", "allow-keep", "allow-stopgap")
+KEPT = ("allow-keep", "kept-by-audit")
+PROCEDURE = """# memoryguard audit: proposals only. Nothing below has been changed.
+1. For every row whose home is not `memory`, read the note and the proposed home, and correct the row if it is wrong. When in doubt whether a note names something private, it does.
+2. Write the corrected table to ${TMPDIR:-/tmp}/claude-reports/<repository directory name>/memory-audit-<date>.md and give the operator its path.
+3. Change nothing until the operator has said yes, to a row or to the whole table.
+4. For each approved move: write the note's general point in its home by a normal edit on that repository's usual branch and pull request, leaving out whatever names a person, an account, an organisation, a host, a private repository, a machine-specific path or port, or where a secret is kept. What names such things stays in memory as a shorter note (then `memoryguard audit --mark-kept <file>`) or goes to a private overlay, never to a public repository. Then delete the original note and its MEMORY.md line. For each approved delete: delete the note and its line. For each note the operator keeps: `memoryguard audit --mark-kept <file>`.
+5. Shorten MEMORY.md to one line of at most 200 characters per remaining note."""
+
+
+def due(until, mtime, now):
+    # -> (is it due, why). A date is due on or after that day; `grep:<text>@<path>`
+    # when the file holds the text; anything else is words, due for a look
+    # when the note is older than STOPGAP_MAX_DAYS.
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", until):
+        return time.strftime("%Y-%m-%d", time.localtime(now)) >= until, "date"
+    if until.startswith("grep:") and "@" in until:
+        needle, path = until[5:].rsplit("@", 1)
+        body = read_text(os.path.expanduser(path.strip()))
+        return body is not None and needle in body, "grep"
+    return now - mtime > STOPGAP_MAX_DAYS * 86400, "age"
+
+
+def project_memory_dir(hook_input, config_dir):
+    # The memory directory of the session's project, or None.
+    tp = hook_input.get("transcript_path")
+    if isinstance(tp, str) and tp:
+        d = os.path.join(os.path.dirname(tp), "memory")
+        if os.path.isdir(d):
+            return d
+    cwd = hook_input.get("cwd")
+    if isinstance(cwd, str) and cwd:
+        main = main_checkout(repo_root(cwd) or os.path.abspath(cwd))
+        for m in (main, os.path.realpath(main)):
+            d = os.path.join(config_dir, "projects", re.sub(r"[^A-Za-z0-9]", "-", m), "memory")
+            if os.path.isdir(d):
+                return d
+    try:
+        with open(os.path.join(config_dir, "settings.json"), encoding="utf-8") as f:
+            auto = json.load(f).get("autoMemoryDirectory")
+    except (OSError, ValueError, AttributeError):
+        auto = None
+    if isinstance(auto, str) and auto and os.path.isdir(os.path.expanduser(auto)):
+        return os.path.expanduser(auto)
+    return None
+
+
+def scan(memdir, now):
+    # One dict per note of the directory (MEMORY.md aside).
+    rows = ledger_rows()
+    placed = {r[4] for r in rows if r[5] in PLACED}
+    kept = {r[4] for r in rows if r[5] in KEPT}
+    out = []
+    for fn in sorted(os.listdir(memdir)):
+        path = os.path.join(memdir, fn)
+        text = read_text(path) if fn.endswith(".md") and fn != "MEMORY.md" else None
+        if text is None:
+            continue
+        mk, sha = markers(text), body_hash(text)
+        out.append({"name": fn, "text": text, "sha": sha, "mk": mk,
+                    "due": bool(mk["until"]) and due(mk["until"], os.path.getmtime(path), now)[0],
+                    "placed": bool(mk["until"] or mk["keep"]) or sha in placed,
+                    "kept": bool(mk["keep"]) or sha in kept})
+    return out
+
+
+def index_stats(memdir):
+    # (characters, entries, entries over LINE_MAX) of the directory's MEMORY.md
+    text = read_text(os.path.join(memdir, "MEMORY.md")) or ""
+    entries, long = index_entries(text)
+    return len(text), len(entries), long
+
+
+def slug_of(memdir):
+    return memory_project(memdir) or os.path.basename(memdir)
+
+
+def hook_start(p):
+    # -> the lines to print, or None. No model call.
+    memdir = project_memory_dir(p, config_dir())
+    if not memdir:
+        return None
+    notes, (chars, entries, long) = scan(memdir, time.time()), index_stats(memdir)
+    stopgaps = [n["name"] for n in notes if n["due"]]
+    unplaced = sum(1 for n in notes if not n["placed"])
+    over = chars > INDEX_MAX or long > 0
+    lines = []
+    if stopgaps:
+        lines.append("memoryguard: %d stopgap note(s) here are due (%s). Do what each was waiting for, then delete the note and its MEMORY.md line."
+                     % (len(stopgaps), ", ".join(stopgaps[:5])))
+    if over:
+        lines.append("memoryguard: MEMORY.md is %d characters in %d entries (%d over %d); the budget is %d. Keep one short line per entry."
+                     % (chars, entries, long, LINE_MAX, INDEX_MAX))
+    if unplaced >= UNPLACED_MIN:
+        lines.append("memoryguard: %d note(s) here are saved but not placed. "
+                     "Run `memoryguard audit --propose`." % unplaced)
+    if not lines:
+        return None
+    try:
+        log_row(slug_of(memdir), None, "-", "start-flag",
+                detail="due=%d,index=%d,unplaced=%d" % (len(stopgaps), int(over), unplaced))
+    except OSError:
+        pass
+    return "\n".join(lines)
+
+
+def audit_line(memdir):
+    notes = scan(memdir, time.time())
+    stop = [n for n in notes if n["mk"]["until"]]
+    return "notes %d  placed %d  unplaced %d  stopgaps %d (due %d)  kept %d  index %d chars, %d entries, %d long" % (
+        len(notes), sum(1 for n in notes if n["placed"]), sum(1 for n in notes if not n["placed"]),
+        len(stop), sum(1 for n in stop if n["due"]), sum(1 for n in notes if n["kept"]), *index_stats(memdir))
+
+
+def cell(s):
+    return " ".join(str(s).replace("|", "/").split())
+
+
+def audit_propose(memdir, root, start):
+    notes = scan(memdir, time.time())
+    todo = [n for n in notes if not (n["mk"]["until"] or n["mk"]["keep"])]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lambda n: place_note(n["name"], n["text"], root, start), todo))
+    got = {n["name"]: r for n, r in zip(todo, results)}
+    print(PROCEDURE)
+    print("\n| note | chars | home | private | confidence | place | reason | marker |\n| --- | --- | --- | --- | --- | --- | --- | --- |")
+    for n in notes:
+        mk = n["mk"]
+        marker = "until: " + mk["until"] if mk["until"] else "keep: " + mk["keep"] if mk["keep"] else "-"
+        if n["name"] not in got:
+            home, priv, conf, place, reason = "-", "-", "-", "-", "marked, not asked"
+        else:
+            answers, detail, ms = got[n["name"]]
+            if answers is None:
+                log_row(slug_of(memdir), n["name"], n["sha"], "audit-error", ms=ms, detail=detail)
+                home, priv, conf, place, reason = "error", "-", "-", "-", detail
+            else:
+                outcome, home, c, pl, reason = verdict(answers)
+                log_row(slug_of(memdir), n["name"], n["sha"], "audit-memory" if home == "memory" else "audit-move", home, c, ms)
+                priv, conf, place = "yes" if names_private(answers) else "no", "%.2f" % c, pl or "-"
+        print("| %s |" % " | ".join(cell(x) for x in (n["name"], len(n["text"]), home, priv, conf, place, reason, marker)))
+    return 0
+
+
+def cmd_audit(argv):
+    propose = every = False
+    kept, dirs, i = None, [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--propose":
+            propose = True
+        elif a == "--all":
+            every = True
+        elif a == "--mark-kept":
+            kept = argv[i + 1:]
+            break
+        elif a.startswith("-"):
+            return usage()
+        else:
+            dirs.append(a)
+        i += 1
+    if len(dirs) > 1 or (every and (propose or kept is not None)) or (kept is not None and (propose or dirs or not kept)):
+        return usage()
+    if kept is not None:
+        code = 0
+        for f in kept:
+            text = read_text(f)
+            if text is None:
+                sys.stderr.write("memoryguard: cannot read %s\n" % f)
+                code = 2
+                continue
+            log_row(slug_of(os.path.dirname(os.path.abspath(f))), os.path.basename(f), body_hash(text), "kept-by-audit")
+            print("kept-by-audit %s" % f)
+        return code
+    if every:
+        base = os.path.join(config_dir(), "projects")
+        for slug in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+            if os.path.isdir(os.path.join(base, slug, "memory")):
+                print("%s  %s" % (slug, audit_line(os.path.join(base, slug, "memory"))))
+        return 0
+    start = os.path.abspath(dirs[0] if dirs else os.getcwd())
+    memdir = project_memory_dir({"cwd": start}, config_dir())
+    if not memdir:
+        sys.stderr.write("memoryguard: no memory directory found for %s\n" % start)
+        return 0
+    print(audit_line(memdir))
+    return audit_propose(memdir, repo_root(start), start) if propose else 0
+
+
+SETTINGS = """memoryguard does not edit settings.json: each profile's file is owned by its
+overlay. Add these to that file's "hooks" (merging with what is there):
+
+  "PreToolUse": [
+    { "matcher": "Write|Edit",
+      "hooks": [{ "type": "command", "timeout": 30, "command": "[ -x ~/bin/memoryguard ] && exec ~/bin/memoryguard hook pre || true" }] },
+    { "matcher": "Bash",
+      "hooks": [{ "type": "command", "timeout": 10, "command": "[ -x ~/bin/memoryguard ] && exec ~/bin/memoryguard hook bash || true" }] }
+  ],
+  "SessionStart": [
+    { "hooks": [{ "type": "command", "timeout": 10, "command": "[ -x ~/bin/memoryguard ] && exec ~/bin/memoryguard hook start || true" }] }
+  ]"""
+
+
+def cmd_settings(argv):
+    if argv:
+        return usage()
+    print(SETTINGS)
+    return 0
+
+
+def usage():
+    sys.stderr.write(
+        "usage: memoryguard decide [--project DIR] [--json] FILE\n"
+        "       memoryguard selftest [--mode lean|agent]\n"
+        "       memoryguard log [--since DAYS]\n"
+        "       memoryguard hook pre|bash|start\n"
+        "       memoryguard audit [--propose] [--all] [--mark-kept FILE...] [DIR]\n"
+        "       memoryguard settings\n")
+    return 2
+
+
+def main():
+    cmds = {"decide": cmd_decide, "selftest": cmd_selftest, "log": cmd_log, "hook": cmd_hook, "audit": cmd_audit, "settings": cmd_settings}
+    argv = sys.argv[1:]
+    if not argv or argv[0] not in cmds:
+        return usage()
+    return cmds[argv[0]](argv[1:])
+
+
+sys.exit(main())
+PY

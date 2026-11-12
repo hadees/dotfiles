@@ -1,4 +1,4 @@
 title: Audit this whole repository (read-only)
 system: Read-only session: change nothing in this repository, commit nothing, push nothing.
 
-Audit this entire repository with the code-review skill, giving it the repository's top directory as its target rather than a diff. Apply no fixes and post no comments. Write the findings, most serious first, each with its file and line, to a file under ${TMPDIR:-/tmp}/claude-reports/<this repository's directory name>/ and end by telling me that file's path.
+Audit this entire repository with a code-review skill if this session has one, giving it the repository's top directory as its target rather than a diff; else review the whole tree directly. Apply no fixes and post no comments. Write the findings, most serious first, each with its file and line, to a file under ${TMPDIR:-/tmp}/claude-reports/<this repository's directory name>/ and end by telling me that file's path.

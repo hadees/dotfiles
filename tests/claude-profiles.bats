@@ -212,6 +212,43 @@ JSON
   [[ "$output" == *"denies logged: 0"* ]]
 }
 
+@test "claude-doctor: memguard line reports the hook wiring, the seat and the log's counts" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  # memoryguard itself needs a real python3 (see setup).
+  [ -n "$REAL_PYTHON3" ] || skip "python3 not installed"
+  mkdir -p "$HOME/bin" "$HOME/.claude-personal"
+  doctor() { run zsh -c "export PATH='$HOME/bin':\$PATH; source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"; }
+
+  # Nothing deployed, nothing wired.
+  doctor
+  [[ "$output" == *"memguard: hook: not wired in $HOME/.claude-personal/settings.json; ~/bin/memoryguard: missing; seat: missing; decisions logged: ? (no memoryguard)"* ]]
+
+  # Deployed, seat present, wired; a log of 4 decisions, one of them an error,
+  # one block that the operator later kept.
+  ln -s "$BATS_TEST_DIRNAME/../bin/executable_memoryguard" "$HOME/bin/memoryguard"
+  mkdir -p "$HOME/.claude-personal/agents" "$HOME/.local/state/memoryguard"
+  : > "$HOME/.claude-personal/agents/decide-haiku.md"
+  printf '{"hooks": {"PreToolUse": [{"hooks": [{"command": "[ -x ~/bin/memoryguard ] && exec ~/bin/memoryguard hook pre || true"}]}]}}\n' \
+    > "$HOME/.claude-personal/settings.json"
+  t='2026-11-12T10:00:00Z'
+  {
+    printf '%s\tp\ts\taaaaaaaa\t1111111111111111\tblock\tdocs\t0.9\t100\t-\n' "$t"
+    printf '%s\tp\ts\taaaaaaaa\t2222222222222222\tallow-keep\t-\t-\t-\t-\n' "$t"
+    printf '%s\tp\ts\tbbbbbbbb\t3333333333333333\tallow-memory\tmemory\t0.9\t100\t-\n' "$t"
+    printf '%s\tp\ts\tcccccccc\t4444444444444444\tallow-error\t-\t-\t-\ttimeout\n' "$t"
+  } > "$HOME/.local/state/memoryguard/decisions.tsv"
+  doctor
+  [[ "$output" == *"memguard: hook: wired in $HOME/.claude-personal/settings.json; ~/bin/memoryguard: present; seat: deployed; decisions logged: 4 (1 refused, 1 errors, 1 refusals later kept)"* ]]
+
+  # A memoryguard that fails (no python3 makes it print nothing and exit 2)
+  # must not read as an empty, healthy log.
+  rm "$HOME/bin/memoryguard"
+  printf '#!/bin/sh\nexit 2\n' > "$HOME/bin/memoryguard"
+  chmod +x "$HOME/bin/memoryguard"
+  doctor
+  [[ "$output" == *"decisions logged: ? (memoryguard log failed)"* ]]
+}
+
 @test "claude-doctor: tabstatus counts events on the shim, on iTerm2's own hook, on neither" {
   repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
   command -v python3 >/dev/null || skip "python3 not installed"
@@ -1361,4 +1398,44 @@ home_repo() {
     claude_profile_dir; claude; claude-as personal-account; gh --version; wrangler --version" 2>&1
   [[ "$output" != *"parameter not set"* ]] || { echo "a wrapper aborted under nounset: $output"; false; }
   [[ "$output" == *"STUB gh --version"* && "$output" == *"STUB wrangler --version"* ]] || { echo "not every call ran: $output"; false; }
+}
+
+# Lead's stable name: an attended launch that sent the workgroup key gets
+# `-n <claude-peer name lead>` unless a name was given or a live session here
+# already has it.
+lead_setup() {
+  peer_setup
+  printf '#!/bin/sh\ncase $1 in here) echo base;; name) [ "$2" = lead ] && echo repo-lead;; esac\n' > "$HOME/bin/claude-peer"
+  printf '#!/bin/sh\necho "args=$*"\n' > "$BATS_TEST_TMPDIR/bin/claude"
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+}
+args_sent() { printf '%s' "$output" | tr -d '\r' | sed -n 's/^.*args=/args=/p'; }
+
+@test "lead name: an attended launch in a workgroup tab is named repo-lead; --resume keeps it first" {
+  lead_setup
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [ "$(args_sent)" = "args=-n repo-lead" ]
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude --resume abc
+  [ "$(args_sent)" = "args=-n repo-lead --resume abc" ]
+}
+
+@test "lead name: a name given is left alone; a live session here already named so gets none" {
+  lead_setup
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude -n mine
+  [ "$(args_sent)" = "args=-n mine" ]
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude --name=mine
+  [ "$(args_sent)" = "args=--name=mine" ]
+  make_session "$HOME/.claude-personal" "$$" "$repo" repo-lead
+  PTY_DIR=$repo PTY_ANSWER=y pty_claude
+  [ "$(args_sent)" = "args=" ]
+}
+
+@test "lead name: none under -p, inside a peer, or without the enter file" {
+  lead_setup
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude -p hi
+  [ "$(args_sent)" = "args=-p hi" ]
+  (CLAUDE_PEER_WORKTREE=$repo PTY_DIR=$repo PTY_ANSWER=n pty_claude; [ "$(args_sent)" = "args=" ])
+  rm "$HOME/.local/state/claude-peer/enter"
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [ "$(args_sent)" = "args=" ]
 }

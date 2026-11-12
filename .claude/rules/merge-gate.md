@@ -7,8 +7,9 @@ paths:
 # merge-gate
 
 `.github/rulesets/main.json` is the ruleset that stands between a pull
-request and `main`. It requires the five CI checks (`test (ubuntu-latest)`,
-`test (macos-latest)`, `test-bootstrap`, `test-rocky`, `test-wsl`) and
+request and `main`. It requires the six CI checks (`test (ubuntu-latest)`,
+`test (macos-latest)`, `test-bootstrap`, `test-macos-apply`, `test-rocky`,
+`test-wsl`) and
 requires the branch to contain main's tip ("up to date"). It has no bypass
 actor, so the owner, `--admin` and a direct push are held to it too. Main
 takes only pull-request merges, so nothing was lost by that.

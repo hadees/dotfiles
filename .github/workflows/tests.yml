@@ -60,8 +60,18 @@ jobs:
         run: sh .github/install-fzf.sh --check
       - name: Run tests
         run: NODE_TESTS_REQUIRED=1 SCREEN_TESTS_REQUIRE='tmux fzf' bats tests
+
+  # .macos applied for real and read back (tests/macos-apply.bats). Its own job
+  # so its ~5 minutes run beside the suite instead of after it on the macOS job.
+  test-macos-apply:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Bats
+        run: |
+          brew install bats-core bash
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
       - name: Apply .macos on the throwaway runner and verify
-        if: matrix.os == 'macos-latest'
         run: MACOS_APPLY_OK=1 bats tests/macos-apply.bats
 
   # The README's fresh-machine command, run for real end to end: the get.chezmoi.io

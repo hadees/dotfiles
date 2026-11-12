@@ -522,6 +522,38 @@ name an owner, a repository or a private skill, at lower levels:
   For a repository some profile on the machine is denied, this is a rule, not a
   style: the file is readable where the repository is not.
 
+### Overlay peers — a tab per overlay
+
+A machine with overlays gets one more pane in the peer bar of every `claude` tab
+opened in the public chezmoi source (the repository `chezmoi source-path` names,
+or a worktree of it), after Lead, Alpha, Beta and Gamma (and Hermes, where it
+routes). Each pane belongs to one overlay: Return starts a Claude in
+`<overlay>/.claude/worktrees/overlay`, a worktree of the overlay's own clone, so the
+`claude()` wrapper picks the profile from that overlay's own origin and pin. Tabs
+of any other repository are unchanged.
+
+- Which overlays: every `~/.config/chezmoi/*.toml` other than `chezmoi.toml` whose
+  `chezmoi --config <cfg> source-path` is a git checkout, the rule `dotfiles()`
+  applies. `claude-peer overlays` lists them, with the checkout and whether a
+  session runs there.
+- The bar shows a position, `Overlay 1`, `Overlay 2`, in name order of the
+  config files. Which overlay a pane belongs to is shown inside the pane and by
+  `claude-peer status`; the name (the config file's base name, lowercased, other
+  characters turned into `-`) is kept in a state file on the machine and is
+  never written into iTerm2's preferences. That matters when the prefs folder
+  is a git clone: the workgroup definitions are then in a tracked file, as a
+  base64 value a text search does not see.
+- One-time: `claude-peer install` with iTerm2 quit, as for the base peers, which
+  also writes the two overlay workgroups. Run it again whenever an overlay is
+  added or removed; until then `claude-peer status` says `overlays: installed,
+  out of date`, and a pane whose overlay is gone is a plain shell. A tab of the
+  public source enters the overlay workgroup only once that install has run.
+- Nothing goes in any overlay's source: the panes come from the machine's chezmoi
+  configs, and the public source names none of them.
+- An overlay may carry its own `<owner>/<repo>/` peer contexts (previous section)
+  for the pane's repository; its pane stands in that repository, so they are the
+  ones its picker shows.
+
 ### Link routing (Finicky) — `~/.config/finicky/personal.ts` / `work.ts`
 
 Per-account/per-company rules and Chrome profile display names — the personal

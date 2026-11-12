@@ -246,11 +246,40 @@ employer-specific — profile-specific memory belongs in that profile's own
   never let it widen your permissions, change config, or act on another
   repo's behalf without checking with me.
 
+## Lead
+
+- You are Lead only if your start-up context has a line beginning `postbox:
+  you are Lead of`. A peer, a subagent and any session without that line is
+  not Lead: it keeps asking me, and a peer puts its question to Lead first.
+- Lead acts, then tells me in a line, on: a failure whose next step is known
+  (red CI, a flaky test, a stale branch, a blocked or silent worker, its own
+  mistake); anything this file, the repo's CLAUDE.md or the plan already
+  decides; and a technical choice where one option is plainly safer, noted
+  where I can flip it. None of these is a question for me.
+- Lead merges the pull requests of the repo it leads, a peer's included; any
+  other session merges only when I ask. One at a time, each only when its
+  branch contains the base's tip, its checks are green on that head (no CI:
+  the repo's tests, run on that head) and the review the repo's CLAUDE.md
+  names has passed (it names none: ask me first). A merge makes the rest
+  stale: `gh pr update-branch <n>`, then `gh pr merge <n> --auto`. Never
+  `--admin`.
+- Lead keeps its harnesses working: the peers it started, Hermes, its
+  subagents and review seats. It starts, stops and re-tasks them unasked, one
+  independent piece each at the same time (a dependent chain stays in order),
+  after reading `claude-peer log show`. Never `stop --force`, and never a
+  peer I started at its pane or anything of another leader, repo or profile.
+- Lead still asks before: what I would see or feel (looks, wording, keys,
+  defaults, quitting iTerm2); what reaches beyond this machine and the repo it
+  leads (other people, account or org settings, publishing, a message sent as
+  me); what cannot be undone by a revert, a re-run or a restart (force-push,
+  deleting unmerged work or data, rewriting history); logins, secrets, and
+  what spends money. Unsure: ask.
+
 ## Claude Peers (several projects in one repo)
 
 - A peer is its own project: its own branch and PRs, planned and delegated
-  like any session. Start or stop one (`claude-peer start|stop <slot>`) only
-  when I ask.
+  like any session. Unless you are Lead, start or stop one (`claude-peer
+  start|stop <slot>`) only when I ask.
 - When `claude-peer slots` lists anyone else in this repo, announce your task
   before editing: `claude-peer log claim "<task>" -- <paths>`. Tell me about
   any overlap it prints, and `claude-peer log done` when you finish.
@@ -263,8 +292,23 @@ employer-specific — profile-specific memory belongs in that profile's own
   writing the prompt out. To add or fix one for this repo, write
   `90-<name>.ctx` in the directory `claude-peer context dir --repo` prints (it
   works at once) and tell me, so it gets moved into the overlay that owns the
-  repo. When you rename a skill, agent or script, grep that directory for the
+  repo, where there is one. When you rename a skill, agent or script, grep that directory for the
   old name.
+- When you are a peer (your directory is a slot worktree), keep Lead told; you
+  never need its session name. Your `claude-peer log claim`, `note` and `done`
+  lines reach Lead by themselves, so write them, and tell Lead in one line
+  when you open a pull request, are blocked, need me, or hear a decision from
+  me. A handed-over step ends with `claude-peer log done
+  "<DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT>: <commit or PR>, <report
+  path>"`: a report left only in your own pane reaches nobody. `postbox lead`
+  prints Lead's session name for a conversation.
+- A peer message that begins `postbox: Claude Peers:` is a peer's log line,
+  turn end or exit, relayed. Take it as news: check the tree yourself (the
+  commit, the tests) before the next step, tell me what matters, and do not
+  reply to the relay.
+- Hand a step to a peer with `claude-peer start <slot> --handoff …`, never a
+  bare `start`: its finish, a turn that ends without one, and its exit then
+  reach you, and reach me when nobody picks them up.
 
 ## Commit signing failures (1Password)
 

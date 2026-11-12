@@ -177,13 +177,22 @@ shared_templates() {
   done
 }
 
-@test "every seat ends with the report contract" {
+@test "every seat ends with the report contract, and a decision seat with the decision contract" {
   for t in $(templates); do
     b="$(body "$t")"
+    grep -q 'You do not dispatch subagents' <<< "$b" || { echo "$t: no nested-dispatch rule"; false; }
+    # A seat whose whole reply is one JSON object read by a program has no
+    # human-facing report. The exemption is these four checks, not a heading.
+    if has_heading "$b" "Decision contract"; then
+      grep -q 'one JSON object' <<< "$b" || { echo "$t: no JSON-only rule"; false; }
+      grep -q '"confidence"' <<< "$b" || { echo "$t: no confidence field"; false; }
+      ! has_heading "$b" "Report" || { echo "$t: a decision seat has no Report section"; false; }
+      ! grep -qEw 'Edit|Write|NotebookEdit|Bash' <<< "$(fmval "$t" tools)" || { echo "$t: a decision seat can change things"; false; }
+      continue
+    fi
     has_heading "$b" "Report" || { echo "$t: no Report section"; false; }
     grep -q 'DONE_WITH_CONCERNS' <<< "$b" || { echo "$t: no status line"; false; }
     grep -q 'under 15 lines' <<< "$b" || { echo "$t: no reply cap"; false; }
-    grep -q 'You do not dispatch subagents' <<< "$b" || { echo "$t: no nested-dispatch rule"; false; }
   done
 }
 
@@ -258,7 +267,8 @@ shared_templates() {
   # The mechanics live in the claude-peer rule file; the shared memory loads
   # in every session, so it holds only the behaviour and may not grow into a
   # manual (26457 characters before this section; at most 700 more, then 500
-  # more for the peer-contexts bullet).
+  # more for the peer-contexts bullet, then 1050 more for the three hand-back
+  # bullets, then 1900 more for the Lead section).
   local shared
   shared="$(tr '\n' ' ' < "$BATS_TEST_DIRNAME/../dot_claude-shared/CLAUDE.md" | tr -s ' ')"
   grep -q 'only when I ask' <<< "$shared" || { echo "shared memory: no ask-first rule for start/stop"; false; }
@@ -267,5 +277,18 @@ shared_templates() {
   # Code points, counted by python: wc -m counts bytes under the C locale of
   # the Rocky CI container.
   n="$(python3 -c 'import sys; print(len(open(sys.argv[1], encoding="utf-8").read()))' "$BATS_TEST_DIRNAME/../dot_claude-shared/CLAUDE.md")"
-  [ "$n" -le 27650 ] || { echo "shared memory is $n characters, limit 27650"; false; }
+  [ "$n" -le 30600 ] || { echo "shared memory is $n characters, limit 30600"; false; }
+}
+
+@test "the shared memory carries the Lead rule, and names the line postbox prints" {
+  # Two statements of one trigger must say the same thing: the memory names
+  # the line, and postbox prints it.
+  local shared p
+  shared="$(tr '\n' ' ' < "$BATS_TEST_DIRNAME/../dot_claude-shared/CLAUDE.md" | tr -s ' ')"
+  for p in 'postbox: you are Lead of' 'Unless you are Lead' 'only when I ask' 'One at a time' \
+    'gh pr update-branch' 'Never `--admin`' 'Never `stop --force`' 'Lead still asks before' \
+    'see or feel' 'reaches beyond this machine' 'cannot be undone' 'spends money'; do
+    grep -qF -- "$p" <<< "$shared" || { echo "shared memory: no '$p'"; false; }
+  done
+  grep -qF 'postbox: you are Lead of' "$BATS_TEST_DIRNAME/../bin/executable_postbox" || { echo "postbox no longer prints the Lead line"; false; }
 }
