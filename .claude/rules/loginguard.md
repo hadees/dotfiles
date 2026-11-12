@@ -59,15 +59,18 @@ the stored `orgId`). `explain` prints one sentence for `claude-doctor`.
 `launch` prints `claude: REFUSED:` lines and exits 3 or 4; with
 `--attended` it also says when the profile is logged out, or the login
 expires within three days or has expired. `hook prompt` exits 2 to block a
-prompt. `settings` prints the `UserPromptSubmit` entry for an overlay to
-paste into a profile's `settings.json` (the `UserPromptSubmit` entry with
-its `exit 2` branch intact, which is what blocks prompts when
-`~/bin/loginguard` is missing, and the `Notification` entry, matcher
-`auth_success`).
+prompt. `settings` prints both hook entries for an overlay to paste into a
+profile's `settings.json`: `UserPromptSubmit`, whose `exit 2` branch is what
+blocks prompts when `~/bin/loginguard` is missing, and `Notification`,
+matcher `auth_success`.
+
+`launch` is for the `claude()` wrapper to call; the wrapper does not call it
+yet (a later step), so today only the hooks act.
 
 ## The removal
 
-`after-login` takes the verdict. Only a positive `mismatch` acts: it runs
+`after-login` takes the verdict. Only a `mismatch` with no `auth-method:`
+detail acts, that is `authMethod` `claude.ai` and a different `orgId`: it runs
 `<claude> auth logout` under the same environment rule as the status call,
 asks again, and when the profile is now `logged-out` logs `removed-login`
 and prints `claude: REMOVED the login just made:` lines (exit 3); when it is
@@ -85,10 +88,16 @@ The session that saw "Login successful" learns why it is logged out from
 sentence saying the login was to another organization and was removed.
 
 Logging out resets Claude Code's first-launch setup for that directory
-(documented). The mismatch can include a matching `orgId` under another
-`authMethod` (for example an `oauth_token` environment credential); there
-`auth logout` cannot remove what is not stored, so the result is
-`remove-failed`.
+(documented). A `mismatch` by `authMethod` (for example an `oauth_token`
+environment credential, whatever its `orgId`) still blocks prompts and
+launches, but `after-login` never logs out for it: an environment token says
+nothing about the login that is stored, which may be the right one. It
+prints `nothing removed` and exits 3.
+
+An uncaught exception in the script (an old Python, say) is caught at the
+end: it logs `internal-error`, prints `internal error` on stderr, and exits
+2 for `hook prompt`, 4 otherwise (`hook auth` stays 0 and silent). It never
+logs out from there.
 
 ## Why it fails closed
 
@@ -101,9 +110,9 @@ one-variable way through.
 
 A login is checked when something asks. A session mid-turn can send one
 request under a swapped login before the next prompt is blocked. A one-word
-prompt such as `claude fix` is not checked at launch (the wrapper only
-checks subcommand-shaped arguments out of the way). A hook that times out
-does not block.
+prompt such as `claude fix` will not be checked at launch once the wrapper
+calls `launch` (it will only check subcommand-shaped arguments out of the
+way). A hook that times out does not block.
 
 ## Bypass and log
 
@@ -111,7 +120,7 @@ does not block.
 (logged as `bypassed`). `LOGINGUARD_LOG` overrides the events log, default
 `${XDG_STATE_HOME:-~/.local/state}/loginguard/events.log`. One line per
 event, six TAB fields: UTC time, event (`refused-launch`, `blocked-prompt`,
-`bypassed`, `removed-login`, `remove-failed`), directory in tilde form, pin, stored `orgId` or `-`, reason or
+`bypassed`, `removed-login`, `remove-failed`, `internal-error`), directory in tilde form, pin, stored `orgId` or `-`, reason or
 `-`. Organization names and email addresses are never written. A failed
 write never changes a verdict or an exit status.
 

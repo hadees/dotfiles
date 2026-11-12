@@ -508,3 +508,37 @@ field() { # n of the TAB-separated $output
   [ "$status" -eq 4 ]
   [[ $output == *"no-python3"* ]]
 }
+
+@test "after-login never logs out for an authMethod mismatch, matching orgId or not" {
+  pin '~/.claude-alpha' "$PINNED"
+  set_status "$PINNED" "" oauth_token
+  run "$LG" after-login --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 3 ]
+  [[ $output == *"nothing removed"* ]]
+  set_status "$OTHER" "" oauth_token
+  run "$LG" after-login --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 3 ]
+  [[ $output == *"nothing removed"* ]]
+  CLAUDE_CONFIG_DIR="$HOME/.claude-alpha" run "$LG" hook auth < /dev/null
+  [ "$status" -eq 0 ]
+  [ "$(logouts)" -eq 0 ]
+}
+
+@test "an uncaught exception fails closed: 2 for the prompt hook, 4 otherwise, no logout" {
+  pin '~/.claude-alpha' "$PINNED"
+  # Output that is not valid UTF-8 makes subprocess raise outside the script's handlers.
+  stub_exe "$BIN/claude" "echo \"\$*\" >> \"$CALLS\"; printf '\\377\\376'"
+  CLAUDE_CONFIG_DIR="$HOME/.claude-alpha" run "$LG" hook prompt < /dev/null
+  [ "$status" -eq 2 ]
+  [[ $output == *"internal error"* ]]
+  run "$LG" launch --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 4 ]
+  [[ $output == *"REFUSED"* ]]
+  run "$LG" after-login --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 4 ]
+  CLAUDE_CONFIG_DIR="$HOME/.claude-alpha" run "$LG" hook auth < /dev/null
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$(logouts)" -eq 0 ]
+  [ "$(grep -c "$(printf '\tinternal-error\t')" "$LOGINGUARD_LOG")" -eq 4 ]
+}

@@ -314,13 +314,17 @@ def removed_recently():
 
 
 def after_login():
-    """-> (exit status, stderr lines). Logs out only on a positive mismatch."""
+    """-> (exit status, stderr lines). Logs out only when claude.ai holds another organization."""
     verdict, stored, exp, reason = check()
     if verdict == "unverifiable":
         return 4, ["loginguard: nothing removed; %s" % sentence(verdict, stored, reason, None)]
     if verdict != "mismatch":
         return 0, []
     text = sentence(verdict, stored, reason, other_dir(stored))
+    if reason != "-":
+        # Another authMethod (an environment token, say) says nothing about the
+        # login that is stored, so there is nothing to remove.
+        return 3, ["loginguard: nothing removed; %s" % text]
     try:
         run_claude("auth", "logout")
     except (OSError, subprocess.SubprocessError):
@@ -394,5 +398,19 @@ def main():
     return 3 if verdict == "mismatch" else 4
 
 
-sys.exit(main())
+try:
+    code = main()
+except Exception as e:
+    # Fail closed on a bug too: an uncaught exception would exit 1, which lets
+    # a prompt through. Never logs out from here.
+    log("internal-error", "-", type(e).__name__)
+    if sub == "hook-auth":
+        code = 0
+    else:
+        sys.stderr.write("%sloginguard: internal error (%s) for %s; refusing. "
+                         "Set CLAUDE_LOGIN_CHECK=0 to bypass once.\n"
+                         % ("claude: REFUSED: " if sub == "launch" else "",
+                            type(e).__name__, tdir))
+        code = 2 if sub == "hook-prompt" else 4
+sys.exit(code)
 PY
