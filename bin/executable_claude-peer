@@ -137,7 +137,10 @@
 #                            profile and add one variable trigger per
 #                            workgroup (claude() sends the key); builtin: the
 #                            job enters Claude Code again; iTerm2 quit
-#   status                   store, iTerm2, workgroup, hermes and default state
+#   status                   store, iTerm2, workgroup, hermes and default state;
+#                            with private overlays (or their workgroups) also
+#                            what is installed against what this machine has,
+#                            and who is in each overlay's pane
 #   context list [--all] [<dir>]
 #                            name<TAB>title<TAB>ask<TAB>flags<TAB>path per start
 #                            context of the repository of <dir> (default $PWD):
@@ -1787,6 +1790,7 @@ prefs_store() {
 }
 
 # peer_py <workgroup|install|status|default> <folder|domain> <plist path> [peers|builtin [overlay names]]
+# (status: the 4th is the enter state, then the overlay names now and the state file's first line)
 # The stdlib only: plistlib for the store, json for the Workgroups value (an
 # NSData holding a JSON array), defaults for the domain.
 peer_py() {
@@ -1964,6 +1968,29 @@ if mode == "status":
             else:
                 print("%s: installed, out of date (%d sessions: %s); this version defines %d (%s) — claude-peer install (with iTerm2 quit)"
                       % (label, len(names), ", ".join(names), len(wnames), ", ".join(wnames)))
+        # overlays: said only when this machine, the store or the state file has any
+        ovs = sys.argv[5].split() if len(sys.argv) > 5 else []
+        ofile = sys.argv[6].split() if len(sys.argv) > 6 else []
+        have = [g for g in groups if g.get("uniqueIdentifier") in (OGROUP, OHGROUP)]
+        nowl = ", ".join(o.capitalize() for o in ovs)
+        if ovs and not have:
+            print("overlays: not installed — this machine has %d (%s); claude-peer install (with iTerm2 quit)" % (len(ovs), nowl))
+        elif have:
+            first = have[0]["uniqueIdentifier"]
+            instl = ", ".join(s.get("displayName", "?") for s in have[0].get("sessions", [])
+                              if str(s.get("uniqueIdentifier", "")).startswith(first + ".o."))
+            if not ovs:
+                print("overlays: installed (%s), but this machine has none now — claude-peer install (with iTerm2 quit) removes them" % instl)
+            elif all(shape(next((g for g in have if g["uniqueIdentifier"] == w["uniqueIdentifier"]), {})) == shape(w)
+                     for w in build_overlays(ovs)):
+                print("overlays: installed (%d panes: %s)" % (len(ovs), nowl))
+            else:
+                print("overlays: installed, out of date (%s); this machine has %d (%s) — claude-peer install (with iTerm2 quit)"
+                      % (instl, len(ovs), nowl))
+        if ofile and not have:
+            print("overlays: the state file lists %s but no overlay workgroup is installed, so a claude tab in the chezmoi source enters no workgroup — claude-peer install (with iTerm2 quit)" % " ".join(ofile))
+        elif have and not ofile:
+            print("overlays: installed, but the state file is missing, so claude-peer here stays base — claude-peer install (with iTerm2 quit)")
     prof = {}
     for b, t in job_triggers(pl):
         st = prof.setdefault(b.get("Name", "?"), [])
@@ -2117,8 +2144,18 @@ cmd_status() {
   if proc_running iTerm2; then printf 'iterm2: running\n'; else printf 'iterm2: not running (install allowed)\n'; fi
   # the store that is true now: iTerm2's memory (the domain) while it runs, the
   # folder file it only writes at quit otherwise
-  if proc_running iTerm2; then peer_py status domain "" "$(enter_state)"; else peer_py status "$skind" "$spath" "$(enter_state)"; fi
+  ovs=$(overlay_names)
+  ovs_filed=$(sed -n 1p "$(overlays_file)" 2>/dev/null)
+  if proc_running iTerm2; then peer_py status domain "" "$(enter_state)" "$ovs" "$ovs_filed"; else peer_py status "$skind" "$spath" "$(enter_state)" "$ovs" "$ovs_filed"; fi
   peers_summary
+  [ -n "$ovs" ] || return 0
+  if st_pub=$(public_root); then printf 'overlays: entered from %s\n' "$st_pub"
+  else printf 'overlays: chezmoi names no source directory in a git repository, so no tab enters them\n'; fi
+  overlay_list 2>/dev/null | while IFS='	' read -r st_n st_r _; do
+    overlay_state "$st_r" | ST_N=$st_n ST_R=$st_r awk -F'\t' '
+      $1 == "idle" { printf "overlay: %s idle in %s\n", ENVIRON["ST_N"], ENVIRON["ST_R"]; next }
+      { printf "overlay: %s %s in %s (tab of %s, pid %s)\n", ENVIRON["ST_N"], $1, ENVIRON["ST_R"], $2, $3 }'
+  done
 }
 
 # peers: how many Claudes run and how many panes wait in the repository the

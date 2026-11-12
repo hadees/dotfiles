@@ -2924,3 +2924,117 @@ PY
   [[ "$stderr" == *"overlay config fake2.toml: chezmoi names no source directory; skipped"* ]]
   [ "$(cat "$OV_STATE")" = fake1 ]
 }
+
+# --- overlays: status ---------------------------------------------------------------
+
+# ov_status: status, from inside $REPO, with the public source at $REPO
+ov_status() { FAKE_CHEZMOI_SOURCE="$REPO" run --separate-stderr sh "$BIN" status; }
+
+@test "status overlays: a machine with none prints no overlay line at all" {
+  ov_prefs
+  run sh "$BIN" status
+  [ "$status" -eq 0 ]
+  [[ "$output" != *overlay* ]]
+  [[ "$output" != *"out of date"* ]]
+  sh "$BIN" install >/dev/null
+  run sh "$BIN" status
+  [[ "$output" == *"hermes: installed"* ]]
+  [[ "$output" != *overlay* ]]
+}
+
+@test "status overlays: not installed says what this machine has" {
+  ov_prefs
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  overlay_cfg fake2.toml "$(overlay_repo ov2)"
+  ov_status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"overlays: not installed — this machine has 2 (Fake1, Fake2); claude-peer install (with iTerm2 quit)"* ]]
+  [[ "$output" != *"state file"* ]]
+}
+
+@test "status overlays: installed, then out of date when the set changes, then none now" {
+  ov_prefs
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  overlay_cfg fake2.toml "$(overlay_repo ov2)"
+  sh "$BIN" install >/dev/null
+  ov_status
+  [[ "$output" == *"overlays: installed (2 panes: Fake1, Fake2)"* ]]
+  [[ "$output" != *"out of date"* ]]
+  [[ "$output" != *"state file"* ]]
+  overlay_cfg fake3.toml "$(overlay_repo ov3)"
+  ov_status
+  [[ "$output" == *"overlays: installed, out of date (Fake1, Fake2); this machine has 3 (Fake1, Fake2, Fake3) — claude-peer install (with iTerm2 quit)"* ]]
+  rm "$HOME"/.config/chezmoi/fake*.toml
+  ov_status
+  [[ "$output" == *"overlays: installed (Fake1, Fake2), but this machine has none now — claude-peer install (with iTerm2 quit) removes them"* ]]
+}
+
+@test "status overlays: one group of the pair missing is out of date" {
+  ov_prefs
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  sh "$BIN" install >/dev/null
+  python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
+import json, plistlib, sys
+pl = plistlib.load(open(sys.argv[1], "rb"))
+gs = [g for g in json.loads(pl["Workgroups"]) if g["uniqueIdentifier"] != "claudePeer.v.overlays.h"]
+pl["Workgroups"] = json.dumps(gs).encode()
+plistlib.dump(pl, open(sys.argv[1], "wb"))
+PY
+  ov_status
+  [[ "$output" == *"overlays: installed, out of date (Fake1); this machine has 1 (Fake1)"* ]]
+}
+
+@test "status overlays: the state file and the store disagree in both directions" {
+  ov_prefs
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  sh "$BIN" install >/dev/null
+  rm "$OV_STATE"
+  ov_status
+  [[ "$output" == *"overlays: installed (1 panes: Fake1)"* ]]
+  [[ "$output" == *"overlays: installed, but the state file is missing, so claude-peer here stays base — claude-peer install (with iTerm2 quit)"* ]]
+  mkdir -p "${OV_STATE%/*}"
+  printf 'fake1 fake9\n' >"$OV_STATE"
+  mkprefs "$CLAUDE_PEER_PREFS"
+  ov_status
+  [[ "$output" == *"overlays: not installed — this machine has 1 (Fake1)"* ]]
+  [[ "$output" == *"overlays: the state file lists fake1 fake9 but no overlay workgroup is installed, so a claude tab in the chezmoi source enters no workgroup — claude-peer install (with iTerm2 quit)"* ]]
+  # a state file alone, with no overlay on the machine and none installed, is still said
+  rm "$HOME/.config/chezmoi/fake1.toml"
+  ov_status
+  [[ "$output" == *"overlays: the state file lists fake1 fake9 but no overlay workgroup"* ]]
+}
+
+@test "status overlays: while iTerm2 runs the domain is what is read, for the overlay lines too" {
+  ov_prefs
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  sh "$BIN" install >/dev/null
+  mkprefs "$BATS_TEST_TMPDIR/domain.plist"
+  export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist"
+  ov_status
+  [[ "$output" == *"overlays: installed (1 panes: Fake1)"* ]]
+  FAKE_PROCS=iTerm2 ov_status
+  [[ "$output" == *"overlays: not installed — this machine has 1 (Fake1)"* ]]
+}
+
+@test "status overlays: from the shell, where tabs enter from and who is in each pane" {
+  ov_prefs
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg fake1.toml "$OV1"
+  overlay_cfg fake2.toml "$OV2"
+  ov_status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"overlays: entered from $REPO"* ]]
+  [[ "$output" == *"overlay: fake1 idle in $OV1"* ]]
+  [[ "$output" == *"overlay: fake2 idle in $OV2"* ]]
+  [[ "$output" == *"peers: 0 running, 0 waiting in $REPO"*"overlays: entered from"* ]]
+  ov_busy "$OV2" "$REPO" wait-only
+  ov_status
+  [[ "$output" == *"overlay: fake2 waiting in $OV2 (tab of $REPO, pid $OV_WAIT)"* ]]
+  printf '%s\n%s\nAlpha\n' "$OV_CLAIM" "$REPO" >"$(git -C "$OV2/.claude/worktrees/alpha" rev-parse --absolute-git-dir)/claude-peer.claim"
+  ov_status
+  [[ "$output" == *"overlay: fake2 running in $OV2 (tab of $REPO, pid $OV_CLAIM)"* ]]
+  [[ "$output" == *"overlay: fake1 idle in $OV1"* ]]
+  # no source directory for the public source
+  run --separate-stderr sh "$BIN" status
+  [[ "$output" == *"overlays: chezmoi names no source directory in a git repository, so no tab enters them"* ]]
+}
