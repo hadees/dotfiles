@@ -9,6 +9,12 @@
 # (see CLAUDE.md).
 
 setup() {
+  # Pin python3 while HOME is still real: an asdf shim first on PATH finds no
+  # version under the fake HOME and exits 126 instead of running.
+  if py="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null)"; then
+    mkdir -p "$BATS_TEST_TMPDIR/pybin" && ln -s "$py" "$BATS_TEST_TMPDIR/pybin/python3"
+    export PATH="$BATS_TEST_TMPDIR/pybin:$PATH"
+  fi
   export HOME="$BATS_TEST_TMPDIR/home"
   mkdir -p "$HOME"
   export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig"
