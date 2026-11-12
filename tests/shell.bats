@@ -203,3 +203,20 @@ setup() {
   [ "$(loc "$BATS_TEST_TMPDIR/bare" linux-gnu LANG=de_DE.UTF-8)" = "de_DE.UTF-8|unset" ]
   [ "$(loc "$BATS_TEST_TMPDIR/bare" darwin23.0)" = "en_US.UTF-8|unset" ]
 }
+
+@test "exports point fzf at fd, else fdfind, else leave its default command alone" {
+  cd "$BATS_TEST_DIRNAME/.."
+  home="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$home" "$BATS_TEST_TMPDIR/fd" "$BATS_TEST_TMPDIR/fdfind" "$BATS_TEST_TMPDIR/neither"
+  for d in fd fdfind neither; do touch "$BATS_TEST_TMPDIR/$d/fzf"; chmod +x "$BATS_TEST_TMPDIR/$d/fzf"; done
+  touch "$BATS_TEST_TMPDIR/fd/fd" "$BATS_TEST_TMPDIR/fdfind/fdfind"
+  chmod +x "$BATS_TEST_TMPDIR/fd/fd" "$BATS_TEST_TMPDIR/fdfind/fdfind"
+  zsh_bin="$(command -v zsh)"
+  finder() { # PATH holds only the stub dir; LANG set so no `locale` is needed
+    env -i HOME="$home" LANG=C PATH="$BATS_TEST_TMPDIR/$1" "$zsh_bin" -c \
+      'source ./dot_exports; print -r -- "${FZF_DEFAULT_COMMAND-unset}|${FZF_CTRL_T_COMMAND-unset}|${FZF_ALT_C_COMMAND-unset}"' 2>/dev/null
+  }
+  [[ "$(finder fd)" == "fd --type f"*"|fd --type f"*"|fd --type d"* ]]
+  [[ "$(finder fdfind)" == "fdfind --type f"*"|fdfind --type f"*"|fdfind --type d"* ]]
+  [ "$(finder neither)" = "unset|unset|unset" ]
+}
