@@ -454,6 +454,18 @@ def candidate_of_token(raw_tok, cwd):
     return out
 
 
+def token_variants(raw_tok):
+    """The token, the text after its first `=` (`--opt=PATH`, dd's
+    `key=PATH`), then each of those without a leading `@` (curl's `@PATH`).
+    No duplicates, no empty strings."""
+    base = [raw_tok, raw_tok.partition("=")[2]]
+    out = []
+    for v in base + [b[1:] for b in base if b.startswith("@")]:
+        if v and v not in out:
+            out.append(v)
+    return out
+
+
 def glob_reach(cand, prefix):
     """How an absolute glob-bearing `cand` can reach the denied `prefix`:
     "inside" (it can name the tree or something in it), "ancestor" (only a
@@ -484,7 +496,9 @@ def scan(text, cwd, rules):
     for words, command_word, _is_heredoc, is_data in segments_of(text):
         recursive = False if is_data else recursion_signal(words, command_word)
         for raw_tok in words:
-            for tok, cand, has_glob in candidate_of_token(raw_tok, cwd):
+            for tok, cand, has_glob in [
+                c for v in token_variants(raw_tok) for c in candidate_of_token(v, cwd)
+            ]:
                 if has_glob:
                     for rule in rules:
                         if not rule.evaluable or rule.prefix is None:

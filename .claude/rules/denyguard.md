@@ -27,8 +27,9 @@ literal path tokens, glob prefixes, or cwd land inside one. It widens
 coverage to every command that names a denied path in its literal text
 (grep, rg, ls, find, wc, awk, diff, `git -C`, a Python file argument, an
 `-exec` argument, a heredoc body — the whole command string is scanned), to
-a glob that could expand into a denied tree, to a relative path or `cd`
-target resolved against the hook's cwd, to a symlink whose target is
+a glob that could expand into a denied tree, to a path attached to an
+option (`--opt=PATH`, `key=PATH` as `dd` writes it, `@PATH` as `curl` does),
+to a relative path or `cd` target resolved against the hook's cwd, to a symlink whose target is
 denied, and to a session whose cwd already is one. `denyguard check
 --profile DIR PATH...` exposes the same boundary test for anything else
 that needs it (a working-set opener, for one), and `denyguard settings`
@@ -93,6 +94,9 @@ string still counts as an opener when a later line happens to be exactly
 `[A-Za-z0-9_]`, or a second heredoc opened on the same line, is not
 recognised — its body is read as ordinary commands, which is strict, not
 blind.
+A value glued to a short option with no separator (`-f` immediately
+followed by the path) is not read either: only the text after an `=` or a
+leading `@` is tried as a path.
 One gap is worth stating separately because a rule's *shape* invites
 over-trust: a token containing a glob is matched only against rules that
 carry a directory prefix, so a bare any-depth rule (`Read(**/*.env)`) does
