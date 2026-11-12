@@ -489,6 +489,7 @@ cmd_stop() {
   case $(os) in
     # kill SIGTERM would be undone at once by the plist's KeepAlive.
     Darwin)
+      [ -f "$(plist_path)" ] || die 'not installed (postbox install)'
       launchctl bootout "gui/$(uid)/$LABEL" >/dev/null 2>&1
       launchd_wait_gone
       printf 'postbox: stopped; it loads again at next login, `postbox start` brings it back now\n'
@@ -1079,7 +1080,9 @@ cmd_status() {
           printf '\n'
         fi
       else
-        printf 'daemon:  %s not loaded (postbox install)\n' "$LABEL"
+        # A stopped job is booted out but its plist stays; start reloads it.
+        if [ -f "$(plist_path)" ]; then hint='postbox start'; else hint='postbox install'; fi
+        printf 'daemon:  %s not loaded (%s)\n' "$LABEL" "$hint"
       fi
       ;;
     *)

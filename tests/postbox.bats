@@ -387,6 +387,8 @@ STUB
 }
 
 @test "stop: boots the job out so KeepAlive cannot undo it, and never sends a kill" {
+  mkdir -p "$HOME/Library/LaunchAgents"
+  : > "$HOME/Library/LaunchAgents/local.postbox.plist"
   run "$PB" stop
   [ "$status" -eq 0 ]
   grep -q "^bootout gui/[0-9]*/local.postbox" "$LAUNCHCTL_LOG" || { echo "no bootout in: $(cat "$LAUNCHCTL_LOG")"; false; }
@@ -407,6 +409,23 @@ STUB
   [ "$status" -eq 0 ]
   grep -q '^kickstart ' "$LAUNCHCTL_LOG" || { echo "no kickstart in: $(cat "$LAUNCHCTL_LOG")"; false; }
   ! grep -q '^bootstrap' "$LAUNCHCTL_LOG" || { echo "bootstrap on a loaded job: $(cat "$LAUNCHCTL_LOG")"; false; }
+}
+
+@test "stop: nothing installed is an error, as on systemd" {
+  run "$PB" stop
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"not installed"* ]]
+  ! grep -q '^bootout' "$LAUNCHCTL_LOG" || { echo "bootout with no plist: $(cat "$LAUNCHCTL_LOG")"; false; }
+}
+
+@test "status: a stopped job (plist kept, not loaded) points at start, a missing plist at install" {
+  printf '#!/bin/sh\n[ "$1" = print ] && exit 1\nexit 0\n' > "$BIN/launchctl"
+  run "$PB" status
+  [[ "$output" == *"not loaded (postbox install)"* ]]
+  mkdir -p "$HOME/Library/LaunchAgents"
+  : > "$HOME/Library/LaunchAgents/local.postbox.plist"
+  run "$PB" status
+  [[ "$output" == *"not loaded (postbox start)"* ]]
 }
 
 @test "start: neither loaded nor installed is an error" {
