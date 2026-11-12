@@ -10,8 +10,9 @@
 # itself except its own log.
 #
 # This file so far: the decision (`decide`), its backends, the log and the
-# cache (`log`), and a self-test of the real backend (`selftest`). The hook,
-# `audit` and `settings` commands arrive in later steps.
+# cache (`log`), a self-test of the real backend (`selftest`), the gate on
+# Write and Edit (`hook pre`) and the settings block to paste (`settings`).
+# `hook bash`, `hook start` and `audit` arrive in later steps.
 #
 # The decider is shaped as a Jev-style function: a request is one JSON
 # object, `{"v": 1, "state": ..., "questions": {<id>: {"type": "choice",
@@ -25,6 +26,8 @@
 #   memoryguard decide [--project DIR] [--json] FILE   FILE `-` is stdin
 #   memoryguard selftest [--mode lean|agent]
 #   memoryguard log [--since DAYS]
+#   memoryguard hook pre          PreToolUse JSON on stdin; always exits 0
+#   memoryguard settings
 # env:
 #   MEMORYGUARD_BACKEND       `claude` or the absolute path of a protocol-v1
 #                             executable (else git config
@@ -38,6 +41,31 @@
 #                             working directory live.
 set -eu
 
+# A hook reads its payload once, here, so that a write nowhere near a memory
+# directory costs one `sh` start and a string test, and python never starts.
+# The payload then reaches python on fd 3 through an already-unlinked file.
+# A profile that sets autoMemoryDirectory may keep notes where the path has no
+# `/memory/` in it, so for such a profile the string test is skipped.
+case "${1:-}" in
+hook)
+  [ -z "${MEMORYGUARD_DEPTH:-}" ] || exit 0
+  payload=$(cat) || exit 0
+  case "${2:-}" in
+  pre | bash)
+    case $payload in
+    */memory/*) ;;
+    *) grep -qs autoMemoryDirectory "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" || exit 0 ;;
+    esac
+    ;;
+  esac
+  tmp=$(mktemp "${TMPDIR:-/tmp}/memoryguard.XXXXXX") || exit 0
+  printf '%s' "$payload" >"$tmp"
+  exec 3<"$tmp"
+  rm -f "$tmp"
+  ;;
+*) exec 3<&0 ;;
+esac
+
 command -v python3 >/dev/null 2>&1 || {
   printf 'memoryguard: python3 not found\n' >&2
   case "${1:-}" in hook) exit 0 ;; esac
@@ -45,9 +73,8 @@ command -v python3 >/dev/null 2>&1 || {
 }
 
 # `python3 -` reads its program from the heredoc below, which occupies
-# stdin, so a note piped to `decide -` is read from fd 3 (denyguard does the
-# same).
-exec 3<&0
+# stdin, so a note piped to `decide -` (or a hook payload) is read from fd 3
+# (denyguard does the same).
 exec python3 - "$@" <<'PY'
 import calendar
 import hashlib
@@ -64,6 +91,9 @@ RUBRIC_V = 1
 BLOCK_AT = 0.75
 BACKEND_TIMEOUT = 20
 NOTE_MAX = 12000
+INDEX_MAX = 8000
+LINE_MAX = 200
+KEEP_MIN = 20
 CLAUDE_MODE_DEFAULT = "lean"
 SEAT = "decide-haiku"
 OUTLINE_MAX = 200
@@ -516,6 +546,19 @@ def log_row(slug, name, sha, outcome, choice="-", conf="-", ms="-", detail="-"):
 
 # ---- commands --------------------------------------------------------------
 
+def place_note(name, text, root, start):
+    # Build the request for one note and ask the backend: (answers, detail, ms).
+    files = [shared_memory_path()]
+    if root:
+        rdir, ddir = os.path.join(root, ".claude", "rules"), os.path.join(root, "docs")
+        files.append(os.path.join(root, "CLAUDE.md"))
+        for d in (rdir, ddir):
+            files += [os.path.join(d, f) for f in sorted(os.listdir(d))] if os.path.isdir(d) else []
+    ev = evidence(text, [f for f in files if f.endswith(".md")])
+    request = build_request(name, text, os.path.basename(root or start), outline(root, shared_memory_path()), ev)
+    return run_backend(request)
+
+
 def cmd_decide(argv):
     as_json, project, files = False, None, []
     i = 0
@@ -554,15 +597,7 @@ def cmd_decide(argv):
         log_row(slug, name, sha, outcome, cached[6], cached[7])
         return emit(res, as_json, 0)
 
-    files_for_evidence = [shared_memory_path()]
-    if root:
-        rdir, ddir = os.path.join(root, ".claude", "rules"), os.path.join(root, "docs")
-        files_for_evidence.append(os.path.join(root, "CLAUDE.md"))
-        for d in (rdir, ddir):
-            files_for_evidence += [os.path.join(d, f) for f in sorted(os.listdir(d))] if os.path.isdir(d) else []
-    ev = evidence(text, [f for f in files_for_evidence if f.endswith(".md")])
-    request = build_request(name, text, os.path.basename(root or start), outline(root, shared_memory_path()), ev)
-    answers, detail, ms = run_backend(request)
+    answers, detail, ms = place_note(name, text, root, start)
     if answers is None:
         outcome = "allow-nobackend" if detail == "nobackend" else "allow-error"
         log_row(slug, name, sha, outcome, ms=ms, detail=detail)
@@ -640,16 +675,257 @@ def cmd_log(argv):
     return 0
 
 
+# ---- the gate on Write and Edit ----------------------------------------------
+
+def under(path, base):
+    rel = os.path.relpath(path, base)
+    return None if rel == ".." or rel.startswith("../") else rel
+
+
+def memory_target(file_path, config_dir, home):
+    # -> ("note" | "index" | "foreign" | None, memory dir). A memory note is a
+    # .md file under <config dir>/projects/<slug>/memory/ or under the
+    # profile's autoMemoryDirectory; "foreign" is the same under another
+    # profile's directory, which is none of this profile's business.
+    if not file_path.endswith(".md"):
+        return None, None
+    path = os.path.realpath(os.path.expanduser(file_path))
+    cfg = os.path.realpath(config_dir)
+    rel = under(path, os.path.join(cfg, "projects"))
+    parts = rel.split("/") if rel else []
+    if len(parts) >= 3 and parts[1] == "memory":
+        return ("index" if parts[2:] == ["MEMORY.md"] else "note"), os.path.join(cfg, "projects", parts[0], "memory")
+    try:
+        with open(os.path.join(cfg, "settings.json"), encoding="utf-8") as f:
+            auto = json.load(f).get("autoMemoryDirectory")
+    except (OSError, ValueError, AttributeError):
+        auto = None
+    if isinstance(auto, str) and auto:
+        auto = os.path.realpath(os.path.expanduser(auto))
+        rel = under(path, auto)
+        if rel:
+            return ("index" if rel == "MEMORY.md" else "note"), auto
+    rel = under(path, os.path.realpath(home))
+    m = re.match(r"^\.claude[^/]*/projects/[^/]+/memory(?=/)", rel or "")
+    return ("foreign", os.path.join(os.path.realpath(home), m.group(0))) if m else (None, None)
+
+
+def resulting_text(tool_name, tool_input):
+    # The note as it will be once the tool call lands, or None when it cannot.
+    if tool_name == "Write":
+        c = tool_input.get("content")
+        return c if isinstance(c, str) else None
+    old, new = tool_input.get("old_string"), tool_input.get("new_string")
+    if tool_name != "Edit" or not isinstance(old, str) or not isinstance(new, str):
+        return None
+    cur = read_text(os.path.expanduser(tool_input.get("file_path") or ""))
+    if cur is None:
+        return new if old == "" else None
+    n = cur.count(old)
+    every = bool(tool_input.get("replace_all"))
+    if n == 0 or (n > 1 and not every):
+        return None
+    return cur.replace(old, new) if every else cur.replace(old, new, 1)
+
+
+def memory_project(memdir):
+    return os.path.basename(os.path.dirname(memdir)) if os.path.basename(memdir) == "memory" else None
+
+
+def main_checkout(root):
+    try:
+        r = subprocess.run(["git", "-C", root, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return os.path.dirname(r.stdout.strip().rstrip("/"))
+    except Exception:
+        pass
+    return root
+
+
+def shared_source():
+    # Where the deployed shared memory comes from, for the session to edit.
+    fallback = "the chezmoi source of ~/.claude-shared/CLAUDE.md"
+    try:
+        r = subprocess.run(["chezmoi", "source-path", shared_memory_path()],
+                           capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL)
+    except Exception:
+        return fallback
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else fallback
+
+
+def describe_home(choice, place, root):
+    sect = place.split(":", 1)[1] if place else None
+    repo = root or "the repository"
+    if choice == "shared-memory":
+        return "shared memory, %s%s" % (shared_source(), ', section "%s"' % sect if sect else "")
+    if choice == "rule":
+        return "%s/.claude/rules/%s.md" % (repo, sect) if sect else "a path-scoped rule file under %s/.claude/rules/" % repo
+    if choice == "claude-md":
+        return "%s/CLAUDE.md%s" % (repo, ', section "%s"' % sect if sect else "")
+    if choice == "docs":
+        return "%s/%s" % (repo, sect) if sect else "%s/docs/" % repo
+    if choice == "overlay":
+        return "a private overlay's own docs, not this repository and not memory"
+    return "no file: do not save it"
+
+
+UNTIL_HINT = ("If it must bridge until that lands, save it again with `until: <YYYY-MM-DD | grep:<text>@<file> | "
+              "a condition in words>` under `metadata:` in its frontmatter; it is kept as a stopgap and flagged when due.")
+KEEP_HINT = "If the operator has said it stays in memory, save it again with `keep: <their reason>` under `metadata:`."
+PUT_HINT = ("Put it there with a normal edit, on that repository's usual branch and pull request. "
+            "Do not reword it to pass, and do not write it by another route.")
+ELSEWHERE_HINT = "That file is in another repository: hand the text to the session there, or work in a worktree of it."
+
+
+def refusal(choice, conf, reason, home, elsewhere):
+    lines = ["memoryguard: not saved. This reads as %s (%d%%)%s" % (choice, round(conf * 100), ": " + reason if reason else "."),
+             "It belongs in %s." % home, PUT_HINT]
+    if elsewhere:
+        lines.append(ELSEWHERE_HINT)
+    return "\n".join(lines + [UNTIL_HINT, KEEP_HINT])
+
+
+def index_warning(text, memdir):
+    entries = [l for l in text.split("\n") if l.lstrip().startswith("- ")]
+    long = sum(1 for l in entries if len(l) > LINE_MAX)
+    missing = []
+    for l in entries:
+        for t in re.findall(r"\]\(([^)\s]+)\)", l):
+            t = t.split("#")[0]
+            if t and not re.match(r"^[a-z][a-z0-9+.-]*:", t) and not os.path.exists(os.path.join(memdir, t)):
+                missing.append(t)
+    msgs = []
+    if len(text) > INDEX_MAX or long:
+        msgs.append("memoryguard: MEMORY.md would be %d characters, %d entries over %d. Keep one short line per entry."
+                    % (len(text), long, LINE_MAX))
+    if missing:
+        msgs.append("Entries link missing files: %s." % ", ".join(missing[:3]))
+    return " ".join(msgs)
+
+
+def hook_pre(p):
+    # -> None, or the fields of the hook's answer: a refusal or a note.
+    tool, ti = p.get("tool_name"), p.get("tool_input")
+    fp = ti.get("file_path") if isinstance(ti, dict) else None
+    if tool not in ("Write", "Edit") or not isinstance(fp, str):
+        return None
+    kind, memdir = memory_target(fp, config_dir(), HOME)
+    if not kind:
+        return None
+    name, mproject = os.path.basename(fp), memory_project(memdir)
+    slug = mproject or os.path.basename(memdir)
+
+    def log(outcome, sha="-", choice="-", conf="-", ms="-", detail="-"):
+        try:
+            log_row(slug, name, sha, outcome, choice, conf, ms, detail)
+        except OSError:
+            pass
+
+    def note(msg):
+        return {"additionalContext": msg}
+
+    if kind == "foreign":
+        log("allow-foreign")
+        return None
+    text = resulting_text(tool, ti)
+    if text is None:
+        log("allow-error", detail="noapply")
+        return None
+    sha = body_hash(text)
+    if kind == "index":
+        warn = index_warning(text, memdir)
+        log("index-warn" if warn else "index-ok", sha)
+        return note(warn) if warn else None
+    if len(text) > NOTE_MAX:
+        log("allow-large", sha, detail=str(len(text)))
+        return note("memoryguard: this note is %d characters. A note is a pointer: move the detail to docs or a rule file." % len(text))
+    mk = markers(text)
+    if mk["keep"] and len(mk["keep"]) >= KEEP_MIN:
+        log("allow-keep", sha)
+        return None
+    if mk["until"]:
+        log("allow-stopgap", sha)
+        return None
+    cached = ledger_row(sha)
+    if cached and cached[5] in CACHE_BLOCK:
+        log("block-cached", sha, cached[6], cached[7])
+        msg = "memoryguard: not saved. This text was already placed: %s." % cached[6]
+        return {"permissionDecision": "deny", "permissionDecisionReason": "\n".join((msg, PUT_HINT, UNTIL_HINT, KEEP_HINT))}
+    if cached:
+        log("allow-memory", sha, cached[6], cached[7])
+        return None
+
+    start = os.path.abspath(p.get("cwd") or os.getcwd())
+    root = repo_root(start)
+    answers, detail, ms = place_note(name, text, root, start)
+    if answers is None:
+        log("allow-nobackend" if detail == "nobackend" else "allow-error", sha, ms=ms, detail=detail)
+        return note("memoryguard: could not place this note (%s); it was saved unplaced." % detail)
+    outcome, choice, conf, place, reason = verdict(answers)
+    extra = " ".join("%s=%s" % (k, LAST[k]) for k in ("api_ms", "tokens") if LAST.get(k) is not None)
+    log(outcome, sha, choice, conf, ms, extra or "-")
+    if outcome == "allow-memory":
+        return None
+    home = describe_home(choice, place, root)
+    if outcome == "allow-unsure":
+        return note("memoryguard: saved, but this may belong in %s (%d%%). If so, move it there and delete the note."
+                    % (home, round(conf * 100)))
+    # A repository home is another repository's when the session works elsewhere
+    # than in the project this memory belongs to.
+    elsewhere = bool(mproject) and choice in ("rule", "claude-md", "docs") and (
+        root is None or mproject not in (re.sub(r"[^A-Za-z0-9]", "-", main_checkout(root)),
+                                         re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(main_checkout(root)))))
+    return {"permissionDecision": "deny", "permissionDecisionReason": refusal(choice, conf, reason, home, elsewhere)}
+
+
+def cmd_hook(argv):
+    # A hook never fails the tool call: any trouble is silence and exit 0.
+    # `hook bash` and `hook start` arrive in later steps and do nothing yet.
+    if argv[:1] != ["pre"]:
+        return 0
+    try:
+        out = hook_pre(json.loads(os.fdopen(3, encoding="utf-8", errors="replace").read()))
+        if out:
+            print(json.dumps({"hookSpecificOutput": dict(hookEventName="PreToolUse", **out)}))
+    except Exception:
+        pass
+    return 0
+
+
+SETTINGS = """memoryguard does not edit settings.json: each profile's file is owned by its
+overlay. Add these to that file's "hooks" (merging with what is there):
+
+  "PreToolUse": [
+    { "matcher": "Write|Edit",
+      "hooks": [{ "type": "command", "timeout": 30, "command": "[ -x ~/bin/memoryguard ] && exec ~/bin/memoryguard hook pre || true" }] },
+    { "matcher": "Bash",
+      "hooks": [{ "type": "command", "timeout": 10, "command": "[ -x ~/bin/memoryguard ] && exec ~/bin/memoryguard hook bash || true" }] }
+  ],
+  "SessionStart": [
+    { "hooks": [{ "type": "command", "timeout": 10, "command": "[ -x ~/bin/memoryguard ] && exec ~/bin/memoryguard hook start || true" }] }
+  ]"""
+
+
+def cmd_settings(argv):
+    if argv:
+        return usage()
+    print(SETTINGS)
+    return 0
+
+
 def usage():
     sys.stderr.write(
         "usage: memoryguard decide [--project DIR] [--json] FILE\n"
         "       memoryguard selftest [--mode lean|agent]\n"
-        "       memoryguard log [--since DAYS]\n")
+        "       memoryguard log [--since DAYS]\n"
+        "       memoryguard hook pre\n"
+        "       memoryguard settings\n")
     return 2
 
 
 def main():
-    cmds = {"decide": cmd_decide, "selftest": cmd_selftest, "log": cmd_log}
+    cmds = {"decide": cmd_decide, "selftest": cmd_selftest, "log": cmd_log, "hook": cmd_hook, "settings": cmd_settings}
     argv = sys.argv[1:]
     if not argv or argv[0] not in cmds:
         return usage()

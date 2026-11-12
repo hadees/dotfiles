@@ -305,3 +305,228 @@ assert c["argv"] == ["-p","--agent","decide-haiku","--output-format","json","--n
   run "$MG" decide "$BATS_TEST_TMPDIR/missing.md"
   [ "$status" -eq 2 ]
 }
+
+# ---- hook pre: the gate on Write and Edit ------------------------------------
+
+# A PreToolUse payload: tool, file_path, content (Write) or old_string, new_string
+# (Edit; pass "" as the second slot for a Write), cwd.
+payload() {
+  "$REAL_PYTHON3" -c '
+import json,sys
+t,f,a,b,cwd = sys.argv[1:6]
+ti = {"file_path": f, "content": a} if t == "Write" else {"file_path": f, "old_string": a, "new_string": b}
+print(json.dumps({"tool_name": t, "tool_input": ti, "cwd": cwd}))' "$@"
+}
+
+# The hook's answer, read back: field of hookSpecificOutput, or "-" when absent.
+field() { # json field
+  "$REAL_PYTHON3" -c '
+import json,sys
+print(json.loads(sys.argv[1]).get("hookSpecificOutput", {}).get(sys.argv[2], "-"))' "$1" "$2"
+}
+
+hook_pre() { run "$MG" hook pre <<< "$1"; }
+last_outcome() { tail -1 "$LOG" | cut -f6; }
+
+# A memory note with a body of its own, under the sandbox profile's project "proj".
+MEMDIR_SUFFIX=projects/-proj/memory
+note_path() { echo "$CLAUDE_CONFIG_DIR/$MEMDIR_SUFFIX/${1:-n.md}"; }
+note_body() { printf -- '---\nname: n\nmetadata:\n%s  type: feedback\n---\n%s\n' "${2:-}" "$1"; }
+write_note() { # body [frontmatter-extra] [file]
+  payload Write "$(note_path "${3:-}")" "$(note_body "$1" "${2:-}")" "" "$HOME/work"
+}
+
+@test "hook pre: a write outside any memory directory costs no python start" {
+  printf '#!/bin/sh\necho started >> "%s/py-calls"\nexec "%s" "$@"\n' "$BATS_TEST_TMPDIR" "$REAL_PYTHON3" > "$BIN/python3"
+  hook_pre "$(payload Write "$HOME/work/a.md" "x" "" "$HOME/work")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ ! -e "$BATS_TEST_TMPDIR/py-calls" ]
+  [ ! -e "$LOG" ]
+}
+
+@test "hook pre: garbage on stdin is silence and exit 0, with and without /memory/" {
+  hook_pre 'not json at all'
+  [ "$status" -eq 0 ] && [ -z "$output" ]
+  hook_pre '{"tool_name": /memory/ broken'
+  [ "$status" -eq 0 ] && [ -z "$output" ]
+  hook_pre '{"tool_name": "Write", "tool_input": "/memory/x"}'
+  [ "$status" -eq 0 ] && [ -z "$output" ]
+}
+
+@test "hook pre: content that mentions /memory/ in a file elsewhere logs nothing" {
+  hook_pre "$(payload Write "$HOME/work/a.md" "see /memory/n.md" "" "$HOME/work")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ ! -e "$LOG" ]
+}
+
+@test "hook pre: a misplaced note is refused with the id, the percentage and both exits, then from the cache" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer shared-memory 0.9)"
+  hook_pre "$(write_note "always ask first")"
+  [ "$status" -eq 0 ]
+  [ "$(field "$output" permissionDecision)" = "deny" ]
+  reason="$(field "$output" permissionDecisionReason)"
+  [[ "$reason" == *"shared-memory (90%)"* ]]
+  [[ "$reason" == *'`until:'* ]]
+  [[ "$reason" == *'`keep:'* ]]
+  [[ "$reason" == *"It belongs in shared memory"* ]]
+  [ "$(last_outcome)" = "block" ]
+  hook_pre "$(write_note "always ask first")"
+  [ "$(field "$output" permissionDecision)" = "deny" ]
+  [[ "$(field "$output" permissionDecisionReason)" == *"already placed: shared-memory"* ]]
+  [ "$(runs)" -eq 1 ]
+  [ "$(last_outcome)" = "block-cached" ]
+}
+
+@test "hook pre: until: (frontmatter or body line) lets a note through without the backend" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer shared-memory 0.9)"
+  hook_pre "$(write_note "bridge one" "  until: 2031-01-01
+")"
+  [ -z "$output" ]
+  [ "$(last_outcome)" = "allow-stopgap" ]
+  hook_pre "$(write_note "bridge two
+Until: when the fix lands")"
+  [ -z "$output" ]
+  [ "$(last_outcome)" = "allow-stopgap" ]
+  [ ! -e "$STUB_DIR/runs" ]
+}
+
+@test "hook pre: keep: needs a reason of twenty characters; a short one is ignored" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer memory 0.9)"
+  hook_pre "$(write_note "kept one" "  keep: the operator asked for it here
+")"
+  [ -z "$output" ]
+  [ "$(last_outcome)" = "allow-keep" ]
+  [ ! -e "$STUB_DIR/runs" ]
+  hook_pre "$(write_note "kept two" "  keep: because
+")"
+  [ "$(last_outcome)" = "allow-memory" ]
+  [ "$(runs)" -eq 1 ]
+}
+
+@test "hook pre: a memory verdict is allowed in silence" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer memory 0.9)"
+  hook_pre "$(write_note "the staging box")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$(last_outcome)" = "allow-memory" ]
+}
+
+@test "hook pre: an unsure verdict is a note to the session and grants nothing" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer rule 0.5)"
+  hook_pre "$(write_note "maybe a rule")"
+  [[ "$(field "$output" additionalContext)" == "memoryguard: saved, but this may belong in "*"(50%)"* ]]
+  [ "$(field "$output" permissionDecision)" = "-" ]
+  [ "$(last_outcome)" = "allow-unsure" ]
+}
+
+@test "hook pre: a failing backend saves the note and says so" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer memory 0.9)"
+  STUB_EXIT=1 hook_pre "$(write_note "anything")"
+  [[ "$(field "$output" additionalContext)" == *"(exit)"* ]]
+  [ "$(field "$output" permissionDecision)" = "-" ]
+  [ "$(last_outcome)" = "allow-error" ]
+}
+
+@test "hook pre: an Edit is judged on the resulting text; one that cannot apply is silent" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer memory 0.9)"
+  mkdir -p "$(dirname "$(note_path)")"
+  printf 'the staging box stays up\n' > "$(note_path)"
+  hook_pre "$(payload Edit "$(note_path)" "stays up" "must keep running" "$HOME/work")"
+  [ "$(runs)" -eq 1 ]
+  grep -q 'must keep running' "$STUB_DIR/request.json"
+  ! grep -q 'stays up' "$STUB_DIR/request.json"
+  hook_pre "$(payload Edit "$(note_path)" "not in the file" "x" "$HOME/work")"
+  [ -z "$output" ]
+  [ "$(last_outcome)" = "allow-error" ]
+  [ "$(tail -1 "$LOG" | cut -f10)" = "noapply" ]
+  [ "$(runs)" -eq 1 ]
+}
+
+@test "hook pre: the refusal names the section, the rule file, or another repository" {
+  fixture_repo
+  mkdir -p "$HOME/.claude-shared"
+  printf '# S\n\n## Delegation\n\ntext\n' > "$HOME/.claude-shared/CLAUDE.md"
+  printf '#!/bin/sh\necho /src/dot_claude-shared/CLAUDE.md\n' > "$BIN/chezmoi"; chmod +x "$BIN/chezmoi"
+  slug="$(printf '%s' "$HOME/repo" | tr -c 'A-Za-z0-9' '-')"
+  inrepo() { payload Write "$CLAUDE_CONFIG_DIR/projects/${2:-$slug}/memory/n.md" "$(note_body "$1")" "" "$HOME/repo"; }
+  export STUB_ANSWER='{"answers":{"destination":{"choice":"shared-memory","confidence":0.9},"place":{"choice":"shared:Delegation","confidence":0.9}}}'
+  hook_pre "$(inrepo "one")"
+  reason="$(field "$output" permissionDecisionReason)"
+  [[ "$reason" == *'shared memory, /src/dot_claude-shared/CLAUDE.md, section "Delegation"'* ]]
+  [[ "$reason" != *"another repository"* ]]
+  printf '#!/bin/sh\nexit 1\n' > "$BIN/chezmoi"
+  STUB_ANSWER='{"answers":{"destination":{"choice":"shared-memory","confidence":0.9},"place":{"choice":"none","confidence":0.9}}}'
+  hook_pre "$(inrepo "one b")"
+  [[ "$(field "$output" permissionDecisionReason)" == *"in shared memory, the chezmoi source of ~/.claude-shared/CLAUDE.md."* ]]
+  STUB_ANSWER='{"answers":{"destination":{"choice":"rule","confidence":0.9},"place":{"choice":"rule:frobnicate","confidence":0.9}}}'
+  hook_pre "$(inrepo "two")"
+  reason="$(field "$output" permissionDecisionReason)"
+  [[ "$reason" == *"$HOME/repo/.claude/rules/frobnicate.md."* ]]
+  [[ "$reason" != *"another repository"* ]]
+  hook_pre "$(inrepo "three" "-elsewhere")"
+  [[ "$(field "$output" permissionDecisionReason)" == *"another repository"* ]]
+}
+
+@test "hook pre: MEMORY.md only ever warns, and a clean index is silent" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer shared-memory 0.9)"
+  mkdir -p "$(dirname "$(note_path)")"
+  printf 'x\n' > "$(note_path a.md)"
+  idx() { payload Write "$(note_path MEMORY.md)" "$1" "" "$HOME/work"; }
+  hook_pre "$(idx "- [A](a.md) — short")"
+  [ -z "$output" ]
+  [ "$(last_outcome)" = "index-ok" ]
+  hook_pre "$(idx "$(printf -- '- [A](a.md) — %0300d' 0)")"
+  [[ "$(field "$output" additionalContext)" == *"1 entries over 200"* ]]
+  [ "$(last_outcome)" = "index-warn" ]
+  hook_pre "$(idx "$(for i in $(seq 120); do printf -- '- [A](a.md) — %060d\n' "$i"; done)")"
+  [[ "$(field "$output" additionalContext)" == *"MEMORY.md would be "* ]]
+  hook_pre "$(idx "- [B](b.md) — gone")"
+  [[ "$(field "$output" additionalContext)" == *"Entries link missing files: b.md."* ]]
+  [ "$(field "$output" permissionDecision)" = "-" ]
+  [ ! -e "$STUB_DIR/runs" ]
+}
+
+@test "hook pre: a note under another profile's directory is allowed untouched" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer shared-memory 0.9)"
+  hook_pre "$(payload Write "$HOME/.claude-other/projects/-p/memory/n.md" "$(note_body x)" "" "$HOME/work")"
+  [ -z "$output" ]
+  [ "$(last_outcome)" = "allow-foreign" ]
+  [ ! -e "$STUB_DIR/runs" ]
+}
+
+@test "hook pre: a note over twelve thousand characters is flagged, not judged" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer shared-memory 0.9)"
+  hook_pre "$(write_note "$(head -c 13000 /dev/zero | tr '\0' x)")"
+  [[ "$(field "$output" additionalContext)" == *"A note is a pointer"* ]]
+  [ "$(last_outcome)" = "allow-large" ]
+  [ ! -e "$STUB_DIR/runs" ]
+}
+
+@test "hook pre: inside the decider's own session (MEMORYGUARD_DEPTH) nothing happens" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer shared-memory 0.9)"
+  MEMORYGUARD_DEPTH=1 hook_pre "$(write_note "anything")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ ! -e "$LOG" ]
+}
+
+@test "hook pre: autoMemoryDirectory in the profile's settings is gated too" {
+  printf '{"autoMemoryDirectory": "%s/auto-mem"}' "$HOME" > "$CLAUDE_CONFIG_DIR/settings.json"
+  export STUB_ANSWER; STUB_ANSWER="$(answer shared-memory 0.9)"
+  hook_pre "$(payload Write "$HOME/auto-mem/n.md" "$(note_body "auto")" "" "$HOME/work")"
+  [ "$(field "$output" permissionDecision)" = "deny" ]
+  [ "$(last_outcome)" = "block" ]
+}
+
+@test "settings prints the three hook commands, each failing open" {
+  run "$MG" settings
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '"command": ".* || true"' <<< "$output")" -eq 3 ]
+  [[ "$output" == *"memoryguard hook pre || true"* ]]
+  [[ "$output" == *"memoryguard hook bash || true"* ]]
+  [[ "$output" == *"memoryguard hook start || true"* ]]
+  run "$MG" hook start <<< '{}'
+  [ "$status" -eq 0 ] && [ -z "$output" ]
+}
