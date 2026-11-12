@@ -28,6 +28,7 @@ have() {
   case $1 in
     tmux) command -v tmux >/dev/null 2>&1;;
     fzf) command -v fzf >/dev/null 2>&1 && fzf_new;;
+    pgrep) command -v pgrep >/dev/null 2>&1;;
     *) return 1;;
   esac
 }
@@ -41,6 +42,7 @@ verdict() {
 reason() {
   case $1 in
     tmux) echo 'no tmux on PATH';;
+    pgrep) echo 'no pgrep on PATH (procps)';;
     *) if ! command -v fzf >/dev/null 2>&1; then echo 'no fzf on PATH'
        else echo "fzf $(fzf_version) is older than 0.75"; fi;;
   esac
@@ -797,7 +799,7 @@ top9() { printf '%s\n' "$SCREEN" | sed -n 1,9p; }
 fzf_kids() { local f; f=$(pgrep -P "$PANE_PID" -x fzf) || { echo 'no fzf under the pane'; return 1; }; pgrep -P "$f" || true; }
 
 @test "sleeper: it moves, keeps what is typed, stops at the limit, and a key starts it again" {
-  need tmux fzf
+  need tmux fzf pgrep
   git config --global --unset claude-peer.art
   git config --global claude-peer.art-seconds 3
   local first still
@@ -816,7 +818,7 @@ fzf_kids() { local f; f=$(pgrep -P "$PANE_PID" -x fzf) || { echo 'no fzf under t
 }
 
 @test "sleeper: with art-seconds 0 it never moves" {
-  need tmux fzf
+  need tmux fzf pgrep
   git config --global --unset claude-peer.art
   screen_open 80 24
   screen_wait 'esc hide'

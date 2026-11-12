@@ -1008,15 +1008,20 @@ fi'
 pane_fzf() {
   while :; do
     rm -f "$pn_me.pick"
-    pn_header=$(pane_head)
-    # the moving sleeper: one header file per pose, which fzf's own timer shows
+    # the moving sleeper: one header file per pose, which fzf's own timer shows; drawn
+    # again only when the layout changed, so a picker reopened at one size renders nothing
     pn_anim=
     if [ "$pn_lay" != none ] && [ "$pn_secs" -gt 0 ]; then
-      pn_anim=1
-      pane_head asleep near >"$pn_me.frame.0"; pane_head asleep near-mid >"$pn_me.frame.1"
-      pane_head asleep-sway all >"$pn_me.frame.2"; pane_head asleep-sway none >"$pn_me.frame.3"
-      printf '%s' "$pn_header" >"$pn_me.frame.still"
+      pn_anim=1 pf_key="$pn_lay $pn_w $pn_cols"
+      if [ "$(cat "$pn_me.frame.key" 2>/dev/null)" != "$pf_key" ]; then
+        pane_head asleep near >"$pn_me.frame.0"; pane_head asleep near-mid >"$pn_me.frame.1"
+        pane_head asleep-sway all >"$pn_me.frame.2"; pane_head asleep-sway none >"$pn_me.frame.3"
+        pane_head >"$pn_me.frame.still"
+        printf '%s\n' "$pf_key" >"$pn_me.frame.key"
+      fi
       pn_header=$(cat "$pn_me.frame.0")
+    else
+      pn_header=$(pane_head)
     fi
     # shellcheck disable=SC2086
     ( trap - TTIN TTOU; unset FZF_DEFAULT_OPTS FZF_DEFAULT_OPTS_FILE
