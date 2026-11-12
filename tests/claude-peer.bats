@@ -6,9 +6,14 @@
 # for $SHELL so nothing starts a real claude.
 # Everything runs in a sandboxed HOME against fixture repos with invented names.
 
+bats_require_minimum_version 1.5.0
+
 setup() {
   BIN="$BATS_TEST_DIRNAME/../bin/executable_claude-peer"
   export HOME="$BATS_TEST_TMPDIR/home"
+  # a runner or a shell that exports XDG_CONFIG_HOME would put the script's
+  # config root outside the sandbox
+  unset XDG_CONFIG_HOME
   export XDG_STATE_HOME="$HOME/.local/state"
   mkdir -p "$HOME" "$BATS_TEST_TMPDIR/bin"
   export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig"
@@ -19,6 +24,7 @@ setup() {
   git config --global user.name octo
   git config --global user.email octo@example.com
   git config --global init.defaultBranch main
+  git config --global claude-peer.picker off
   cat >"$BATS_TEST_TMPDIR/bin/fakeshell" <<'STUB'
 #!/bin/sh
 echo "pwd=$PWD"
@@ -408,7 +414,7 @@ pane() {
     exec sh "$BIN" run --as "$s" --wait >"$BATS_TEST_TMPDIR/pane-$t.out" 2>&1 3>&- ) &
   LAST_PANE=$!
   PANES="$PANES $LAST_PANE"
-  until_ok "[ -f '$REPO/.git/claude-peer.wait/$s.$LAST_PANE' ]"
+  until_ok "[ -f '$(git -C "$d" rev-parse --path-format=absolute --git-common-dir)/claude-peer.wait/$s.$LAST_PANE' ]"
 }
 
 # press <tag> <text>: type a line into that pane's terminal
@@ -450,6 +456,7 @@ hold() {
   [ -z "$(sh "$BIN" peers)" ]
   [ "$(find "$REPO/.git" -name claude-peer.claim | wc -l | tr -d ' ')" -eq 0 ]
   [ "$(grep -c "Return starts a Claude here" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 2 ]
+  grep -qx "Alpha" "$BATS_TEST_TMPDIR/pane-alpha.out"
 }
 
 @test "run --as --wait: c continues, q leaves a shell, anything else asks again" {
@@ -653,6 +660,7 @@ hold() {
   until_ok '[ "$(grep -c "Return tries again" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 1 ]'
   [ "$(sh "$BIN" slots | grep -c waiting)" -eq 1 ]
   [ "$(shell_runs)" -eq 0 ]
+  ! grep -q "	end	" "$REPO/$LOG" 2>/dev/null
 }
 
 @test "the pool: a configured pool falls back to a free one of the first three" {
@@ -847,7 +855,23 @@ LOG=.git/claude-peer.log
   [ "$(cut -f2,3,4 "$REPO/$LOG")" = "Lead"$'\t'"start"$'\t'"Alpha by Lead" ]
   printf '{"pid": %s, "status": "idle"}\n' "$sp" >"$cfg/sessions/$sp.json"
   sh "$BIN" stop alpha >/dev/null
-  [ "$(cut -f2,3,4 "$REPO/$LOG" | sed -n 2p)" = "Lead"$'\t'"stop"$'\t'"Alpha by Lead" ]
+  # the pane's `end` races `stop`'s line; both are there, in either order
+  until_ok '[ "$(grep -c . "$REPO/$LOG")" -eq 3 ]'
+  grep -qx "Lead"$'\t'"stop"$'\t'"Alpha by Lead" <(cut -f2,3,4 "$REPO/$LOG")
+  grep -Eqx "Alpha"$'\t'"end"$'\t'"Alpha ended after [0-9]+s \(some words\)" <(cut -f2,3,4 "$REPO/$LOG")
+}
+
+@test "end: a session that ends logs one end line, which closes its label's claims" {
+  FAKE_SHELL_SLEEP=1 pane alpha
+  sh "$BIN" log --as Alpha claim fixing -- some/file >/dev/null
+  sh "$BIN" start alpha the task >/dev/null
+  until_ok 'grep -q "	end	" "$REPO/$LOG"'
+  [ "$(grep -c "	end	" "$REPO/$LOG")" -eq 1 ]
+  [[ "$(grep "	end	" "$REPO/$LOG" | cut -f2,3,4)" =~ ^Alpha$'\t'end$'\t'Alpha\ ended\ after\ [0-9]+s\ \(the\ task\)$ ]]
+  run sh "$BIN" log --as Beta claim other -- some
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  ! sh "$BIN" log show | grep -q "	Alpha	claim	"
 }
 
 # --- workgroup / install / status ----------------------------------------------
@@ -1297,4 +1321,890 @@ plistlib.dump(pl, open(p, "wb"))
 PY
   run sh "$BIN" status
   [[ "$output" == *"default: mixed (1 of 2 profiles enter by variable)"* ]]
+}
+
+# --- contexts -----------------------------------------------------------------
+
+ctxfix() { # three fixture repositories and a context tree
+  export CLAUDE_PEER_CONTEXTS="$BATS_TEST_TMPDIR/ctx"
+  git remote add origin git@example.invalid:octo/proj.git
+  mkdir -p "$BATS_TEST_TMPDIR/other" "$BATS_TEST_TMPDIR/bare"
+  git -C "$BATS_TEST_TMPDIR/other" init -q
+  git -C "$BATS_TEST_TMPDIR/other" remote add origin https://example.invalid/Octo/Other
+  git -C "$BATS_TEST_TMPDIR/bare" init -q
+  mkdir -p "$CLAUDE_PEER_CONTEXTS/octo/proj" "$CLAUDE_PEER_CONTEXTS/octo/other"
+  printf 'title: Greet\nask: Who\nmodel: sonnet\neffort: low\nsystem: be brief\n\nHello {input}, again {input}.\nKeep {owner}.\n\n\n' >"$CLAUDE_PEER_CONTEXTS/20-greet.ctx"
+  printf 'title: Plain\n\nJust this.\n' >"$CLAUDE_PEER_CONTEXTS/10-plain.ctx"
+  printf 'title: Owner level\n\nowner\n' >"$CLAUDE_PEER_CONTEXTS/octo/30-mine.ctx"
+  printf 'title: Greet for octo\nagent: plan-fable\nmode: continue\n\nowner greet\n' >"$CLAUDE_PEER_CONTEXTS/octo/05-greet.ctx"
+  printf 'title: Deploy proj\n\nproj\n' >"$CLAUDE_PEER_CONTEXTS/octo/proj/10-deploy.ctx"
+  printf 'title: Deploy other\n\nother\n' >"$CLAUDE_PEER_CONTEXTS/octo/other/10-deploy.ctx"
+}
+
+names() { printf '%s\n' "$output" | cut -f1 | tr '\n' ' '; }
+
+@test "context list: the three levels in order, a deeper same-name file replaces and takes the later place" {
+  ctxfix
+  run sh "$BIN" context list
+  [ "$status" -eq 0 ]
+  [ "$(names)" = "plain greet mine deploy " ]
+  [[ "$output" == *"greet"$'\t'"Greet for octo"$'\t'"-"$'\t'"agent=plan-fable mode=continue"$'\t'"$CLAUDE_PEER_CONTEXTS/octo/05-greet.ctx"* ]]
+  [[ "$output" == *"deploy"$'\t'"Deploy proj"* ]]
+}
+
+@test "context list: a capitalised origin folds, another repository's directory is never read, a linked worktree gives its leader's rows" {
+  ctxfix
+  cd "$BATS_TEST_TMPDIR/other"
+  run sh "$BIN" context list
+  [ "$(names)" = "plain greet mine deploy " ]
+  [[ "$output" == *"Deploy other"* ]]
+  [[ "$output" != *"Deploy proj"* ]]
+  cd "$REPO"
+  sh "$BIN" context list >"$BATS_TEST_TMPDIR/main.rows"
+  git worktree add -q "$REPO/.claude/worktrees/alpha" -b alpha
+  cd "$REPO/.claude/worktrees/alpha"
+  run sh "$BIN" context list
+  [ "$output" = "$(cat "$BATS_TEST_TMPDIR/main.rows")" ]
+}
+
+@test "context list: no origin reads the top level only with a silent stderr; a missing root is empty and exit 0" {
+  ctxfix
+  cd "$BATS_TEST_TMPDIR/bare"
+  run --separate-stderr sh "$BIN" context list
+  [ "$status" -eq 0 ]
+  [ "$(names)" = "plain greet " ]
+  [ -z "$stderr" ]
+  CLAUDE_PEER_CONTEXTS="$BATS_TEST_TMPDIR/none" run --separate-stderr sh "$BIN" context list
+  [ "$status" -eq 0 ]
+  [ -z "$output$stderr" ]
+}
+
+@test "context list: an origin without owner/repo reads the top level and says so once" {
+  ctxfix
+  git remote set-url origin 'host:../../etc'
+  run --separate-stderr sh "$BIN" context list
+  [ "$status" -eq 0 ]
+  [ "$(names)" = "plain greet " ]
+  [ "$stderr" = "claude-peer: origin 'host:../../etc' gives no owner/repo; only the general contexts apply" ]
+}
+
+@test "context list --all: every file once, no override; an invalid file is skipped with a stderr line" {
+  ctxfix
+  printf 'title: Bad\nrepo: octo/proj\n\nx\n' >"$CLAUDE_PEER_CONTEXTS/40-bad.ctx"
+  printf 'title: Not a context\n' >"$CLAUDE_PEER_CONTEXTS/notes.txt"
+  printf 'title: Bad name\n\nx\n' >"$CLAUDE_PEER_CONTEXTS/Bad.ctx"
+  run --separate-stderr sh "$BIN" context list --all
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | wc -l)" -eq 6 ]
+  [ "$(printf '%s\n' "$output" | grep -c "	greet	\|^greet	")" -eq 2 ]
+  [ "$stderr" = "claude-peer: $CLAUDE_PEER_CONTEXTS/40-bad.ctx: repo: is not a key (a per-repository context goes in <owner>/<repo>/)" ]
+}
+
+@test "context list: an invalid file is left out with a stderr line" {
+  ctxfix
+  printf 'title: Bad\nmodel: --evil\n\nx\n' >"$CLAUDE_PEER_CONTEXTS/40-bad.ctx"
+  run --separate-stderr sh "$BIN" context list
+  [ "$(names)" = "plain greet mine deploy " ]
+  [[ "$stderr" == *"40-bad.ctx: model: '--evil' is not a plain value" ]]
+}
+
+@test "context show: header, scope, flags in start's order, and the prompt with the value substituted everywhere" {
+  ctxfix
+  run sh "$BIN" context show plain
+  [ "$status" -eq 0 ]
+  [ "$output" = "plain — Plain"$'\n'"file: $CLAUDE_PEER_CONTEXTS/10-plain.ctx"$'\n'"scope: everywhere"$'\n\n'"Just this." ]
+  run sh "$BIN" context show deploy
+  [[ "$output" == *"scope: octo/proj"* ]]
+  run sh "$BIN" context show mine
+  [[ "$output" == *"scope: octo"$'\n'* ]]
+  run sh "$BIN" context show greet w
+  [[ "$output" == *$'flag: --continue\nflag: --agent plan-fable\n\nowner greet'* ]]
+  cd "$BATS_TEST_TMPDIR/bare"
+  run sh "$BIN" context show greet w
+  [[ "$output" == *$'asks: Who\nflag: --model sonnet\nflag: --effort low\nflag: --append-system-prompt be brief\n\nHello w, again w.'* ]]
+  cd "$REPO"
+  run sh "$BIN" context show 20-greet
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no context '20-greet' here (claude-peer context list)"* ]]
+}
+
+@test "context show: the value arrives byte for byte; {owner} is left alone; a body without {input} gets it appended; no value leaves {input} visible" {
+  ctxfix
+  rm "$CLAUDE_PEER_CONTEXTS/octo/05-greet.ctx"
+  v=$'a & b \\1 \\n "q" \'s\'\nline two'
+  run sh "$BIN" context show greet "$v"
+  [ "$status" -eq 0 ]
+  want="Hello $v, again $v."$'\n'"Keep {owner}."
+  [[ "$output" == *$'\n\n'"$want" ]]
+  [ "${output##*$'\n\n'}" = "$want" ]
+  run sh "$BIN" context show greet
+  [[ "$output" == *"Hello {input}, again {input}."* ]]
+  run sh "$BIN" context show plain extra words
+  [[ "$output" == *$'\n\nJust this.\n\nextra words' ]]
+}
+
+@test "context show: @ names describe the built-in rows; an invalid file fails with its reason" {
+  ctxfix
+  run sh "$BIN" context show @resume
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "@resume — Resume a session" ]
+  [ "${#lines[@]}" -eq 2 ]
+  printf 'title: Bad\nrepo: octo/proj\n\nx\n' >"$CLAUDE_PEER_CONTEXTS/octo/proj/20-bad.ctx"
+  run --separate-stderr sh "$BIN" context show bad
+  [ "$status" -eq 1 ]
+  [[ "$stderr" == *"repo: is not a key (a per-repository context goes in <owner>/<repo>/)" ]]
+  printf 'title: Bad\nbogus: 1\n\nx\n' >"$CLAUDE_PEER_CONTEXTS/octo/proj/20-bad.ctx"
+  run --separate-stderr sh "$BIN" context show bad
+  [[ "$stderr" == *"unknown key 'bogus'" ]]
+  printf 'title: Bad\nmode: sideways\n\nx\n' >"$CLAUDE_PEER_CONTEXTS/octo/proj/20-bad.ctx"
+  run --separate-stderr sh "$BIN" context show bad
+  [ "$status" -eq 1 ]
+  printf 'title Bad\n\nx\n' >"$CLAUDE_PEER_CONTEXTS/octo/proj/20-bad.ctx"
+  run --separate-stderr sh "$BIN" context show bad
+  [[ "$stderr" == *"header line without ': ': title Bad" ]]
+}
+
+@test "context dir: the root, and with --repo the repository's directory; no origin is exit 1" {
+  ctxfix
+  run sh "$BIN" context dir
+  [ "$output" = "$CLAUDE_PEER_CONTEXTS" ]
+  run sh "$BIN" context dir --repo
+  [ "$status" -eq 0 ]
+  [ "$output" = "$CLAUDE_PEER_CONTEXTS/octo/proj" ]
+  run sh "$BIN" context dir --repo "$BATS_TEST_TMPDIR/other"
+  [ "$output" = "$CLAUDE_PEER_CONTEXTS/octo/other" ]
+  run sh "$BIN" context dir --repo "$BATS_TEST_TMPDIR/bare"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"this repository has no origin remote, so it has no context directory" ]]
+}
+
+@test "context: the root defaults under XDG_CONFIG_HOME, else HOME/.config" {
+  run sh "$BIN" context dir
+  [ "$output" = "$HOME/.config/claude-peer/contexts" ]
+  XDG_CONFIG_HOME="$BATS_TEST_TMPDIR/xdg" run sh "$BIN" context dir
+  [ "$output" = "$BATS_TEST_TMPDIR/xdg/claude-peer/contexts" ]
+}
+
+@test "context: the shipped catalogue lists seven rows, shows the value last, keeps {owner}, and audit carries its system line" {
+  export CLAUDE_PEER_CONTEXTS="$BATS_TEST_DIRNAME/../dot_config/claude-peer/contexts"
+  run --separate-stderr sh "$BIN" context list --all
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | wc -l)" -eq 7 ]
+  [ -z "$stderr" ]
+  run sh "$BIN" context show prs 12 13
+  [[ "$output" == *"12 13" ]]
+  [[ "$output" == *"repos/{owner}/{repo}/rules/branches/"* ]]
+  run sh "$BIN" context show audit
+  [[ "$output" == *"flag: --append-system-prompt"* ]]
+}
+
+# --- start --context ---------------------------------------------------------------
+
+# hello: every flag a context can set, and a body that takes the value
+hellofix() {
+  ctxfix
+  printf 'title: Hello\nask: Who\nagent: plan-fable\nmodel: sonnet\neffort: low\nsystem: be brief\n\nHello {input}.\n' >"$CLAUDE_PEER_CONTEXTS/30-hello.ctx"
+  printf 'title: Say\n\nSay: {input}!\n' >"$CLAUDE_PEER_CONTEXTS/40-say.ctx"
+}
+
+@test "start --context: the flags go in the fixed order before the prompt, the claim has seven lines, the pane says who and what" {
+  hellofix
+  FAKE_SHELL_SLEEP=2 pane alpha
+  run sh "$BIN" start alpha --context hello World
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha --agent plan-fable --model sonnet --effort low --append-system-prompt be brief Hello World\.\$" "$FAKE_SHELL_LOG"'
+  cl=$(claim_of "$REPO/.claude/worktrees/alpha")
+  [ "$(wc -l <"$cl" | tr -d ' ')" -eq 7 ]
+  [ "$(sed -n 4p "$cl")" = Lead ]
+  [ "$(sed -n 5p "$cl")" = hello ]
+  [ "$(sed -n 6p "$cl")" = "hello: World" ]
+  [[ "$(sed -n 7p "$cl")" =~ ^[0-9]+$ ]]
+  run sh "$BIN" peers
+  [ "$(printf '%s' "$output" | awk -F'\t' '{ print NF }')" -eq 4 ]
+  grep -qx "Alpha · started by Lead · hello: World" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  [ ! -e "$REPO/.git/claude-peer.wait/alpha.$LAST_PANE.meta" ]
+}
+
+@test "start --context: a multi-line value from stdin arrives byte for byte inside the prompt; a plain start still names its prompt" {
+  hellofix
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  want=$'a & \\ "q" $HOME\nsecond line'
+  run sh -c 'printf "%s" "$1" | sh "$2" start alpha --context say -' _ "$want" "$BIN"
+  [ "$status" -eq 0 ]
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = "Say: $want!" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/last.n")" -eq 6 ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  run sh "$BIN" start alpha fix the thing
+  [ "$status" -eq 0 ]
+  until_ok 'grep -qx "Alpha · started by Lead · fix the thing" "$BATS_TEST_TMPDIR/pane-alpha.out"'
+}
+
+@test "start --context: a context with mode continue puts --continue first" {
+  hellofix
+  FAKE_SHELL_SLEEP=2 pane alpha
+  run sh "$BIN" start alpha --context greet
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha --continue --agent plan-fable owner greet\$" "$FAKE_SHELL_LOG"'
+}
+
+@test "start --context: --continue with it is 2, an unknown context 1, a missing value 2; none wakes the pane" {
+  hellofix
+  pane alpha
+  run sh "$BIN" start alpha --continue --context hello World
+  [ "$status" -eq 2 ]
+  run sh "$BIN" start alpha --context nope World
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no context 'nope' here"* ]]
+  run sh "$BIN" start alpha --context hello
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"context hello needs a value: Who"* ]]
+  [ "$(shell_runs)" -eq 0 ]
+  [ "$(sh "$BIN" slots | cut -f2)" = waiting ]
+  [ ! -e "$REPO/.git/claude-peer.wait/alpha.$LAST_PANE.start" ]
+  [ ! -e "$REPO/.git/claude-peer.wait/alpha.$LAST_PANE.meta" ]
+}
+
+@test "start --context: a pane whose wait file has no line 2 predates contexts, exit 4; a plain start still works" {
+  hellofix
+  FAKE_SHELL_SLEEP=2 pane alpha
+  printf '%s\n' "$REPO" >"$REPO/.git/claude-peer.wait/alpha.$LAST_PANE"
+  run sh "$BIN" start alpha --context hello World
+  [ "$status" -eq 4 ]
+  [[ "$output" == *"the waiting pane (pid $LAST_PANE) predates contexts; reopen its tab"* ]]
+  [ "$(shell_runs)" -eq 0 ]
+  run sh "$BIN" start alpha fix it
+  [ "$status" -eq 0 ]
+}
+
+# --- the picker in the waiting pane -------------------------------------------------
+
+# A stand-in fzf. `--version` prints FAKE_FZF_VERSION and notes the call. Otherwise
+# it logs its arguments (one per line) and the FZF_DEFAULT_OPTS it got, keeps the
+# rows, counts its calls, and on the first call ends as FAKE_FZF_OUT / FAKE_FZF_RC
+# say (after FAKE_FZF_SLEEP seconds when set); a later call waits like a real fzf
+# (FAKE_FZF_SLEEP2, default 30) and ends as FAKE_FZF_OUT2 / FAKE_FZF_RC2 (130).
+# A TERM while it waits is noted.
+fzfstub() {
+  mkdir -p "$BATS_TEST_TMPDIR/fzfbin"
+  cat >"$BATS_TEST_TMPDIR/fzfbin/fzf" <<'STUB'
+#!/bin/sh
+if [ "${1-}" = --version ]; then
+  echo x >>"$FAKE_FZF_LOG.version"
+  echo "${FAKE_FZF_VERSION:-0.75.0 (stub)}"
+  exit 0
+fi
+printf '%s\n' "$@" >"$FAKE_FZF_LOG"
+printf '%s\n' "${FZF_DEFAULT_OPTS-unset}" >"$FAKE_FZF_LOG.opts"
+echo x >>"$FAKE_FZF_LOG.calls"
+cat >"$FAKE_FZF_LOG.rows"
+out=${FAKE_FZF_OUT-} rc=${FAKE_FZF_RC-0} sl=${FAKE_FZF_SLEEP-}
+if [ "$(wc -l <"$FAKE_FZF_LOG.calls")" -gt 1 ]; then
+  out=${FAKE_FZF_OUT2-} rc=${FAKE_FZF_RC2-130} sl=${FAKE_FZF_SLEEP2-30}
+fi
+if [ -n "$sl" ]; then
+  trap 'echo TERM >>"$FAKE_FZF_LOG.term"; kill $sp 2>/dev/null; exit 143' TERM
+  sleep "$sl" & sp=$!
+  wait $sp
+fi
+printf '%s' "$out"
+exit "$rc"
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/fzfbin/fzf"
+  export PATH="$BATS_TEST_TMPDIR/fzfbin:$PATH"
+  export FAKE_FZF_LOG="$BATS_TEST_TMPDIR/fzf.log"
+  unset FZF_DEFAULT_OPTS
+}
+
+fzf_calls() { [ -f "$FAKE_FZF_LOG.calls" ] && wc -l <"$FAKE_FZF_LOG.calls" | tr -d ' ' || echo 0; }
+
+# typeline <tag> <text>: press, and return once the pane has read the line, so
+# the next line cannot overtake it
+typeline() { press "$1" "$2"; until_ok "! kill -0 $! 2>/dev/null"; }
+
+# pane_count <tag> <text>: how many times the pane's output has that text (a prompt
+# has no newline after it, so lines are not anchored)
+pane_count() { grep -oF -- "$2" "$BATS_TEST_TMPDIR/pane-$1.out" | wc -l | tr -d ' '; }
+
+# pane_says <slot-tag> <text>: wait until the pane's output has that text on a line
+pane_says() { until_ok "grep -qF -- '$2' '$BATS_TEST_TMPDIR/pane-$1.out'"; }
+
+LISTHINT='c continue · r resume · n task · s task, saved · q shell'
+
+@test "picker list: with no setting and no terminal the list is open at once, titles in one column; one Return is a blank session" {
+  hellofix
+  git config --global --unset claude-peer.picker
+  FAKE_SHELL_SLEEP=2 pane alpha
+  pane_says alpha "$LISTHINT"
+  o=$BATS_TEST_TMPDIR/pane-alpha.out
+  ! grep -q 'Return picks' "$o"
+  ! grep -qF ' (asks:' "$o"
+  [ "$(grep -E '^ ?[0-9]+  ' "$o" | sed -E 's/^ ?[0-9]+  ([a-z]+) +.*/\1/' | tr '\n' ' ')" = "fresh plain hello say greet mine deploy continue resume task shell " ]
+  grep -qx ' 1  fresh     A new session, no prompt' "$o"
+  grep -qx ' 3  hello     Hello' "$o"
+  grep -qx ' 8  continue  Pick up the last conversation' "$o"
+  grep -qx ' 9  resume    Choose an earlier conversation' "$o"
+  grep -qx '10  task      Type a task and start it' "$o"
+  grep -qx '11  shell     Drop to a shell' "$o"
+  typeline alpha ''
+  until_ok 'grep -q "claude-peer proj-alpha\$" "$FAKE_SHELL_LOG"'
+  cl=$(claim_of "$REPO/.claude/worktrees/alpha")
+  [ "$(sed -n 4p "$cl")" = pane ]
+  [ "$(sed -n 5p "$cl")" = - ]
+}
+
+@test "picker list: a number starts that context and asks for its value; a context name, continue and c work; an empty answer is the list again" {
+  hellofix
+  git config --global claude-peer.picker list
+  FAKE_SHELL_SLEEP=2 pane alpha
+  pane_says alpha "$LISTHINT"
+  typeline alpha 3
+  pane_says alpha 'Who: '
+  typeline alpha World
+  until_ok 'grep -q "claude-peer proj-alpha --agent plan-fable --model sonnet --effort low --append-system-prompt be brief Hello World\.\$" "$FAKE_SHELL_LOG"'
+  cl=$(claim_of "$REPO/.claude/worktrees/alpha")
+  [ "$(sed -n 4p "$cl")" = pane ]
+  [ "$(sed -n 5p "$cl")" = hello ]
+  [ "$(sed -n 6p "$cl")" = "hello: World" ]
+  # the session ends: the list is open again
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  until_ok '[ "$(pane_count alpha "$LISTHINT")" -eq 2 ]'
+  typeline alpha hello
+  typeline alpha ''
+  until_ok '[ "$(pane_count alpha "$LISTHINT")" -eq 3 ]'
+  typeline alpha hello
+  typeline alpha Again
+  until_ok 'grep -q "append-system-prompt be brief Hello Again\.\$" "$FAKE_SHELL_LOG"'
+  [ "$(shell_runs)" -eq 2 ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  typeline alpha nosuch
+  typeline alpha continue
+  until_ok 'grep -q "claude-peer proj-alpha --continue\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  typeline alpha c
+  until_ok '[ "$(grep -c "claude-peer proj-alpha --continue\$" "$FAKE_SHELL_LOG")" -eq 2 ]'
+}
+
+@test "picker list: r ends the argument list with --resume and nothing after it" {
+  hellofix
+  git config --global claude-peer.picker list
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  pane_says alpha "$LISTHINT"
+  typeline alpha r
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = --resume ]
+  [ "$(cat "$BATS_TEST_TMPDIR/last.n")" -eq 6 ]
+  grep -q "claude-peer proj-alpha --resume\$" "$FAKE_SHELL_LOG"
+}
+
+@test "picker list: n takes the typed task as the prompt; an empty task and an unknown answer show the list again" {
+  hellofix
+  git config --global claude-peer.picker list
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  pane_says alpha "$LISTHINT"
+  typeline alpha zzz
+  until_ok '[ "$(pane_count alpha "$LISTHINT")" -eq 2 ]'
+  typeline alpha n
+  pane_says alpha 'Task: '
+  typeline alpha ''
+  until_ok '[ "$(pane_count alpha "$LISTHINT")" -eq 3 ]'
+  [ "$(shell_runs)" -eq 0 ]
+  typeline alpha n
+  typeline alpha 'fix the thing'
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = "fix the thing" ]
+  cl=$(claim_of "$REPO/.claude/worktrees/alpha")
+  [ "$(sed -n 4p "$cl")" = pane ]
+  [ "$(sed -n 6p "$cl")" = "fix the thing" ]
+  grep -qx "Alpha · fix the thing" "$BATS_TEST_TMPDIR/pane-alpha.out"
+}
+
+@test "picker list: q, and the number of the shell row, leave a shell and the wait file" {
+  hellofix
+  git config --global claude-peer.picker list
+  pane alpha
+  pp=$LAST_PANE
+  pane_says alpha "$LISTHINT"
+  typeline alpha q
+  until_ok '! kill -0 $pp 2>/dev/null'
+  grep -qx "pwd=$REPO args=-i" "$FAKE_SHELL_LOG"
+  [ -z "$(ls "$REPO/.git/claude-peer.wait")" ]
+  pane alpha
+  pp=$LAST_PANE
+  pane_says alpha "$LISTHINT"
+  typeline alpha 11
+  until_ok '! kill -0 $pp 2>/dev/null'
+  [ "$(grep -cx "pwd=$REPO args=-i" "$FAKE_SHELL_LOG")" -eq 2 ]
+  [ -z "$(ls "$REPO/.git/claude-peer.wait")" ]
+}
+
+@test "picker list: s saves the task as 90-<name>.ctx for this repository; the same name again, and a bad name, are refused and the task still starts" {
+  hellofix
+  git config --global claude-peer.picker list
+  FAKE_SHELL_SLEEP=2 pane alpha
+  pane_says alpha "$LISTHINT"
+  typeline alpha s
+  typeline alpha 'fix ci please'
+  pane_says alpha 'Save as (a name like fix-ci, Return skips): '
+  typeline alpha fix-ci
+  until_ok 'grep -q "claude-peer proj-alpha fix ci please\$" "$FAKE_SHELL_LOG"'
+  f=$CLAUDE_PEER_CONTEXTS/octo/proj/90-fix-ci.ctx
+  [ "$(cat "$f")" = $'title: fix ci please\n\nfix ci please' ]
+  grep -qF "saved as fix-ci ($f)" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  run sh "$BIN" context list
+  [[ "$output" == *"fix-ci"$'\t'"fix ci please"* ]]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  typeline alpha s
+  typeline alpha 'second try'
+  typeline alpha fix-ci
+  until_ok 'grep -q "claude-peer proj-alpha second try\$" "$FAKE_SHELL_LOG"'
+  grep -qF "not saved: fix-ci already exists in $CLAUDE_PEER_CONTEXTS/octo/proj" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  [ "$(cat "$f")" = $'title: fix ci please\n\nfix ci please' ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  # a name another file of the directory already has, and a bad name
+  typeline alpha s
+  typeline alpha 'third'
+  typeline alpha deploy
+  until_ok 'grep -q "claude-peer proj-alpha third\$" "$FAKE_SHELL_LOG"'
+  grep -qF "not saved: deploy already exists in " "$BATS_TEST_TMPDIR/pane-alpha.out"
+  [ ! -e "$CLAUDE_PEER_CONTEXTS/octo/proj/90-deploy.ctx" ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  typeline alpha s
+  typeline alpha 'fourth'
+  typeline alpha 'Bad Name'
+  until_ok 'grep -q "claude-peer proj-alpha fourth\$" "$FAKE_SHELL_LOG"'
+  grep -qF "not saved: 'Bad Name' is not a name" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  [ "$(ls "$CLAUDE_PEER_CONTEXTS/octo/proj" | wc -l | tr -d ' ')" -eq 2 ]
+  # a long task: the saved title is its first 40 characters
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  typeline alpha s
+  typeline alpha 'a task whose first line runs well past forty characters'
+  typeline alpha longone
+  until_ok '[ "$(sed -n 1p "$CLAUDE_PEER_CONTEXTS/octo/proj/90-longone.ctx" 2>/dev/null)" = "title: a task whose first line runs well past f" ]'
+}
+
+@test "picker list: the same name saved from a pane in one repository and one in another lands in each repository's own directory" {
+  hellofix
+  git config --global claude-peer.picker list
+  git -C "$BATS_TEST_TMPDIR/other" commit -q --allow-empty -m init
+  FAKE_SHELL_SLEEP=2 pane alpha
+  FAKE_SHELL_SLEEP=2 pane alpha "$BATS_TEST_TMPDIR/other" o
+  pane_says alpha "$LISTHINT"
+  pane_says o "$LISTHINT"
+  typeline alpha s
+  typeline o s
+  typeline alpha 'in proj'
+  typeline o 'in other'
+  typeline alpha same
+  typeline o same
+  until_ok '[ -f "$CLAUDE_PEER_CONTEXTS/octo/proj/90-same.ctx" ] && [ -f "$CLAUDE_PEER_CONTEXTS/octo/other/90-same.ctx" ]'
+  until_ok 'grep -q "args=.*in other\$" "$FAKE_SHELL_LOG" && grep -q "args=.*in proj\$" "$FAKE_SHELL_LOG"'
+  ! grep -qF 'not saved' "$BATS_TEST_TMPDIR/pane-alpha.out" "$BATS_TEST_TMPDIR/pane-o.out"
+  run sh "$BIN" context list
+  [[ "$output" == *"same"$'\t'"in proj"* ]]
+  [[ "$output" != *"in other"* ]]
+  cd "$BATS_TEST_TMPDIR/other"
+  run sh "$BIN" context list
+  [[ "$output" == *"same"$'\t'"in other"* ]]
+  [[ "$output" != *"in proj"* ]]
+}
+
+@test "picker list: a save in a repository with no origin says so, asks no name, and the task still starts" {
+  hellofix
+  git config --global claude-peer.picker list
+  git -C "$BATS_TEST_TMPDIR/bare" commit -q --allow-empty -m init
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha "$BATS_TEST_TMPDIR/bare" b
+  pane_says b "$LISTHINT"
+  typeline b s
+  typeline b 'no home for this'
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = "no home for this" ]
+  grep -qF "not saved: this repository has no origin remote, so it has no context directory" "$BATS_TEST_TMPDIR/pane-b.out"
+  ! grep -q 'Save as' "$BATS_TEST_TMPDIR/pane-b.out"
+  [ ! -e "$CLAUDE_PEER_CONTEXTS/90-no-home-for-this.ctx" ]
+}
+
+@test "picker list: a start from outside interrupts the list and the question after it" {
+  hellofix
+  git config --global claude-peer.picker list
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  pane_says alpha "$LISTHINT"
+  CLAUDE_PEER_START_WAIT=10 run sh "$BIN" start alpha first
+  [ "$status" -eq 0 ]
+  until_ok '[ "$(cat "$BATS_TEST_TMPDIR/last" 2>/dev/null)" = first ]'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  until_ok '[ "$(pane_count alpha "$LISTHINT")" -eq 2 ]'
+  typeline alpha 3
+  pane_says alpha 'Who: '
+  CLAUDE_PEER_START_WAIT=10 run sh "$BIN" start alpha hello
+  [ "$status" -eq 0 ]
+  until_ok '[ "$(cat "$BATS_TEST_TMPDIR/last")" = hello ]'
+}
+
+@test "picker fzf: open with no key pressed, small and flat: the call's flags, the rows in order, and a canned pick starts that context" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  FAKE_FZF_OUT=$'\n\nhello\thello     Hello\n' FAKE_SHELL_SLEEP=2 pane alpha
+  until_ok '[ -f "$FAKE_FZF_LOG.rows" ]'
+  ! grep -q 'Return picks' "$BATS_TEST_TMPDIR/pane-alpha.out"
+  for a in --expect=ctrl-t,ctrl-s --print-query --no-multi --no-sort --no-mouse --layout=reverse \
+      --header-first --info=hidden --no-separator '--delimiter=\t' --with-nth=2 '--prompt=Alpha ▸ ' \
+      --height=13 --margin=0,0,0,0 --color=header:-1 '--pointer=▸' '--gutter= '; do
+    grep -qxF -- "$a" "$FAKE_FZF_LOG"
+  done
+  grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -qF 'esc hide'
+  grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -qF '^S …and save it'
+  ! grep -q -- '--preview' "$FAKE_FZF_LOG"
+  ! grep -qxF -- '--height=100%' "$FAKE_FZF_LOG"
+  [ "$(cut -f1 "$FAKE_FZF_LOG.rows" | tr '\n' ' ')" = "@fresh plain hello say greet mine deploy @continue @resume @task @shell " ]
+  [ "$(sed -n 3p "$FAKE_FZF_LOG.rows")" = $'hello\thello     Hello' ]
+  pane_says alpha 'Who: '
+  typeline alpha World
+  until_ok 'grep -q "append-system-prompt be brief Hello World\.\$" "$FAKE_SHELL_LOG"'
+  # the session ends and the picker is open again, with no key pressed
+  until_ok '[ "$(fzf_calls)" -eq 2 ]'
+  [ "$(shell_runs)" -eq 1 ]
+}
+
+# fzfsize <size>: a pane at that CLAUDE_PEER_SIZE; returns once fzf was called
+fzfsize() {
+  rm -f "$FAKE_FZF_LOG" "$FAKE_FZF_LOG.calls"
+  CLAUDE_PEER_SIZE=$1 FAKE_FZF_SLEEP=30 pane alpha
+  until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+}
+
+@test "picker fzf: centred from 80 columns, at most the pane's height, the short hint under 56" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  git config --global claude-peer.art false   # C4b's geometry; the sleeper's is tested below
+  fzfsize '40 120'
+  grep -qxF -- --margin=0,31,0,31 "$FAKE_FZF_LOG"
+  grep -qxF -- --height=13 "$FAKE_FZF_LOG"
+  fzfsize '40 70'
+  grep -qxF -- --margin=0,0,0,0 "$FAKE_FZF_LOG"
+  fzfsize '10 120'
+  grep -qxF -- --height=10 "$FAKE_FZF_LOG"
+  fzfsize '40 50'
+  grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -qF 'esc hide'
+  ! grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -qF '^S'
+}
+
+@test "picker fzf: the short hint under 56 columns, and a block wide enough for the widest row" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  git config --global claude-peer.art false   # C4b's geometry; the sleeper's is tested below
+  fzfsize '40 55'
+  [ "$(grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -cF '^S')" -eq 0 ]
+  fzfsize '40 56'
+  grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -qF '^S …and save it'
+  printf 'title: A title that is exactly forty chars long\n\nWide.\n' >"$CLAUDE_PEER_CONTEXTS/50-sixteen-chars-nm.ctx"
+  fzfsize '40 120'
+  grep -qxF -- --margin=0,30,0,29 "$FAKE_FZF_LOG"
+}
+
+@test "picker fzf: only the colour words of FZF_DEFAULT_OPTS reach fzf, and the variable does not" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  export FZF_DEFAULT_OPTS='--height 40% --border --color=bg:#1a1a1a --color $(id) --preview x'
+  FAKE_FZF_SLEEP=30 pane alpha
+  until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+  [ "$(cat "$FAKE_FZF_LOG.opts")" = unset ]
+  grep -qxF -- '--color=bg:#1a1a1a' "$FAKE_FZF_LOG"
+  ! grep -qxF -- '--border' "$FAKE_FZF_LOG"
+  ! grep -q -- '--preview' "$FAKE_FZF_LOG"
+  ! grep -qF '$(' "$FAKE_FZF_LOG"
+  ! grep -qxF -- '40%' "$FAKE_FZF_LOG"
+}
+
+@test "picker fzf: older than 0.75 is the list, said once; list and off never run fzf at all" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  FAKE_FZF_VERSION='0.44.1 (debian)' pane alpha
+  pane_says alpha "$LISTHINT"
+  [ "$(pane_count alpha "claude-peer: fzf 0.44.1 is older than 0.75; using the list")" -eq 1 ]
+  [ ! -e "$FAKE_FZF_LOG.calls" ]
+  [ -s "$FAKE_FZF_LOG.version" ]
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  rm -f "$FAKE_FZF_LOG.version"
+  git config --global claude-peer.picker list
+  pane alpha
+  pane_says alpha "$LISTHINT"
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  git config --global claude-peer.picker off
+  pane alpha
+  pane_says alpha 'Alpha: Return starts a Claude here'
+  [ ! -e "$FAKE_FZF_LOG.version" ]
+  [ ! -e "$FAKE_FZF_LOG.calls" ]
+}
+
+@test "picker fzf: Esc (130), an empty exit 0 and an empty exit 1 go quiet and stay there; Return opens the picker again" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  for o in 'FAKE_FZF_RC=130' 'FAKE_FZF_RC=0' "FAKE_FZF_RC=1 FAKE_FZF_OUT=$'\n\n'"; do
+    rm -f "$FAKE_FZF_LOG.calls"
+    eval "$o pane alpha"
+    pane_says alpha 'Alpha: Return picks a context, c continues the last session, q leaves a shell'
+    sleep 2
+    [ "$(fzf_calls)" -eq 1 ]
+    [ "$(pane_count alpha "Alpha: Return picks")" -eq 1 ]
+    typeline alpha ''
+    until_ok '[ "$(fzf_calls)" -eq 2 ]'
+    kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  done
+  [ "$(shell_runs)" -eq 0 ]
+}
+
+@test "picker fzf: the shell row leaves a shell; a context row, ctrl-t, exit 1 with a query and ctrl-s behave as before; ctrl-t with nothing typed opens it again" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  FAKE_FZF_SLEEP=1 FAKE_FZF_OUT=$'\n\n@shell\tshell     Drop to a shell\n' pane alpha
+  pp=$LAST_PANE
+  until_ok '! kill -0 $pp 2>/dev/null'
+  grep -qx "pwd=$REPO args=-i" "$FAKE_SHELL_LOG"
+  [ -z "$(ls "$REPO/.git/claude-peer.wait")" ]
+  rm -f "$FAKE_FZF_LOG.calls"
+  FAKE_FZF_OUT=$'\n\n@continue\tcontinue\n' FAKE_SHELL_SLEEP=2 pane alpha
+  until_ok 'grep -q "claude-peer proj-alpha --continue\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(fzf_calls)" -eq 2 ]'
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  rm -f "$FAKE_FZF_LOG.calls"
+  FAKE_FZF_OUT=$'use this\nctrl-t\n@fresh\tfresh\n' FAKE_SHELL_SLEEP=2 pane alpha
+  until_ok 'grep -q "claude-peer proj-alpha use this\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(fzf_calls)" -eq 2 ]'
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  rm -f "$FAKE_FZF_LOG.calls"
+  FAKE_FZF_RC=1 FAKE_FZF_OUT=$'typed and unmatched\n\n' FAKE_SHELL_SLEEP=2 pane alpha
+  until_ok 'grep -q "claude-peer proj-alpha typed and unmatched\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(fzf_calls)" -eq 2 ]'
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  rm -f "$FAKE_FZF_LOG.calls"
+  FAKE_FZF_RC=1 FAKE_FZF_OUT=$'save me\nctrl-s\n' FAKE_SHELL_SLEEP=2 pane alpha
+  pane_says alpha 'Save as (a name like fix-ci, Return skips): '
+  typeline alpha keeper
+  until_ok 'grep -q "claude-peer proj-alpha save me\$" "$FAKE_SHELL_LOG"'
+  [ "$(cat "$CLAUDE_PEER_CONTEXTS/octo/proj/90-keeper.ctx")" = $'title: save me\n\nsave me' ]
+  until_ok '[ "$(fzf_calls)" -eq 2 ]'
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  [ "$(shell_runs)" -eq 5 ]
+  rm -f "$FAKE_FZF_LOG.calls"
+  FAKE_FZF_RC=1 FAKE_FZF_OUT=$'\nctrl-t\n' pane alpha
+  until_ok '[ "$(fzf_calls)" -eq 2 ]'
+  [ "$(shell_runs)" -eq 5 ]
+}
+
+@test "picker fzf: exit 2 says so once and uses the list from then on" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  FAKE_FZF_RC=2 FAKE_SHELL_SLEEP=1 pane alpha
+  pane_says alpha "$LISTHINT"
+  grep -qF "claude-peer: fzf failed (exit 2); using the list" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  typeline alpha r
+  until_ok 'grep -q "claude-peer proj-alpha --resume\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(pane_count alpha "$LISTHINT")" -eq 2 ]'
+  [ "$(pane_count alpha "fzf failed")" -eq 1 ]
+  [ "$(fzf_calls)" -eq 1 ]
+}
+
+@test "picker fzf: a start from outside while fzf is open closes it with TERM at once and the session gets the prompt" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  FAKE_FZF_SLEEP=30 FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+  [ "$(sh "$BIN" slots | cut -f2)" = waiting ]
+  CLAUDE_PEER_START_WAIT=10 run sh "$BIN" start alpha hello
+  [ "$status" -eq 0 ]
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = hello ]
+  until_ok '[ -f "$FAKE_FZF_LOG.term" ]'
+  grep -qx "Alpha · started by Lead · hello" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  ! grep -q "picker closed" "$BATS_TEST_TMPDIR/pane-alpha.out"
+}
+
+@test "picker fzf: a killed pane takes its fzf and its wait file with it" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  FAKE_FZF_SLEEP=30 pane alpha
+  pp=$LAST_PANE
+  until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+  kids=$(ps -Ao pid=,ppid= | awk -v p="$pp" '$2 == p { print $1 }')
+  [ -n "$kids" ]
+  kill "$pp"
+  until_ok '! kill -0 $pp 2>/dev/null'
+  for k in $kids; do until_ok "! kill -0 $k 2>/dev/null"; done
+  until_ok '[ -f "$FAKE_FZF_LOG.term" ]'
+  [ -z "$(ls "$REPO/.git/claude-peer.wait")" ]
+}
+
+@test "contexts: every shipped title is at most 40 characters" {
+  for f in "$BATS_TEST_DIRNAME"/../dot_config/claude-peer/contexts/*.ctx; do
+    t=$(sed -n 's/^title: //p' "$f" | sed -n 1p)
+    [ -n "$t" ]
+    [ "${#t}" -le 40 ] || { echo "$f: ${#t}"; false; }
+  done
+}
+
+@test "picker off: Return is a blank session and the hint is today's line; a context name is not special" {
+  hellofix
+  FAKE_SHELL_SLEEP=2 pane alpha
+  until_ok 'grep -qx "Alpha: Return starts a Claude here, c continues the last session, q leaves a shell" "$BATS_TEST_TMPDIR/pane-alpha.out"'
+  typeline alpha hello
+  until_ok '[ "$(pane_count alpha "Alpha: Return starts")" -eq 2 ]'
+  [ "$(shell_runs)" -eq 0 ]
+  typeline alpha ''
+  until_ok 'grep -q "claude-peer proj-alpha\$" "$FAKE_SHELL_LOG"'
+}
+
+# --- the sleeper --------------------------------------------------------------------
+
+ESC=$'\033'
+
+# fzf_header: the --header= argument the stub got (it spans lines: one per header line)
+fzf_header() { sed -n '/^--header=/,/^--print-query$/p' "$FAKE_FZF_LOG" | sed '$d'; }
+
+@test "art: nine lines, four eyes, the reference colours and the three z's; --z, --256, the slot's cap" {
+  run sh "$BIN" art --slot beta --truecolor
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 9 ]
+  [ "$(printf '%s' "$output" | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ]
+  [[ "$output" == *'48;2;90;120;200'* && "$output" == *'48;2;217;119;87'* ]]
+  [[ "$output" == *"${ESC}[1mZ"* && "$output" == *"${ESC}[38;5;250mz"* && "$output" == *"${ESC}[2mz"* ]]
+  run sh "$BIN" art --slot beta --truecolor --z none
+  [[ "$output" != *z* && "$output" != *Z* ]]
+  run sh "$BIN" art --slot alpha --truecolor
+  [[ "$output" != *'90;120;200'* && "$output" == *'153;204;153'* ]]
+  run sh "$BIN" art --slot beta --256
+  [[ "$output" != *'38;2;'* && "$output" != *'48;2;'* ]]
+  git config --global claude-peer.beta.cap '#102030'
+  run sh "$BIN" art --slot beta --truecolor
+  [[ "$output" == *'48;2;16;32;48'* && "$output" == *'11;22;33'* && "$output" != *'90;120;200'* ]]
+}
+
+@test "art: claude-peer.art-file replaces the figure; one that does not parse says why and the built-in is drawn" {
+  printf 'palette X 1 2 3\nmargin 1\nframe asleep\n.XX\n.XX\n' >"$BATS_TEST_TMPDIR/one.art"
+  git config --global claude-peer.art-file "$BATS_TEST_TMPDIR/one.art"
+  run sh "$BIN" art --truecolor
+  [ "$status" -eq 0 ]
+  [ "$output" = "  ${ESC}[48;2;1;2;3m ${ESC}[0m${ESC}[48;2;1;2;3m ${ESC}[0m" ]
+  printf 'palette X 1 2 3\nframe asleep\nXX\nX\n' >"$BATS_TEST_TMPDIR/bad.art"
+  git config --global claude-peer.art-file "$BATS_TEST_TMPDIR/bad.art"
+  run --separate-stderr sh "$BIN" art --truecolor
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "claude-peer: $BATS_TEST_TMPDIR/bad.art: line 4: frame asleep has rows of unequal width" ]
+  [ "${#lines[@]}" -eq 9 ]
+  [ "$(printf '%s' "$output" | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ]
+}
+
+@test "sleeper in fzf: beside at 120 columns, under at 60, none at 15 rows or with claude-peer.art false" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  fzfsize '40 120'
+  [ "$(fzf_header | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ]
+  fzf_header | grep -qF '✻ '
+  fzf_header | grep -F '✻ ' | grep -F Alpha | grep -qF proj
+  fzf_header | grep -qF 'waiting · ⏎ pick a context'
+  fzf_header | grep -qF 'esc hide'
+  grep -qxF -- --height=23 "$FAKE_FZF_LOG"
+  grep -qxF -- --margin=0,31,0,31 "$FAKE_FZF_LOG"
+  fzfsize '17 120'
+  grep -qxF -- --height=17 "$FAKE_FZF_LOG"
+  fzfsize '15 120'
+  ! fzf_header | grep -qF '▬'
+  grep -qxF -- --height=13 "$FAKE_FZF_LOG"
+  fzfsize '40 60'
+  [ "$(fzf_header | wc -l | tr -d ' ')" -eq 13 ]
+  fzf_header | sed -n 10p | grep -qF '✻ '
+  fzf_header | sed -n 11p | grep -qF 'waiting · ⏎ pick a context'
+  [ -z "$(fzf_header | sed -n 12p)" ]
+  grep -qxF -- --margin=0,0,0,0 "$FAKE_FZF_LOG"
+  git config --global claude-peer.art false
+  fzfsize '40 120'
+  ! fzf_header | grep -qF '▬'
+  grep -qxF -- --height=13 "$FAKE_FZF_LOG"
+}
+
+@test "sleeper: a repository name too long for the block is cut, the label never" {
+  local long=a-repository-name-of-forty-characters-x
+  long=${long}y
+  [ "${#long}" -eq 40 ]
+  mkdir -p "$BATS_TEST_TMPDIR/$long"
+  git -C "$BATS_TEST_TMPDIR/$long" init -q
+  git -C "$BATS_TEST_TMPDIR/$long" commit -q --allow-empty -m init
+  fzfstub
+  git config --global claude-peer.picker fzf
+  rm -f "$FAKE_FZF_LOG.calls"
+  CLAUDE_PEER_SIZE='40 80' FAKE_FZF_SLEEP=30 pane alpha "$BATS_TEST_TMPDIR/$long"
+  until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+  # 78 wide, 75 of header, 46 beside the figure: `✻ Alpha · ` and 36 of the name
+  fzf_header | grep -F '✻ ' | grep -qF "Alpha${ESC}[0m · ${long:0:36}"
+  ! fzf_header | grep -qF "${long:0:37}"
+}
+
+@test "sleeper above the list: the figure's lines start at the block's text, then an empty line, then row 1" {
+  hellofix
+  git config --global claude-peer.picker list
+  CLAUDE_PEER_SIZE='40 120' pane alpha
+  pane_says alpha "$LISTHINT"
+  local out="$BATS_TEST_TMPDIR/pane-alpha.out"
+  [ "$(sed -n 1,9p "$out" | grep -c "^$(printf '%33s' '')")" -eq 9 ]
+  [ "$(sed -n 1,9p "$out" | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ]
+  [ -z "$(sed -n 10p "$out")" ]
+  sed -n 11p "$out" | grep -q "^$(printf '%31s' '') 1  fresh"
+}
+
+@test "sleeper quiet: Esc prints the figure with the quiet hint, no old line, and art --screen prints the same" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  CLAUDE_PEER_SIZE='40 120' FAKE_FZF_RC=130 pane alpha
+  pane_says alpha '⏎ picker · c continue · q shell'
+  local out="$BATS_TEST_TMPDIR/pane-alpha.out"
+  [ "$(grep -o '▬' "$out" | wc -l | tr -d ' ')" -eq 4 ]
+  ! grep -q 'Alpha: Return picks' "$out"
+  [ "$(CLAUDE_PEER_SIZE='40 120' sh "$BIN" art --screen --slot alpha)" = "$(cat "$out")" ]
+}
+
+# quiet_erases <size> <lines…>: Esc at that size, then each line typed; prints the output
+quiet_erases() {
+  local size=$1; shift
+  rm -f "$FAKE_FZF_LOG.calls"
+  CLAUDE_PEER_SIZE=$size FAKE_FZF_RC=130 pane alpha
+  until_ok '[ "$(fzf_calls)" -eq 1 ]'
+  sleep 1
+  local l
+  for l; do typeline alpha "$l"; done
+  until_ok '[ "$(fzf_calls)" -eq 2 ]'
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+}
+
+@test "sleeper quiet: Return, and a mistyped line, erase the quiet block in place first; nothing is erased without it" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  local out="$BATS_TEST_TMPDIR/pane-alpha.out" erase11="${ESC}[11A"$'\r'"${ESC}[J"
+  quiet_erases '40 120' ''
+  [ "$(pane_count alpha "$erase11")" -eq 1 ]
+  # after the block and its empty line, and the last thing before the stub's second call
+  [[ "$(cat "$out")" == *'q shell'*$'\n\n'"$erase11" ]]
+  quiet_erases '40 120' x ''
+  [ "$(pane_count alpha "$erase11")" -eq 2 ]
+  quiet_erases '40 60' ''
+  [ "$(pane_count alpha "${ESC}[13A"$'\r'"${ESC}[J")" -eq 1 ]
+  quiet_erases '' ''
+  ! grep -qE "${ESC}\[[0-9]+A" "$out"
+  git config --global claude-peer.art false
+  quiet_erases '40 120' ''
+  ! grep -qE "${ESC}\[[0-9]+A" "$out"
 }

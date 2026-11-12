@@ -8,7 +8,18 @@ on:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    # tests/claude-peer-screen.bats draws the waiting pane in tmux and reads the
+    # screen. SCREEN_TESTS_REQUIRE names what a job has installed for it; a named
+    # tool that is missing fails those tests instead of skipping them. fzf is an
+    # fzf of 0.75 or newer (the picker). No job takes it from its image's
+    # packages, whose index is as old as the image: each installs the release
+    # named in .github/fzf-version (see .github/install-fzf.sh) and then checks
+    # that it is the first one on PATH.
     strategy:
+      # One platform failing must not cancel the other: each meets what the other
+      # does not (macOS the BSD tools and .macos, ubuntu the runner's own
+      # XDG_CONFIG_HOME), and a cancelled job reads as a hang.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
@@ -17,26 +28,34 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y bats zsh
+          sudo apt-get install -y bats zsh tmux
       # macOS's /bin/bash is 3.2, under which bats silently ignores a failing
       # `[[ ]]` that is not a test's last command; a modern bash must be
       # first on PATH (tests/shell.bats enforces it).
       - name: Install Bats on macOS
         if: matrix.os == 'macos-latest'
         run: |
-          brew install bats-core bash
+          brew install bats-core bash tmux
           echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
       - name: Install chezmoi
         run: |
           sh -c "$(curl -fsLS get.chezmoi.io)" -- -b "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # After the brew step on purpose: the directory written to GITHUB_PATH last
+      # comes first on PATH, so this fzf is ahead of any a package manager brings.
+      - name: Install the pinned fzf
+        run: |
+          sh .github/install-fzf.sh "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       # tests/finicky.bats runs the .ts routing config under Node (>= 22.6
       # strips types natively); without a recent Node it skips silently.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Check that the fzf on PATH is the pinned one
+        run: sh .github/install-fzf.sh --check
       - name: Run tests
-        run: bats tests
+        run: SCREEN_TESTS_REQUIRE='tmux fzf' bats tests
       - name: Apply .macos on the throwaway runner and verify
         if: matrix.os == 'macos-latest'
         run: MACOS_APPLY_OK=1 bats tests/macos-apply.bats
@@ -81,7 +100,12 @@ jobs:
   test-rocky:
     # No hosted Rocky runners exist; run in a container on the ubuntu host.
     runs-on: ubuntu-latest
-    container: rockylinux:9
+    # --init: Actions starts a job container with `tail -f /dev/null` as process 1,
+    # which never reaps. A pane orphaned by `tmux kill-server` then stays a zombie
+    # that still answers `kill -0`, and the screen tests wait for it until they fail.
+    container:
+      image: rockylinux:9
+      options: --init
     steps:
       - name: Install dependencies
         # No explicit curl: the image ships curl-minimal, which conflicts
@@ -93,13 +117,23 @@ jobs:
         # (no ps), which claude-peer needs to find the sessions it stops.
         run: dnf install -y git zsh rsync diffutils procps-ng
       - uses: actions/checkout@v3
+      - name: Install tmux for the screen tests
+        run: dnf install -y tmux
       - name: Install Bats and chezmoi
         run: |
           git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats-core
           /tmp/bats-core/install.sh /usr/local
           sh -c "$(curl -fsLS get.chezmoi.io)" -- -b /usr/local/bin
+      - name: Install the pinned fzf
+        run: sh .github/install-fzf.sh /usr/local/bin
+      - name: Check that the fzf on PATH is the pinned one
+        run: sh .github/install-fzf.sh --check
       - name: Run tests
-        run: bats tests
+        # The image sets no locale, and the screen tests match glyphs as characters
+        # (their harness test says so by name when the charmap is not UTF-8).
+        env:
+          LANG: C.UTF-8
+        run: SCREEN_TESTS_REQUIRE='tmux fzf' bats tests
 
   test-wsl:
     runs-on: windows-2025
@@ -117,8 +151,12 @@ jobs:
       - uses: Vampire/setup-wsl@v5
         with:
           distribution: Ubuntu-24.04
-          additional-packages: bats zsh rsync curl
+          additional-packages: bats zsh rsync curl tmux
       - name: Install chezmoi
         run: sh -c "$(curl -fsLS get.chezmoi.io)" -- -b /usr/local/bin
+      - name: Install the pinned fzf
+        run: sh .github/install-fzf.sh /usr/local/bin
+      - name: Check that the fzf on PATH is the pinned one
+        run: sh .github/install-fzf.sh --check
       - name: Run tests
-        run: bats tests
+        run: SCREEN_TESTS_REQUIRE='tmux fzf' bats tests

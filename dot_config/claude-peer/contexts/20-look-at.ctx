@@ -1,0 +1,6 @@
+title: Look at a link and say what we can use
+ask: URL, and anything to look for
+
+Look at {input}
+
+Read it properly, following it into the source or documentation it points at when that matters. Then tell me, in this order: what it is, in two sentences; what in it is new or better than what this repository does today, naming the file or note here it would touch; what is not worth taking, and why. Check this repository's notes and docs for an earlier look at the same thing before judging. Change nothing until I say.
