@@ -154,6 +154,7 @@ Claude in the same checkout is a second writer on the live tree, so each
 branch gets `<dir>/.claude/worktrees/<slug>` (`/` becomes `-`), made by the
 rules `workset checkout` follows: an existing branch is checked out, a new one
 is cut from `origin/HEAD` else `HEAD`, a branch checked out anywhere else is
+refused, two branches that slug to the same directory (`a/b`, `a-b`) are
 refused, and nothing is created if any branch is refused — validate, create,
 then open. The tab is the entry's row with its dir swapped for the worktree
 and is typed into the login shell like any other, so `claude` there is the
@@ -195,3 +196,5 @@ workflow holds no logic and therefore no identity — the group names come from
 the overlay at run time. It is **not** a chezmoi target: Alfred rewrites
 `info.plist` whenever the workflow is edited in its GUI, which would show as
 permanent drift, so the repo keeps the source and `alfred-install` copies it.
+It warns when no `Alfred*.app` sits in `/Applications` or `~/Applications`
+(`WORKTABS_APPLICATIONS` replaces the first, for tests).

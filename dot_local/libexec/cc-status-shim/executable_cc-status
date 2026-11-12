@@ -39,7 +39,9 @@
 # ${XDG_STATE_HOME:-~/.local/state}/tabstatus/<session_id>.seats, so a Stop
 # over a still-running background seat paints that seat's colour rather than
 # amber or orange; SessionStart and SessionEnd delete the file and one older
-# than a day is ignored. The row name carries the repo (see below), so the
+# than a day is ignored. SessionStart also removes every .named, .tasks and
+# .seats file in that directory older than seven days (a session that died
+# without a SessionEnd leaves them); nothing else there is touched. The row name carries the repo (see below), so the
 # detail carries only the status.
 #
 # The row name is the session's name, and on iTerm2 3.7.5+ the Claude Code
@@ -81,7 +83,7 @@
 # user, so a root child counts; no root needed). Per task it keeps
 # "task_id<TAB>last_mtime<TAB>cpu_seconds<TAB>first_seen_quiet_ts" in
 # ${XDG_STATE_HOME:-~/.local/state}/tabstatus/<session_id>.tasks (pruned to the
-# payload's tasks, deleted on SessionStart/SessionEnd). A quiet shell task is
+# payload's tasks, deleted on SessionStart/SessionEnd, swept when seven days old). A quiet shell task is
 # stalled when nothing holds its file (the process is gone, the task still
 # registered) or when it was first seen quiet tabstatus.stall-minutes (default
 # 15) ago and its CPU has moved under a second since, with the file untouched.
@@ -319,6 +321,7 @@ seat_col = seat_color(agent_type)
 seat = agent_type if seat_col else None
 
 # Seat state: one "<agent_id>\t<agent_type>" line per running seat of a session.
+STALE_DAYS = 7
 ID = re.compile(r"[A-Za-z0-9_-]+")
 pid = payload.get("session_id")
 state_dir = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "tabstatus")
@@ -646,6 +649,17 @@ if live != before or event in ("SessionStart", "SessionEnd"):
         try:
             os.remove(nf)
         except (OSError, TypeError):
+            pass
+    if event == "SessionStart":
+        # A session that died without a SessionEnd leaves its files for good; sweep them by suffix.
+        try:
+            for e in os.scandir(state_dir):
+                try:
+                    if e.name.endswith((".named", ".tasks", ".seats")) and time.time() - e.stat().st_mtime > STALE_DAYS * 86400:
+                        os.remove(e.path)
+                except OSError:
+                    pass
+        except OSError:
             pass
 if in_seat_tool and not after:
     tool = payload.get("tool_name")
