@@ -56,6 +56,15 @@
 # where. It is advisory: `log claim` warns of overlap and never fails on it.
 # When a pane's session ends, the pane logs `end`: `<Label> ended after <dur>`
 # and its task, which closes that label's claims as `stop` does.
+# Overlay peers: a machine with private overlays (chezmoi configs other than
+# chezmoi.toml whose source is a git repository) gets two more Workgroups, the two
+# above plus one pane per overlay, entered only by a tab of the public chezmoi
+# source and only once `install` has written the overlays state file. A pane is
+# stored by position, `Overlay <N>` running `overlay <N>`: iTerm2's preferences can
+# be a tracked file, so no overlay's name goes into them. The names are in the
+# state file; `overlay <N>` reads the N-th, cd's into that overlay's main
+# checkout and is a waiting pane of that repository, slot `overlay`, led from
+# where it started.
 # `install` edits the preferences while iTerm2 is quit because iTerm2 writes
 # its preferences back at quit (and, with a custom prefs folder, replaces the
 # domain from the folder at launch); an edit made while it runs is lost.
@@ -98,6 +107,16 @@
 #                            shell that runs hermes_peer (hermes where a profile
 #                            routes here, else a one-line notice); no
 #                            repository or worktree needed
+#   overlays                 name<TAB>root<TAB>state<TAB>leader<TAB>pid per
+#                            private overlay of this machine (a chezmoi config
+#                            whose source is a git repository); state is idle,
+#                            waiting or running in a tab of another repository
+#   overlay <name|N>         a waiting pane of the overlay <name>, or of the N-th
+#                            overlay pane `install` wrote (the N-th name of the
+#                            overlays state file, not the N-th row of `overlays`):
+#                            enters its main checkout and takes the slot
+#                            `overlay` there; an unknown one is one line and a
+#                            plain shell
 #   peers [--leader <dir>] [<dir>]
 #                            worktree<TAB>pid<TAB>leader<TAB>label per live
 #                            claim in the repository of <dir> (default $PWD), sorted;
@@ -118,14 +137,26 @@
 #                            (Lead, Alpha, Beta, Gamma) that install would write
 #   install                  write that and "Claude Peers + Hermes" (the same
 #                            plus a Hermes pane) into iTerm2's preferences;
-#                            iTerm2 must be quit
+#                            iTerm2 must be quit. With private overlays on this
+#                            machine, also "Claude Peers + Overlays" and
+#                            "Claude Peers + Hermes + Overlays" (one pane per
+#                            overlay, after the others, stored by position,
+#                            `Overlay <N>` running `overlay <N>`, never a name)
+#                            and the overlays state file, which holds the names;
+#                            with none, it removes both
 #   here                     the key claude() sends to choose the workgroup for
-#                            this directory (base)
+#                            this directory (base; overlays in the public
+#                            chezmoi source once install wrote the overlay
+#                            panes)
 #   default <peers|builtin>  peers: disable the claude job trigger in every
 #                            profile and add one variable trigger per
 #                            workgroup (claude() sends the key); builtin: the
 #                            job enters Claude Code again; iTerm2 quit
-#   status                   store, iTerm2, workgroup, hermes and default state
+#   status                   store, iTerm2, workgroup, hermes and default state;
+#                            with private overlays (or their workgroups) also
+#                            what is installed against what this machine has,
+#                            which pane is which overlay, and who is in each
+#                            overlay's pane
 #   context list [--all] [<dir>]
 #                            name<TAB>title<TAB>ask<TAB>flags<TAB>path per start
 #                            context of the repository of <dir> (default $PWD):
@@ -1615,6 +1646,153 @@ cmd_plan() {
   worktree_plan "$repo" "$@"
 }
 
+# --- overlays -----------------------------------------------------------------
+# An overlay is a private chezmoi source of this machine: a ~/.config/chezmoi
+# config other than chezmoi.toml whose `chezmoi --config <cfg> source-path` is in
+# a git repository (the rule dotfiles() applies). This section only finds them and
+# says whether a session runs in one; it reads git metadata and this script's own
+# files, nothing from an overlay's tree. Every compare is on `pwd -P` output.
+
+overlays_file() { printf '%s/claude-peer/overlays\n' "${XDG_STATE_HOME:-$HOME/.local/state}"; }
+
+# dir -> the physical main checkout of the non-bare repository holding dir
+root_of() {
+  ro_c=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  case $ro_c in
+    */.git) ( cd "${ro_c%/.git}" 2>/dev/null && pwd -P );;
+    *) return 1;;
+  esac
+}
+
+# The main checkout of the repository holding `chezmoi source-path`.
+public_root() {
+  command -v chezmoi >/dev/null 2>&1 || return 1
+  pr_s=$(chezmoi source-path 2>/dev/null) || return 1
+  [ -d "$pr_s" ] || return 1
+  root_of "$pr_s"
+}
+
+# config path -> the label source: its base name, lowercase, [a-z0-9_-], starting with a letter
+overlay_name() {
+  on_n=${1##*/}
+  on_n=$(printf '%s' "${on_n%.toml}" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C tr -c 'a-z0-9_-' '-')
+  case $on_n in [a-z]*) ;; *) on_n=o-$on_n;; esac
+  printf '%s\n' "$on_n"
+}
+
+# rows column value -> the config base name of the first row with that value in that column
+overlay_seen() {
+  printf '%s' "$1" | OS_V=$3 awk -F'\t' -v c="$2" '$c == ENVIRON["OS_V"] { n = split($3, p, "/"); print p[n]; exit }'
+}
+
+# name<TAB>root<TAB>config per overlay, sorted by name; a candidate that cannot be
+# one is named on stderr and left out
+overlay_list() {
+  ol_cand=
+  for ol_c in "$HOME"/.config/chezmoi/*.toml; do
+    [ -f "$ol_c" ] || continue
+    [ "${ol_c##*/}" != chezmoi.toml ] || continue
+    ol_cand="$ol_cand$(overlay_name "$ol_c")	$ol_c
+"
+  done
+  [ -n "$ol_cand" ] || return 0
+  command -v chezmoi >/dev/null 2>&1 || { warn "chezmoi is not on PATH; overlays cannot be resolved"; return 0; }
+  ol_pub=$(public_root) || ol_pub=
+  ol_cand=$(printf '%s' "$ol_cand" | LC_ALL=C sort)
+  ol_rows=
+  while IFS='	' read -r ol_n ol_c; do
+    ol_why=
+    ol_s=$(chezmoi --config "$ol_c" source-path 2>/dev/null </dev/null) || ol_s=
+    if [ ! -d "$ol_s" ]; then ol_why='chezmoi names no source directory'
+    elif ! ol_r=$(root_of "$ol_s"); then ol_why="$ol_s is not inside a non-bare git repository"
+    elif [ "$ol_r" = "$ol_pub" ]; then ol_why='its source is the public source'
+    elif ol_o=$(overlay_seen "$ol_rows" 2 "$ol_r") && [ -n "$ol_o" ]; then ol_why="same repository as $ol_o"
+    elif ol_o=$(overlay_seen "$ol_rows" 1 "$ol_n") && [ -n "$ol_o" ]; then ol_why="the name '$ol_n' is already taken by $ol_o"
+    fi
+    if [ -n "$ol_why" ]; then warn "overlay config ${ol_c##*/}: $ol_why; skipped"; continue; fi
+    ol_rows="$ol_rows$ol_n	$ol_r	$ol_c
+"
+    printf '%s\t%s\t%s\n' "$ol_n" "$ol_r" "$ol_c"
+  done <<EOF
+$ol_cand
+EOF
+}
+
+overlay_names() { overlay_list | awk -F'\t' '{ s = s (NR > 1 ? " " : "") $1 } END { print s }'; }
+
+# name -> the root of that overlay; status 1 when none
+overlay_root() {
+  or_r=$(overlay_list 2>/dev/null | OR_A=$1 awk -F'\t' '$1 == ENVIRON["OR_A"] { print $2; exit }')
+  [ -n "$or_r" ] && printf '%s\n' "$or_r"
+}
+
+# N -> the name of the N-th overlay pane install wrote (the N-th name of the state
+# file); status 1 when there is none: no state file, N is 0 or past the last name
+overlay_installed() {
+  oi_n=$(sed -n 1p "$(overlays_file)" 2>/dev/null |
+    OI_N=$1 awk '{ n = ENVIRON["OI_N"] + 0; if (n >= 1 && n <= NF) print $n }')
+  [ -n "$oi_n" ] && printf '%s\n' "$oi_n"
+}
+
+# names (space separated) -> one bar label per name, TAB separated, in order. The
+# label is the position: the names stay out of iTerm2's preferences.
+overlay_labels() { printf '%s\n' "$1" | awk '{ for (i = 1; i <= NF; i++) printf "%sOverlay %d", (i > 1 ? "\t" : ""), i; print "" }'; }
+
+# stdin: rows with a pid in column 2 and a leader in column 3 -> leader<TAB>pid of
+# the first led from outside root (a pane of another repository's tab)
+overlay_foreign() {
+  OF_R=$1 awk -F'\t' 'BEGIN { r = ENVIRON["OF_R"] } $3 != r && index($3, r "/") != 1 { print $3 "\t" $2; exit }'
+}
+
+# root -> state<TAB>leader<TAB>pid
+overlay_state() {
+  os_x=$(cmd_peers "$1" | overlay_foreign "$1")
+  [ -z "$os_x" ] || { printf 'running\t%s\n' "$os_x"; return 0; }
+  os_x=$(waiters "$1" | overlay_foreign "$1")
+  [ -z "$os_x" ] || { printf 'waiting\t%s\n' "$os_x"; return 0; }
+  printf 'idle\t-\t-\n'
+}
+
+cmd_overlays() {
+  [ $# -eq 0 ] || usage
+  overlay_list | while IFS='	' read -r co_n co_r _; do
+    printf '%s\t%s\t%s\n' "$co_n" "$co_r" "$(overlay_state "$co_r")"
+  done
+}
+
+# <name|N>. The pane of an overlay in the public source's workgroup: stands in the
+# overlay's main checkout and is an ordinary waiting pane of that repository,
+# slot `overlay`, led from the directory it started in. N is the N-th pane install
+# wrote (the state file), resolved against the overlays now, so a changed set
+# never re-points a pane. Never ends at iTerm2's restart banner: a missing overlay
+# is one line and a plain shell.
+cmd_overlay() {
+  [ $# -eq 1 ] || usage
+  LEADER=$(pwd -P)
+  co_name=$1
+  case $1 in
+    ''|*[!0-9]*) ;;
+    *) co_name=$(overlay_installed "$1") || {
+         echo "claude-peer: no overlay pane $1 is installed on this machine (claude-peer status says what is; claude-peer install with iTerm2 quit writes them); plain shell"
+         exec "${SHELL:-/bin/sh}" -i
+       };;
+  esac
+  if ! co_root=$(overlay_root "$co_name"); then
+    echo "claude-peer: no overlay '$co_name' on this machine (claude-peer overlays lists them; a changed set needs claude-peer install with iTerm2 quit); plain shell"
+    exec "${SHELL:-/bin/sh}" -i
+  fi
+  unset CLAUDE_PROFILE
+  if ! cd -- "$co_root" 2>/dev/null; then
+    echo "claude-peer: cannot enter $co_root; plain shell"
+    exec "${SHELL:-/bin/sh}" -i
+  fi
+  repo=$co_root
+  rname=$(rname_of "$repo")
+  slot=overlay
+  label=$(label_of "$co_name")
+  pane
+}
+
 # --- the Workgroup ------------------------------------------------------------
 
 os() { uname -s 2>/dev/null; }
@@ -1645,7 +1823,10 @@ prefs_store() {
   skind=folder; spath=${f%/}/com.googlecode.iterm2.plist
 }
 
-# peer_py <workgroup|install|status|default> <folder|domain> <plist path> [peers|builtin]
+# peer_py <workgroup|install|status|default> <folder|domain> <plist path> [peers|builtin [overlay labels]]
+# (the 5th of install is the overlay panes' bar labels, TAB separated, from overlay_labels;
+# install is given no overlay name. status: the 4th is the enter state, then the overlay
+# names now, the state file's first line, and the labels now)
 # The stdlib only: plistlib for the store, json for the Workgroups value (an
 # NSData holding a JSON array), defaults for the domain.
 peer_py() {
@@ -1713,6 +1894,36 @@ def build():
     """[Claude Peers, Claude Peers + Hermes]"""
     base = {"uniqueIdentifier": GROUP, "name": NAME, "sessions": build_base("claudePeer")}
     return [base, with_hermes(base)]
+
+OGROUP, OHGROUP = "claudePeer.v.overlays", "claudePeer.v.overlays.h"
+
+def with_overlays(group, gid, name, labels):
+    """A copy of a definition under id gid and name, every session id moved under
+    gid, and one pane per bar label appended after the others. A pane is stored by
+    position, never by overlay name: the store can be a tracked file."""
+    old = next(s for s in group["sessions"] if s["kind"] == {"kind": "root"})["uniqueIdentifier"][:-len(".main")]
+    out = copy.deepcopy(group)
+    out.update(uniqueIdentifier=gid, name=name)
+    for s in out["sessions"]:
+        s["uniqueIdentifier"] = gid + s["uniqueIdentifier"][len(old):]
+        if "parentID" in s:
+            s["parentID"] = gid + s["parentID"][len(old):]
+    out["sessions"] += [session("%s.o.%d" % (gid, n), label, "peer", "claude-peer overlay %d" % n,
+                                parent=gid + ".main") for n, label in enumerate(labels, 1)]
+    return out
+
+def build_overlays(labels):
+    """[] for no overlays, else [Claude Peers + Overlays, Claude Peers + Hermes + Overlays];
+    Hermes keeps its place, so the second is built from the Hermes twin."""
+    if not labels:
+        return []
+    base, hermes_twin = build()
+    return [with_overlays(base, OGROUP, "Claude Peers + Overlays", labels),
+            with_overlays(hermes_twin, OHGROUP, "Claude Peers + Hermes + Overlays", labels)]
+
+def labels_arg(i):
+    """argv[i] as the overlay panes' bar labels, TAB separated; [] when absent or empty."""
+    return [l for l in sys.argv[i].split("\t") if l] if len(sys.argv) > i else []
 
 VAR = "user.claudePeerEnter"
 VAR_ENTER = 115  # iTermTriggerMatchTypeEventVariableChanged
@@ -1798,6 +2009,35 @@ if mode == "status":
             else:
                 print("%s: installed, out of date (%d sessions: %s); this version defines %d (%s) — claude-peer install (with iTerm2 quit)"
                       % (label, len(names), ", ".join(names), len(wnames), ", ".join(wnames)))
+        # overlays: said only when this machine, the store or the state file has any
+        ovs = sys.argv[5].split() if len(sys.argv) > 5 else []
+        ofile = sys.argv[6].split() if len(sys.argv) > 6 else []
+        labels = labels_arg(7)
+        def paired(bar, names):
+            return ", ".join("%s = %s" % (b, names[i].capitalize() if i < len(names) else "?") for i, b in enumerate(bar))
+        have = [g for g in groups if g.get("uniqueIdentifier") in (OGROUP, OHGROUP)]
+        nowl = ", ".join(o.capitalize() for o in ovs)
+        if ovs and not have:
+            print("overlays: not installed — this machine has %d (%s); claude-peer install (with iTerm2 quit)" % (len(ovs), nowl))
+        elif have:
+            first = have[0]["uniqueIdentifier"]
+            bar = [s.get("displayName", "?") for s in have[0].get("sessions", [])
+                   if str(s.get("uniqueIdentifier", "")).startswith(first + ".o.")]
+            instl = paired(bar, ofile)
+            if not ovs:
+                print("overlays: installed (%s), but this machine has none now — claude-peer install (with iTerm2 quit) removes them" % instl)
+            elif (len(labels) == len(ovs)
+                  and all(shape(next((g for g in have if g["uniqueIdentifier"] == w["uniqueIdentifier"]), {})) == shape(w)
+                          for w in build_overlays(labels))
+                  and (not ofile or ofile == ovs)):
+                print("overlays: installed (%d panes: %s)" % (len(ovs), paired(labels, ovs)))
+            else:
+                print("overlays: installed, out of date (%s); this machine has %d (%s) — claude-peer install (with iTerm2 quit)"
+                      % (instl, len(ovs), paired(labels, ovs)))
+        if ofile and not have:
+            print("overlays: the state file lists %s but no overlay workgroup is installed, so a claude tab in the chezmoi source enters no workgroup — claude-peer install (with iTerm2 quit)" % " ".join(ofile))
+        elif have and not ofile:
+            print("overlays: installed, but the state file is missing, so claude-peer here stays base and no overlay pane finds its overlay — claude-peer install (with iTerm2 quit)")
     prof = {}
     for b, t in job_triggers(pl):
         st = prof.setdefault(b.get("Name", "?"), [])
@@ -1842,13 +2082,18 @@ elif mode == "install":
     except (ValueError, TypeError) as e:
         fail("the Workgroups value is not a JSON list (%s); nothing written" % e)
     done = []
-    for wg in build():
+    labels = labels_arg(5)
+    for wg in build() + build_overlays(labels):
         idx = next((i for i, g in enumerate(groups) if g.get("uniqueIdentifier") == wg["uniqueIdentifier"]), None)
         if idx is None:
             groups.append(wg)
         else:
             groups[idx] = wg
         done.append('"%s" %s' % (wg["name"], "written" if idx is None else "replaced"))
+    if not labels:  # no overlay on this machine: a pair installed earlier goes
+        for g in [g for g in groups if g.get("uniqueIdentifier") in (OGROUP, OHGROUP)]:
+            groups.remove(g)
+            done.append('"%s" removed' % g.get("name"))
     pl["Workgroups"] = json.dumps(groups, separators=(",", ":")).encode("utf-8")
     if len(sys.argv) > 4 and sys.argv[4] == "peers":
         n = len(sync_var_triggers(pl, groups))
@@ -1893,9 +2138,17 @@ enter_file() { printf '%s/claude-peer/enter\n' "${XDG_STATE_HOME:-$HOME/.local/s
 enter_state() { [ -r "$(enter_file)" ] && sed -n 1p "$(enter_file)"; return 0; }
 
 # The key the wrapper sends for this directory: the workgroup to enter.
+# `overlays` only inside the public chezmoi source, only when install has written
+# the state file (so the definitions exist) and only while this machine has an
+# overlay; every other directory, and any failure on the way, is `base`.
 cmd_here() {
   [ $# -eq 0 ] || usage
-  printf 'base\n'
+  he_k=base
+  if [ -s "$(overlays_file)" ] && he_r=$(root_of "$PWD") && he_p=$(public_root) \
+     && [ "$he_r" = "$he_p" ] && [ -n "$(overlay_list 2>/dev/null)" ]; then
+    he_k=overlays
+  fi
+  printf '%s\n' "$he_k"
 }
 
 cmd_workgroup() {
@@ -1908,7 +2161,15 @@ cmd_install() {
   need_macos install
   proc_running iTerm2 && die "quit iTerm2 first — it rewrites its preferences at quit and would overwrite this"
   prefs_store
-  r=$(peer_py install "$skind" "$spath" "$(enter_state)") || exit 1
+  ovs=$(overlay_names)
+  r=$(peer_py install "$skind" "$spath" "$(enter_state)" "$(overlay_labels "$ovs")") || exit 1
+  # after peer_py succeeded: `here` answers overlays only for a definition that is there
+  ovf=$(overlays_file)
+  if [ -n "$ovs" ]; then
+    mkdir -p "${ovf%/*}" && printf '%s\n' "$ovs" >"$ovf" || die "cannot write $ovf"
+  else
+    rm -f "$ovf"
+  fi
   [ "$skind" = folder ] && where=$spath || where="the com.googlecode.iterm2 domain"
   printf 'claude-peer: %s in %s; start iTerm2, then Shell > Workgroups > Claude Peers in a plain tab\n' "$r" "$where"
 }
@@ -1938,8 +2199,19 @@ cmd_status() {
   if proc_running iTerm2; then printf 'iterm2: running\n'; else printf 'iterm2: not running (install allowed)\n'; fi
   # the store that is true now: iTerm2's memory (the domain) while it runs, the
   # folder file it only writes at quit otherwise
-  if proc_running iTerm2; then peer_py status domain "" "$(enter_state)"; else peer_py status "$skind" "$spath" "$(enter_state)"; fi
+  ovs=$(overlay_names)
+  ovs_filed=$(sed -n 1p "$(overlays_file)" 2>/dev/null)
+  ovs_lab=$(overlay_labels "$ovs")
+  if proc_running iTerm2; then peer_py status domain "" "$(enter_state)" "$ovs" "$ovs_filed" "$ovs_lab"; else peer_py status "$skind" "$spath" "$(enter_state)" "$ovs" "$ovs_filed" "$ovs_lab"; fi
   peers_summary
+  [ -n "$ovs" ] || return 0
+  if st_pub=$(public_root); then printf 'overlays: entered from %s\n' "$st_pub"
+  else printf 'overlays: chezmoi names no source directory in a git repository, so no tab enters them\n'; fi
+  overlay_list 2>/dev/null | while IFS='	' read -r st_n st_r _; do
+    overlay_state "$st_r" | ST_N=$st_n ST_R=$st_r awk -F'\t' '
+      $1 == "idle" { printf "overlay: %s idle in %s\n", ENVIRON["ST_N"], ENVIRON["ST_R"]; next }
+      { printf "overlay: %s %s in %s (tab of %s, pid %s)\n", ENVIRON["ST_N"], $1, ENVIRON["ST_R"], $2, $3 }'
+  done
 }
 
 # peers: how many Claudes run and how many panes wait in the repository the
@@ -2192,6 +2464,8 @@ cmd=$1; shift
 case $cmd in
   run) cmd_run "$@";;
   hermes) cmd_hermes "$@";;
+  overlays) cmd_overlays "$@";;
+  overlay) cmd_overlay "$@";;
   peers) cmd_peers "$@";;
   start) cmd_start "$@";;
   stop) cmd_stop "$@";;

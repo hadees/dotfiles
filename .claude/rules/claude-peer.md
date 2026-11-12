@@ -43,7 +43,11 @@ so a repo where no Hermes profile routes must be given the definition without
 the pane, chosen before entry. There is no Diff peer, and nothing is copied
 from `builtin.claudeCode`; the builtin is never edited. In code `build_base`
 returns the four sessions for an id prefix and `with_hermes` the twin of a
-definition. `claude-peer install` writes both into the `Workgroups` key (JSON
+definition. A machine with private overlays gets two more, `Claude Peers +
+Overlays` (`claudePeer.v.overlays`) and `Claude Peers + Hermes + Overlays`
+(`claudePeer.v.overlays.h`), four in all: `build_overlays` returns them from the
+panes' bar labels and `with_overlays` makes each from a base definition, one peer
+per overlay after the others, stored by position (see **Overlay peers**). `claude-peer install` writes both into the `Workgroups` key (JSON
 in a data value; replace by id, else append), refuses while iTerm2 runs, and
 edits the custom prefs folder's plist when `LoadPrefsFromCustomFolder` is on,
 else the domain. Both are forced:
@@ -52,7 +56,8 @@ launch replaces the domain's syncable keys from the folder
 (`:1768-1830`), so `defaults write` or an edit while iTerm2 runs is lost. That
 plist is tracked here and rewritten by iTerm2 at every quit, so the edit is
 the same drift as any save and is not committed back. `status` prints
-`store:`, `iterm2:`, `workgroup:`, `hermes:` and `default:`, and inside a
+`store:`, `iterm2:`, `workgroup:`, `hermes:` and `default:`, `overlays:` where the
+machine, the store or the state file has any, and inside a
 repository `peers:`. It reads the store that is true at that moment: the
 preferences domain while iTerm2 runs (its memory is what counts; the folder
 file is only written at quit) and the store `store:` names while it is quit, so
@@ -70,9 +75,16 @@ written to the terminal) to `<key>:<nonce>`, and one variable-changed Enter
 Workgroup trigger per workgroup, matching `^<key>:`, enters it. The keys:
 `claudePeer.workgroup` is `base`, `claudePeer.h` is `base/hermes`,
 `claudePeer.v.<name>` is `<name>` and `claudePeer.v.<name>.h` is
-`<name>/hermes`. `claude-peer here` prints the key for the directory (today
-always `base`); the wrapper adds `/hermes` where `hermes_profile` routes it,
-the gate `hermes_peer` uses. The nonce (`$EPOCHREALTIME`) makes a second launch
+`<name>/hermes`. `claude-peer here` prints the key for the directory: `overlays` when all hold,
+tested in this order so the common case costs one file test (the state file
+`${XDG_STATE_HOME:-~/.local/state}/claude-peer/overlays`, one line of names, written by
+`install` after the definitions went in, read by `here` and by `overlay <N>`, and absent or empty otherwise; the caller is in a
+repository; that repository's main checkout, by `pwd -P` (`root_of`), is the
+main checkout of the repository holding `chezmoi source-path` (`public_root`); this machine
+has an overlay now), else `base`, always exit 0 with no stderr. The state file is the gate:
+a deployed script whose definitions are not installed yet must not send a key no trigger
+matches, which would put every tab of the public source in no workgroup. The wrapper adds
+`/hermes` where `hermes_profile` routes it, the gate `hermes_peer` uses. The nonce (`$EPOCHREALTIME`) makes a second launch
 in one tab a second change; whether it enters again after the workgroup was
 exited is live check L15. The wrapper sends the key only **after** the
 second-session question has been passed (an `n` sends nothing and launches
@@ -393,6 +405,63 @@ and Hermes appends `.worktrees/` to the tracked `.gitignore` of whichever
 checkout the leader stands in, once, if that line is missing (Hermes 0.19.0
 `cli.py`). The Hermes peer has no Session Status row (rows come from Claude
 Code hooks) and is not part of the leader's roll-call.
+
+**Overlay peers.** A tab of the public chezmoi source gets one extra pane per private
+overlay of the machine, each a waiting pane of that overlay's own repository. Discovery is
+`dotfiles()`'s rule, by chezmoi's own answer: every `~/.config/chezmoi/*.toml` but
+`chezmoi.toml` whose `chezmoi --config <cfg> source-path` is inside a non-bare git
+repository, sorted by name under `LC_ALL=C` (`overlay_list`; `claude-peer overlays` prints
+`name<TAB>root<TAB>state<TAB>leader<TAB>pid`). A candidate that cannot be one is named on
+stderr and skipped: no source directory, not in a git repository, the public source itself,
+the same repository as an earlier config, a name already taken. The name is the config's base
+name lowercased, anything outside `a-z0-9_-` turned into `-`, `o-` in front when it does not
+start with a letter. No overlay name is a literal in the public source, and none is written into iTerm2's
+preferences either: where the prefs folder is a git clone the `Workgroups` value sits in a
+tracked plist, base64-encoded, where a text leak guard does not read. What is stored where: in
+the preferences a position (id `<gid>.o.<N>`, bar label `Overlay <N>`, command
+`claude-peer overlay <N>`); in the state file the names in pane order; on the terminal the name
+(the pane's header, `status`, `overlays`). `claude-peer overlay <N>` is the pane command: N is
+the N-th name of the state file, resolved against the overlays the machine has now, so a changed
+set never re-points a pane; `overlay <name>` is the form typed by hand. It resolves the overlay at run time, `unset`s `CLAUDE_PROFILE`, `cd`s to the overlay's
+main checkout and then calls `pane` with slot `overlay`, so everything a slot pane does is
+reused: worktree `<overlay>/.claude/worktrees/overlay`, detached at `origin/HEAD` when new and
+reused as left, the `**/.claude/worktrees/` line in that repository's `.git/info/exclude`, the
+claim, the pool (a second tab of the public source finds `overlay` in use and takes the pool
+from its fourth name on, as Alpha does), Return/`c`/`q`, and `claude` through an interactive
+shell so the `claude()` wrapper resolves the profile from the overlay's own origin and pin,
+which are read and never written. It changes directory, and does not call `run`, because `run`
+takes the leader to be the directory it stands in: the claim must name the public source as
+leader (line 2), or `tabname` would mark the overlay's checkout as Lead. The waiting pane's
+header is the overlay's label; the claim's label, the session name `<overlay dir>-overlay` and
+the Session Status row `<overlay dir> · Overlay` come from the slot. Nothing reads or prints
+anything from an overlay's tree: the script touches git metadata (worktree list, `git worktree
+add`) and files of its own under `.git/`, so an overlay a profile is denied is listed by path,
+name and running state only. A name that no longer resolves, or a directory that cannot be
+entered, prints one line and leaves a plain shell, never iTerm2's restart banner.
+
+The two definitions are separate from the others because peers spawn at entry: panes added to
+`Claude Peers` would appear in every repository's tab. The bar is the root plus the peers in
+session order and ⌥⇧⌘1…8 pick by position, so the Hermes twin of the overlay group is built from
+`claudePeer.h` plus the overlays, not by `with_hermes` of the first: Lead, Alpha, Beta, Gamma, then the
+overlays, or Lead, Alpha, Beta, Gamma, Hermes, then the overlays. Hermes keeps ⌥⇧⌘5; ⌥⇧⌘9 is
+"last", so it becomes the last overlay (iTerm2 3.7.7 source; not yet seen on a real tab). One
+pair is built at `install` time for the overlays the machine has then (none: neither, and a stale
+pair is removed with the state file); `install` needs iTerm2 quit, the one part of this that does.
+Between a change of the overlay set and the next `install` things degrade visibly: a pane whose
+overlay is gone says so and is a plain shell, a new overlay has no pane, and `status` says
+`overlays: installed, out of date (...)` (as many overlays under other names is out of date
+too: the state file's names must be the names now); a pane whose position has no name in the
+state file says so and is a plain shell; a state file and a store that disagree get a second
+`overlays:` line saying which tabs enter nothing or stay `base`. `status` says which pane is which
+overlay: `overlays: installed (N panes: Overlay 1 = <Name>, …)`. From the shell `status` also
+prints `overlays: entered from <public root>` and one `overlay: <name> <state> in <root>` per
+overlay (`idle`, `waiting`, or `running` with the tab that leads it).
+
+Limits. An overlay peer is in the overlay's `slots`, `peers` and log, not the leader's, so Lead's
+roll-call does not announce it, and `start` and `stop` for it are run from inside the overlay.
+`q` leaves the operator's own shell standing in the overlay's main checkout. The leader's exit
+tears overlay peers down like any peer. A linked worktree of the public source counts as the public source;
+any other repository keeps `base` and `base/hermes`.
 
 Tests: `tests/claude-peer.bats` (stub ps/uname/defaults,
 fixture plists; the real store is only touched by the operator's `install`).
