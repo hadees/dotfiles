@@ -96,7 +96,7 @@ import subprocess
 import sys
 import time
 
-RUBRIC_V = 1
+RUBRIC_V = 2
 BLOCK_AT = 0.75
 BACKEND_TIMEOUT = 20
 NOTE_MAX = 12000
@@ -517,6 +517,8 @@ def verdict(answers):
         place = p
     if choice == "memory":
         outcome = "allow-memory"
+    elif choice == "overlay":
+        outcome = "allow-private"
     elif conf >= BLOCK_AT:
         outcome = "block"
     else:
@@ -777,21 +779,29 @@ def describe_home(choice, place, root):
     if choice == "docs":
         return "%s/%s" % (repo, sect) if sect else "%s/docs/" % repo
     if choice == "overlay":
-        return "a private overlay's own docs, not this repository and not memory"
+        return "a private overlay's own docs"
     return "no file: do not save it"
 
 
 UNTIL_HINT = ("If it must bridge until that lands, save it again with `until: <YYYY-MM-DD | grep:<text>@<file> | "
               "a condition in words>` under `metadata:` in its frontmatter; it is kept as a stopgap and flagged when due.")
 KEEP_HINT = "If the operator has said it stays in memory, save it again with `keep: <their reason>` under `metadata:`."
-PUT_HINT = ("Put it there with a normal edit, on that repository's usual branch and pull request. "
-            "Do not reword it to pass, and do not write it by another route.")
+PRIVATE_THINGS = "a person, an account, an organisation, a host, a private repository, a machine-specific path or port, or where a secret is kept"
+MOVE_HINT = ("Put it there with a normal edit, on that repository's usual branch and pull request. "
+             "Moving it is an edit like any other: write the general point and leave out whatever names " + PRIVATE_THINGS +
+             ". What names such things stays in memory, as a shorter note of its own.")
+EVADE_HINT = "Do not rephrase the note to get it past this check, and do not write it by another route."
+OVERLAY_NOTE = ("memoryguard: saved, because it names something private and memory is private. If it is configuration knowledge "
+                "rather than a note for this project, a private overlay's own docs are its home; it never goes in a public repository.")
 ELSEWHERE_HINT = "That file is in another repository: hand the text to the session there, or work in a worktree of it."
 
 
 def refusal(choice, conf, reason, home, elsewhere):
     lines = ["memoryguard: not saved. This reads as %s (%d%%)%s" % (choice, round(conf * 100), ": " + reason if reason else "."),
-             "It belongs in %s." % home, PUT_HINT]
+             "It belongs in %s." % home]
+    if choice != "nowhere":
+        lines.append(MOVE_HINT)
+    lines.append(EVADE_HINT)
     if elsewhere:
         lines.append(ELSEWHERE_HINT)
     return "\n".join(lines + [UNTIL_HINT, KEEP_HINT])
@@ -867,7 +877,8 @@ def hook_pre(p):
     if cached and cached[5] in CACHE_BLOCK:
         log("block-cached", sha, cached[6], cached[7])
         msg = "memoryguard: not saved. This text was already placed: %s." % cached[6]
-        return {"permissionDecision": "deny", "permissionDecisionReason": "\n".join((msg, PUT_HINT, UNTIL_HINT, KEEP_HINT))}
+        lines = [msg] + ([MOVE_HINT] if cached[6] != "nowhere" else []) + [EVADE_HINT, UNTIL_HINT, KEEP_HINT]
+        return {"permissionDecision": "deny", "permissionDecisionReason": "\n".join(lines)}
     if cached:
         log("allow-memory", sha, cached[6], cached[7])
         return None
@@ -883,10 +894,15 @@ def hook_pre(p):
     log(outcome, sha, choice, conf, ms, extra or "-")
     if outcome == "allow-memory":
         return None
+    if outcome == "allow-private":
+        return note(OVERLAY_NOTE)
     home = describe_home(choice, place, root)
     if outcome == "allow-unsure":
-        return note("memoryguard: saved, but this may belong in %s (%d%%). If so, move it there and delete the note."
-                    % (home, round(conf * 100)))
+        if choice == "nowhere":
+            return note("memoryguard: saved, but this may belong in %s (%d%%). If so, move it there and delete the note."
+                        % (home, round(conf * 100)))
+        return note("memoryguard: saved, but this may belong in %s (%d%%). If so, write its general point there, leaving out whatever names %s, and delete the note."
+                    % (home, round(conf * 100), PRIVATE_THINGS))
     # A repository home is another repository's when the session works elsewhere
     # than in the project this memory belongs to.
     elsewhere = bool(mproject) and choice in ("rule", "claude-md", "docs") and (
@@ -987,10 +1003,10 @@ def cmd_hook(argv):
 PLACED = ("allow-memory", "audit-memory", "kept-by-audit", "allow-keep", "allow-stopgap")
 KEPT = ("allow-keep", "kept-by-audit")
 PROCEDURE = """# memoryguard audit: proposals only. Nothing below has been changed.
-1. For every row whose home is not `memory`, read the note and the proposed home, and correct the row if it is wrong.
+1. For every row whose home is not `memory`, read the note and the proposed home, and correct the row if it is wrong. When in doubt whether a note names something private, it does.
 2. Write the corrected table to ${TMPDIR:-/tmp}/claude-reports/<repository directory name>/memory-audit-<date>.md and give the operator its path.
 3. Change nothing until the operator has said yes, to a row or to the whole table.
-4. For each approved move: put the text in its home by a normal edit on that repository's usual branch and pull request, then delete the note and its MEMORY.md line. For each approved delete: delete the note and its line. For each note the operator keeps: `memoryguard audit --mark-kept <file>`.
+4. For each approved move: write the note's general point in its home by a normal edit on that repository's usual branch and pull request, leaving out whatever names a person, an account, an organisation, a host, a private repository, a machine-specific path or port, or where a secret is kept. What names such things stays in memory as a shorter note (then `memoryguard audit --mark-kept <file>`) or goes to a private overlay, never to a public repository. Then delete the original note and its MEMORY.md line. For each approved delete: delete the note and its line. For each note the operator keeps: `memoryguard audit --mark-kept <file>`.
 5. Shorten MEMORY.md to one line of at most 200 characters per remaining note."""
 
 
@@ -1078,7 +1094,7 @@ def hook_start(p):
         lines.append("memoryguard: MEMORY.md is %d characters in %d entries (%d over %d); the budget is %d. Keep one short line per entry."
                      % (chars, entries, long, LINE_MAX, INDEX_MAX))
     if unplaced >= UNPLACED_MIN:
-        lines.append("memoryguard: %d note(s) here were never placed (written before this hook, or outside the Write tool). "
+        lines.append("memoryguard: %d note(s) here are saved but not placed. "
                      "Run `memoryguard audit --propose`." % unplaced)
     if not lines:
         return None

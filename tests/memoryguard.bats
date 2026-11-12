@@ -372,12 +372,55 @@ write_note() { # body [frontmatter-extra] [file]
   [[ "$reason" == *'`until:'* ]]
   [[ "$reason" == *'`keep:'* ]]
   [[ "$reason" == *"It belongs in shared memory"* ]]
+  [[ "$reason" == *"leave out whatever names a person"* ]]
+  [[ "$reason" == *"stays in memory"* ]]
+  [[ "$reason" == *"Do not rephrase the note to get it past this check"* ]]
   [ "$(last_outcome)" = "block" ]
   hook_pre "$(write_note "always ask first")"
   [ "$(field "$output" permissionDecision)" = "deny" ]
   [[ "$(field "$output" permissionDecisionReason)" == *"already placed: shared-memory"* ]]
+  [[ "$(field "$output" permissionDecisionReason)" == *"leave out whatever names a person"* ]]
   [ "$(runs)" -eq 1 ]
   [ "$(last_outcome)" = "block-cached" ]
+}
+
+@test "hook pre: a refusal tells the session to leave out what names private things, and never quotes the note" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer shared-memory 0.9)"
+  hook_pre "$(write_note "The mount works as user jdoe on host nas-attic.example.net")"
+  [ "$(field "$output" permissionDecision)" = "deny" ]
+  reason="$(field "$output" permissionDecisionReason)"
+  [[ "$reason" == *"leave out whatever names a person, an account, an organisation, a host"* ]]
+  [[ "$reason" != *"jdoe"* ]]
+  [[ "$reason" != *"nas-attic"* ]]
+}
+
+@test "hook pre: a nowhere refusal has nothing to move and still forbids rephrasing" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer nowhere 0.9)"
+  hook_pre "$(write_note "a dead end")"
+  [ "$(field "$output" permissionDecision)" = "deny" ]
+  reason="$(field "$output" permissionDecisionReason)"
+  [[ "$reason" != *"Put it there"* ]]
+  [[ "$reason" == *"Do not rephrase the note to get it past this check"* ]]
+}
+
+@test "hook pre: overlay is saved with a note, never refused, at any confidence; the note stays unplaced" {
+  # a refusal cached under the old rubric must not be replayed
+  sha="$("$REAL_PYTHON3" -c 'import hashlib,sys; print(hashlib.sha256(("v1\n1\n"+sys.argv[1]).encode()).hexdigest()[:16])' "the overlay thing 0.9")"
+  mkdir -p "$(dirname "$LOG")"
+  printf '2026-11-12T00:00:00Z\tp\ts\t-\t%s\tblock\toverlay\t0.9\t-\t-\n' "$sha" > "$LOG"
+  audit_project
+  for conf in 0.9 0.4; do
+    export STUB_ANSWER; STUB_ANSWER="$(answer overlay "$conf")"
+    hook_pre "$(write_note "the overlay thing $conf")"
+    [ "$(field "$output" permissionDecision)" = "-" ]
+    ctx="$(field "$output" additionalContext)"
+    [[ "$ctx" == *"names something private"* ]]
+    [[ "$ctx" == *"never goes in a public repository"* ]]
+    [ "$(last_outcome)" = "allow-private" ]
+    disk_note "n$conf.md" "the overlay thing $conf"
+  done
+  run "$MG" audit "$HOME/work"
+  [[ "$output" == "notes 2  placed 0  unplaced 2"* ]]
 }
 
 @test "hook pre: until: (frontmatter or body line) lets a note through without the backend" {
@@ -418,6 +461,7 @@ Until: when the fix lands")"
   export STUB_ANSWER; STUB_ANSWER="$(answer rule 0.5)"
   hook_pre "$(write_note "maybe a rule")"
   [[ "$(field "$output" additionalContext)" == "memoryguard: saved, but this may belong in "*"(50%)"* ]]
+  [[ "$(field "$output" additionalContext)" == *"leaving out whatever names"* ]]
   [ "$(field "$output" permissionDecision)" = "-" ]
   [ "$(last_outcome)" = "allow-unsure" ]
 }
@@ -681,14 +725,14 @@ hook_start() { run "$MG" hook start <<< "$(start_payload "$@")"; }
   [ -z "$output" ]
   disk_note d.md "straight to disk d"
   hook_start
-  [[ "$output" == "memoryguard: 3 note(s) here were never placed"*"Run \`memoryguard audit --propose\`." ]]
+  [[ "$output" == "memoryguard: 3 note(s) here are saved but not placed. Run \`memoryguard audit --propose\`." ]]
   [ "$(tail -1 "$LOG" | cut -f10)" = "due=0,index=0,unplaced=3" ]
 }
 
 @test "hook start: the memory directory is found from the transcript, and from a worktree through the common directory" {
   disk_note a.md "one"; disk_note b.md "two"; disk_note c.md "three"
   hook_start
-  [[ "$output" == *"3 note(s) here were never placed"* ]]
+  [[ "$output" == *"3 note(s) here are saved but not placed. Run \`memoryguard audit --propose\`."* ]]
   hook_start "$BATS_TEST_TMPDIR/elsewhere/s.jsonl" "$HOME/work"
   [ -z "$output" ]
   # a session in a worktree: the transcript lives under the worktree's own slug
@@ -702,7 +746,7 @@ hook_start() { run "$MG" hook start <<< "$(start_payload "$@")"; }
   hook_start "$CLAUDE_CONFIG_DIR/projects/-wt/s.jsonl" "$HOME/main-wt/.."
   [ -z "$output" ]
   hook_start "$CLAUDE_CONFIG_DIR/projects/-wt/s.jsonl" "$HOME/main-wt"
-  [[ "$output" == *"3 note(s) here were never placed"* ]]
+  [[ "$output" == *"3 note(s) here are saved but not placed. Run \`memoryguard audit --propose\`."* ]]
 }
 
 @test "hook start: inside the decider's own session nothing happens" {
@@ -747,6 +791,8 @@ hook_start() { run "$MG" hook start <<< "$(start_payload "$@")"; }
   [ "$status" -eq 0 ]
   [ "$(grep -c '^[1-5]\. ' <<< "$output")" -eq 5 ]
   [[ "$output" == *"# memoryguard audit: proposals only. Nothing below has been changed."* ]]
+  [[ "$output" == *"leaving out whatever names"* ]]
+  [[ "$output" == *"never to a public repository"* ]]
   [[ "$output" == *"| note | chars | home | confidence | place | reason | marker |"* ]]
   [[ "$output" == *"| a.md | "*" | rule | 0.80 | - | because | - |"* ]]
   [[ "$output" == *"| k.md | "*" | - | - | - | marked, not asked | keep: the operator asked for it here |"* ]]
@@ -784,4 +830,9 @@ hook_start() { run "$MG" hook start <<< "$(start_payload "$@")"; }
   [ "$status" -eq 2 ]
   run "$MG" audit --mark-kept
   [ "$status" -eq 2 ]
+}
+
+@test "the source no longer tells a session to reword a note or to put its text in its home" {
+  ! grep -qi 'reword it to pass' "$MG" || false
+  ! grep -qi 'put the text in its home' "$MG" || false
 }

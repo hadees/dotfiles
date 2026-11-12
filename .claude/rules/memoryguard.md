@@ -57,8 +57,22 @@ the note for the audit, where a full session and the operator look at it.
 | this text decided before | replay it | `allow-memory` / `block-cached` |
 | no seat, no `claude`, backend failed | allow, with a note | `allow-nobackend` / `allow-error` |
 | `memory` | allow | `allow-memory` |
+| `overlay`, any confidence | allow, with a note | `allow-private` |
 | anything else, confidence at or above `BLOCK_AT` (0.75) | **deny** | `block` |
 | anything else, below it | allow, with a note | `allow-unsure` |
+
+**A refusal says how to move, not just where.** Moving a note is an edit
+like any other, and a session left to itself copies the note as it is. So
+every refusal (and the unsure note, and the audit's procedure) tells the
+session to write the general point and leave out whatever names a person,
+an account, an organisation, a host, a private repository, a
+machine-specific path or port, or where a secret is kept; what names such
+things stays in memory as a shorter note. A separate sentence forbids
+rephrasing the note to get it past the check. `overlay` is saved, never
+refused: memory is private, and most repositories have no overlay, so a
+refusal toward one would leave a private fact without a reachable home.
+The note says a private overlay's own docs are its home and a public
+repository never is.
 
 The index is never refused, only warned about: a refused index edit
 strands a note. `BLOCK_AT` is a starting value, not a calibrated one;
@@ -142,6 +156,10 @@ is why the entries carry their own `timeout`.
   that share two terms with the note (backticked spans, and words with
   `/`, `_`, `-`, a digit or an inner capital); a restatement in other
   words is judged by the model alone.
+- Whether a destination repository is public. The hook says the same
+  thing for every home, and it is not the boundary between a private value
+  and a public file: the wording above, the push-time leak guard and the
+  review of the pull request are.
 - The refusal text for a cached refusal carries no "It belongs in" line:
   the home is not logged, only the criteria id.
 
@@ -201,8 +219,8 @@ profile's notes must not be characterised there. The reason is shown once,
 in the refusal, to the session that wrote the note. The log is also the
 cache (see the table for which outcomes replay). `memoryguard log
 [--since DAYS]` prints a count per outcome and `blocks later kept`.
-`RUBRIC_V` is part of the hash: changing the rubric bumps it and empties
-the cache.
+`RUBRIC_V` is part of the hash: changing the rubric or the texts a refusal
+carries bumps it and empties the cache.
 
 Cost per decision, from the design and not yet measured: 2 to 5k input
 tokens of Haiku in lean mode, a few seconds, a fraction of a cent. Notes
