@@ -1627,13 +1627,13 @@ function hermes-doctor() {
 # wrangler's per-user config dir either way, so every install sees the same
 # logins.
 function wrangler() {
+	emulate -L zsh;
 	local profile bin;
 	bin="$(wrangler_bin)" || {
 		print -ru2 -- "wrangler: not found — no node_modules/.bin/wrangler at or above $PWD and none on PATH";
 		return 127;
 	};
 	# Account management passes straight through (as gh() does with `gh
-	emulate -L zsh;
 	# auth`); an API token in the environment overrides every profile and
 	# makes wrangler refuse binding changes, so there is nothing to manage.
 	case $1 in
@@ -2096,14 +2096,16 @@ function tailnet_scp_host() {
 
 # The host curl will talk to: the first URL argument, else the first bare
 # `host[:port][/path]` argument whose host could be a tailnet node (curl takes
-# URLs anywhere among options, so an option's value can be mistaken for one —
-# the only cost is a lookup, and at worst a public URL is fetched through a
-# daemon's ordinary outbound path). Prints nothing when the user is already
-# proxying (-x/--proxy/--socks*/--noproxy, or proxy variables in the
-# environment) — the user's choice wins.
+# URLs anywhere among options). The value of an option that takes one
+# (-H, -d, -o, -X, … — a header or a form field can hold a URL) is skipped,
+# but an option left off that list has its value read as the destination, and
+# a wrong host sends the whole request through that host's tailnet proxy.
+# `--url` needs no entry: its value is the next argument. Prints nothing when
+# the user is already proxying (-x/--proxy/--socks*/--noproxy, or proxy
+# variables in the environment) — the user's choice wins.
 function tailnet_curl_host() {
 	emulate -L zsh;
-	local a host bare;
+	local a host bare skip=0;
 	[[ -z $ALL_PROXY$all_proxy$HTTPS_PROXY$https_proxy$HTTP_PROXY$http_proxy ]] || return 1;
 	for a in "$@"; do
 		case $a in
@@ -2111,7 +2113,9 @@ function tailnet_curl_host() {
 		esac;
 	done;
 	for a in "$@"; do
+		(( skip )) && { skip=0; continue; };
 		case $a in
+			(-H|--header|-d|--data|--data-raw|--data-binary|--data-urlencode|--json|-e|--referer|-A|--user-agent|-F|--form|--form-string|-u|--user|-o|--output|-w|--write-out|-b|--cookie|-X|--request) skip=1; continue;;
 			(-*) continue;;
 			(*://*)
 				host=${a#*://};
@@ -2416,6 +2420,7 @@ function tailnet-doctor() {
 # the personal account — not an org member, so it silently sees only public
 # repos.
 function gh() {
+	emulate -L zsh;
 	[[ $1 == auth ]] && { command gh "$@"; return; };
 	local -A gh_owners;
 	local key val owner acct arg seg;
@@ -2426,7 +2431,6 @@ function gh() {
 		owner=${key#credential.https://github.com/};
 		owner=${owner%.username};
 		[[ -n $owner && -n $val ]] && gh_owners[$owner]=$val;
-	emulate -L zsh;
 	done < <(command git config --get-regexp \
 		'^credential\.https://github\.com/.*\.username' 2>/dev/null);
 	(( ${#gh_owners} )) || { command gh "$@"; return; };

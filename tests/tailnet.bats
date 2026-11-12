@@ -930,6 +930,17 @@ CLAUDE_CODE_OPTS="no_bare_glob_qual no_case_glob glob_star_short no_extended_glo
   [ ! -s "$TS_LOG" ]
 }
 
+@test "tailnet_curl_host: skips the value of an option that takes one, and reads --url's" {
+  run zsh -c "source '$DOTFUNCTIONS'; tailnet_curl_host -H 'Referer: http://nas.example/' https://public.example/x"
+  [ "$output" = "public.example" ]
+  run zsh -c "source '$DOTFUNCTIONS'; tailnet_curl_host -d 'next=https://public.example/' http://node.example/"
+  [ "$output" = "node.example" ]
+  run zsh -c "source '$DOTFUNCTIONS'; tailnet_curl_host --url http://node.example/x"
+  [ "$output" = "node.example" ]
+  run zsh -c "source '$DOTFUNCTIONS'; tailnet_curl_host -X POST -o out.txt -u user:pw --json '{\"u\":\"http://nas.example/\"}' http://node.example/"
+  [ "$output" = "node.example" ]
+}
+
 # --- functions: tailnet-as / passthrough ------------------------------------
 
 @test "tailnet-as: runs one command with TAILNET and the proxy environment set; unknown names error out" {
