@@ -179,8 +179,8 @@ pane's Alpha is in use by the peers of <leader>)` when that differs. With every
 name taken it prints `all <n> slots are in use in <repo>` and `Return tries
 again`, and waits. `next` is not a slot name.
 
-**`start` and `stop` are the operator's.** A session runs them only when
-asked; `slots` and `log` only read or append, and the shared memory tells every
+**`start` and `stop` are the operator's and Lead's.** A session that is not
+Lead runs them only when asked; `slots` and `log` only read or append, and the shared memory tells every
 session to use them (announce a task when `slots` shows another slot running,
 read `log show` before a machine-wide action). `claude-peer start <slot|next> [--continue] [--leader <dir>] [--]
 [prompt words…]` writes a request file (`<slot>.<pid>.start`: line 1 `fresh` or
@@ -202,11 +202,29 @@ leader<TAB>session name` for the repository. Exit codes: 0 done; 1 failed; 2
 usage; 3 already in the requested state (running, not running, no slot free);
 4 nothing to act on (no pane waiting); 5 refused because busy.
 
+**Lead** is one session per leader directory, known by its name. `claude()`
+gives the launch that enters the workgroup the name `claude-peer name lead`
+prints, Claude Code passes it to SessionStart hooks as `session_title`, and
+`postbox hook start` prints `postbox: you are Lead of <dir> (session
+<name>)…` when the two agree and the session is not a peer. Nothing else makes
+a session Lead: a launch outside the wrapper, a second session in the
+directory, a peer and a subagent are not, and `claude -n "$(claude-peer name
+lead)"` is the by-hand form. Lead's to stop or re-task is a slot whose
+`leader` in `slots` is its directory and whose claim says `by Lead`
+(`claude-peer claim <worktree>`); a `by pane` claim is the operator's own
+start. `stop` without `--force` refuses a busy session (exit 5), and that
+refusal is the guard, so Lead never forces. Re-tasking is a message to an
+idle peer, or `stop` then `start --handoff`. The Hermes pane has no claim and
+no `start`, so Lead uses Hermes only by `hermes -z "<task>"` through the
+wrapper. Overlay peers and peers of another profile are not Lead's. The merge
+gate is in `merge-gate.md`.
+
 **A peer is a separate project, not a helper of the leader.** It has its own
 context, branch and pull requests, and plans and delegates inside itself like any
 session; `start` passes its prompt through untouched, except that `--handoff` appends the
-fixed hand-off note, and nothing here briefs,
-merges or supervises a peer. A tab's log lines are relayed to Lead (postbox's
+fixed hand-off note, and nothing in this
+script briefs, merges or supervises a peer; Lead, a session, does (the shared
+memory's `Lead` section). A tab's log lines are relayed to Lead (postbox's
 `lead-news` and Stop hook), and a tab is still not briefed, merged or supervised. The one shared thing is the coordination log,
 `<git common dir>/claude-peer.log`, so every worktree of the repository reads the
 same file and it outlives any session. It is append-only, one line per entry,
