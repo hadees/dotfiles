@@ -97,12 +97,13 @@ one straight after an option may be that option's value, so neither counts
 `ls` guard only after a `--long` option or one ending in `P` or `I`, so `du
 -sh src` still names `src`). When no root is named, every base `scan` holds
 is tried as the directory it recurses from: one that is a strict ancestor of
-a denied prefix refuses ("`rg` recurses from `<base>`, an ancestor of
-`<rule>`; name an existing directory under it, after the pattern"). Unlike
+a denied prefix refuses ("`rg` recurses from `<base>`, which holds
+`<rule>`; name a directory under `<base>` that does not hold it, after the
+pattern"). Unlike
 a named directory, there is no exemption for `$HOME` or `/`. A root that
 does not exist yet is not a root (`rg x newdir/` is refused). A heredoc body
-line read as a command gets the same test, and its refusal adds "pass prose
-through cat". `rg` and `ack` fed by a pipe and given no path read stdin,
+line read as a command gets the same test, and its refusal adds that prose
+belongs in `cat <<EOF`, on its own or inside `$( )` for `git` and `gh`. `rg` and `ack` fed by a pipe and given no path read stdin,
 not the directory, and are exempt; `grep -r`, `find`, `du`, `tree`, `fd` and
 `ls -R` ignore stdin and are not. A glob with no slash is dropped everywhere else, because a bare star is
 also a markdown bullet, a SQL column list and a product; under a recursive,
@@ -193,6 +194,10 @@ A pattern glued to its short option (`-ePAT`) is not recognised as one.
 relocating a denied tree that way passes.
 `ag` fed by a pipe is refused though it reads stdin (not verified, so not
 exempted).
+A slash-less star under a recursive command (`cp -r * dest`) is refused
+from above a denied tree even where the shell would not expand it onto a
+dot-name: with `dotglob` or `GLOB_DOTS` on it does, and the scanner cannot
+see shell options. Naming directories is the way through.
 False positives of the same test: an option between the pattern and the root
 hides the root (`rg foo --hidden src`: put options first, or write `--`
 before the roots).

@@ -185,6 +185,7 @@ evt_ml() { # cwd command
   run hook "$(evt "$HOME/code" "true")"
   [ "$status" -eq 2 ]
   [[ "$output" == *"denyguard: cannot read"* ]]
+  [[ "$output" == *"readable JSON"* ]] || { echo "$output"; false; }
 }
 
 @test "a python3 that exists but cannot start blocks the hook, not just check" {
@@ -213,6 +214,7 @@ evt_ml() { # cwd command
     printf '%s\n' "$shape" > "$HOME/.claude-fixture/settings.json"
     run hook "$(evt "$HOME/code" "true")"
     [ "$status" -eq 2 ] || { echo "shape $shape exited $status: $output"; false; }
+    [[ "$output" == *"list of rule strings"* ]] || { echo "shape $shape: $output"; false; }
   done
 }
 
@@ -708,7 +710,7 @@ EOF")"
   for cmd in "rg gizmo" "grep -r gizmo" "find -name x" "du -sh"; do
     run hook "$(evt "$HOME/code" "$cmd")"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"recurses from $HOME/code, an ancestor of Read(~/code/octo-secret/**); name an existing directory under it, after the pattern"* ]] || { echo "$cmd: $output"; false; }
+    [[ "$output" == *"recurses from $HOME/code, which holds Read(~/code/octo-secret/**); name a directory under $HOME/code that does not hold it, after the pattern"* ]] || { echo "$cmd: $output"; false; }
   done
 }
 
@@ -777,7 +779,7 @@ EOF")"
 tree view is wrong
 EOF")"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"pass prose through cat"* ]] || { echo "$output"; false; }
+  [[ "$output" == *'prose belongs in cat <<EOF, on its own or inside $( ) for git and gh'* ]] || { echo "$output"; false; }
 }
 
 @test "recursion controls: an existing or globbed root after the pattern, options and --, stays silent" {
