@@ -881,3 +881,33 @@ files" ]
   [[ ! -e "$LIVEF" ]]
   [[ ! -e "$FAKE_DEFAULTS_LOG" ]]
 }
+
+# The public base fragment (dot_config/iterm2/prefs.d/10-base.plist)
+BASE="$BATS_TEST_DIRNAME/../dot_config/iterm2/prefs.d/10-base.plist"
+
+@test "the public base lints clean under --public" {
+  run sh "$BIN" lint --public "$BASE"
+  echo "$output"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "the public base holds one profile, named Default, and it is the default bookmark" {
+  [ "$(pget "$BASE" 'len(d["New Bookmarks"])')" = 1 ]
+  [ "$(pget "$BASE" 'd["New Bookmarks"][0]["Name"]')" = Default ]
+  [ "$(pget "$BASE" 'd["New Bookmarks"][0]["Guid"] == d["Default Bookmark Guid"]')" = True ]
+}
+
+@test "the public base has no data element" {
+  [ "$(grep -c '<data>' "$BASE")" = 0 ]
+}
+
+@test "the public base alone composes into a store with its default profile" {
+  cp "$BASE" "$FRAGS/10-base.plist"
+  run sh "$BIN" compose --print
+  echo "$output"
+  [ "$status" -eq 0 ]
+  printf '%s' "$output" >"$BATS_TEST_TMPDIR/printed.plist"
+  [ "$(pget "$BATS_TEST_TMPDIR/printed.plist" 'len(d["New Bookmarks"])')" = 1 ]
+  [ "$(pget "$BATS_TEST_TMPDIR/printed.plist" 'd["New Bookmarks"][0]["Guid"] == d["Default Bookmark Guid"]')" = True ]
+}
