@@ -2545,7 +2545,7 @@ plain() { sed $'s/\033\\[[0-9;?]*[A-Za-z]//g'; }
   run --separate-stderr sh "$BIN" art --hermes --truecolor
   [ "$status" -eq 0 ]
   [ -z "$stderr" ]
-  [ "$(printf '%s\n' "$output" | plain)" = "$(printf '  %s\n' '⢀⣿⡀' '⣿⣿⣿⣿' '⠈⣿⠁'; echo; printf '  waiting · ⏎ to start Hermes')" ]
+  [ "$(printf '%s\n' "$output" | plain)" = "$(printf '  %s\n' '⢀⣿⡀' '⣿⣿⣿⣿' '⠈⣿⠁'; echo; printf '  waiting · ⏎ to start Hermes · q for a shell')" ]
   [[ "$output" == *'38;2;150;92;36'* ]]
   [[ "$output" != *'255;214;150'* ]]
   [[ "$output" != *$'\033[31m'* ]]

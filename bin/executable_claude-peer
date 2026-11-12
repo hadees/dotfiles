@@ -928,7 +928,8 @@ while rows and not rows[0].strip("\u2800 "):
 if not rows or len(rows) > 40 or max(map(len, rows)) > 100:
     sys.exit(3)
 H, W = len(rows), max(map(len, rows))
-HINT = "\n  \x1b[2mwaiting \u00b7 \u23ce to start Hermes\x1b[0m\x1b[K\n"
+HINT = "\n  \x1b[2mwaiting \u00b7 \u23ce to start Hermes \u00b7 q for a shell\x1b[0m\x1b[K\n"
+ESC = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 def frame(t):
     p, lines = t - 6, []
@@ -950,7 +951,7 @@ else:
     for t in range(n):
         with open("%s/%d" % (out, t), "w", encoding="utf-8") as f:
             f.write(frame(t))
-    print(n, W + 2)
+    print(n, max(W + 2, len(ESC.sub("", HINT).strip("\n"))))
 PYEOF
 }
 

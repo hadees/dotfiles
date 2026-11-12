@@ -903,7 +903,7 @@ hermes_open() {
   git config --global claude-peer.art-seconds 2
   hermes_open
   screen_wait 'waiting · ⏎ to start Hermes'
-  [ "$(line 1)" = '  ⢀⣀⣀⣀⣀⣀⡀' ] && [ "$(line 6)" = '  waiting · ⏎ to start Hermes' ] || { screen_show; false; }
+  [ "$(line 1)" = '  ⢀⣀⣀⣀⣀⣀⡀' ] && [ "$(line 6)" = '  waiting · ⏎ to start Hermes · q for a shell' ] || { screen_show; false; }
   [ "$(count_lines 'Return starts hermes')" -eq 0 ] || { screen_show; false; }
   local first; first=$SCREEN_E
   until_ok 'screen_grab; [ "$SCREEN_E" != "$first" ]' || { screen_show; false; }

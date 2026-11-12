@@ -405,7 +405,7 @@ sleeper: `HERMES_CADUCEUS` is read at run time from the installed Hermes
 `/usr/local/lib/hermes-agent`; MIT, Nous Research) and never copied here,
 its rich tags and any escape or control bytes stripped. Dark bronze (150,92,36), a band about
 three cells wide lit toward (255,214,150) sweeping down it diagonally, then a pause (one cycle
-is rows + columns + 40 frames of 70 ms), and `waiting · ⏎ to start Hermes` under it; no z's.
+is rows + columns + 40 frames of 70 ms), and `waiting · ⏎ to start Hermes · q for a shell` under it; no z's.
 `herm_py` (python3, which Hermes itself needs) writes every frame once per wait; the band's
 seven levels come from `art_mode` and, in 256 colours, `art_c256` (the sleeper's mapping, also
 `art_hat`'s). `art --hermes --wait` draws them for `claude-peer.art-seconds` from the start and
