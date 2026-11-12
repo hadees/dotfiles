@@ -39,3 +39,31 @@ https://github.com/JeanExtreme002/pymacos
   author, and a few months have passed (earliest ~2027-01). Then: pin an
   exact version, run `settings.export()` on a configured Mac, and diff
   it against `.macos`.
+
+## Jev (a "System One" model)
+
+https://typesafe.ai/blog/introducing-system-one-models-and-jev
+(docs: https://docs.typesafe.ai/introduction)
+
+- **Evaluated:** 2026-11-12, from the vendor's announcement and docs. No key, nothing run.
+- **What:** a hosted model that answers typed questions about a piece of
+  state instead of generating text: a `choice` among listed criteria, a
+  `score`, a true-or-false `noul`, each with a confidence. One HTTPS
+  endpoint with a bearer key, Python and JavaScript SDKs, no CLI. The
+  vendor claims 70-500 ms a call and $0.042 per million input tokens,
+  output free.
+- **Why it matters here:** the hook that decides where a memory note
+  belongs asks exactly this kind of question, one home out of seven, and
+  today asks a Haiku session through `claude -p`, which takes seconds.
+  That hook's backend protocol is shaped on Jev's request and answer, so
+  an adapter is one small script and no hook changes.
+- **What stops us:** early access behind a waitlist; the pages state no
+  retention or training policy, and a note's text would leave the machine
+  for a third party; the announcement itself says the price may be
+  subsidised and its evaluations lean its own way; nothing keeps a note
+  inside the account whose session wrote it.
+- **Revisit when:** a key is in hand, a written retention and no-training
+  policy exists, and the API has gone a few months without a breaking
+  change. Then: write the adapter, run the hook's self-test against it
+  beside the Haiku numbers, and enable it only for profiles whose notes
+  may leave the machine.
