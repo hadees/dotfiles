@@ -71,7 +71,7 @@ shadow no bash. CI's macOS job adds Homebrew's `bin` itself; elsewhere use
 `PATH="$(brew --prefix)/bin:$PATH" bats tests`. A test that fakes `HOME` and
 needs `python3` must pin the real interpreter in `setup()` before it does,
 because an asdf shim cannot resolve a version under a fake `HOME` and exits
-126 (`tests/claude-peer.bats` does not pin yet).
+126.
 
 To *run* the dotfiles rather than test them — render a machine class into a
 sandbox `$HOME`, drive the resulting zsh (prompt, wrappers, doctors) one-shot

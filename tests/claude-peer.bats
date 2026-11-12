@@ -10,6 +10,14 @@ bats_require_minimum_version 1.5.0
 
 setup() {
   BIN="$BATS_TEST_DIRNAME/../bin/executable_claude-peer"
+  # Pin python3 while HOME is still real: an asdf shim first on PATH finds no
+  # version under the fake HOME and exits 126 instead of running.
+  if py="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null)"; then
+    mkdir -p "$BATS_TEST_TMPDIR/pybin" && ln -s "$py" "$BATS_TEST_TMPDIR/pybin/python3"
+    export PATH="$BATS_TEST_TMPDIR/pybin:$PATH"
+  fi
+  # a suite run from inside a peer slot would otherwise inherit that slot
+  unset CLAUDE_PEER_WORKTREE CLAUDE_PEER_SELF
   export HOME="$BATS_TEST_TMPDIR/home"
   # a runner or a shell that exports XDG_CONFIG_HOME would put the script's
   # config root outside the sandbox
