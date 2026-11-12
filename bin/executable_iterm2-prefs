@@ -1,0 +1,324 @@
+#!/bin/sh
+# iterm2-prefs — compose iTerm2's preferences from per-owner fragments.
+#
+# Usage:
+#   iterm2-prefs lint [--public] <file>...
+#   iterm2-prefs compose [--auto] [--reset] [--print]
+#   iterm2-prefs status [--line]
+#   iterm2-prefs capture [--from domain|store|<plist>] [--all] [--values]
+#                        [--owned <fragment>] [<unit>...] [--into <fragment> | --file <plist>]
+#   iterm2-prefs install [--dry-run] [--no-seed]
+#
+# Exit codes: 0 done, 1 failed or refused, 2 usage or not macOS.
+#
+# Each owner (this repository, and each private overlay that has a key of its
+# own) deploys an XML property list of iTerm2 preference keys into
+# ~/.config/iterm2/prefs.d/NN-<name>.plist, the same shape as
+# ~/.config/git/allowed_signers.d. This script merges them, in name order and
+# with the later fragment winning a key both set, into the one store iTerm2
+# loads from its custom folder, which lives outside every git repository.
+#
+# Why a merge, when git-allowed-signers can simply concatenate: iTerm2 is a
+# second writer. At every quit it writes every syncable key of the domain back
+# to that folder, so a composer that regenerated the file would undo every
+# change made in Settings. The merge is three-way per key against a record of
+# what the sources said at the last compose, so a key iTerm2 changed is kept
+# and counted until `capture` moves it into the fragment that owns it.
+#
+# Why only while iTerm2 is quit: it holds the truth in memory and overwrites
+# the file at quit, and a file that changed under it raises "changed since
+# iTerm2 started". `compose` and `install` therefore write nothing while it
+# runs. `lint` and `compose --print` read and print only, and need no macOS.
+#
+# Reserved, never composed: Workgroups and each profile's Triggers (written by
+# claude-peer and by iTerm2's own onboarding), the keys iTerm2 itself does not
+# sync, and a profile's Dynamic Profile* keys. A fragment that sets one has it
+# ignored and counted. Unit names (keys and profile/<guid>/<key>) are printed;
+# values never are, except by `capture --values`.
+#
+# This is the first step of the build: lint and compose --print. The other
+# verbs answer "not built yet".
+set -u
+
+warn() { printf 'iterm2-prefs: %s\n' "$*" >&2; }
+die() { warn "$*"; exit 1; }
+
+usage() { sed -n '/^# Usage:/,/^# Exit codes/p' "$0" | sed 's/^# \{0,1\}//'; }
+
+os() { uname -s 2>/dev/null; }
+# Exit 2 as for usage: the verb cannot be used here at all, nothing was refused.
+need_macos() { [ "$(os)" = Darwin ] || { warn "$1 needs macOS"; exit 2; }; }
+
+# `ps` rather than pgrep, as bin/executable_claude-peer: pgrep cannot see
+# processes of the caller's own session under some sandboxes.
+proc_running() {
+  ps -Ao ucomm= 2>/dev/null |
+    awk -v n="$1" '{ sub(/[ \t]+$/, "", $0); if ($0 == n) f = 1 } END { exit !f }'
+}
+
+# The stdlib only, and Python 3.9 clean (no match, no `X | Y` annotations):
+# /usr/bin/python3 is all a fresh mac has.
+prefs_py() {
+  python3 -I - "$@" <<'PYEOF'
+import datetime, os, plistlib, re, sys
+
+MISSING = type("Missing", (), {"__repr__": lambda self: "MISSING"})()
+
+# iTerm2's own filter (iTermRemotePreferences.m): these never reach the folder.
+EXEMPT = frozenset((
+    "LoadPrefsFromCustomFolder", "PrefsCustomFolder", "Secure Input",
+    "moveToApplicationsFolderAlertSuppress", "iTerm Version",
+    "CGFontRenderingFontSmoothingDisabled", "PreventEscapeSequenceFromChangingProfile",
+    "PreventEscapeSequenceFromClearingHistory", "Coprocess MRU", "MetalCaptureEnabled",
+    "MetalCaptureEnabledDate", "Snippets", "AppleAntiAliasingThreshold",
+    "AppleSmoothFixedFontsSizeThreshold", "AppleWindowTabbingMode",
+    "AppleScrollAnimationEnabled", "ApplePressAndHoldEnabled"))
+NO_SYNC_PREFIXES = ("NS", "SU", "NoSync", "UK")
+FRAGMENT_NAME = re.compile(r"[0-9]{2}-[a-z0-9_-]+\.plist")
+# profile keys that carry a host, a command or free text: empty in the public base
+EMPTY_ONLY = ("Bound Hosts", "Command", "Initial Text", "Badge Text", "Tags")
+
+
+def syncable(key):
+    return key not in EXEMPT and not key.startswith(NO_SYNC_PREFIXES)
+
+
+# A unit is ("top", key) or ("profile", guid, key); key None is a whole profile.
+def reserved(unit):
+    if unit[0] == "top":
+        return unit[1] == "Workgroups" or not syncable(unit[1])
+    return unit[2] is not None and (unit[2] == "Triggers" or unit[2].startswith("Dynamic Profile"))
+
+
+def unit_text(unit):
+    if unit[0] == "top":
+        return unit[1]
+    return "profile/%s" % unit[1] if unit[2] is None else "profile/%s/%s" % unit[1:]
+
+
+def parse_unit(text):
+    if text.startswith("profile/"):
+        parts = text.split("/", 2)
+        return ("profile", parts[1], parts[2] if len(parts) == 3 else None)
+    return ("top", text)
+
+
+def same(a, b):
+    """Deep equality with exact types: True, 1 and 1.0 are three values."""
+    if a is MISSING or b is MISSING:
+        return a is b
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(same(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(same(x, y) for x, y in zip(a, b))
+    return a == b
+
+
+def split_units(prefs):
+    """(units, reserved units, profile Guids in order) of a preferences dictionary."""
+    units, res, guids = {}, [], []
+
+    def put(unit, value):
+        if reserved(unit):
+            res.append(unit)
+        else:
+            units[unit] = value
+
+    for key, value in prefs.items():
+        if key != "New Bookmarks":
+            put(("top", key), value)
+            continue
+        for prof in value if isinstance(value, list) else []:
+            guid = prof.get("Guid") if isinstance(prof, dict) else None
+            if not isinstance(guid, str):
+                continue
+            guids.append(guid)
+            for pkey, pvalue in prof.items():
+                if pkey != "Guid":
+                    put(("profile", guid, pkey), pvalue)
+    return units, res, guids
+
+
+def units_of(prefs):
+    return split_units(prefs)[0]
+
+
+def load_plist(path):
+    with open(path, "rb") as f:
+        return plistlib.load(f)
+
+
+def dump_plist(prefs):
+    return plistlib.dumps(prefs, fmt=plistlib.FMT_XML, sort_keys=True)
+
+
+def leaves(value):
+    if isinstance(value, dict):
+        for v in value.values():
+            yield from leaves(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from leaves(v)
+    else:
+        yield value
+
+
+def lint_file(path, public):
+    """(preferences or None, problems) for one file; None when it cannot be read as a fragment."""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError as e:
+        return None, ["cannot read: %s" % e.strerror]
+    if raw.startswith(b"bplist"):
+        return None, ["binary property list (fragments are XML)"]
+    try:
+        prefs = plistlib.loads(raw)
+    except Exception:
+        return None, ["not a property list"]
+    if not isinstance(prefs, dict):
+        return None, ["root is not a dictionary"]
+
+    probs = []
+    if "New Bookmarks" in prefs:
+        nb = prefs["New Bookmarks"]
+        if not (isinstance(nb, list) and all(isinstance(p, dict) for p in nb)):
+            probs.append("New Bookmarks is not an array of dictionaries")
+        else:
+            seen = set()
+            for i, prof in enumerate(nb):
+                guid = prof.get("Guid")
+                if not isinstance(guid, str) or not guid:
+                    probs.append("profile %d has no Guid" % i)
+                elif guid in seen:
+                    probs.append("profile Guid %s appears twice" % guid)
+                else:
+                    seen.add(guid)
+    units, res, _ = split_units(prefs)
+    probs += ["reserved key " + unit_text(u) for u in res]
+    if public:
+        for u, value in units.items():
+            text = unit_text(u)
+            for leaf in leaves(value):
+                if isinstance(leaf, bytes):
+                    probs.append("data value at " + text)
+                elif isinstance(leaf, datetime.datetime):
+                    probs.append("date value at " + text)
+                elif isinstance(leaf, str):
+                    if "/Users/" in leaf or "/home/" in leaf:
+                        probs.append("home path in " + text)
+                    if u != ("top", "AitermURL") and (leaf.startswith(("/", "~/")) or "://" in leaf):
+                        probs.append("path or URL in " + text)
+                    if "@" in leaf:
+                        probs.append("address in " + text)
+            if u[0] == "profile" and u[2] in EMPTY_ONLY and not (isinstance(value, (str, list)) and not value):
+                probs.append(text + " must be empty or absent")
+        for u in res:
+            if u[0] == "profile" and u[2].startswith("Dynamic Profile"):
+                probs.append("dynamic profile " + u[1])
+        probs = list(dict.fromkeys(probs))
+    return prefs, probs
+
+
+def read_fragments(frag_dir):
+    """[(name, preferences or None, problems)] for the NN-<name>.plist files, in name order."""
+    try:
+        names = sorted(os.listdir(frag_dir))
+    except OSError:
+        return []
+    out = []
+    for n in names:
+        path = os.path.join(frag_dir, n)
+        if FRAGMENT_NAME.fullmatch(n) and os.path.isfile(path):
+            prefs, probs = lint_file(path, False)
+            out.append((n[:-len(".plist")], prefs, probs))
+    return out
+
+
+def merge(fragments):
+    """(new, owner, order, ignored): the last fragment's value per unit."""
+    new, owner, order, ignored = {}, {}, [], []
+    for name, prefs, _ in fragments:
+        if prefs is None:
+            continue
+        units, res, guids = split_units(prefs)
+        for u, value in units.items():
+            new[u], owner[u] = value, name
+        ignored += [(name, unit_text(u)) for u in res]
+        order += [g for g in guids if g not in order]
+    return new, owner, order, ignored
+
+
+def lay(new, order):
+    """Merged units over an empty dictionary, profiles in order. ponytail: S2's apply_units replaces this."""
+    prefs, profiles = {}, {}
+    for u, value in new.items():
+        if u[0] == "top":
+            prefs[u[1]] = value
+        else:
+            profiles.setdefault(u[1], {"Guid": u[1]})[u[2]] = value
+    if profiles:
+        prefs["New Bookmarks"] = [profiles[g] for g in order if g in profiles]
+    return prefs
+
+
+def frag_dir():
+    if os.environ.get("ITERM2_PREFS_FRAGMENTS"):
+        return os.environ["ITERM2_PREFS_FRAGMENTS"]
+    config = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.environ["HOME"], ".config")
+    return os.path.join(config, "iterm2", "prefs.d")
+
+
+def usage(text):
+    sys.stderr.write("iterm2-prefs: usage: iterm2-prefs %s\n" % text)
+    return 2
+
+
+def cmd_lint(args):
+    public = args[:1] == ["--public"]
+    files = args[1:] if public else args
+    if not files or any(a.startswith("-") for a in files):
+        return usage("lint [--public] <file>...")
+    bad = False
+    for path in files:
+        for problem in lint_file(path, public)[1]:
+            sys.stderr.write("%s: %s\n" % (path, problem))
+            bad = True
+    return 1 if bad else 0
+
+
+def cmd_compose(args):
+    if "--print" not in args or any(a not in ("--print", "--auto", "--reset") for a in args):
+        return usage("compose [--auto] [--reset] [--print]")
+    fragments = read_fragments(frag_dir())
+    for name, _, probs in fragments:
+        # a broken fragment would make its keys look as if they had left the sources
+        broken = [p for p in probs if not p.startswith("reserved key ")]
+        if broken:
+            sys.stderr.write("iterm2-prefs: %s: %s; nothing composed\n"
+                             % (os.path.join(frag_dir(), name + ".plist"), broken[0]))
+            return 1
+    new, _, order, _ = merge(fragments)
+    sys.stdout.buffer.write(dump_plist(lay(new, order)))
+    return 0
+
+
+verb, args = sys.argv[1], sys.argv[2:]
+sys.exit({"lint": cmd_lint, "compose": cmd_compose}[verb](args))
+PYEOF
+}
+
+case ${1:-} in
+  lint) shift; prefs_py lint "$@";;
+  compose)
+    case " $* " in
+      *" --print "*) shift; prefs_py compose "$@";;
+      *) die "compose is not built yet";;
+    esac;;
+  status|capture|install) die "$1 is not built yet";;
+  -h|--help|help) usage;;
+  '') usage >&2; exit 2;;
+  *) warn "unknown verb: $1"; usage >&2; exit 2;;
+esac
