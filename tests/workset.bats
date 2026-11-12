@@ -108,7 +108,7 @@ workset_fn() { # subcommand...
   # never LISTED as a set name (the warning naming it, on the other hand,
   # is expected — worktabs' own stance: complained about, never dropped
   # silently)
-  ! printf '%s\n' "$output" | grep -qx "bad name"
+  ! printf '%s\n' "$output" | grep -qx "bad name" || { echo "the output lists the rejected name"; false; }
   [[ "$output" == *"a name may only hold letters, digits, - and _"* ]]
 }
 
@@ -123,7 +123,7 @@ workset_fn() { # subcommand...
   run "$WS" list
   [ "$status" -eq 0 ]
   printf '%s\n' "$output" | grep -qx demo
-  ! [[ "$output" == *"a name may only hold"* ]]
+  [[ "$output" != *"a name may only hold"* ]]
 }
 
 @test "members: ok/missing/not-a-repo/duplicate, exit 2 if any is not ok" {
@@ -223,7 +223,7 @@ workset_fn() { # subcommand...
   run "$WS" close demo feat/probe
   [[ "$output" == *"closed"* ]]
   [ ! -d "$WT" ]
-  ! git -C "$HOME/code/octo-alpha" show-ref --verify -q refs/heads/feat/probe
+  ! git -C "$HOME/code/octo-alpha" show-ref --verify -q refs/heads/feat/probe || { echo "the feat/probe branch exists in octo-alpha"; false; }
 }
 
 @test "checkout without origin/HEAD bases on HEAD, and close keeps the branch it cannot prove merged" {
@@ -425,7 +425,7 @@ EOF
   [ "$status" -eq 0 ]
   [ -f "$CALL_LOG" ]
   grep -q -- "--add-dir $HOME/code/octo-beta/.claude/worktrees/feat-probe" "$CALL_LOG"
-  ! grep -q -- "--add-dir $HOME/code/octo-alpha" "$CALL_LOG"
+  ! grep -q -- "--add-dir $HOME/code/octo-alpha" "$CALL_LOG" || { echo "--add-dir names the alpha checkout"; false; }
   grep -q "cwd: $HOME/code/octo-alpha/.claude/worktrees/feat-probe" "$CALL_LOG"
   grep -q "CLAUDE_PROFILE=$HOME/.claude-fixture WORKSET=good WORKSET_BRANCH=feat/probe CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1" "$CALL_LOG"
 }

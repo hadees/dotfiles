@@ -11,7 +11,7 @@
   [ -n "$pkgs" ]
   [ -z "$(echo "$pkgs" | sort | uniq -d)" ]
   # One package name per line, no stray whitespace
-  ! echo "$pkgs" | grep -qE '[[:space:]]'
+  ! echo "$pkgs" | grep -qE '[[:space:]]' || { echo "a package name holds whitespace"; false; }
 }
 
 @test "packages-apt-wsl.txt is non-empty with no duplicates" {
@@ -19,7 +19,7 @@
   pkgs=$(grep -vE '^[[:space:]]*(#|$)' packages-apt-wsl.txt)
   [ -n "$pkgs" ]
   [ -z "$(echo "$pkgs" | sort | uniq -d)" ]
-  ! echo "$pkgs" | grep -qE '[[:space:]]'
+  ! echo "$pkgs" | grep -qE '[[:space:]]' || { echo "a package name holds whitespace"; false; }
 }
 
 @test "the wsl list adds to the shared list rather than repeating it" {

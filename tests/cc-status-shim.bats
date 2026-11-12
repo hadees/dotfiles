@@ -509,7 +509,7 @@ PY
   age_file a 7200
   run_shim <<< "$(payload Stop '[{"task_id":"a","description":"tail -F build.log"}]' '"cwd":"/work/proj/"')"
   grep -qx 'idle · 1 quiet background task, quiet 120 min: tail -F build.log' "$BATS_TEST_TMPDIR/argv"
-  ! grep -q '^proj' "$BATS_TEST_TMPDIR/argv"
+  ! grep -q '^proj' "$BATS_TEST_TMPDIR/argv" || { echo "a row named proj reached the argv log"; false; }
 }
 
 @test "explain: a seat event names the seat, its colour and the live state, and writes nothing" {
@@ -826,7 +826,7 @@ NAMED_FILE() { printf '%s/tabstatus/s1.named' "$XDG_STATE_HOME"; }
   run_shim <<< "$(named_payload Stop /work/proj '"last_assistant_message":"Shall I go on?"')"
   [ "$(grep -c -- '--text-color' "$BATS_TEST_TMPDIR/argv_all")" -eq 1 ]
   grep -qx '#ffd75f' "$BATS_TEST_TMPDIR/argv_all"
-  ! grep -qx '#112233' "$BATS_TEST_TMPDIR/argv_all"
+  ! grep -qx '#112233' "$BATS_TEST_TMPDIR/argv_all" || { echo "colour #112233 reached the argv log"; false; }
 }
 
 @test "role: a lead paints nothing by default and tabstatus.color.lead when set" {
@@ -956,7 +956,7 @@ NAMED_FILE() { printf '%s/tabstatus/s1.named' "$XDG_STATE_HOME"; }
   run_shim <<< "$(seat_payload Stop plan-fable)"
   run_shim <<< "$(seat_payload UserPromptSubmit plan-fable)"
   [ ! -e "$BATS_TEST_TMPDIR/tabname_argv" ]
-  ! grep -qx 'set-name' "$BATS_TEST_TMPDIR/argv_all"
+  ! grep -qx 'set-name' "$BATS_TEST_TMPDIR/argv_all" || { echo "set-name reached the argv log"; false; }
 }
 
 @test "rename: SessionEnd never renames; SessionStart and SessionEnd delete the marker" {
@@ -1167,7 +1167,7 @@ status_flags() { { grep -cx -- '--status' "$BATS_TEST_TMPDIR/argv_all" || true; 
     [ "$status" -eq 0 ]
   done
   [ ! -e "$BATS_TEST_TMPDIR/fed" ]
-  ! grep -qx 'handle-agent-hook' "$BATS_TEST_TMPDIR/argv_all"
+  ! grep -qx 'handle-agent-hook' "$BATS_TEST_TMPDIR/argv_all" || { echo "handle-agent-hook reached the argv log"; false; }
 }
 
 @test "after: a plain Stop sends only the rename" {
@@ -1288,7 +1288,7 @@ sub_stop() { payload SubagentStop "$1" '"session_id":"s1","agent_id":"ag1"'"${2:
     [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
   done
   [ "$(status_flags)" -eq 0 ]
-  ! grep -qx -- '--background-tasks' "$BATS_TEST_TMPDIR/argv_all"
+  ! grep -qx -- '--background-tasks' "$BATS_TEST_TMPDIR/argv_all" || { echo "--background-tasks reached the argv log"; false; }
 }
 
 @test "after: an in-seat tool call with no tool name shows the seat alone" {

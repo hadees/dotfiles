@@ -113,7 +113,7 @@ run_update() {
   grep -qF "== update.check: echo 50% broken >&2; exit 3" out
   # The banner comes last, after gem, and names the failing command verbatim.
   [ "$(tail -n 1 err | sed $'s/\e\\[[0-9;]*m//g')" = "✘ update.check failed: echo 50% broken >&2; exit 3" ]
-  ! grep -q "update.check failed: echo first" err
+  ! grep -q "update.check failed: echo first" err || { echo "the first update.check failure was reported"; false; }
   grep -qF "sudo gem cleanup" calls.log
 }
 
@@ -121,5 +121,5 @@ run_update() {
   export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig" GIT_CONFIG_NOSYSTEM=1
   : > "$GIT_CONFIG_GLOBAL"
   run_update ":"
-  ! grep -q "update.check" out err
+  ! grep -q "update.check" out err || { echo "update.check was reported"; false; }
 }

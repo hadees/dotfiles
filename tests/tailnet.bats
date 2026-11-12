@@ -486,7 +486,7 @@ CLAUDE_CODE_OPTS="no_bare_glob_qual no_case_glob glob_star_short no_extended_glo
   run tailnet peer work workbox.personal-net.ts.net
   [ "$status" -eq 1 ]
   # Never a DNS lookup or `tailscale ip`: only status --json was asked.
-  ! grep -qv 'status --json' "$TS_LOG"
+  ! grep -qv 'status --json' "$TS_LOG" || { echo "tailscale was asked for something besides status --json"; false; }
 }
 
 @test "tailnet route: work host via work, personal host direct (the system daemon is on it), stranger exit 1" {
@@ -523,7 +523,7 @@ CLAUDE_CODE_OPTS="no_bare_glob_qual no_case_glob glob_star_short no_extended_glo
   rm "$STATE/personal/tailscaled.sock"
   run tailnet route shared
   [ "$output" = work ]
-  ! grep -q "$STATE/personal/tailscaled.sock" "$TS_LOG"
+  ! grep -q "$STATE/personal/tailscaled.sock" "$TS_LOG" || { echo "the personal tailscaled socket was used"; false; }
 }
 
 @test "tailnet route: when the system daemon is off, every node is routed through its daemon" {
@@ -600,7 +600,7 @@ CLAUDE_CODE_OPTS="no_bare_glob_qual no_case_glob glob_star_short no_extended_glo
   FAKE_OS=Linux run tailnet mount workdata
   [ "$status" -eq 0 ]
   grep -qxF "mount" "$RCLONE_LOG"
-  ! grep -qxF "nfsmount" "$RCLONE_LOG"
+  ! grep -qxF "nfsmount" "$RCLONE_LOG" || { echo "rclone nfsmount was used"; false; }
   grep -qxF ":sftp:/srv/data" "$RCLONE_LOG"
 }
 
