@@ -258,7 +258,9 @@ function gh_account_for_cwd() {
 # the host, `.git` stripped), from ssh, scp-alias, or https URL shapes.
 # Lowercased because GitHub owners and repos are case-insensitive and the
 # pins are recorded lowercase. Prints nothing and returns 1 for a local path
-# or no origin.
+# or no origin. The host is deliberately not consulted: an ssh host alias is a
+# supported remote shape and says nothing about the real host, so routing is by
+# owner name.
 function git_origin_slug() {
 	local url slug;
 	url="$(command git config --get remote.origin.url 2>/dev/null)";
