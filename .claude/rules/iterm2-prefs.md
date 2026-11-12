@@ -163,6 +163,14 @@ the Default profile, extracted with an explicit include list through `capture
 lint --public` (no data value, no path or host list, no address); a key outside
 the list does not get in by being convenient.
 
+The base's Default profile keeps the Guid it was captured with. On a machine whose
+own default profile has another Guid, which is every machine but that one,
+`install` adds the base profile beside the existing one and makes it the
+default, so Settings > Profiles shows two named Default until one is deleted
+there. `install --dry-run` shows what would change first, `install --no-seed`
+starts the store from the fragments alone, and the saved domain is the way back
+from either.
+
 ## What an overlay implements
 
 Optional. It deploys one

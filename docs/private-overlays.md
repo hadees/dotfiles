@@ -508,6 +508,15 @@ The switch-over has not happened yet: until `iterm2-prefs install` is run by
 hand with iTerm2 quit, iTerm2 still loads the tracked plist in the public
 clone, and `dotfiles` composes nothing.
 
+The base's Default profile keeps the Guid it was captured with. On a machine
+whose own default profile has another Guid, which is every machine but that
+one, `install` adds the base profile beside the existing one and makes it the
+default, so Settings > Profiles shows two named Default until one is deleted
+there. `install --dry-run` shows what would change first, `install --no-seed`
+starts the store from the fragments alone, and the saved domain is the way back
+from either. Run `iterm2-prefs install --dry-run` before the first `install` on
+any machine.
+
 What an overlay implements, all of it:
 
 1. Optional. An overlay with no iTerm2 key of its own ships nothing and the
