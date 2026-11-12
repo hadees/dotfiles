@@ -208,6 +208,18 @@ field() { # n of the TAB-separated $output
   [ "$status" -eq 4 ]
 }
 
+@test "a matching orgId under a non-claude.ai authMethod is a mismatch naming the method" {
+  pin '~/.claude-alpha' "$PINNED"
+  set_status "$PINNED" "" oauth_token
+  run "$LG" verdict --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 3 ]
+  [ "$(field 1)" = mismatch ]
+  [ "$(field 5)" = auth-method:oauth_token ]
+  run "$LG" launch --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 3 ]
+  [[ $output == *"oauth_token"* ]]
+}
+
 @test "unverifiable: no claude on PATH" {
   pin '~/.claude-alpha' "$PINNED"
   bare="$BATS_TEST_TMPDIR/bare"

@@ -43,9 +43,9 @@ untouched and the directory is `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`.
 | Verdict | Condition | `verdict` exit |
 | --- | --- | --- |
 | `unpinned` | no `claude.<dir>.org` | 0 |
-| `ok` | logged in, `orgId` equals the pin (case-insensitive) | 0 |
+| `ok` | logged in via `claude.ai`, `orgId` equals the pin (case-insensitive) | 0 |
 | `logged-out` | `loggedIn` false | 0 |
-| `mismatch` | logged in, `orgId` differs | 3 |
+| `mismatch` | logged in, `orgId` differs, or any `authMethod` other than `claude.ai` (detail `auth-method:<method>`) | 3 |
 | `unverifiable` | pinned, and none of the above can be established | 4 |
 
 `unverifiable` reasons: `pin-not-a-uuid`, `no-python3`, `no-claude`,

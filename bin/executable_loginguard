@@ -213,6 +213,11 @@ def check():
         return "unverifiable", "-", exp, "no-org-in-status"
     if not isinstance(org, str) or not UUID.fullmatch(org):
         return "unverifiable", "-", exp, "no-org-in-status"
+    method = s.get("authMethod")
+    if method != "claude.ai":
+        # ok needs claude.ai AND a matching orgId, so any other method is
+        # refused even when the organization matches.
+        return "mismatch", org, exp, "auth-method:" + clean(method or "unknown")
     if org.lower() == pin.lower():
         return "ok", org, exp, "-"
     return "mismatch", org, exp, "-"
@@ -241,8 +246,9 @@ def sentence(verdict, stored, reason, other):
     if verdict == "mismatch":
         got = named(stored, other[1] if other else "")
         extra = " That organization is the pin of %s." % other[0] if other else ""
-        return ("%s is logged in to organization %s but is pinned to %s "
-                "(claude.%s.org).%s" % (tdir, got, pinned, tdir, extra))
+        via = " via %s, not claude.ai," % reason[12:] if reason.startswith("auth-method:") else ""
+        return ("%s is logged in to organization %s%s but is pinned to %s "
+                "(claude.%s.org).%s" % (tdir, got, via, pinned, tdir, extra))
     return ("cannot establish which organization %s is logged in to (%s); "
             "it is pinned to %s." % (tdir, reason, pinned))
 
@@ -267,7 +273,7 @@ def main():
     verdict, stored, exp, reason = check()
     other = other_dir(stored) if verdict == "mismatch" else None
     if sub == "verdict":
-        detail = reason if verdict == "unverifiable" else (
+        detail = reason if reason != "-" else (
             "other=" + other[0] if other else "-")
         print("\t".join([verdict, pin, stored, exp, detail]))
     elif sub == "explain":
