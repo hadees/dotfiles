@@ -49,9 +49,15 @@ rather than a fork away. The marker is matched as a standalone word
 anywhere in the subject, case-insensitively: Conventional Commits subjects
 lead with a type, so anchoring at the start would never fire on one, and
 the word boundary is what keeps `swipe` out (`[^[:alnum:]]`, not `\b`,
-which BSD grep drops). A force-push is not visible to a hook as a flag, so
-it is inferred the way git decides one is needed: the remote's commit is no
-longer an ancestor of what is being pushed.
+which BSD grep drops). A subject that starts with git's autosquash
+prefixes — `fixup! `, `squash! ` or `amend! ` — counts too, anchored at the
+start because that is the only place the prefix means anything, and
+case-sensitive because git's autosquash folds only the lower-case form; a
+subject that merely mentions one passes, and the body is never read. The
+same `hook.pre-push.wip = false` switches both off, and the refusal names
+that key. A force-push is not visible
+to a hook as a flag, so it is inferred the way git decides one is needed:
+the remote's commit is no longer an ancestor of what is being pushed.
 
 Two details are load-bearing. git hands the hook the remote's **live** sha,
 read over the push connection, so on a shared branch it is routinely a
