@@ -2190,6 +2190,36 @@ fzf_header() { sed -n '/^--header=/,/^--print-query$/p' "$FAKE_FZF_LOG" | sed '$
   grep -qxF -- --height=13 "$FAKE_FZF_LOG"
 }
 
+@test "sleeper: the selector takes the hat's colour while the sleeper shows, and fzf keeps its own without it" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  COLORTERM=truecolor fzfsize '40 120'
+  grep -qxF -- '--color=pointer:#99cc99,prompt:#99cc99' "$FAKE_FZF_LOG"
+  COLORTERM= fzfsize '40 120'
+  grep -qxF -- '--color=pointer:114,prompt:114' "$FAKE_FZF_LOG"
+  git config --global claude-peer.alpha.cap '#f2777a'
+  COLORTERM=truecolor fzfsize '40 120'
+  grep -qxF -- '--color=pointer:#f2777a,prompt:#f2777a' "$FAKE_FZF_LOG"
+  COLORTERM=truecolor fzfsize '15 120'
+  [ "$(grep -c -- '--color=pointer' "$FAKE_FZF_LOG")" -eq 0 ]
+  git config --global claude-peer.art false
+  COLORTERM=truecolor fzfsize '40 120'
+  [ "$(grep -c -- '--color=pointer' "$FAKE_FZF_LOG")" -eq 0 ]
+}
+
+@test "sleeper above the list: the prompt takes the hat's colour; without the sleeper it is plain" {
+  hellofix
+  git config --global claude-peer.picker list
+  COLORTERM=truecolor CLAUDE_PEER_SIZE='40 120' pane alpha
+  pane_says alpha "$LISTHINT"
+  grep -qF $'\033[38;2;153;204;153mAlpha ▸\033[0m ' "$BATS_TEST_TMPDIR/pane-alpha.out"
+  COLORTERM=truecolor pane beta
+  pane_says beta "$LISTHINT"
+  grep -qF 'Beta ▸ ' "$BATS_TEST_TMPDIR/pane-beta.out"
+  [ "$(grep -c $'\033\\[38;' "$BATS_TEST_TMPDIR/pane-beta.out")" -eq 0 ]
+}
+
 @test "sleeper: a repository name too long for the block is cut, the label never" {
   local long=a-repository-name-of-forty-characters-x
   long=${long}y

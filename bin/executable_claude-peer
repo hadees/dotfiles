@@ -686,9 +686,10 @@ art_cap() {
 # frame z slot [mode] -> the rendered rows: from git config claude-peer.art-file when
 # it parses (else one line saying why, and the built-in). Mode: truecolor when
 # COLORTERM says so, else 256.
+art_mode() { case ${COLORTERM-} in truecolor|24bit) echo truecolor;; *) echo 256;; esac; }
+
 art_lines() {
-  al_m=${4-}
-  [ -n "$al_m" ] || case ${COLORTERM-} in truecolor|24bit) al_m=truecolor;; *) al_m=256;; esac
+  al_m=${4:-$(art_mode)}
   art_cap "$3"
   al_f=$(git config --path --get claude-peer.art-file 2>/dev/null) || al_f=
   if [ -n "$al_f" ]; then
@@ -697,6 +698,20 @@ art_lines() {
     else warn "$al_f: $(printf '%s\n' "$al_o" | sed -n 1p)"; fi
   fi
   art_default | art_awk "$1" "$2" "$al_m" "$ac_cap" "$ac_band"
+}
+
+# slot -> hat_fzf (#rrggbb, or the 256-colour index the art draws the hat in) and
+# hat_sgr (the same as an SGR foreground), for the selector to match the hat.
+art_hat() {
+  art_cap "$1"
+  if [ "$(art_mode)" = truecolor ]; then
+    # shellcheck disable=SC2086
+    hat_fzf=$(printf '#%02x%02x%02x' $ac_cap) hat_sgr="38;2;$(echo "$ac_cap" | tr ' ' ';')"
+  else
+    hat_fzf=$(printf 'palette C 0 0 0\nmargin 0\nframe asleep\nC\nC\n' |
+      art_awk asleep none 256 "$ac_cap" "$ac_band" | sed 's/.*48;5;\([0-9]*\)m.*/\1/')
+    hat_sgr="38;5;$hat_fzf"
+  fi
 }
 
 # second-line -> the art block: the asleep frame with its z's and, beside it on
@@ -915,7 +930,7 @@ pane_fzf() {
     pn_header=$(pane_head)
     # shellcheck disable=SC2086
     ( trap - TTIN TTOU; unset FZF_DEFAULT_OPTS FZF_DEFAULT_OPTS_FILE
-      exec fzf $pn_colors --color=header:-1 \
+      exec fzf $pn_colors --color=header:-1 $pn_hatc \
         --no-multi --no-sort --no-mouse --layout=reverse --header-first \
         --height="$pn_h" --info=hidden --no-separator \
         --margin="0,$pn_right,0,$pn_left" --pointer='▸' --gutter=' ' \
@@ -961,7 +976,7 @@ pane_list() {
     pane_art 'waiting · ⏎ pick a context'
     awk -F'\t' -v p="$pn_pad" '{ printf "%s%2d  %s\n", p, NR, $2 }' "$pn_me.rows"
     printf '%sc continue · r resume · n task · s task, saved · q shell\n' "$pn_pad"
-    if ! pane_ask "$label ▸ "; then
+    if ! pane_ask "$pn_prompt"; then
       case $pn_why in intr) pane_shell;; eof) pn_state=quiet;; esac
       return 0
     fi
@@ -988,6 +1003,13 @@ pane_pick() {
   pane_size
   pick_rows "$pn_slug" >"$pn_me.rows"
   pane_geom
+  # the selector takes the hat's colour while the sleeper shows
+  pn_hatc= pn_prompt="$label ▸ "
+  if [ "$pn_lay" != none ]; then
+    art_hat "$slot"
+    pn_hatc="--color=pointer:$hat_fzf,prompt:$hat_fzf"
+    pn_prompt=$(printf '\033[%sm%s ▸\033[0m ' "$hat_sgr" "$label")
+  fi
   if [ "$pn_pick" = fzf ]; then
     pane_fzf "$@" && return 0
   fi

@@ -165,11 +165,11 @@ screen_run() {
   }
 }
 
-# screen_open <cols> <rows> [VAR=value…]: the waiting pane of slot alpha
+# screen_open <cols> <rows> [VAR=value…]: the waiting pane of slot $SCREEN_SLOT (alpha)
 screen_open() {
-  local c=$1 r=$2; shift 2
-  screen_run "$c" "$r" env FZF_DEFAULT_OPTS="$SCREEN_FZF_OPTS" "$@" sh "$BIN" run --as alpha --wait
-  until_ok "[ -f '$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)/claude-peer.wait/alpha.$PANE_PID' ]"
+  local c=$1 r=$2 sl=${SCREEN_SLOT:-alpha}; shift 2
+  screen_run "$c" "$r" env FZF_DEFAULT_OPTS="$SCREEN_FZF_OPTS" "$@" sh "$BIN" run --as "$sl" --wait
+  until_ok "[ -f '$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)/claude-peer.wait/$sl.$PANE_PID' ]"
 }
 
 screen_close() {
@@ -664,6 +664,31 @@ from_col() { printf '%s\n' "$SCREEN" | sed -n "$1,\$p" | while IFS= read -r l; d
     [[ "$pre" != *$'\033[38;'* ]] || { printf '%q\n' "$l2"; false; }
     screen_close
   done
+}
+
+# sgr_before '<ERE>': the line of SCREEN_E whose plain text (SCREEN) first matches,
+# up to its first ▸
+sgr_before() { printf '%s\n' "$SCREEN_E" | sed -n "$(lineno_of "$1")p" | sed 's/▸.*//'; }
+
+@test "sleeper: the selector takes the hat's colour, slot by slot; with the art off it does not" {
+  need tmux fzf
+  git config --global --unset claude-peer.art
+  local each
+  for each in 'alpha Alpha 153;204;153' 'beta Beta 90;120;200'; do
+    set -- $each
+    SCREEN_SLOT=$1 screen_open 80 24
+    screen_wait 'esc hide'
+    screen_still
+    [[ "$(sgr_before '▸ fresh ')" == *"38;2;$3"* ]] || { screen_show; false; }
+    [[ "$(sgr_before "^ *$2 ▸")" == *"38;2;$3"* ]] || { screen_show; false; }
+    [[ "$SCREEN_E" == *"48;2;$3"* ]] || { screen_show; false; }   # the hat itself
+    screen_close
+  done
+  git config --global claude-peer.art false
+  screen_open 80 24
+  screen_wait 'esc hide'
+  screen_still
+  [[ "$(sgr_before '▸ fresh ')" != *'38;2;153;204;153'* ]] || { screen_show; false; }
 }
 
 @test "sleeper: it stays whole while the list scrolls" {
