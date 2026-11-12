@@ -1,0 +1,416 @@
+#!/bin/sh
+# loginguard — a Claude Code profile may only hold a login to its own
+# organization.
+#
+# A profile directory's organization is pinned in git config, supplied by
+# the overlay that owns the profile (this repo names none):
+#   claude.<dir>.org        one organization UUID; <dir> spelled like the
+#                           `browser` pin (`~/.claude-<name>`), or expanded
+#   claude.<dir>.org-label  optional human name, printed in messages
+# The witness is `claude auth status --json` (field `orgId`), run in the
+# profile's environment: the CLI's own answer, not the `.claude.json` cache.
+# A directory with no pin is never touched.
+#
+# Fails CLOSED, like denyguard and for the same reason: a pinned profile
+# whose organization cannot be established is refused the same as a
+# mismatch. See .claude/rules/loginguard.md.
+#
+# Usage:
+#   loginguard verdict [--profile DIR]
+#       one TAB-separated line: verdict, pin, orgId, loginExpiresAt, detail.
+#       Exit 0 (unpinned, ok, logged-out), 3 (mismatch), 4 (unverifiable).
+#   loginguard explain [--profile DIR]     one human sentence; exit 0.
+#   loginguard launch [--profile DIR] [--attended]
+#       silent when fine; REFUSED lines on stderr and exit 3/4 otherwise.
+#   loginguard hook prompt                 UserPromptSubmit hook body.
+#   loginguard hook auth                   Notification (auth_success) hook
+#                                          body: after-login, output discarded.
+#   loginguard after-login [--profile DIR]
+#       a login to the wrong organization is logged out as soon as it is
+#       stored. Exit 0 nothing to do, 3 removed (or removal failed), 4
+#       unverifiable (nothing removed).
+#   loginguard settings                    hook entries to paste into a
+#                                          profile's settings.json.
+# env:
+#   CLAUDE_LOGIN_CHECK=0   bypass (logged), per launch; removes nothing.
+#   CLAUDE_CODE_EXECPATH   the claude binary to ask (else `claude`).
+#   LOGINGUARD_LOG         events log path (else
+#                          ${XDG_STATE_HOME:-~/.local/state}/loginguard/events.log).
+set -eu
+
+usage() {
+  printf 'usage: loginguard verdict|explain|launch|after-login [--profile DIR] [--attended] | hook prompt|auth | settings\n' >&2
+  exit 2
+}
+
+[ $# -gt 0 ] || usage
+sub=$1
+shift
+case $sub in
+  settings) [ $# -eq 0 ] || usage; exec python3 -I - settings <<'PY'
+import json
+print(json.dumps({
+    "UserPromptSubmit": {"hooks": [{
+        "type": "command",
+        "timeout": 15,
+        "onFailure": "block",
+        "command": (
+            "[ -x ~/bin/loginguard ] && exec ~/bin/loginguard hook prompt || "
+            "{ echo 'loginguard: ~/bin/loginguard is not installed; "
+            "refusing prompts until `dotfiles` deploys it' >&2; exit 2; }"
+        ),
+    }]},
+    "Notification": {"matcher": "auth_success", "hooks": [{
+        "type": "command",
+        "timeout": 30,
+        "command": "[ -x ~/bin/loginguard ] && exec ~/bin/loginguard hook auth || true",
+    }]},
+}, indent=2))
+PY
+  ;;
+  verdict | explain | launch | after-login) ;;
+  hook)
+    case ${1-} in prompt) sub=hook-prompt ;; auth) sub=hook-auth ;; *) usage ;; esac
+    shift ;;
+  *) usage ;;
+esac
+
+profile='' attended=''
+while [ $# -gt 0 ]; do
+  case $1 in
+    --profile) [ $# -ge 2 ] || usage; profile=$2; shift 2 ;;
+    --attended) [ "$sub" = launch ] || usage; attended=1; shift ;;
+    *) usage ;;
+  esac
+done
+
+# The directory, expanded and in tilde form, trailing slashes stripped.
+dir=${profile:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}
+case $dir in '~' | '~/'*) dir=$HOME${dir#\~} ;; esac
+while [ "${dir%/}" != "$dir" ] && [ -n "${dir%/}" ]; do dir=${dir%/}; done
+case $dir in
+  "$HOME") tdir='~' ;;
+  "$HOME"/*) tdir="~${dir#"$HOME"}" ;;
+  *) tdir=$dir ;;
+esac
+
+# Unpinned: finish here, without python or claude.
+pin=$(git config --get "claude.$tdir.org" 2>/dev/null) \
+  || pin=$(git config --get "claude.$dir.org" 2>/dev/null) || pin=''
+if [ -z "$pin" ]; then
+  case $sub in
+    verdict) printf 'unpinned\t-\t-\t-\t-\n' ;;
+    explain) printf 'no claude.%s.org pin\n' "$tdir" ;;
+  esac
+  exit 0
+fi
+
+bypass=''
+[ "${CLAUDE_LOGIN_CHECK-}" = 0 ] && bypass=1
+
+if ! command -v python3 >/dev/null 2>&1; then
+  why='no-python3'
+  case $sub in
+    verdict) printf 'unverifiable\t%s\t-\t-\t%s\n' "$pin" "$why"; exit 4 ;;
+    explain) printf 'UNVERIFIABLE (%s): pinned to %s\n' "$why" "$pin"; exit 0 ;;
+  esac
+  if [ -n "$bypass" ]; then
+    [ "$sub" = launch ] && printf 'claude: loginguard bypassed (CLAUDE_LOGIN_CHECK=0)\n' >&2
+    exit 0
+  fi
+  case $sub in
+    hook-auth) exit 0 ;;
+    after-login) printf 'loginguard: nothing removed; cannot establish which organization %s is logged in to (%s).\n' "$tdir" "$why" >&2; exit 4 ;;
+  esac
+  if [ "$sub" = launch ]; then
+    printf 'claude: REFUSED: cannot establish which organization %s is logged in to (%s); it is pinned to %s.\n' "$tdir" "$why" "$pin" >&2
+    printf 'claude: REFUSED: install python3, or set CLAUDE_LOGIN_CHECK=0 to bypass once.\n' >&2
+    exit 4
+  fi
+  printf 'loginguard: cannot establish which organization %s is logged in to (%s); install python3, or set CLAUDE_LOGIN_CHECK=0 to bypass once.\n' "$tdir" "$why" >&2
+  exit 2
+fi
+
+explicit=''
+[ -n "$profile" ] && explicit=1
+exec python3 -I - "$sub" "$dir" "$tdir" "$pin" "$explicit" "$attended" "$bypass" <<'PY'
+import datetime
+import json
+import os
+import re
+import subprocess
+import sys
+
+sub, dir_, tdir, pin, explicit, attended, bypass = sys.argv[1:8]
+HOME = os.environ.get("HOME", "")
+UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+HOW = ("Run `claude auth login` for the right account (`claude auth status` "
+       "shows which one is stored), or set CLAUDE_LOGIN_CHECK=0 to bypass once.")
+
+
+def git(*args):
+    try:
+        r = subprocess.run(["git", "config", *args], capture_output=True,
+                           text=True, timeout=5)
+        return r.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def label(*spellings):
+    for s in spellings:
+        v = git("--get", "claude.%s.org-label" % s)
+        if v:
+            return v
+    return ""
+
+
+def tilde(p):
+    p = p.rstrip("/") or "/"
+    if p.startswith("~/") or p == "~":
+        return p
+    if HOME and p == HOME:
+        return "~"
+    if HOME and p.startswith(HOME + "/"):
+        return "~" + p[len(HOME):]
+    return p
+
+
+def log_path():
+    return os.environ.get("LOGINGUARD_LOG") or os.path.join(
+        os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local", "state"),
+        "loginguard", "events.log")
+
+
+def log(event, stored, reason):
+    # A failed write never changes a verdict or an exit status.
+    try:
+        path = log_path()
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with open(path, "a") as f:
+            f.write("\t".join([now, event, tdir, pin, stored, reason]) + "\n")
+    except Exception:
+        pass
+
+
+def clean(v):
+    return re.sub(r"\s", " ", str(v))
+
+
+def run_claude(*args):
+    env = dict(os.environ)
+    if explicit:
+        # postbox's rule: the default directory is addressed by leaving the
+        # variable unset, every other one by setting it.
+        if dir_ == os.path.join(HOME, ".claude"):
+            env.pop("CLAUDE_CONFIG_DIR", None)
+        else:
+            env["CLAUDE_CONFIG_DIR"] = dir_
+    return subprocess.run([os.environ.get("CLAUDE_CODE_EXECPATH") or "claude", *args],
+                          capture_output=True, text=True, timeout=8, env=env,
+                          stdin=subprocess.DEVNULL)
+
+
+def check():
+    """-> (verdict, stored orgId or '-', expiry as given or '-', reason or '-')"""
+    if not UUID.fullmatch(pin):
+        return "unverifiable", "-", "-", "pin-not-a-uuid"
+    try:
+        r = run_claude("auth", "status", "--json")
+    except (FileNotFoundError, PermissionError):
+        return "unverifiable", "-", "-", "no-claude"
+    except (OSError, subprocess.SubprocessError):
+        return "unverifiable", "-", "-", "status-failed"
+    # The CLI exits 1 when logged out; the JSON is read whatever the status.
+    try:
+        s = json.loads(r.stdout)
+        logged_in = s["loggedIn"]
+        assert isinstance(logged_in, bool)
+    except Exception:
+        return "unverifiable", "-", "-", "status-not-json"
+    exp = clean(s["loginExpiresAt"]) if s.get("loginExpiresAt") is not None else "-"
+    if not logged_in:
+        return "logged-out", "-", exp, "-"
+    org = s.get("orgId")
+    if not org:
+        method = s.get("authMethod")
+        if method and method != "claude.ai":
+            return "unverifiable", "-", exp, "auth-method:" + clean(method)
+        return "unverifiable", "-", exp, "no-org-in-status"
+    if not isinstance(org, str) or not UUID.fullmatch(org):
+        return "unverifiable", "-", exp, "no-org-in-status"
+    method = s.get("authMethod")
+    if method != "claude.ai":
+        # ok needs claude.ai AND a matching orgId, so any other method is
+        # refused even when the organization matches.
+        return "mismatch", org, exp, "auth-method:" + clean(method or "unknown")
+    if org.lower() == pin.lower():
+        return "ok", org, exp, "-"
+    return "mismatch", org, exp, "-"
+
+
+def other_dir(stored):
+    """(tilde dir, label) of another directory whose pin is `stored`, or None."""
+    for line in git("--get-regexp", r"^claude\..+\.org$").splitlines():
+        key, _, val = line.partition(" ")
+        m = re.fullmatch(r"claude\.(.+)\.org", key)
+        if not m or val.lower() != stored.lower():
+            continue
+        spelling = m.group(1)
+        norm = tilde(HOME + spelling[1:] if spelling.startswith("~/") else spelling)
+        if norm != tdir:
+            return norm, label(spelling)
+    return None
+
+
+def named(value, lbl):
+    return value + (" (%s)" % lbl if lbl else "")
+
+
+def sentence(verdict, stored, reason, other):
+    pinned = named(pin, label(tdir, dir_))
+    if verdict == "mismatch":
+        got = named(stored, other[1] if other else "")
+        extra = " That organization is the pin of %s." % other[0] if other else ""
+        via = " via %s, not claude.ai," % reason[12:] if reason.startswith("auth-method:") else ""
+        return ("%s is logged in to organization %s%s but is pinned to %s "
+                "(claude.%s.org).%s" % (tdir, got, via, pinned, tdir, extra))
+    return ("cannot establish which organization %s is logged in to (%s); "
+            "it is pinned to %s." % (tdir, reason, pinned))
+
+
+def when(exp):
+    try:
+        if re.fullmatch(r"\d+(\.\d+)?", exp):
+            n = float(exp)
+            return datetime.datetime.fromtimestamp(n / 1000 if n > 1e11 else n, datetime.timezone.utc)
+        d = datetime.datetime.fromisoformat(exp.replace("Z", "+00:00"))
+        return d if d.tzinfo else d.replace(tzinfo=datetime.timezone.utc)
+    except Exception:
+        return None
+
+
+def removed_recently():
+    """True when the events log holds a removed-login for this directory under 10 minutes old."""
+    try:
+        with open(log_path()) as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return False
+    now = datetime.datetime.now(datetime.timezone.utc)
+    for line in lines:
+        t = line.split("\t")
+        if len(t) < 3 or t[1] != "removed-login" or t[2] != tdir:
+            continue
+        try:
+            at = datetime.datetime.strptime(t[0], "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=datetime.timezone.utc)
+        except ValueError:
+            continue
+        if 0 <= (now - at).total_seconds() < 600:
+            return True
+    return False
+
+
+def after_login():
+    """-> (exit status, stderr lines). Logs out only when claude.ai holds another organization."""
+    verdict, stored, exp, reason = check()
+    if verdict == "unverifiable":
+        return 4, ["loginguard: nothing removed; %s" % sentence(verdict, stored, reason, None)]
+    if verdict != "mismatch":
+        return 0, []
+    text = sentence(verdict, stored, reason, other_dir(stored))
+    if reason != "-":
+        # Another authMethod (an environment token, say) says nothing about the
+        # login that is stored, so there is nothing to remove.
+        return 3, ["loginguard: nothing removed; %s" % text]
+    try:
+        run_claude("auth", "logout")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if check()[0] == "logged-out":
+        log("removed-login", stored, reason)
+        return 3, ["claude: REMOVED the login just made: %s" % text,
+                   "claude: REMOVED the login just made: run `claude auth login` again for the right account."]
+    log("remove-failed", stored, reason)
+    return 3, ["claude: the wrong login is still stored: %s" % text,
+               "claude: run `claude auth logout` by hand, then `claude auth login`."]
+
+
+def main():
+    if bypass and sub in ("launch", "hook-prompt", "hook-auth", "after-login"):
+        log("bypassed", "-", "-")
+        if sub == "launch":
+            sys.stderr.write("claude: loginguard bypassed (CLAUDE_LOGIN_CHECK=0)\n")
+        return 0
+    if sub in ("after-login", "hook-auth"):
+        code, lines = after_login()
+        if sub == "after-login":
+            sys.stderr.write("".join(l + "\n" for l in lines))
+            return code
+        return 0
+    verdict, stored, exp, reason = check()
+    other = other_dir(stored) if verdict == "mismatch" else None
+    if sub == "verdict":
+        detail = reason if reason != "-" else (
+            "other=" + other[0] if other else "-")
+        print("\t".join([verdict, pin, stored, exp, detail]))
+    elif sub == "explain":
+        if verdict == "ok":
+            print("ok: %s is logged in to the pinned organization %s"
+                  % (tdir, named(pin, label(tdir, dir_))))
+        elif verdict == "logged-out":
+            print("pinned to %s; not logged in" % named(pin, label(tdir, dir_)))
+        elif verdict == "mismatch":
+            print("MISMATCH: " + sentence(verdict, stored, reason, other))
+        else:
+            print("UNVERIFIABLE (%s): pinned to %s" % (reason, named(pin, label(tdir, dir_))))
+    elif verdict in ("mismatch", "unverifiable"):
+        text = sentence(verdict, stored, reason, other)
+        if sub == "launch":
+            log("refused-launch", stored, reason)
+            sys.stderr.write("claude: REFUSED: %s\nclaude: REFUSED: %s\n" % (text, HOW))
+        else:
+            log("blocked-prompt", stored, reason)
+            sys.stderr.write("loginguard: %s %s\n" % (text, HOW))
+    elif sub == "hook-prompt" and verdict == "logged-out" and removed_recently():
+        log("blocked-prompt", "-", "login-removed")
+        sys.stderr.write("loginguard: the login just made to %s was to another organization "
+                         "and was removed; run /login again.\n" % tdir)
+        return 2
+    elif sub == "launch" and attended:
+        if verdict == "logged-out":
+            sys.stderr.write("claude: not logged in to %s; run `claude auth login`.\n" % tdir)
+        else:
+            d = when(exp)
+            if d:
+                left = d - datetime.datetime.now(datetime.timezone.utc)
+                day = d.strftime("%Y-%m-%d")
+                if left.total_seconds() < 0:
+                    sys.stderr.write("claude: the login for %s expired on %s; run `claude auth login`.\n" % (tdir, day))
+                elif left.days < 3:
+                    sys.stderr.write("claude: the login for %s expires on %s; run `claude auth login` to renew it.\n" % (tdir, day))
+    if sub == "explain" or verdict not in ("mismatch", "unverifiable"):
+        return 0
+    if sub == "hook-prompt":
+        return 2
+    return 3 if verdict == "mismatch" else 4
+
+
+try:
+    code = main()
+except Exception as e:
+    # Fail closed on a bug too: an uncaught exception would exit 1, which lets
+    # a prompt through. Never logs out from here.
+    log("internal-error", "-", type(e).__name__)
+    if sub == "hook-auth":
+        code = 0
+    else:
+        sys.stderr.write("%sloginguard: internal error (%s) for %s; refusing. "
+                         "Set CLAUDE_LOGIN_CHECK=0 to bypass once.\n"
+                         % ("claude: REFUSED: " if sub == "launch" else "",
+                            type(e).__name__, tdir))
+        code = 2 if sub == "hook-prompt" else 4
+sys.exit(code)
+PY
