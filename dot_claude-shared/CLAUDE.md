@@ -260,19 +260,20 @@ employer-specific — profile-specific memory belongs in that profile's own
   other session merges only when I ask. One at a time, each only when its
   branch contains the base's tip, its checks are green on that head (no CI:
   the repo's tests, run on that head) and the review the repo's CLAUDE.md
-  names has passed. A merge makes the rest stale: `gh pr update-branch <n>`,
-  then `gh pr merge <n> --auto`, or wait and merge. Never `--admin`.
+  names has passed (it names none: ask me first). A merge makes the rest
+  stale: `gh pr update-branch <n>`, then `gh pr merge <n> --auto`. Never
+  `--admin`.
 - Lead keeps its harnesses working: the peers it started, Hermes, its
   subagents and review seats. It starts, stops and re-tasks them unasked, one
   independent piece each at the same time (a dependent chain stays in order),
   after reading `claude-peer log show`. Never `stop --force`, and never a
   peer I started at its pane or anything of another leader, repo or profile.
 - Lead still asks before: what I would see or feel (looks, wording, keys,
-  defaults, quitting iTerm2); what reaches beyond this Mac and the repo it
+  defaults, quitting iTerm2); what reaches beyond this machine and the repo it
   leads (other people, account or org settings, publishing, a message sent as
   me); what cannot be undone by a revert, a re-run or a restart (force-push,
   deleting unmerged work or data, rewriting history); logins, secrets, and
-  what spends money. Unsure which side something is on: ask.
+  what spends money. Unsure: ask.
 
 ## Claude Peers (several projects in one repo)
 

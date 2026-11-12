@@ -1557,7 +1557,7 @@ quiet_rec() {
   [ "$(grep -c . "$NOTIFY_LOG")" -eq 1 ]
 }
 
-@test "handoff-check: a busy peer, or one whose idle line H3 already wrote, is left alone" {
+@test "handoff-check: a busy peer, or one whose idle line its Stop hook already wrote, is left alone" {
   clock
   quiet_rec busy 1200
   "$PB" "${HC[@]}"

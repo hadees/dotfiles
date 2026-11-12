@@ -170,8 +170,8 @@ count above 0 it logs `<time> turn-end: <worktree>: paused on <n> background
 task(s)` to `courier.log` and stops there: a Monitor or `/loop` wakes the
 session itself. Otherwise it runs `claude-peer log idle "<line>"` from the
 worktree in the foreground; whether that writes anything (a hand-off, no
-`done` since the last turn) is `log idle`'s decision. A non-peer gets T3b's
-news block. `start)`, for a non-peer whose directory has a delivered count
+`done` since the last turn) is `log idle`'s decision. A non-peer gets the Stop
+hook's news block (`stop_news`, above). `start)`, for a non-peer whose directory has a delivered count
 (`rollcall/log/<key>`: a Lead was here before), ends with `peer_news "$sdir"`,
 so a Lead restarted mid-chain reads in its first turn what its tabs logged
 while it was gone; without the count file no `claude-peer` runs.

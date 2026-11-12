@@ -2695,7 +2695,7 @@ stopmark() { echo "$(git -C "$REPO/.claude/worktrees/alpha" rev-parse --absolute
   [ ! -e "$(stopmark)" ]
 }
 
-@test "gone: a plain session ends with T2's end and no call, whatever stale mark was left" {
+@test "gone: a plain session ends with the plain end line and no call, whatever stale mark was left" {
   pb_stub
   FAKE_SHELL_SLEEP=1 pane alpha
   git -C "$REPO" worktree add -q --detach "$REPO/.claude/worktrees/alpha" HEAD

@@ -335,9 +335,9 @@ How a session ended is one of three lines, chosen by `pane_go` after
 beside the claim (who asked), after its busy check and before the first
 signal, and removes it when the session does not exit in time; with the mark
 there the line is `end` with ` (stopped by <who>)` and nobody is told (the
-mark goes). Without it, a hand-off is `gone` with T2's text, and `lead-news`
+mark goes). Without it, a hand-off is `gone` with the plain end line's text, and `lead-news`
 is called with lines 9 and 10, so Lead's own `stop; start` never wakes it.
-Anything else is T2's `end`. `gone` closes that label's claims as `end` does.
+Anything else is the plain `end` line. `gone` closes that label's claims as `end` does.
 A file is used because `stop` logs only after the claim is gone, so the log's
 order cannot tell a requested stop from an ending; `write_claim` removes a
 stale mark. Once the claim is seen, `start --handoff` also leaves postbox's

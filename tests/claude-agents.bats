@@ -278,7 +278,7 @@ shared_templates() {
   shared="$(tr '\n' ' ' < "$BATS_TEST_DIRNAME/../dot_claude-shared/CLAUDE.md" | tr -s ' ')"
   for p in 'postbox: you are Lead of' 'Unless you are Lead' 'only when I ask' 'One at a time' \
     'gh pr update-branch' 'Never `--admin`' 'Never `stop --force`' 'Lead still asks before' \
-    'see or feel' 'reaches beyond this Mac' 'cannot be undone' 'spends money'; do
+    'see or feel' 'reaches beyond this machine' 'cannot be undone' 'spends money'; do
     grep -qF -- "$p" <<< "$shared" || { echo "shared memory: no '$p'"; false; }
   done
   grep -qF 'postbox: you are Lead of' "$BATS_TEST_DIRNAME/../bin/executable_postbox" || { echo "postbox no longer prints the Lead line"; false; }
