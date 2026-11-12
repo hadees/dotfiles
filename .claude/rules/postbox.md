@@ -147,6 +147,23 @@ detached `postbox` and, when Lead is idle, one small headless run; Lead's
 Stop one `claude-peer log show --all` and an `awk` (none for a session that
 never led); expect two to four extra Lead turns per task per tab under `all`.
 
+**A peer's turn end, and a Lead that starts with news waiting.** `stop)` runs
+`mail_block` first (unchanged, and only outside a held turn); when it blocked,
+that is all. Otherwise a peer gets `peer_turn_end`, even when
+`stop_hook_active` is true (no block then means the turn really ends): one
+`python3` over the payload counts `background_tasks` plus `session_crons`
+(missing or not a list: 0) and takes the first non-empty line of
+`last_assistant_message`, control characters removed, cut to 200. With a
+count above 0 it logs `<time> turn-end: <worktree>: paused on <n> background
+task(s)` to `courier.log` and stops there: a Monitor or `/loop` wakes the
+session itself. Otherwise it runs `claude-peer log idle "<line>"` from the
+worktree in the foreground; whether that writes anything (a hand-off, no
+`done` since the last turn) is `log idle`'s decision. A non-peer gets T3b's
+news block. `start)`, for a non-peer whose directory has a delivered count
+(`rollcall/log/<key>`: a Lead was here before), ends with `peer_news "$sdir"`,
+so a Lead restarted mid-chain reads in its first turn what its tabs logged
+while it was gone; without the count file no `claude-peer` runs.
+
 Cost, over a session start that is otherwise unchanged (one `sh`, a few
 `python3` starts, one `curl` capped at two seconds, one `am check-inbox`,
 about 95 words): a non-peer start adds one socket test and one `python3` for

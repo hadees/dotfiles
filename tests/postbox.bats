@@ -610,6 +610,7 @@ peer_stub() {
   cat > "$BIN/claude-peer" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$*" >> "$PEER_LOG"
+printf '%s\n' "$PWD" >> "$PEER_LOG.pwd"
 case $1 in
   peers)
     if [ "${2-}" = --leader ]; then
@@ -1360,4 +1361,75 @@ STOP='{"cwd":"'"$HOME/code/some-project"'","session_id":"s1","stop_hook_active":
   [[ "$output" != *'claimed'* ]]
   run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
   [[ "$output" == *"postbox: Claude Peers: Alpha claimed: fix thing"* ]]
+}
+
+# --- a peer's turn end; a Lead that starts with news waiting --------------------
+
+# A peer at $HOME/code/alpha whose Stop hook runs with payload $1.
+peer_stop() {
+  peer_stub
+  wt="$HOME/code/alpha"; mkdir -p "$wt"
+  export CLAUDE_PEER_WORKTREE="$wt"
+  run payload "$1" hook stop
+}
+
+@test "hook stop: a peer's turn end runs log idle with the first line, from its worktree" {
+  peer_stop '{"cwd":"'"$HOME/code/alpha"'","session_id":"p1","last_assistant_message":"\n  first line\nsecond\nthird"}'
+  [ -z "$output" ]
+  [ "$(cat "$PEER_LOG")" = "log idle   first line" ]
+  [ "$(cat "$PEER_LOG.pwd")" = "$(cd "$HOME/code/alpha" && pwd)" ]
+}
+
+@test "hook stop: a peer with a background task in flight is paused, not idle" {
+  peer_stop '{"cwd":"'"$HOME/code/alpha"'","session_id":"p1","background_tasks":[{"id":1}],"last_assistant_message":"x"}'
+  [ ! -e "$PEER_LOG" ]
+  grep -q "turn-end: $HOME/code/alpha: paused on 1 background task(s)" "$POSTBOX_STATE/logs/courier.log"
+}
+
+@test "hook stop: a peer inside a held turn still reports; without the arrays nothing is in flight" {
+  peer_stop '{"cwd":"'"$HOME/code/alpha"'","session_id":"p1","stop_hook_active":true,"last_assistant_message":"done here"}'
+  [ "$(cat "$PEER_LOG")" = "log idle done here" ]
+}
+
+@test "hook stop: a peer with unread mail gets the mail block and no log idle" {
+  export FAKE_INBOX='{"unread_count":1,"messages":[{"id":3,"subject":"review please","from":"BlueLake"}]}'
+  peer_stop '{"cwd":"'"$HOME/code/alpha"'","session_id":"p1","last_assistant_message":"x"}'
+  [[ "$output" == *'"decision": "block"'* ]]
+  [ ! -e "$PEER_LOG" ]
+}
+
+@test "hook stop: a non-peer never runs log idle" {
+  peer_stub
+  run payload '{"cwd":"'"$WORK"'","session_id":"s9","last_assistant_message":"x"}' hook stop
+  ! grep -q 'log idle' "$PEER_LOG" 2>/dev/null || { echo "a non-peer ran log idle"; false; }
+}
+
+@test "hook stop: a tab and an escape in the first line do not reach log idle" {
+  peer_stop '{"cwd":"'"$HOME/code/alpha"'","session_id":"p1","last_assistant_message":"a\tb\u001b[31mc"}'
+  [ "$(cat "$PEER_LOG")" = "log idle ab[31mc" ]
+}
+
+@test "hook start: a Lead coming back reads what its tabs logged meanwhile, once" {
+  news_leader
+  logl 1799999400 Alpha claim "fix"
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ "$(counter)" = 1 ]
+  logl 1799999500 Alpha done "DONE: abc"
+  run payload '{"cwd":"'"$WORK"'","session_id":"s2"}' hook start
+  [[ "$output" == *$'\n'"postbox: Claude Peers: Alpha done: DONE: abc" ]]
+  run payload '{"cwd":"'"$WORK"'","session_id":"s2"}' hook prompt
+  [[ "$output" != *"Alpha done"* ]]
+}
+
+@test "hook start: no delivered count, no claude-peer; a peer's start adds no news" {
+  leader_profile; peer_stub
+  export FAKE_LOG="$BATS_TEST_TMPDIR/peer-log"; : > "$FAKE_LOG"
+  logl 1799999500 Alpha done "DONE: abc"
+  run payload '{"cwd":"'"$WORK"'","session_id":"s2"}' hook start
+  [ ! -e "$PEER_LOG" ]
+  [[ "$output" != *"Alpha done"* ]]
+  mkdir -p "$POSTBOX_STATE/rollcall/log"; echo 0 > "$POSTBOX_STATE/rollcall/log/$(rkey)"
+  export CLAUDE_PEER_WORKTREE="$WORK"
+  run payload '{"cwd":"'"$WORK"'","session_id":"s2"}' hook start
+  [[ "$output" != *"Alpha done"* ]]
 }

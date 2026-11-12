@@ -936,7 +936,7 @@ EOF
 }
 
 # Stop, mail first: block once per new message. Returns 1 when it did not block.
-stop_mail() {
+mail_block() {
   s=$(inbox_summary "$name") || return 1
   count=$(printf '%s\n' "$s" | sed -n 1p); newest=$(printf '%s\n' "$s" | sed -n 2p)
   [ "${count:-0}" -gt 0 ] 2>/dev/null || return 1
@@ -948,6 +948,33 @@ subs = [l.rstrip("\n") for l in sys.stdin if l.strip()]
 reason = ("postbox: %s new message(s) for %s: " % (sys.argv[1], sys.argv[2])) + "; ".join(subs) + \
     ". Read them with fetch_inbox, act or reply as appropriate (a reply in a multi-party thread keeps every recipient), mark them read, then stop."
 print(json.dumps({"decision": "block", "reason": reason}))' "$count" "$name"
+}
+
+# A peer's turn ended: with background tasks or crons in flight it is a pause
+# (counted in courier.log); otherwise `claude-peer log idle` with the first
+# line of its last message decides whether Lead hears of it.
+peer_turn_end() {
+  PEERCMD=${POSTBOX_CLAUDE_PEER:-$HOME/bin/claude-peer}
+  [ -x "$PEERCMD" ] || return 0
+  pt=$(printf '%s' "$PAYLOAD" | python3 -c '
+import json, re, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+n = sum(len(d.get(k)) for k in ("background_tasks", "session_crons") if isinstance(d.get(k), list))
+m = d.get("last_assistant_message")
+first = next((l for l in m.splitlines() if l.strip()), "") if isinstance(m, str) else ""
+print(n)
+print(re.sub(r"[\x00-\x1f\x7f]", "", first)[:200])' 2>/dev/null) || return 0
+  pt_n=$(printf '%s\n' "$pt" | sed -n 1p); pt_l=$(printf '%s\n' "$pt" | sed -n 2p)
+  if [ "${pt_n:-0}" -gt 0 ] 2>/dev/null; then
+    mkdir -p "$STATE/logs" 2>/dev/null
+    printf '%s turn-end: %s: paused on %s background task(s)\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$CLAUDE_PEER_WORKTREE" "$pt_n" >> "$STATE/logs/courier.log" 2>/dev/null
+    return 0
+  fi
+  ( cd "$CLAUDE_PEER_WORKTREE" && "$PEERCMD" log idle "$pt_l" ) </dev/null >/dev/null 2>&1
+  return 0
 }
 
 # Stop, then the tabs' news, for a session that is or was a Lead (it has a
@@ -1015,6 +1042,13 @@ cmd_hook() {
         fi
         [ -n "$sid" ] && mark_seen "$sid" "${newest:-0}"
       fi
+      # A Lead was here before (the directory has a delivered count): what the
+      # tabs logged while nobody was there, now.
+      if ! is_peer "$sdir"; then
+        PEERCMD=${POSTBOX_CLAUDE_PEER:-$HOME/bin/claude-peer}
+        sk=$(cd "$sdir" 2>/dev/null && pwd -P) && sk=$(printf '%s' "$sk" | tr -c 'A-Za-z0-9._-' '_')
+        [ -n "$sk" ] && [ -f "$STATE/rollcall/log/$sk" ] && [ -x "$PEERCMD" ] && peer_news "$sdir"
+      fi
       ;;
     prompt|UserPromptSubmit)
       is_peer "$sdir" || rollcall
@@ -1028,8 +1062,12 @@ cmd_hook() {
     stop|Stop)
       # Block the stop once per new message, never while already in a
       # blocked-stop turn (stop_hook_active) — that is the loop guard.
-      [ "$(json_field stop_hook_active)" = true ] && exit 0
-      stop_mail || stop_news
+      # A peer's turn end is reported even inside a held turn: no block
+      # printed there means the turn is ending now.
+      active=$(json_field stop_hook_active)
+      if [ "$active" != true ] && mail_block; then exit 0; fi
+      if is_peer "$sdir"; then peer_turn_end
+      elif [ "$active" != true ]; then stop_news; fi
       ;;
     *) exit 0 ;;
   esac

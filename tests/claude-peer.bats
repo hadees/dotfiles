@@ -2305,7 +2305,7 @@ NOTE_END='A report left only in this pane reaches nobody.'
   cl=$(claim_of "$REPO/.claude/worktrees/alpha")
   until_ok '[ "$(wc -l <"'"$cl"'" | tr -d " ")" -eq 10 ]'
   [ "$(sed -n '8,10p' "$cl" | tr '\n' ' ')" = "- - - " ]
-  ! grep -q 'not a hand-off' "$BATS_TEST_TMPDIR/pane-alpha.out"
+  ! grep -q 'not a hand-off' "$BATS_TEST_TMPDIR/pane-alpha.out" || { echo "a Return start warned"; false; }
 }
 
 @test "start --handoff: no words, from a peer, or without CLAUDE_PID is 2, and none wakes the pane" {
@@ -2415,10 +2415,10 @@ stopmark() { echo "$(git -C "$REPO/.claude/worktrees/alpha" rev-parse --absolute
   CLAUDE_PID=4242 CLAUDE_CODE_SESSION_ID=aaaa-bbbb sh "$BIN" start alpha --handoff the task >/dev/null
   until_ok 'grep -q "	gone	" "$REPO/$LOG"'
   [[ "$(grep "	gone	" "$REPO/$LOG" | cut -f2,3,4)" =~ ^Alpha$'\t'gone$'\t'Alpha\ ended\ after\ [0-9]+s\ \(the\ task\)$ ]]
-  ! grep -q "	end	" "$REPO/$LOG"
+  ! grep -q "	end	" "$REPO/$LOG" || { echo "a hand-off logged end"; false; }
   pb_wait 2   # the fixture's own claim is one call
   [ "$(grep -cx "lead-news $REPO 4242 aaaa-bbbb" "$PB_CALLS")" -eq 1 ]
-  ! sh "$BIN" log show | grep -q "	Alpha	claim	"
+  ! sh "$BIN" log show | grep -q "	Alpha	claim	" || { echo "gone left Alpha's claim open"; false; }
 }
 
 @test "gone: stop on a hand-off logs end (stopped by Lead), tells nobody, and leaves no mark" {
@@ -2433,7 +2433,7 @@ stopmark() { echo "$(git -C "$REPO/.claude/worktrees/alpha" rev-parse --absolute
   [ "$status" -eq 0 ]
   until_ok 'grep -q "	end	" "$REPO/$LOG"'
   [[ "$(grep "	end	" "$REPO/$LOG" | cut -f4)" == *"(the task) (stopped by Lead)" ]]
-  ! grep -q "	gone	" "$REPO/$LOG"
+  ! grep -q "	gone	" "$REPO/$LOG" || { echo "a stopped hand-off logged gone"; false; }
   sleep 0.5
   [ ! -e "$PB_CALLS" ]
   [ ! -e "$(stopmark)" ]
