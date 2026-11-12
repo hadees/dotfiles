@@ -367,7 +367,7 @@ Tests: `tests/claude-peer.bats` (stub ps/uname/defaults,
 fixture plists; the real store is only touched by the operator's `install`).
 
 **Screen tests.** `tests/claude-peer-screen.bats` draws the real waiting pane in a
-detached tmux server of its own (`tmux -L cps<pid>-<n>`, its own three-line config,
+detached tmux server of its own (`tmux -L cps<pid>-<n>`, its own four-line config,
 never the caller's server) at fixed sizes, captures it with `capture-pane -p`
 (`-e` for colours) and asserts on the screen as drawn: the harness probe (size,
 `$SHELL`, glyph widths, 24-bit colour), the gate, the CI promises, and the numbered
@@ -376,7 +376,9 @@ fzf falling back to it), the fzf picker, and the sleeper (cell for cell against
 `claude-peer art`, whole while the list scrolls, absent at 15 rows, one after Esc and
 Return, and above the list). The sleeper's tests unset the `claude-peer.art false` that
 `setup` sets for the rest. Waits are for text and for a still screen, never a bare
-`sleep`. Run it with
+`sleep`. They need a UTF-8 locale and, in a container, an init as process 1
+(`docker run --init`): the harness test and `screen_close` say so by name, and
+`screen_run` fails when tmux did not make the size it was asked for. Run it with
 `PATH="$(brew --prefix)/bin:$PATH" SCREEN_TESTS_REQUIRE='tmux fzf' bats tests/claude-peer-screen.bats`.
 `SCREEN_TESTS_REQUIRE` lists what the caller promises is installed (`tmux`, `fzf`
 for 0.75 or newer, `fzf-old` for older): a missing tool skips its tests, a missing

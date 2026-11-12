@@ -109,7 +109,7 @@ STUB
   chmod +x "$BATS_TEST_TMPDIR/bin/claude"
   export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
   SOCK="cps$$-$BATS_TEST_NUMBER"
-  printf '%s\n' 'set -g status off' 'set -g remain-on-exit on' 'set -g default-shell /bin/sh' >"$BATS_TEST_TMPDIR/tmux.conf"
+  printf '%s\n' 'set -g status off' 'set -g remain-on-exit on' 'set -g default-shell /bin/sh' 'set -g window-size manual' >"$BATS_TEST_TMPDIR/tmux.conf"
   : "${SCREEN_FZF_OPTS=--height 40% --layout=reverse --border --color=bg+:#262626,bg:#1a1a1a,header:#747369,pointer:#f2777a,prompt:#f2777a}"
 }
 
@@ -140,6 +140,14 @@ screen_run() {
   tm new-session -d -s s -x "$SCREEN_COLS" -y "$SCREEN_ROWS" -c "$REPO" \
     env SHELL="$SHELL" TERM=xterm-256color COLORTERM=truecolor "$@"
   PANE_PID=$(tm display-message -p -t s '#{pane_pid}')
+  # checked here, where the size is made: tmux 3.2a without `window-size manual`
+  # gives 80x24 whatever is asked, and a test then fails on a wrapped line far away
+  local got
+  got=$(tm display-message -p -t s '#{pane_width}x#{pane_height}')
+  [ "$got" = "${SCREEN_COLS}x$SCREEN_ROWS" ] || {
+    echo "screen_run: asked $(tm -V) for ${SCREEN_COLS}x$SCREEN_ROWS and got $got"
+    return 1
+  }
 }
 
 # screen_open <cols> <rows> [VAR=value…]: the waiting pane of slot alpha
@@ -151,7 +159,13 @@ screen_open() {
 
 screen_close() {
   tm kill-server >/dev/null 2>&1 || true
-  until_ok "! kill -0 $PANE_PID 2>/dev/null"
+  until_ok "! kill -0 $PANE_PID 2>/dev/null" && return 0
+  # dead but never reaped still answers kill -0: process 1 here is not an init
+  case $(ps -o stat= -p "$PANE_PID" 2>/dev/null | tr -d ' ') in
+    Z*) echo "screen_close: pane $PANE_PID is a zombie: process 1 here does not reap (a container needs an init: docker run --init)";;
+    *) echo "screen_close: pane $PANE_PID is still running ten seconds after kill-server";;
+  esac
+  return 1
 }
 
 screen_keys() { tm send-keys -t s "$@"; }
@@ -252,6 +266,12 @@ line() { printf '%s\n' "$SCREEN" | sed -n "$1p"; }
 
 @test "harness: a pane of the asked size, its own shell and colours, captured as drawn" {
   need tmux
+  # the matching in this file reads a glyph as one character; in the C locale GNU grep
+  # reads a set of glyphs as a set of bytes, and no_border finds a border in `▸`
+  [ "$(locale charmap 2>/dev/null)" = UTF-8 ] || {
+    echo "the locale's charmap is $(locale charmap 2>/dev/null), not UTF-8: the screen tests need a UTF-8 locale (LANG=C.UTF-8)"
+    false
+  }
   local script size cols rows
   # shellcheck disable=SC2016
   script='stty size; printf "%s\n" "$SHELL" "$TERM"; printf "\033[1mB\033[0m \033[48;2;217;119;87m \033[0mx ▸·…↵⏎✻▀▄▬"; sleep 30'

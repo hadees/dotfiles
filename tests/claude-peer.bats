@@ -11,6 +11,9 @@ bats_require_minimum_version 1.5.0
 setup() {
   BIN="$BATS_TEST_DIRNAME/../bin/executable_claude-peer"
   export HOME="$BATS_TEST_TMPDIR/home"
+  # a runner or a shell that exports XDG_CONFIG_HOME would put the script's
+  # config root outside the sandbox
+  unset XDG_CONFIG_HOME
   export XDG_STATE_HOME="$HOME/.local/state"
   mkdir -p "$HOME" "$BATS_TEST_TMPDIR/bin"
   export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig"
@@ -1778,8 +1781,7 @@ LISTHINT='c continue · r resume · n task · s task, saved · q shell'
   typeline alpha s
   typeline alpha 'a task whose first line runs well past forty characters'
   typeline alpha longone
-  until_ok '[ -f "$CLAUDE_PEER_CONTEXTS/octo/proj/90-longone.ctx" ]'
-  [ "$(sed -n 1p "$CLAUDE_PEER_CONTEXTS/octo/proj/90-longone.ctx")" = 'title: a task whose first line runs well past f' ]
+  until_ok '[ "$(sed -n 1p "$CLAUDE_PEER_CONTEXTS/octo/proj/90-longone.ctx" 2>/dev/null)" = "title: a task whose first line runs well past f" ]'
 }
 
 @test "picker list: the same name saved from a pane in one repository and one in another lands in each repository's own directory" {
@@ -1964,7 +1966,7 @@ fzfsize() {
   hellofix
   fzfstub
   git config --global claude-peer.picker fzf
-  FAKE_FZF_OUT=$'\n\n@shell\tshell     Drop to a shell\n' pane alpha
+  FAKE_FZF_SLEEP=1 FAKE_FZF_OUT=$'\n\n@shell\tshell     Drop to a shell\n' pane alpha
   pp=$LAST_PANE
   until_ok '! kill -0 $pp 2>/dev/null'
   grep -qx "pwd=$REPO args=-i" "$FAKE_SHELL_LOG"
@@ -2056,7 +2058,7 @@ fzfsize() {
 @test "picker off: Return is a blank session and the hint is today's line; a context name is not special" {
   hellofix
   FAKE_SHELL_SLEEP=2 pane alpha
-  grep -qx "Alpha: Return starts a Claude here, c continues the last session, q leaves a shell" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  until_ok 'grep -qx "Alpha: Return starts a Claude here, c continues the last session, q leaves a shell" "$BATS_TEST_TMPDIR/pane-alpha.out"'
   typeline alpha hello
   until_ok '[ "$(pane_count alpha "Alpha: Return starts")" -eq 2 ]'
   [ "$(shell_runs)" -eq 0 ]

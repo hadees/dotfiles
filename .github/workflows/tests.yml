@@ -14,6 +14,10 @@ jobs:
     # fzf of 0.75 or newer (the picker); fzf-old is an older one (apt's), which
     # gets the numbered list.
     strategy:
+      # One platform failing must not cancel the other: each draws screens the other
+      # cannot (macOS the fzf picker, ubuntu the list under apt's own fzf), and a
+      # cancelled job reads as a hang.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
         include:
@@ -35,6 +39,17 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: |
           brew install bats-core bash tmux fzf
+          # The image exports HOMEBREW_NO_AUTO_UPDATE, so brew installs what the image's
+          # formula index held when the image was built, which can be days behind.
+          # The picker needs fzf 0.75 or newer (fzf_new in tests/claude-peer-screen.bats):
+          # refresh the index only when the image's fzf is older than that.
+          fzf="$(brew --prefix)/bin/fzf"
+          if ! "$fzf" --version | awk '{ split($1, v, "."); exit !(v[1] + 0 > 0 || v[2] + 0 >= 75) }'; then
+            echo "fzf $("$fzf" --version) is older than 0.75: brew update, then brew upgrade fzf"
+            brew update
+            brew upgrade fzf
+          fi
+          "$fzf" --version
           echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
       - name: Install chezmoi
         run: |
@@ -91,7 +106,12 @@ jobs:
   test-rocky:
     # No hosted Rocky runners exist; run in a container on the ubuntu host.
     runs-on: ubuntu-latest
-    container: rockylinux:9
+    # --init: Actions starts a job container with `tail -f /dev/null` as process 1,
+    # which never reaps. A pane orphaned by `tmux kill-server` then stays a zombie
+    # that still answers `kill -0`, and the screen tests wait for it until they fail.
+    container:
+      image: rockylinux:9
+      options: --init
     steps:
       - name: Install dependencies
         # No explicit curl: the image ships curl-minimal, which conflicts
@@ -111,6 +131,10 @@ jobs:
           /tmp/bats-core/install.sh /usr/local
           sh -c "$(curl -fsLS get.chezmoi.io)" -- -b /usr/local/bin
       - name: Run tests
+        # The image sets no locale, and the screen tests match glyphs as characters
+        # (their harness test says so by name when the charmap is not UTF-8).
+        env:
+          LANG: C.UTF-8
         run: SCREEN_TESTS_REQUIRE=tmux bats tests
 
   test-wsl:
