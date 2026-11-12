@@ -102,6 +102,10 @@
 #                            private overlay of this machine (a chezmoi config
 #                            whose source is a git repository); state is idle,
 #                            waiting or running in a tab of another repository
+#   overlay <name|N>         a waiting pane of the overlay <name> (or the N-th of
+#                            `overlays`): enters its main checkout and takes the
+#                            slot `overlay` there; an unknown one is one line and
+#                            a plain shell
 #   peers [--leader <dir>] [<dir>]
 #                            worktree<TAB>pid<TAB>leader<TAB>label per live
 #                            claim in the repository of <dir> (default $PWD), sorted;
@@ -1723,6 +1727,31 @@ cmd_overlays() {
   done
 }
 
+# <name|N>. The pane of an overlay in the public source's workgroup: stands in the
+# overlay's main checkout and is an ordinary waiting pane of that repository,
+# slot `overlay`, led from the directory it started in. Never ends at iTerm2's
+# restart banner: a missing overlay is one line and a plain shell.
+cmd_overlay() {
+  [ $# -eq 1 ] || usage
+  LEADER=$(pwd -P)
+  if ! co_root=$(overlay_root "$1"); then
+    echo "claude-peer: no overlay '$1' on this machine (claude-peer overlays lists them; a changed set needs claude-peer install with iTerm2 quit); plain shell"
+    exec "${SHELL:-/bin/sh}" -i
+  fi
+  co_name=$1
+  case $1 in *[!0-9]*) ;; *) co_name=$(overlay_names | cut -d' ' -f"$1");; esac
+  unset CLAUDE_PROFILE
+  if ! cd -- "$co_root" 2>/dev/null; then
+    echo "claude-peer: cannot enter $co_root; plain shell"
+    exec "${SHELL:-/bin/sh}" -i
+  fi
+  repo=$co_root
+  rname=$(rname_of "$repo")
+  slot=overlay
+  label=$(label_of "$co_name")
+  pane
+}
+
 # --- the Workgroup ------------------------------------------------------------
 
 os() { uname -s 2>/dev/null; }
@@ -2301,6 +2330,7 @@ case $cmd in
   run) cmd_run "$@";;
   hermes) cmd_hermes "$@";;
   overlays) cmd_overlays "$@";;
+  overlay) cmd_overlay "$@";;
   peers) cmd_peers "$@";;
   start) cmd_start "$@";;
   stop) cmd_stop "$@";;

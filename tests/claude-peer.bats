@@ -2663,3 +2663,141 @@ ov_busy() {
   [[ "$output" != *"unknown command"* ]]
   [[ "$output" == *"Usage: claude-peer"* ]]
 }
+
+# opane <name> <root> [<leader dir> [<tag>]]: a waiting `overlay <name>` pane started in
+# <leader dir> (default $REPO), waiting on the wait file in the OVERLAY's git directory;
+# its terminal is the FIFO tty-<tag> (tag defaults to the name)
+opane() {
+  local n=$1 r=$2 d=${3:-$REPO} t=${4:-$1}
+  local tty=$BATS_TEST_TMPDIR/tty-$t
+  [ -p "$tty" ] || mkfifo "$tty"
+  ( cd "$d" && export CLAUDE_PEER_TTY="$tty" &&
+    exec sh "$BIN" overlay "$n" >"$BATS_TEST_TMPDIR/pane-$t.out" 2>&1 3>&- ) &
+  LAST_PANE=$!
+  PANES="$PANES $LAST_PANE"
+  until_ok "[ -f '$r/.git/claude-peer.wait/overlay.$LAST_PANE' ]"
+}
+
+@test "overlay: a waiting pane stands in the overlay and leaves the leader's repository alone" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  opane fake1 "$OV1"
+  [ "$(sed -n 1p "$OV1/.git/claude-peer.wait/overlay.$LAST_PANE")" = "$REPO" ]
+  [ ! -e "$OV1/.claude/worktrees/overlay" ]
+  [ -z "$(find "$OV1/.git" -name 'claude-peer.claim' -o -name 'claude-peer.lock')" ]
+  [ ! -e "$REPO/.claude" ]
+  [ -z "$(find "$REPO/.git" -name 'claude-peer.*')" ]
+  [ "$(shell_runs)" -eq 0 ]
+  grep -q "^Fake1: Return starts a Claude here, c continues the last session, q leaves a shell$" "$BATS_TEST_TMPDIR/pane-fake1.out"
+  run sh "$BIN" overlays
+  [ "$output" = "fake1"$'\t'"$OV1"$'\t'"waiting"$'\t'"$REPO"$'\t'"$LAST_PANE" ]
+}
+
+@test "overlay: Return starts a session in the overlay's own slot, claimed for the leader" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  FAKE_SHELL_SLEEP=3 opane fake1 "$OV1"
+  press fake1 ''
+  until_ok 'grep -q "pwd=$OV1/.claude/worktrees/overlay args=.*claude-peer ov1-overlay\$" "$FAKE_SHELL_LOG"'
+  local c; c=$(claim_of "$OV1/.claude/worktrees/overlay")
+  [ "$(sed -n 2p "$c")" = "$REPO" ]
+  [ "$(sed -n 3p "$c")" = "Overlay" ]
+  [ "$(grep -cxF '**/.claude/worktrees/' "$OV1/.git/info/exclude")" -eq 1 ]
+  [ ! -e "$REPO/.claude" ]
+  [ -z "$(find "$REPO/.git" -name 'claude-peer.*')" ]
+  grep -qx "Overlay" "$BATS_TEST_TMPDIR/pane-fake1.out"
+}
+
+@test "overlay: a new worktree is detached at origin/HEAD when the overlay has one" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  git clone -q --bare "$OV1" "$BATS_TEST_TMPDIR/ov1-remote.git"
+  git -C "$OV1" remote add origin "$BATS_TEST_TMPDIR/ov1-remote.git"
+  git -C "$OV1" fetch -q origin
+  git -C "$OV1" remote set-head origin -a >/dev/null
+  git -C "$OV1" commit -q --allow-empty -m 'local only'
+  FAKE_SHELL_SLEEP=2 opane fake1 "$OV1"
+  press fake1 ''
+  until_ok 'grep -q "claude-peer ov1-overlay\$" "$FAKE_SHELL_LOG"'
+  ! git -C "$OV1/.claude/worktrees/overlay" symbolic-ref -q HEAD
+  [ "$(git -C "$OV1/.claude/worktrees/overlay" rev-parse HEAD)" = "$(git -C "$OV1" rev-parse origin/HEAD)" ]
+  [ "$(git -C "$OV1" rev-parse HEAD)" != "$(git -C "$OV1" rev-parse origin/HEAD)" ]
+}
+
+@test "overlay: a slot left on a branch with a dirty file is reused untouched" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  git -C "$OV1" worktree add -q -b side "$OV1/.claude/worktrees/overlay"
+  echo edit >"$OV1/.claude/worktrees/overlay/scratch.txt"
+  git -C "$OV1/.claude/worktrees/overlay" add scratch.txt
+  FAKE_SHELL_SLEEP=2 opane fake1 "$OV1"
+  press fake1 ''
+  until_ok 'grep -q "pwd=$OV1/.claude/worktrees/overlay args=.*claude-peer ov1-overlay\$" "$FAKE_SHELL_LOG"'
+  [ "$(git -C "$OV1/.claude/worktrees/overlay" symbolic-ref --short HEAD)" = side ]
+  [ "$(git -C "$OV1/.claude/worktrees/overlay" status --porcelain)" = "A  scratch.txt" ]
+}
+
+@test "overlay: a second leader's pane takes the overlay's pool and says the first is in use" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  mkdir "$REPO/sub"
+  FAKE_SHELL_SLEEP=4 opane fake1 "$OV1" "$REPO" a
+  press a ''
+  until_ok 'grep -q "claude-peer ov1-overlay\$" "$FAKE_SHELL_LOG"'
+  FAKE_SHELL_SLEEP=2 opane fake1 "$OV1" "$REPO/sub" b
+  press b ''
+  until_ok 'grep -q "claude-peer ov1-delta\$" "$FAKE_SHELL_LOG"'
+  grep -qF "Delta (this pane's Fake1 is in use by the peers of $REPO)" "$BATS_TEST_TMPDIR/pane-b.out"
+}
+
+@test "overlay: an unknown name, and an overlay deleted after listing, are one line and a plain shell" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  run sh "$BIN" overlay nope
+  [ "$status" -eq 0 ]
+  [[ "$output" == "claude-peer: no overlay 'nope' on this machine (claude-peer overlays lists them; a changed set needs claude-peer install with iTerm2 quit); plain shell"$'\n'"pwd=$REPO"$'\n'* ]]
+  [[ "$output" == *"args=-i" ]]
+  run sh "$BIN" overlay 2
+  [[ "$output" == *"no overlay '2' on this machine"* ]]
+  rm -rf "$OV1"
+  run sh "$BIN" overlay fake1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no overlay 'fake1' on this machine"* ]]
+  [[ "$output" == *"pwd=$REPO"$'\n'* ]]
+  [[ "$output" == *"args=-i" ]]
+}
+
+@test "overlay: no argument or two is usage, exit 2" {
+  run sh "$BIN" overlay
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"Usage: claude-peer"* ]]
+  [[ "$output" != *"unknown command"* ]]
+  run sh "$BIN" overlay fake1 fake2
+  [ "$status" -eq 2 ]
+}
+
+@test "overlay: CLAUDE_PROFILE is unset for the session, and a number reaches that row's root" {
+  overlay_stub
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg fake_a.toml "$OV1"
+  overlay_cfg fake-b.toml "$OV2"
+  cat >"$BATS_TEST_TMPDIR/bin/profshell" <<'STUB'
+#!/bin/sh
+echo "pwd=$PWD profile=${CLAUDE_PROFILE-unset}" >>"$FAKE_SHELL_LOG"
+sleep 1
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/profshell"
+  export SHELL="$BATS_TEST_TMPDIR/bin/profshell"
+  export CLAUDE_PROFILE=x
+  # rows sort fake-b, fake_a: 1 is the second repository
+  opane 1 "$OV2" "$REPO" one
+  press one ''
+  until_ok 'grep -q "^pwd=$OV2/.claude/worktrees/overlay profile=unset\$" "$FAKE_SHELL_LOG"'
+  grep -q "^Fake-b: Return" "$BATS_TEST_TMPDIR/pane-one.out"
+}
