@@ -702,3 +702,48 @@ EOF")"
   [ "$status" -eq 0 ]
   [ -z "$output" ] || { echo "refused: $output"; false; }
 }
+
+# --- recursion that names no path starts at the directory it stands in ----------
+@test "recursion: a pathless rg, grep -r, find or du from above a denied tree is refused" {
+  for cmd in "rg gizmo" "grep -r gizmo" "find -name x" "du -sh"; do
+    run hook "$(evt "$HOME/code" "$cmd")"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"recurses from $HOME/code, an ancestor of Read(~/code/octo-secret/**); name a directory under it"* ]] || { echo "$cmd: $output"; false; }
+  done
+}
+
+@test "recursion: a pathless recursive command after a cd is judged from where the cd went" {
+  mkdir -p "$HOME/elsewhere"
+  run hook "$(evt "$HOME/elsewhere" "cd $HOME/code && rg gizmo")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"recurses from $HOME/code"* ]]
+}
+
+@test "recursion: a slash-less glob in a recursive command is resolved against the directory" {
+  mkdir -p "$HOME/elsewhere"
+  run hook "$(evt "$HOME/code" "cp -r * $HOME/elsewhere")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"may expand into"* ]]
+}
+
+@test "recursion controls: a named path, a help flag or a narrower cwd stays silent" {
+  for cmd in "grep gizmo" "rg gizmo octo-alpha" "rg --version" "rg gizmo newdir/" "grep -r gizmo *.md"; do
+    run hook "$(evt "$HOME/code" "$cmd")"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ] || { echo "$cmd refused: $output"; false; }
+  done
+  run hook "$(evt "$HOME/code/octo-alpha" "rg gizmo")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || { echo "refused: $output"; false; }
+}
+
+@test "recursion controls: a star bullet in a data heredoc, and a bare star outside a recursive command, stay silent" {
+  run hook "$(evt_ml "$HOME/code" "cat <<EOF > notes.md
+* a bullet
+EOF")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || { echo "refused: $output"; false; }
+  run hook "$(evt "$HOME/code" "echo * && ls *.md")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || { echo "refused: $output"; false; }
+}

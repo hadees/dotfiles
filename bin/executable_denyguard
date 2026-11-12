@@ -129,6 +129,9 @@ FLAG_RECURSIVE = {
     "diff": {"-r", "-R", "--recursive"},
     "ls": {"-R", "--recursive"},
 }
+# A command word that, with no path argument, searches the directory it
+# stands in (implicit_cwd adds grep -r and ls -R).
+IMPLICIT_CWD = {"find", "fd", "rg", "ag", "ack", "du", "tree"}
 GREP_LIKE = {"grep", "egrep", "fgrep"}
 GREP_RECURSIVE_FLAGS = {"-r", "-R", "--recursive", "--dereference-recursive"}
 RULE_RE = re.compile(r"^(Read|Edit)\((.+)\)$")
@@ -433,12 +436,13 @@ def substitute_home(text):
     return TILDE_RE.sub(HOME, text)
 
 
-def candidate_of_token(raw_tok, cwd):
+def candidate_of_token(raw_tok, cwd, recursive=False):
     """`raw_tok`, resolved against `cwd`, plus a realpath variant where the
     resolved path exists (deny rules apply to a symlink and its target
     alike — doc, "Symlinks"). Each item is (raw_token, resolved_absolute_
     path, has_glob_chars); empty when the token is a bare word matching no
-    file (just a word, not a path)."""
+    file (just a word, not a path) — except a slash-less glob under a
+    recursive command, which names whatever it matches there."""
     tok = substitute_home(raw_tok)
     has_glob = any(c in tok for c in GLOB_CHARS)
     if tok.startswith("/"):
@@ -447,7 +451,7 @@ def candidate_of_token(raw_tok, cwd):
         resolved = os.path.normpath(os.path.join(cwd, tok))
     else:
         candidate = os.path.join(cwd, tok)
-        if not os.path.lexists(candidate):
+        if not os.path.lexists(candidate) and not (has_glob and recursive):
             return []
         resolved = os.path.normpath(candidate)
     out = [(raw_tok, resolved, has_glob)]
@@ -488,6 +492,17 @@ def cd_targets(words, command_word, bases):
     return [os.path.normpath(os.path.join(b, target)) for b in bases]
 
 
+def implicit_cwd(words, command_word):
+    """Does this ONE simple command search the directory it stands in when
+    it is given no path? Never for a `--help` or `--version` call."""
+    if "--help" in words or "--version" in words:
+        return False
+    if command_word in IMPLICIT_CWD:
+        return True
+    return (command_word in GREP_LIKE or command_word == "ls") \
+        and recursion_signal(words, command_word)
+
+
 def glob_reach(cand, prefix):
     """How an absolute glob-bearing `cand` can reach the denied `prefix`:
     "inside" (it can name the tree or something in it), "ancestor" (only a
@@ -519,21 +534,26 @@ def scan(text, cwd, rules):
     cwd, then every directory a `cd`/`pushd` earlier in the text could have
     left the shell in. It only grows — a subshell's `cd` is not undone, the
     strict reading — and a `cd` that would take it past MAX_BASES is refused
-    (rule None), not dropped. No rules, nothing to protect: None at once."""
+    (rule None), not dropped. No rules, nothing to protect: None at once.
+    A recursive command with no path argument starts at each base: a base
+    above a denied tree is refused. A slash-less glob is a path under a
+    recursive command only."""
     if not rules:
         return None
     bases = [cwd]
     for words, command_word, _is_heredoc, is_data in segments_of(text):
         recursive = False if is_data else recursion_signal(words, command_word)
-        for raw_tok in words:
+        named = False
+        for idx, raw_tok in enumerate(words):
             seen = set()
             cands = []
             for v in token_variants(raw_tok):
                 for b in bases:
-                    for c in candidate_of_token(v, b):
+                    for c in candidate_of_token(v, b, recursive):
                         if c[1:] not in seen:
                             seen.add(c[1:])
                             cands.append(c)
+            named = named or (idx > 0 and bool(cands))
             for tok, cand, has_glob in cands:
                 if has_glob:
                     for rule in rules:
@@ -571,6 +591,15 @@ def scan(text, cwd, rules):
                         "name the file under it directly, or drop the "
                         "recursive flag" % (tok, rule.raw, command_word)
                     )
+        if recursive and not named and implicit_cwd(words, command_word):
+            for b in bases:
+                for rule in rules:
+                    if rule.evaluable and rule.prefix is not None \
+                            and rule.prefix.startswith(os.path.join(b, "")):
+                        return " ".join(words), rule, (
+                            "%s recurses from %s, an ancestor of %s; name a "
+                            "directory under it" % (command_word, b, rule.raw)
+                        )
         for d in cd_targets(words, command_word, bases):
             if d in bases:
                 continue

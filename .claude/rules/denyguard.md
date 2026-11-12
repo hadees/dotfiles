@@ -69,6 +69,22 @@ pattern such as `~/.zsh*` was cut back to `$HOME` and refused whenever any
 rule sat under it (found by the audit's own sessions, whose commands
 mentioned such a pattern).
 
+**A recursion that names no path starts where the command stands.**
+`find`, `fd`, `rg`, `ag`, `ack`, `du` and `tree`, `grep -r` and `ls -R`
+search the directory they are in when given no path (`implicit_cwd`; never
+for a call carrying `--help` or `--version`). When such a simple command has
+no word after the command word that reads as a path, every base `scan`
+holds is tried as the directory it recurses from: one that is a strict
+ancestor of a denied prefix refuses ("`rg` recurses from `<base>`, an
+ancestor of `<rule>`; name a directory under it"). Unlike a named
+directory, there is no exemption for `$HOME` or `/`. A token with a slash
+always counts as a path, even one that does not exist yet (`rg x newdir/`).
+A glob with no slash is dropped everywhere else, because a bare star is
+also a markdown bullet, a SQL column list and a product; under a recursive,
+non-data command it is resolved against each base and matched like any
+other glob, so `cp -r * dest` from above a denied tree refuses, and it
+counts as the path the command was given (`grep -r x *.md` passes).
+
 **A heredoc is only the lines between an opener and its terminator.** The
 line that opens one is a command line like any other: it is scanned whole,
 minus the `<<WORD` operator itself, so a redirect, an argument or a chained
@@ -121,6 +137,8 @@ blind.
 A value glued to a short option with no separator (`-f` immediately
 followed by the path) is not read either: only the text after an `=` or a
 leading `@` is tried as a path.
+`ls` of a slash-less glob without `-R` (one directory level, names only) is
+likewise not examined.
 One gap is worth stating separately because a rule's *shape* invites
 over-trust: a token containing a glob is matched only against rules that
 carry a directory prefix, so a bare any-depth rule (`Read(**/*.env)`) does
