@@ -26,9 +26,9 @@ setopt HIST_IGNORE_DUPS
 setopt HIST_IGNORE_SPACE
 setopt HIST_VERIFY
 
-# Shell quality-of-life options comparable to the prior Bash setup.
+# Shell quality-of-life options. EXTENDED_GLOB stays off: it turns an unquoted
+# `HEAD^` (as in `git show HEAD^`) a pattern that fails with "no matches found".
 setopt AUTO_CD
-setopt EXTENDED_GLOB
 setopt GLOBSTARSHORT
 setopt NO_CASE_GLOB
 setopt PROMPT_SUBST
@@ -47,11 +47,14 @@ if (( $+commands[brew] )); then
 fi
 
 autoload -Uz compinit
-if [[ -n "${ZDOTDIR:-$HOME}/.zcompdump"(#qN.mh+24) ]]; then
+# Full compinit when the dump is over a day old, else the faster cached -C.
+_zcompdump_old=("${ZDOTDIR:-$HOME}/.zcompdump"(N.mh+24))
+if (( ${#_zcompdump_old} )); then
 	compinit
 else
 	compinit -C
 fi
+unset _zcompdump_old
 
 if (( $+functions[_git] )); then
 	compdef _git g

@@ -170,3 +170,15 @@ setup() {
   [ "$(ed "$BATS_TEST_TMPDIR/vim")" = "vim|vim" ]
   [ "$(ed "$BATS_TEST_TMPDIR/none")" = "vi|vi" ]
 }
+
+@test "zshrc leaves extendedglob off so an unquoted caret reaches git" {
+  cd "$BATS_TEST_DIRNAME/.."
+  home="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$home"
+  run env -i HOME="$home" PATH="/usr/bin:/bin" "$(command -v zsh)" -c \
+    'source ./dot_zshrc; print -r -- HEAD^; [[ -o extendedglob ]] && print on || print off'
+  [ "${lines[-2]}" = "HEAD^" ] || { echo "caret did not survive: $output"; false; }
+  [ "${lines[-1]}" = "off" ] || { echo "extendedglob is on: $output"; false; }
+  [ "$(grep -c 'setopt EXTENDED_GLOB' dot_zshrc)" -eq 0 ] || { echo "dot_zshrc still sets EXTENDED_GLOB"; false; }
+  zsh -n dot_zshrc
+}
