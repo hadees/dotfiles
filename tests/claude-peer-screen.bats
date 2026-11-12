@@ -379,6 +379,28 @@ line() { printf '%s\n' "$SCREEN" | sed -n "$1p"; }
   screen_wait '^Alpha · started by Lead · hello$'
 }
 
+@test "list: a start from outside puts its line under the prompt, for a new slot and for one that has its worktree" {
+  need tmux
+  local n
+  git config --global claude-peer.picker list
+  screen_open 80 60 FAKE_SHELL_SLEEP=3
+  screen_wait 'q shell$'
+  run sh "$BIN" start alpha hello
+  [ "$status" -eq 0 ]
+  screen_wait '^Alpha · started by Lead · hello$'
+  n=$(lineno_of '^Alpha · started by Lead · hello$')
+  [ "$(line $((n - 1)))" = '           Alpha ▸' ] || { screen_show; false; }
+  [ "$(count_lines 'Preparing worktree')" -eq 0 ] || { screen_show; false; }
+  until_ok 'screen_grab; [ "$(count_lines "q shell$")" -eq 2 ]' || { screen_show; false; }
+  [ -d "$REPO/.claude/worktrees/alpha" ]
+  run sh "$BIN" start alpha again
+  [ "$status" -eq 0 ]
+  screen_wait '^Alpha · started by Lead · again$'
+  n=$(lineno_of '^Alpha · started by Lead · again$')
+  [ "$(line $((n - 1)))" = '           Alpha ▸' ] || { screen_show; false; }
+  [ "$(count_lines '▸ Alpha · started')" -eq 0 ] || { screen_show; false; }
+}
+
 @test "list: an fzf older than 0.75 gets the list, and the pane says so" {
   need tmux
   # an old fzf, first on PATH: it answers --version as apt's 0.44.1 does, and the pane
@@ -515,15 +537,13 @@ lineno_of() { printf '%s\n' "$SCREEN" | grep -nE -- "$1" | sed -n '1s/:.*//p' | 
 
 @test "fzf: a start from outside clears the picker, the session runs, and the next picker is clean" {
   need tmux fzf
-  # the slot's worktree already made (the usual case): a first checkout prints git's
-  # own `Preparing worktree` line above the header, which is not the picker's to clear
-  git -C "$REPO" worktree add -q --detach "$REPO/.claude/worktrees/alpha"
   screen_open 80 24 FAKE_SHELL_SLEEP=3
   screen_wait 'esc hide'
   run sh "$BIN" start alpha hello
   [ "$status" -eq 0 ]
   screen_wait '^Alpha · started by Lead · hello$'
   [ "$(line 1)" = 'Alpha · started by Lead · hello' ] || { screen_show; false; }
+  [ "$(count_lines 'Preparing worktree')" -eq 0 ] || { screen_show; false; }
   [ "$(count_lines 'esc hide')" -eq 0 ] || { screen_show; false; }
   [ -z "$(marked)" ] || { screen_show; false; }
   [[ "$SCREEN" != *21337* ]] || { screen_show; false; }
@@ -534,6 +554,30 @@ lineno_of() { printf '%s\n' "$SCREEN" | grep -nE -- "$1" | sed -n '1s/:.*//p' | 
   no_cut
   screen_keys Down
   screen_wait '▸ ask '
+}
+
+@test "fzf: a start from outside cuts into a row's question, and its line goes under the question" {
+  need tmux fzf
+  local n
+  git -C "$REPO" worktree add -q --detach "$REPO/.claude/worktrees/alpha"
+  screen_open 80 24 FAKE_SHELL_SLEEP=3
+  screen_wait 'esc hide'
+  screen_keys Down
+  screen_wait '^ {11}▸ ask '
+  screen_keys Enter
+  screen_wait '^ {11}Question:$'
+  screen_still
+  [ "$(count_lines 'esc hide')" -eq 0 ] || { screen_show; false; }
+  run sh "$BIN" start alpha hello
+  [ "$status" -eq 0 ]
+  screen_wait '^Alpha · started by Lead · hello$'
+  n=$(lineno_of '^Alpha · started by Lead · hello$')
+  [ "$(line $((n - 1)))" = '           Question:' ] || { screen_show; false; }
+  screen_wait 'esc hide'
+  screen_still
+  [ "$(count_lines 'esc hide')" -eq 1 ] || { screen_show; false; }
+  [[ "$(marked)" =~ ^\ *▸\ fresh\  ]] || { screen_show; false; }
+  no_cut
 }
 
 @test "fzf: a pane narrowed under 80 columns is left-aligned the next time the picker opens" {

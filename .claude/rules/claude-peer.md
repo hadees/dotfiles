@@ -129,7 +129,10 @@ prints `worktree<TAB>pid<TAB>leader<TAB>label` for each live claim in the
 repository, on every OS. Residual: breaking a stale lock is not atomic, so two
 waiters racing at the instant a holder was killed can still collide; the
 claim's re-read is the backstop. `git worktree add` runs immune to hangup so a
-pane torn down mid-checkout leaves no half-made tree. `status` adds `peers: <r>
+pane torn down mid-checkout leaves no half-made tree. A slot's checkout runs with
+`-q`, so its first start prints nothing of git's above the pane's header, and a
+checkout that fails still prints git's `fatal:` line and then `<slot>: git
+worktree add failed`. `status` adds `peers: <r>
 running, <w> waiting in <repo>` with the running labels when run inside a
 repository, and
 `leftover: <k> peer-N worktrees from the retired scratch layout (...)` when
@@ -296,7 +299,10 @@ alone is row 1, a number its row, a name its context (or a built-in row by its s
 `c r n s` as the hint says, `q` and Ctrl-C a shell; a reader that ends with no line (no
 terminal) goes quiet. A line typed at the quiet prompt that is exactly a context name starts
 it. Every question (`<ask>: `, `Task: `, `Save as …`) is read by `pane_ask`, which is
-`pane_block`, so a `start` request interrupts any of them, and an empty answer or Ctrl-C
+`pane_block`, so a `start` request interrupts any of them (`pane_ask` then ends the
+question's line, so the header of the session that follows starts a line of its own; an
+open fzf and the quiet line already leave the cursor at the start of a line and get
+nothing), and an empty answer or Ctrl-C
 goes back to the picker (`Save as`: Return skips the save, the task still starts). fzf runs
 as a background child the pane `wait`s on, with its signals reset in the subshell (the pane
 ignores `TTIN` and `TTOU`); a request while it is open sends it TERM, runs `stty sane` on the

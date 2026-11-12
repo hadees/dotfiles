@@ -280,6 +280,8 @@ worktree_checkout() {
 
 # `git worktree add` and `checkout` ignore hangup and terminate: a pane torn
 # down mid-checkout would otherwise leave a half-made tree that looks dirty.
+# Only stdout is dropped: a slot's checkout is quieted with git's own -q, so a
+# failure still shows git's fatal: line.
 git_immune() { ( trap '' HUP TERM; exec git "$@" ) >/dev/null; }
 
 # repo slot label -> slot<TAB>wt<TAB>created|reused, claimed. The slot's
@@ -311,7 +313,7 @@ slot_pick() {
     ensure_exclude "$1"
     base=HEAD
     git -C "$1" rev-parse --verify -q origin/HEAD >/dev/null 2>&1 && base=origin/HEAD
-    git_immune -C "$1" worktree add --detach "$wt" "$base" || die "$2: git worktree add failed"
+    git_immune -C "$1" worktree add -q --detach "$wt" "$base" || die "$2: git worktree add failed"
     act=created
   fi
   write_claim "$wt" "$3"
@@ -805,7 +807,8 @@ pane_unquiet() {
 pane_ask() {
   printf '%s%s' "$pn_pad" "$1"
   pane_block
-  if [ -f "$pn_me.start" ]; then pn_why=request; return 1; fi
+  # a request leaves the cursor after the prompt: end its line for the header
+  if [ -f "$pn_me.start" ]; then echo; pn_why=request; return 1; fi
   if [ -n "$pn_intr" ]; then pn_intr=; pn_why=intr; return 1; fi
   if [ ! -f "$pn_me.key" ]; then
     [ "$pn_ended" != 1 ] || pn_reader=0

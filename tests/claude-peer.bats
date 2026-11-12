@@ -467,6 +467,28 @@ hold() {
   grep -qx "Alpha" "$BATS_TEST_TMPDIR/pane-alpha.out"
 }
 
+@test "run --as: a slot's first checkout prints nothing of git's, direct or in a pane" {
+  run --separate-stderr sh "$BIN" run --as alpha
+  [ "$status" -eq 0 ]
+  [[ "$output" == "alpha"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"created"* ]]
+  [[ "$stderr" != *"Preparing worktree"* ]]
+  [[ "$stderr" != *"HEAD is now at"* ]]
+  FAKE_SHELL_SLEEP=1 pane beta
+  press beta ''
+  until_ok 'grep -qx "Beta" "$BATS_TEST_TMPDIR/pane-beta.out"'
+  [ "$(grep -c "Preparing worktree" "$BATS_TEST_TMPDIR/pane-beta.out")" -eq 0 ]
+}
+
+@test "run --as: a checkout git refuses still shows git's own reason" {
+  git init -q "$BATS_TEST_TMPDIR/empty"
+  cd "$BATS_TEST_TMPDIR/empty"
+  run sh "$BIN" run --as alpha
+  [ "$status" -eq 1 ]
+  printf '%s\n' "$output" | grep -q '^fatal: '
+  printf '%s\n' "$output" | grep -qx 'claude-peer: alpha: git worktree add failed'
+  [[ "$output" != *"pwd="* ]]
+}
+
 @test "run --as --wait: c continues, q leaves a shell, anything else asks again" {
   FAKE_SHELL_SLEEP=1 pane alpha
   press alpha c
@@ -1725,7 +1747,9 @@ LISTHINT='c continue · r resume · n task · s task, saved · q shell'
   cl=$(claim_of "$REPO/.claude/worktrees/alpha")
   [ "$(sed -n 4p "$cl")" = pane ]
   [ "$(sed -n 6p "$cl")" = "fix the thing" ]
-  grep -qx "Alpha · fix the thing" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  # the FIFO echoes no Return, so an answered question and the header share a
+  # line here; on a terminal they are two lines
+  grep -q 'Task: Alpha · fix the thing$' "$BATS_TEST_TMPDIR/pane-alpha.out"
 }
 
 @test "picker list: q, and the number of the shell row, leave a shell and the wait file" {
@@ -1840,6 +1864,8 @@ LISTHINT='c continue · r resume · n task · s task, saved · q shell'
   pane_says alpha "$LISTHINT"
   CLAUDE_PEER_START_WAIT=10 run sh "$BIN" start alpha first
   [ "$status" -eq 0 ]
+  o=$BATS_TEST_TMPDIR/pane-alpha.out
+  until_ok 'grep -qx "Alpha · started by Lead · first" "$o"'
   until_ok '[ "$(cat "$BATS_TEST_TMPDIR/last" 2>/dev/null)" = first ]'
   until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
   until_ok '[ "$(pane_count alpha "$LISTHINT")" -eq 2 ]'
@@ -1848,6 +1874,10 @@ LISTHINT='c continue · r resume · n task · s task, saved · q shell'
   CLAUDE_PEER_START_WAIT=10 run sh "$BIN" start alpha hello
   [ "$status" -eq 0 ]
   until_ok '[ "$(cat "$BATS_TEST_TMPDIR/last")" = hello ]'
+  until_ok 'grep -qx "Alpha · started by Lead · hello" "$o"'
+  grep -qx 'Alpha ▸ Who: ' "$o"
+  [ "$(grep -c "Preparing worktree" "$o")" -eq 0 ]
+  [ "$(grep -cx '' "$o")" -eq 0 ]
 }
 
 @test "picker fzf: open with no key pressed, small and flat: the call's flags, the rows in order, and a canned pick starts that context" {
@@ -2037,6 +2067,23 @@ fzfsize() {
   until_ok '[ -f "$FAKE_FZF_LOG.term" ]'
   grep -qx "Alpha · started by Lead · hello" "$BATS_TEST_TMPDIR/pane-alpha.out"
   ! grep -q "picker closed" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  [ "$(grep -c "Preparing worktree" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 0 ]
+  [ "$(grep -cx '' "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 0 ]
+}
+
+@test "picker fzf: a start from outside cuts into the question a picked row asks, and its line starts a line" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  git -C "$REPO" worktree add -q --detach "$REPO/.claude/worktrees/alpha" HEAD
+  FAKE_FZF_OUT=$'\n\nhello\thello     Hello\n' FAKE_SHELL_SLEEP=2 pane alpha
+  pane_says alpha 'Who: '
+  CLAUDE_PEER_START_WAIT=10 run sh "$BIN" start alpha hi
+  [ "$status" -eq 0 ]
+  o=$BATS_TEST_TMPDIR/pane-alpha.out
+  until_ok 'grep -qx "Alpha · started by Lead · hi" "$o"'
+  grep -qx 'Who: ' "$o"
+  [ "$(grep -cx '' "$o")" -eq 0 ]
 }
 
 @test "picker fzf: a killed pane takes its fzf and its wait file with it" {
