@@ -225,6 +225,11 @@ function dotfiles() {
 	# fragments (git has no include for it), so it can only be composed once
 	# every overlay above has deployed its own. Same reason as the touch.
 	(( $+commands[git-allowed-signers] )) && git-allowed-signers;
+	# iTerm2's preferences are merged from per-owner fragments in the same
+	# way, so they too compose only once every overlay has deployed its own.
+	# --auto says nothing where iTerm2 does not load the composed folder and
+	# writes nothing while iTerm2 runs (iTerm2 rewrites the store at quit).
+	(( $+commands[iterm2-prefs] )) && iterm2-prefs compose --auto;
 	return 0;
 }
 
@@ -3090,6 +3095,8 @@ function iterm2-doctor() {
 	done;
 	print -r -- "plugins: ${${(j:, :)plugs}:-none installed (no iTermAI.app / iTermBrowserPlugin.app)}";
 	print -r -- "prefs:   $(iterm2_pref LoadPrefsFromCustomFolder), $(iterm2_pref PrefsCustomFolder)";
+	# Report-only: status --line reads the domain, ps and the fragment files.
+	print -r -- "store:   $( (( $+commands[iterm2-prefs] )) && iterm2-prefs status --line || print -r -- 'iterm2-prefs not deployed' )";
 	print -r -- "api:     $(iterm2_pref EnableAPIServer)";
 	print -r -- "startup: $(iterm2_pref OpenNoWindowsAtStartup), $(iterm2_pref OpenArrangementAtStartup), $(iterm2_pref AlwaysOpenWindowAtStartup)";
 	# Counts, never names: a dynamic profile or an autolaunch script is

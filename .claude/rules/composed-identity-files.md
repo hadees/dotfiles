@@ -50,3 +50,8 @@ Signing keys are never copied to a machine to make this work: the shared
 workstations sign and authenticate through an ssh agent **forwarded** from the
 mac (`ForwardAgent yes`, scoped to those hosts in the work fragment), so the
 private half stays in 1Password. See `git-identity.md`.
+
+A third target is composed the same way and for the same reason, iTerm2's
+preferences, but by merge rather than by include or concatenation, because
+iTerm2 rewrites the file itself: see `iterm2-prefs.md`. There the later
+fragment wins, as in `.gitconfig`.
