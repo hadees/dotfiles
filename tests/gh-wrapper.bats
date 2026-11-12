@@ -224,7 +224,7 @@ EOF
   repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; gh-doctor"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Octo-Mixed -> mixed-acct MIXED CASE: Octo-Mixed never matches (lookups lowercase the owner); record it lowercase"* ]]
+  [[ "$output" == *"Octo-Mixed -> mixed-acct MIXED CASE: the wrappers look up the lowercase owner so add a pin for that spelling too"* ]]
   [[ "$output" == *"octo-work-org -> work-acct, octo-personal -> personal-acct, Octo-Mixed"* ]] || { echo "lowercase pins gained a suffix: $output"; false; }
   [[ "$output" != *"octo-work-org -> work-acct MIXED"* ]] || { echo "lowercase pin flagged: $output"; false; }
 }

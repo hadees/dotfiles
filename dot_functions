@@ -2495,7 +2495,7 @@ function gh-doctor() {
 	print -r -- "account: ${acct:-<no credential pin matched — gh runs as its active account>}";
 	# Never echo the token itself — only whether it is set.
 	print -r -- "env:     GH_TOKEN=$([[ -n $GH_TOKEN ]] && print -r -- '<set — gh ignores stored logins>' || print -r -- '<unset>')";
-	print -r -- "pins:    $(command git config --get-regexp '^credential\.https://github\.com/.*\.username' 2>/dev/null | command sed 's|credential.https://github.com/||; s|\.username | -> |; s|^\([^ ]*[[:upper:]][^ ]*\) -> .*|& MIXED CASE: \1 never matches (lookups lowercase the owner); record it lowercase|' | command paste -sd, - | command sed 's/,/, /g')";
+	print -r -- "pins:    $(command git config --get-regexp '^credential\.https://github\.com/.*\.username' 2>/dev/null | command sed 's|credential.https://github.com/||; s|\.username | -> |; s|^\([^ ]*[[:upper:]][^ ]*\) -> .*|& MIXED CASE: the wrappers look up the lowercase owner so add a pin for that spelling too (keep this one if a remote spells it this way; the git match is case-sensitive)|' | command paste -sd, - | command sed 's/,/, /g')";
 	[[ -n $acct ]] || return 0;
 	tok="$(command gh auth token --user "$acct" 2>/dev/null)";
 	if [[ -z $tok ]]; then
