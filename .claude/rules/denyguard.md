@@ -226,12 +226,25 @@ and allows — that is the correct reading of an empty list, not a failure.
 A command line that changes directory in more ways than the scan follows
 (`MAX_BASES`, above) is refused too, as an ordinary JSON deny: the scan
 knows it has stopped looking, and silence there would be the same lie.
+A call that cannot finish its scan is refused too: one `SIGALRM` budget
+(`BUDGET_S = 4.0` seconds, armed after the payload is parsed and disarmed
+before a decision is written) covers the whole hook call, `check`, `rules`,
+`settings` and `dir` excepted. When it runs out the answer is a JSON deny
+("could not finish checking this command within 4 s … split the command, or
+shorten it") with `(time limit)` in the log's rule column.
+`DENYGUARD_BUDGET` (seconds, for tests) may only lower it; a value that does
+not parse, is not positive or exceeds `BUDGET_S` is ignored, so the variable
+cannot lift the bound. The bound is a backstop: a data heredoc body is
+resolved against the cwd alone, an absolute spelling once, and a word that
+has passed is not judged again until a `cd` adds a directory.
 The one way this still fails open is documented by Claude Code itself and
 cannot be fixed from here: a hook that TIMES OUT does not block ("don't
-count on a stalled hook to act as a gate" — hooks reference §4). So the
-script does no network, no subprocesses, and stats only paths it has not
-already ruled on lexically; the wiring's `timeout: 10` exists only so a
-wedged mount cannot hold a whole turn for the 600s default.
+count on a stalled hook to act as a gate" — hooks reference §4). The budget
+turns a slow scan into a refusal well before the wiring's `timeout: 10`,
+but a filesystem call that never returns (a wedged mount) is not something
+a signal reliably interrupts, so that caveat stays. The script does no
+network and no subprocesses; the wiring's `timeout: 10` exists so such a
+mount cannot hold a whole turn for the 600s default.
 
 **Cost**: one `sh -c`, one `python3` start, a JSON parse of the settings
 file, and a few dozen `lstat`s — about 25–35ms per Bash call, on every Bash

@@ -940,3 +940,64 @@ EOF
   [ "$status" -eq 0 ]
   [ -z "$output" ] || { echo "subshell refused: $output"; false; }
 }
+
+# --- one time budget for the whole hook call -----------------------------------
+#
+# The wiring gives the hook 10 s and a hook that times out does not block, so
+# a scan that cannot finish must refuse by itself. The limits below are real
+# wall-clock ones: 5 s is half the hook timeout and a few times what a slow
+# runner needs for the fast case.
+
+# An event whose command is NCD relative `cd`s, one per line, then OPENER, then
+# 3000 lines of path-like prose, then EOF. Built in python3 because the command
+# is far larger than one argument can carry on Linux.
+prose_evt() { # cwd ncd opener
+  python3 - "$@" <<'PY'
+import json, sys
+cwd, ncd, opener = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+lines = ["cd d%d" % i for i in range(ncd)] + [opener]
+lines += ["see src/mod%d/file%d.txt and docs/topic%d/page.md" % (i, i, i) for i in range(3000)]
+lines.append("EOF")
+print(json.dumps({"session_id": "s1", "cwd": cwd, "tool_name": "Bash",
+                  "tool_input": {"command": "\n".join(lines)}}))
+PY
+}
+
+@test "budget: a long data heredoc after six cds is checked against the cwd only, and answers well inside the hook timeout" {
+  mkdir -p "$HOME/elsewhere"
+  local event
+  event="$(prose_evt "$HOME/elsewhere" 6 "cat <<EOF > notes.md")"
+  SECONDS=0
+  run hook "$event"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || { echo "refused: $output"; false; }
+  [ "$SECONDS" -lt 5 ] || { echo "took $SECONDS s"; false; }
+}
+
+@test "budget: a scan that cannot finish in time is refused, logged as a time limit, and returns promptly" {
+  mkdir -p "$HOME/elsewhere"
+  local event
+  event="$(prose_evt "$HOME/elsewhere" 6 "sh <<EOF")"
+  export DENYGUARD_BUDGET=0.05
+  SECONDS=0
+  run hook "$event"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]] || { echo "silent: $output"; false; }
+  [[ "$output" == *"within 0.05 s"* ]] || { echo "$output"; false; }
+  [ "$SECONDS" -lt 5 ] || { echo "took $SECONDS s"; false; }
+  [ "$(tail -n 1 "$DENYGUARD_LOG" | cut -f3)" = "(time limit)" ] || { cat "$DENYGUARD_LOG"; false; }
+}
+
+@test "budget: DENYGUARD_BUDGET can only lower the bound, never lift it" {
+  grep -q '^BUDGET_S = 4.0$' "$DG" || { echo "BUDGET_S is not 4.0"; false; }
+  local value
+  for value in 999 abc 0 -1 nan; do
+    export DENYGUARD_BUDGET="$value"
+    run hook "$(evt "$HOME/code" "cat $HOME/code/octo-secret/x")"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"is inside Read(~/code/octo-secret/**)"* ]] || { echo "$value: $output"; false; }
+    run hook "$(evt "$HOME/code" "git -C $HOME/code/octo-alpha status")"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ] || { echo "$value refused: $output"; false; }
+  done
+}

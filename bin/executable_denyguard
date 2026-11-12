@@ -57,10 +57,13 @@
 # failure. The one way this still fails open is documented by Claude Code
 # itself and cannot be fixed from here: a hook that TIMES OUT does not
 # block ("don't count on a stalled hook to act as a gate" — hooks reference
-# §4). So this script does no network, no subprocesses, and only stats
-# paths it has not already ruled on lexically; the wiring's `timeout: 10`
-# (see `denyguard settings`) exists so a wedged mount cannot hold a whole
-# turn for the 600s default instead.
+# §4). So this script does no network and no subprocesses. It resolves each
+# path-shaped word against each directory the command line stood in and
+# through symlinks (a few filesystem calls per word), under a 4 s budget
+# (BUDGET_S): a slow scan is refused, not left to run into the wiring's
+# `timeout: 10` (see `denyguard settings`), which exists so a wedged mount
+# cannot hold a whole turn for the 600s default. A filesystem call that never
+# returns is the one thing the budget cannot interrupt.
 #
 # Usage:
 #   denyguard hook               PreToolUse hook body; reads the event JSON
@@ -85,6 +88,9 @@
 #                       out, so the default profile is addressed the same
 #                       way everywhere).
 #   DENYGUARD_LOG       overrides the denial log path (tests).
+#   DENYGUARD_BUDGET    seconds, to lower the hook's time budget (tests); a
+#                       value that is not positive, does not parse or exceeds
+#                       4 is ignored.
 set -eu
 
 command -v python3 >/dev/null 2>&1 || {
@@ -104,6 +110,7 @@ import fnmatch
 import json
 import os
 import re
+import signal
 import sys
 import time
 
@@ -113,6 +120,10 @@ GLOB_CHARS = set("*?[")
 # is joined to every directory already listed, so the list doubles at each
 # one: 64 holds six descending relative `cd`s. Past it scan refuses.
 MAX_BASES = 64
+# One time budget for a whole `hook` call, in seconds. The wiring gives the
+# hook 10 and a hook that times out does not block, so a scan that cannot
+# finish refuses by itself (OutOfTime). DENYGUARD_BUDGET may only lower it.
+BUDGET_S = 4.0
 # A command word that is recursive by nature — no flag needed.
 DEFAULT_RECURSIVE = {
     "find", "fd", "rg", "ag", "ack", "du", "tree", "tar", "zip", "rsync",
@@ -214,6 +225,19 @@ def load_deny(dir_):
         )
         sys.exit(2)
     return (data.get("permissions") or {}).get("deny") or []
+
+
+class OutOfTime(BaseException):
+    """Raised by the SIGALRM handler. A BaseException so that no
+    `except Exception` between the timer and cmd_hook can swallow it."""
+
+
+def budget():
+    try:
+        value = float(os.environ.get("DENYGUARD_BUDGET", ""))
+    except ValueError:
+        return BUDGET_S
+    return value if 0 < value <= BUDGET_S else BUDGET_S
 
 
 FIRMLINK = "/System/Volumes/Data"
@@ -654,28 +678,37 @@ def glob_reach(cand, prefix):
 
 
 def scan(text, cwd, rules):
-    """First rule this text trips, as (fragment, rule, reason) — or None.
+    """First rule this text trips, as (fragment, rule_or_label, reason) — or
+    None. The middle element is a Rule, or a label string for a refusal no
+    one rule caused ("(cd limit)").
     A recursion signal only counts within the SAME simple command as the
     candidate token (`segments_of`); a data heredoc body never counts as
     one, so an ancestor guess never fires there — only a direct hit does.
     `bases` are the directories a relative token may be relative to: the
     cwd, then every directory a `cd`/`pushd` earlier in the text could have
     left the shell in. It only grows — a subshell's `cd` is not undone, the
-    strict reading — and a `cd` that would take it past MAX_BASES is refused
-    (rule None), not dropped. No rules, nothing to protect: None at once.
+    strict reading — and a `cd` that would take it past MAX_BASES is refused,
+    not dropped. No rules, nothing to protect: None at once.
     A recursive command that names no search root (names_root) starts at
     each base: a base above a denied tree is refused. A slash-less glob is a
-    path under a recursive command only."""
+    path under a recursive command only. The words of a data heredoc body are
+    resolved against the cwd alone (that text is being written, not opened),
+    an absolute spelling once, and a word that has already passed is not
+    judged again while `bases` has not grown."""
     if not rules:
         return None
     bases = [cwd]
+    harmless = set()
     for words, command_word, is_heredoc, is_data, piped_in in segments_of(text):
         recursive = False if is_data else recursion_signal(words, command_word)
         for raw_tok in words:
+            memo = (raw_tok, recursive, is_data, len(bases))
+            if memo in harmless:
+                continue
             seen = set()
             cands = []
             for v in token_variants(raw_tok):
-                for b in bases:
+                for b in (bases[:1] if is_data or substitute_home(v).startswith("/") else bases):
                     for c in candidate_of_token(v, b, recursive):
                         if c[1:] not in seen:
                             seen.add(c[1:])
@@ -709,6 +742,7 @@ def scan(text, cwd, rules):
                         "name the file under it directly, or drop the "
                         "recursive flag" % (tok, rule.raw, command_word)
                     )
+            harmless.add(memo)
         if recursive and implicit_cwd(words, command_word) \
                 and not (piped_in and command_word in STDIN_SEARCHERS) \
                 and not names_root(words, command_word, bases):
@@ -726,7 +760,7 @@ def scan(text, cwd, rules):
             if d in bases:
                 continue
             if len(bases) >= MAX_BASES:
-                return " ".join(words), None, (
+                return " ".join(words), "(cd limit)", (
                     "this command line changes directory in more ways than "
                     "denyguard follows (limit %d), so a relative path after "
                     "it cannot be checked; split the command, or use "
@@ -773,7 +807,7 @@ def log_denial(dir_, rule_raw, fragment):
         pass  # the log is a record of the mechanism acting, not the gate
 
 
-def deny(dir_, rule, fragment, reason):
+def deny(dir_, rule_or_label, fragment, reason):
     sys.stdout.write(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -781,7 +815,30 @@ def deny(dir_, rule, fragment, reason):
             "permissionDecisionReason": reason,
         }
     }) + "\n")
-    log_denial(dir_, rule.raw if rule else "(cd limit)", fragment)
+    log_denial(dir_, rule_or_label.raw if isinstance(rule_or_label, Rule) else rule_or_label, fragment)
+
+
+def decide(event, dir_):
+    """The verdict on one PreToolUse event: (rule_or_label, fragment, reason)
+    for a refusal, None for no opinion."""
+    cwd = event.get("cwd") or os.getcwd()
+    rules = parse_deny_list(load_deny(dir_), cwd)
+
+    hit = cwd_hit(cwd, rules)
+    if hit is not None:
+        return hit, cwd, "session cwd %s is inside %s" % (cwd, hit.raw)
+
+    tool_input = event.get("tool_input") or {}
+    texts = [tool_input.get("command") or ""] \
+        if event.get("tool_name") == "Bash" and isinstance(tool_input, dict) \
+        else list(strings_of(tool_input))
+
+    for text in texts:
+        found = scan(text, cwd, rules)
+        if found is not None:
+            fragment, rule_or_label, reason = found
+            return rule_or_label, fragment, reason
+    return None
 
 
 def cmd_hook():
@@ -795,25 +852,29 @@ def cmd_hook():
         sys.exit(2)
 
     dir_ = profile_dir()
-    cwd = event.get("cwd") or os.getcwd()
-    rules = parse_deny_list(load_deny(dir_), cwd)
+    limit = budget()
 
-    hit = cwd_hit(cwd, rules)
-    if hit is not None:
-        deny(dir_, hit, cwd, "session cwd %s is inside %s" % (cwd, hit.raw))
-        return
+    def out_of_time(signum, frame):
+        raise OutOfTime()
 
-    tool_input = event.get("tool_input") or {}
-    texts = [tool_input.get("command") or ""] \
-        if event.get("tool_name") == "Bash" and isinstance(tool_input, dict) \
-        else list(strings_of(tool_input))
-
-    for text in texts:
-        found = scan(text, cwd, rules)
-        if found is not None:
-            fragment, rule, reason = found
-            deny(dir_, rule, fragment, reason)
-            return
+    signal.signal(signal.SIGALRM, out_of_time)
+    signal.setitimer(signal.ITIMER_REAL, limit)
+    try:
+        verdict = decide(event, dir_)
+    except OutOfTime:
+        command = (event.get("tool_input") or {}).get("command") \
+            if isinstance(event.get("tool_input"), dict) else ""
+        verdict = ("(time limit)", " ".join(str(command).split())[:80], (
+            "denyguard could not finish checking this command within %g s, so "
+            "it is refused rather than run unchecked; split the command, or "
+            "shorten it" % limit))
+    finally:
+        # Disarmed before anything is written: a second alarm mid-write
+        # would garble the JSON.
+        signal.setitimer(signal.ITIMER_REAL, 0)
+    if verdict is not None:
+        rule_or_label, fragment, reason = verdict
+        deny(dir_, rule_or_label, fragment, reason)
     # No rule tripped: no opinion. Silence is the correct "allow" here —
     # the hooks reference treats empty stdout on exit 0 as no decision.
 
