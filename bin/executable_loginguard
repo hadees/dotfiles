@@ -18,7 +18,9 @@
 # Usage:
 #   loginguard verdict [--profile DIR]
 #       one TAB-separated line: verdict, pin, orgId, loginExpiresAt, detail.
-#       Exit 0 (unpinned, ok, logged-out), 3 (mismatch), 4 (unverifiable).
+#       Exit 0 (unpinned, ok, logged-out, desktop), 3 (mismatch), 4
+#       (unverifiable). `desktop`: a Claude Desktop Code-tab session whose
+#       credentials name no organization; warned about, never blocked.
 #   loginguard explain [--profile DIR]     one human sentence; exit 0.
 #   loginguard launch [--profile DIR] [--attended]
 #       silent when fine; REFUSED lines on stderr and exit 3/4 otherwise.
@@ -34,6 +36,10 @@
 # env:
 #   CLAUDE_LOGIN_CHECK=0   bypass (logged), per launch; removes nothing.
 #   CLAUDE_CODE_EXECPATH   the claude binary to ask (else `claude`).
+#   CLAUDE_CODE_ENTRYPOINT=claude-desktop, with a status of authMethod
+#                          oauth_token, marks a Claude Desktop session.
+#   CLAUDE_CODE_ORGANIZATION_UUID  the organization Desktop signed in to,
+#                          compared when the status names none.
 #   LOGINGUARD_LOG         events log path (else
 #                          ${XDG_STATE_HOME:-~/.local/state}/loginguard/events.log).
 set -eu
@@ -146,6 +152,9 @@ HOME = os.environ.get("HOME", "")
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 HOW = ("Run `claude auth login` for the right account (`claude auth status` "
        "shows which one is stored), or set CLAUDE_LOGIN_CHECK=0 to bypass once.")
+DESKTOP_HOW = ("Sign that Claude Desktop window in to the pinned organization, or open "
+               "the folder in the Desktop instance that belongs to this profile, or "
+               "set CLAUDE_LOGIN_CHECK=0 in that instance's environment to bypass.")
 
 
 def git(*args):
@@ -232,6 +241,15 @@ def check():
     exp = clean(s["loginExpiresAt"]) if s.get("loginExpiresAt") is not None else "-"
     if not logged_in:
         return "logged-out", "-", exp, "-"
+    if (os.environ.get("CLAUDE_CODE_ENTRYPOINT") == "claude-desktop"
+            and s.get("authMethod") == "oauth_token"):
+        # A Code-tab session uses Desktop's own token, not the stored login.
+        # Both signs are needed; never logs out from here (see after_login).
+        for found, why in ((s.get("orgId"), "desktop:status-org"),
+                           (os.environ.get("CLAUDE_CODE_ORGANIZATION_UUID"), "desktop:env-org")):
+            if isinstance(found, str) and UUID.fullmatch(found):
+                return ("ok" if found.lower() == pin.lower() else "mismatch"), found, exp, why
+        return "desktop", "-", exp, "desktop:no-org"
     org = s.get("orgId")
     if not org:
         method = s.get("authMethod")
@@ -270,6 +288,11 @@ def named(value, lbl):
 
 def sentence(verdict, stored, reason, other):
     pinned = named(pin, label(tdir, dir_))
+    if verdict == "mismatch" and reason.startswith("desktop:"):
+        extra = " That organization is the pin of %s." % other[0] if other else ""
+        return ("%s is in use by a Claude Desktop sign-in to organization %s but is "
+                "pinned to %s (claude.%s.org).%s"
+                % (tdir, named(stored, other[1] if other else ""), pinned, tdir, extra))
     if verdict == "mismatch":
         got = named(stored, other[1] if other else "")
         extra = " That organization is the pin of %s." % other[0] if other else ""
@@ -278,6 +301,17 @@ def sentence(verdict, stored, reason, other):
                 "(claude.%s.org).%s" % (tdir, got, via, pinned, tdir, extra))
     return ("cannot establish which organization %s is logged in to (%s); "
             "it is pinned to %s." % (tdir, reason, pinned))
+
+
+def how(reason):
+    return DESKTOP_HOW if reason.startswith("desktop:") else HOW
+
+
+def warning():
+    return ("loginguard: not checked: %s is a Claude Desktop Code-tab session, which "
+            "signs in with its own token that names no organization, so it cannot be "
+            "compared with the pin %s; that Desktop window's own sign-in is the boundary."
+            % (tdir, named(pin, label(tdir, dir_))))
 
 
 def when(exp):
@@ -358,22 +392,35 @@ def main():
         print("\t".join([verdict, pin, stored, exp, detail]))
     elif sub == "explain":
         if verdict == "ok":
-            print("ok: %s is logged in to the pinned organization %s"
-                  % (tdir, named(pin, label(tdir, dir_))))
+            print("ok: %s is %s the pinned organization %s"
+                  % (tdir, "in use by a Claude Desktop sign-in to" if reason.startswith("desktop:")
+                     else "logged in to", named(pin, label(tdir, dir_))))
+        elif verdict == "desktop":
+            print("DESKTOP (not checked): %s is a Claude Desktop Code-tab session, "
+                  "pinned to %s" % (tdir, named(pin, label(tdir, dir_))))
         elif verdict == "logged-out":
             print("pinned to %s; not logged in" % named(pin, label(tdir, dir_)))
         elif verdict == "mismatch":
             print("MISMATCH: " + sentence(verdict, stored, reason, other))
         else:
             print("UNVERIFIABLE (%s): pinned to %s" % (reason, named(pin, label(tdir, dir_))))
+    elif verdict == "desktop":
+        # A JSON systemMessage on exit 0 is the only warning that neither
+        # blocks (any other exit code does under onFailure) nor reaches the model.
+        if sub == "launch":
+            log("warned-launch", "-", reason)
+            sys.stderr.write("claude: WARNING: %s\n" % warning())
+        else:
+            log("warned-prompt", "-", reason)
+            print(json.dumps({"systemMessage": warning()}))
     elif verdict in ("mismatch", "unverifiable"):
         text = sentence(verdict, stored, reason, other)
         if sub == "launch":
             log("refused-launch", stored, reason)
-            sys.stderr.write("claude: REFUSED: %s\nclaude: REFUSED: %s\n" % (text, HOW))
+            sys.stderr.write("claude: REFUSED: %s\nclaude: REFUSED: %s\n" % (text, how(reason)))
         else:
             log("blocked-prompt", stored, reason)
-            sys.stderr.write("loginguard: %s %s\n" % (text, HOW))
+            sys.stderr.write("loginguard: %s %s\n" % (text, how(reason)))
     elif sub == "hook-prompt" and verdict == "logged-out" and removed_recently():
         log("blocked-prompt", "-", "login-removed")
         sys.stderr.write("loginguard: the login just made to %s was to another organization "
