@@ -225,6 +225,11 @@ function dotfiles() {
 	# fragments (git has no include for it), so it can only be composed once
 	# every overlay above has deployed its own. Same reason as the touch.
 	(( $+commands[git-allowed-signers] )) && git-allowed-signers;
+	# iTerm2's preferences are merged from per-owner fragments in the same
+	# way, so they too compose only once every overlay has deployed its own.
+	# --auto says nothing where iTerm2 does not load the composed folder and
+	# writes nothing while iTerm2 runs (iTerm2 rewrites the store at quit).
+	(( $+commands[iterm2-prefs] )) && iterm2-prefs compose --auto;
 	return 0;
 }
 

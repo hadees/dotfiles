@@ -911,3 +911,19 @@ BASE="$BATS_TEST_DIRNAME/../dot_config/iterm2/prefs.d/10-base.plist"
   [ "$(pget "$BATS_TEST_TMPDIR/printed.plist" 'len(d["New Bookmarks"])')" = 1 ]
   [ "$(pget "$BATS_TEST_TMPDIR/printed.plist" 'd["New Bookmarks"][0]["Guid"] == d["Default Bookmark Guid"]')" = True ]
 }
+
+@test "dotfiles() composes iTerm2's preferences after applying every overlay" {
+  run awk '/^function dotfiles/,/^}/' "$BATS_TEST_DIRNAME/../dot_functions"
+  echo "$output" | grep -q 'iterm2-prefs compose --auto'
+  loop=$(echo "$output" | grep -n 'chezmoi --config' | tail -1 | cut -d: -f1)
+  call=$(echo "$output" | grep -n 'iterm2-prefs compose --auto' | tail -1 | cut -d: -f1)
+  [ "$call" -gt "$loop" ]
+}
+
+@test "dotfiles() calls iterm2-prefs only where it is deployed, and still returns 0" {
+  run awk '/^function dotfiles/,/^}/' "$BATS_TEST_DIRNAME/../dot_functions"
+  echo "$output" | grep -q '(( \$+commands\[iterm2-prefs\] )) && iterm2-prefs compose --auto;'
+  call=$(echo "$output" | grep -n 'iterm2-prefs compose --auto' | tail -1 | cut -d: -f1)
+  ret=$(echo "$output" | grep -n 'return 0' | tail -1 | cut -d: -f1)
+  [ "$ret" -gt "$call" ]
+}
