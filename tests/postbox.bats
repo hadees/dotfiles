@@ -181,6 +181,27 @@ payload() { printf '%s' "$1" | "$PB" "${@:2}"; }
   [[ "$output" == *"	hash" ]] || [[ "$output" == *"	hash"$'\n'* ]]
 }
 
+@test "names: a root that is itself a repository is listed and not descended into" {
+  git init -q "$WORK"
+  mkdir -p "$WORK/sub"
+  git init -q "$WORK/sub"
+  run "$PB" names "$WORK"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "~/code/some-project	"* ]]
+  [[ "$output" != *"sub"* ]]
+}
+
+@test "names: node_modules is skipped at both levels" {
+  mkdir -p "$HOME/code/node_modules/pkg" "$HOME/code/outer/node_modules"
+  git init -q "$HOME/code/node_modules/pkg"
+  git init -q "$HOME/code/outer/node_modules"
+  git init -q "$HOME/code/outer/kept"
+  run "$PB" names
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"~/code/outer/kept	"* ]]
+  [[ "$output" != *"node_modules"* ]]
+}
+
 @test "names: two directories sharing a name fail loudly with both named" {
   git init -q "$WORK"
   mkdir -p "$HOME/code/twin"
@@ -363,6 +384,54 @@ STUB
   [ "$status" -eq 0 ]
   # bootout, three prints that still see the job, the one that does not, then bootstrap.
   [ "$(grep -o '^[a-z]*' "$LAUNCHCTL_LOG" | tr '\n' ' ')" = "bootout print print print print bootstrap kickstart " ]
+}
+
+@test "stop: boots the job out so KeepAlive cannot undo it, and never sends a kill" {
+  mkdir -p "$HOME/Library/LaunchAgents"
+  : > "$HOME/Library/LaunchAgents/local.postbox.plist"
+  run "$PB" stop
+  [ "$status" -eq 0 ]
+  grep -q "^bootout gui/[0-9]*/local.postbox" "$LAUNCHCTL_LOG" || { echo "no bootout in: $(cat "$LAUNCHCTL_LOG")"; false; }
+  ! grep -q '^kill' "$LAUNCHCTL_LOG" || { echo "stop sent a kill: $(cat "$LAUNCHCTL_LOG")"; false; }
+  [[ "$output" == *"postbox start"* ]]
+}
+
+@test "start: bootstraps an installed plist that is not loaded, kickstarts one that is" {
+  mkdir -p "$HOME/Library/LaunchAgents"
+  : > "$HOME/Library/LaunchAgents/local.postbox.plist"
+  run "$PB" start
+  [ "$status" -eq 0 ]
+  grep -q '^bootstrap ' "$LAUNCHCTL_LOG" || { echo "no bootstrap in: $(cat "$LAUNCHCTL_LOG")"; false; }
+  ! grep -q '^kickstart' "$LAUNCHCTL_LOG" || { echo "kickstart on an unloaded job: $(cat "$LAUNCHCTL_LOG")"; false; }
+  : > "$LAUNCHCTL_LOG"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "$LAUNCHCTL_LOG"\nexit 0\n' > "$BIN/launchctl"
+  run "$PB" start
+  [ "$status" -eq 0 ]
+  grep -q '^kickstart ' "$LAUNCHCTL_LOG" || { echo "no kickstart in: $(cat "$LAUNCHCTL_LOG")"; false; }
+  ! grep -q '^bootstrap' "$LAUNCHCTL_LOG" || { echo "bootstrap on a loaded job: $(cat "$LAUNCHCTL_LOG")"; false; }
+}
+
+@test "stop: nothing installed is an error, as on systemd" {
+  run "$PB" stop
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"not installed"* ]]
+  ! grep -q '^bootout' "$LAUNCHCTL_LOG" || { echo "bootout with no plist: $(cat "$LAUNCHCTL_LOG")"; false; }
+}
+
+@test "status: a stopped job (plist kept, not loaded) points at start, a missing plist at install" {
+  printf '#!/bin/sh\n[ "$1" = print ] && exit 1\nexit 0\n' > "$BIN/launchctl"
+  run "$PB" status
+  [[ "$output" == *"not loaded (postbox install)"* ]]
+  mkdir -p "$HOME/Library/LaunchAgents"
+  : > "$HOME/Library/LaunchAgents/local.postbox.plist"
+  run "$PB" status
+  [[ "$output" == *"not loaded (postbox start)"* ]]
+}
+
+@test "start: neither loaded nor installed is an error" {
+  run "$PB" start
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"not installed"* ]]
 }
 
 @test "status: open files against the installed plist's limit, and a stale plist is named" {
@@ -856,13 +925,14 @@ SEND='{"tool_name":"mcp__postbox__send_message","tool_input":{"to":["GreenCastle
   [ -z "$output" ]
   wait_relays 1
   # Run as the recipient's profile, headless, MCP excluded, only SendMessage allowed.
-  grep -q "^$HOME/.claude-other	-p --output-format text --max-turns 3 --model haiku --permission-mode auto --strict-mcp-config --allowedTools SendMessage$" "$CLAUDE_LOG"
-  # Told to message that session, about this mail, as delivered (the
-  # response's subject, not the request's).
+  grep -q "^$HOME/.claude-other	-p --output-format text --max-turns 3 --model haiku --permission-mode auto --strict-mcp-config --tools SendMessage --allowedTools SendMessage$" "$CLAUDE_LOG"
+  # Told to message that session about who sent mail to whom, never what the
+  # sender wrote: neither the response's subject nor the request's.
   grep -q 'SendMessage tool (not any MCP tool) exactly once: to="other-project-x9"' "$CLAUDE_LOG.stdin"
-  grep -q "new mail for GreenCastle from RedStone — 'please review the plan'" "$CLAUDE_LOG.stdin"
+  grep -q "new mail for GreenCastle from RedStone\\." "$CLAUDE_LOG.stdin"
   grep -q "fetch_inbox as GreenCastle in project $HOME/code" "$CLAUDE_LOG.stdin"
-  ! grep -q 'asked subject' "$CLAUDE_LOG.stdin" || { echo "the relay prompt carries the subject"; false; }
+  ! grep -q 'please review the plan' "$CLAUDE_LOG.stdin" || { echo "the relay prompt carries the delivered subject"; false; }
+  ! grep -q 'asked subject' "$CLAUDE_LOG.stdin" || { echo "the relay prompt carries the requested subject"; false; }
   grep -q 'courier: RedStone -> GreenCastle (other-project-x9) via' "$POSTBOX_STATE/logs/courier.log"
 }
 
@@ -908,7 +978,8 @@ SEND='{"tool_name":"mcp__postbox__send_message","tool_input":{"to":["GreenCastle
   grep -q 'to="other-a"' "$CLAUDE_LOG.stdin"
   grep -q 'to="third-b"' "$CLAUDE_LOG.stdin"
   ! grep -q 'to="me"' "$CLAUDE_LOG.stdin" || { echo "the relay prompt addresses to=\"me\""; false; }
-  grep -q "new mail for BlueLake from RedStone — 'all hands'" "$CLAUDE_LOG.stdin"
+  grep -q "new mail for BlueLake from RedStone\\." "$CLAUDE_LOG.stdin"
+  ! grep -q 'all hands' "$CLAUDE_LOG.stdin" || { echo "the relay prompt carries the subject"; false; }
 }
 
 @test "courier: a reply wakes whoever the server actually delivered to" {
@@ -920,7 +991,7 @@ SEND='{"tool_name":"mcp__postbox__send_message","tool_input":{"to":["GreenCastle
   run payload '{"cwd":"'"$WORK"'","tool_name":"mcp__postbox__reply_message","tool_input":{"message_id":9,"body_md":"ok"},"tool_response":{"deliveries":[{"payload":{"id":10,"to":["GreenCastle"],"subject":"Re: the plan"}}]}}' courier
   wait_relays 1
   grep -q 'to="other-a"' "$CLAUDE_LOG.stdin"
-  grep -q "'Re: the plan'" "$CLAUDE_LOG.stdin"
+  ! grep -q 'Re: the plan' "$CLAUDE_LOG.stdin" || { echo "the relay prompt carries the reply's subject"; false; }
 }
 
 @test "courier: no live session for the recipient, another tool, or the courier switched off — nothing runs" {
