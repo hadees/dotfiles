@@ -47,15 +47,16 @@ jobs:
         run: |
           sh .github/install-fzf.sh "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      # tests/finicky.bats runs the .ts routing config under Node (>= 22.6
-      # strips types natively); without a recent Node it skips silently.
+      # tests/finicky.bats and tests/chrome-pairing.bats run the .ts routing
+      # config under Node (>= 22.6 strips types natively); NODE_TESTS_REQUIRED
+      # (below) makes a missing or old Node fail them instead of skipping.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: Check that the fzf on PATH is the pinned one
         run: sh .github/install-fzf.sh --check
       - name: Run tests
-        run: SCREEN_TESTS_REQUIRE='tmux fzf' bats tests
+        run: NODE_TESTS_REQUIRED=1 SCREEN_TESTS_REQUIRE='tmux fzf' bats tests
       - name: Apply .macos on the throwaway runner and verify
         if: matrix.os == 'macos-latest'
         run: MACOS_APPLY_OK=1 bats tests/macos-apply.bats
@@ -132,6 +133,9 @@ jobs:
       - name: Check that the fzf on PATH is the pinned one
         run: sh .github/install-fzf.sh --check
       - name: Run tests
+        # No Node here on purpose: tests/finicky.bats and tests/chrome-pairing.bats
+        # are OS-independent logic, run on ubuntu and macOS, so skipping them on
+        # Rocky is intended (NODE_TESTS_REQUIRED stays unset).
         # The image sets no locale, and the screen tests match glyphs as characters
         # (their harness test says so by name when the charmap is not UTF-8).
         env:
@@ -162,4 +166,7 @@ jobs:
       - name: Check that the fzf on PATH is the pinned one
         run: sh .github/install-fzf.sh --check
       - name: Run tests
+        # No Node here on purpose: tests/finicky.bats and tests/chrome-pairing.bats
+        # are OS-independent logic, run on ubuntu and macOS, so skipping them on
+        # WSL is intended (NODE_TESTS_REQUIRED stays unset).
         run: SCREEN_TESTS_REQUIRE='tmux fzf' bats tests
