@@ -58,6 +58,7 @@ teardown() {
   [ -f "$TMPHOME/.functions" ]
   [ -x "$TMPHOME/bin/has-glyphs" ]
   [ -x "$TMPHOME/bin/tabname" ]
+  [ -x "$TMPHOME/bin/branchname" ]
   [ -x "$TMPHOME/bin/claude-peer" ]
   # Rendered shell files parse
   zsh -n "$TMPHOME/.zshrc"
