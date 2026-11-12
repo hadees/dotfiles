@@ -708,7 +708,7 @@ EOF")"
   for cmd in "rg gizmo" "grep -r gizmo" "find -name x" "du -sh"; do
     run hook "$(evt "$HOME/code" "$cmd")"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"recurses from $HOME/code, an ancestor of Read(~/code/octo-secret/**); name a directory under it"* ]] || { echo "$cmd: $output"; false; }
+    [[ "$output" == *"recurses from $HOME/code, an ancestor of Read(~/code/octo-secret/**); name an existing directory under it, after the pattern"* ]] || { echo "$cmd: $output"; false; }
   done
 }
 
@@ -727,7 +727,7 @@ EOF")"
 }
 
 @test "recursion controls: a named path, a help flag or a narrower cwd stays silent" {
-  for cmd in "grep gizmo" "rg gizmo octo-alpha" "rg --version" "rg gizmo newdir/" "grep -r gizmo *.md"; do
+  for cmd in "grep gizmo" "rg gizmo octo-alpha" "rg --version" "grep -r gizmo *.md"; do
     run hook "$(evt "$HOME/code" "$cmd")"
     [ "$status" -eq 0 ]
     [ -z "$output" ] || { echo "$cmd refused: $output"; false; }
@@ -735,6 +735,59 @@ EOF")"
   run hook "$(evt "$HOME/code/octo-alpha" "rg gizmo")"
   [ "$status" -eq 0 ]
   [ -z "$output" ] || { echo "refused: $output"; false; }
+}
+
+@test "recursion: a root that does not exist yet is not a root, so rg gizmo newdir/ is refused" {
+  run hook "$(evt "$HOME/code" "rg gizmo newdir/")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"recurses from $HOME/code"* ]] || { echo "$output"; false; }
+}
+
+# --- only a real search root switches the implicit-cwd test off ---------------------
+@test "recursion: an option value or a pattern that looks like a path is not a root" {
+  touch "$HOME/code/NOTES"
+  for cmd in "rg -g '*.py' gizmo" "grep -r --include=*.py gizmo" "find -name '*.md'" \
+             "tree -P '*.py'" "rg gizmo/x" "rg NOTES"; do
+    run hook "$(evt_ml "$HOME/code" "$cmd")"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"recurses from $HOME/code"* ]] || { echo "$cmd: $output"; false; }
+  done
+}
+
+@test "recursion: a pipe into rg or ack is exempt, a pipe into grep -r or find is not, and || is no pipe" {
+  for cmd in "git log --oneline | rg gizmo" "git log |& ack gizmo"; do
+    run hook "$(evt "$HOME/code" "$cmd")"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ] || { echo "$cmd refused: $output"; false; }
+  done
+  for cmd in "git log | grep -r gizmo" "git log | find -name x" "true || rg gizmo"; do
+    run hook "$(evt "$HOME/code" "$cmd")"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"recurses from $HOME/code"* ]] || { echo "$cmd: $output"; false; }
+  done
+}
+
+@test "recursion: a heredoc body line read as a command can name a root, or is refused with the way out" {
+  run hook "$(evt_ml "$HOME/code" "git commit -F - <<EOF
+find the cause of the crash
+EOF")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || { echo "refused: $output"; false; }
+  run hook "$(evt_ml "$HOME/code" "git commit -F - <<EOF
+tree view is wrong
+EOF")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pass prose through cat"* ]] || { echo "$output"; false; }
+}
+
+@test "recursion controls: an existing or globbed root after the pattern, options and --, stays silent" {
+  for cmd in "rg -i gizmo octo-alpha" "rg -e gizmo octo-alpha" "grep gizmo -r octo-alpha" \
+             "du -sh octo-alpha" "du -sh *.log" "find octo-alpha -name x" \
+             "rg --files octo-alpha" "rg gizmo -- octo-alpha"; do
+    run hook "$(evt "$HOME/code" "$cmd")"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ] || { echo "$cmd refused: $output"; false; }
+  done
 }
 
 @test "recursion controls: a star bullet in a data heredoc, and a bare star outside a recursive command, stay silent" {

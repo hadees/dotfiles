@@ -72,14 +72,28 @@ mentioned such a pattern).
 **A recursion that names no path starts where the command stands.**
 `find`, `fd`, `rg`, `ag`, `ack`, `du` and `tree`, `grep -r` and `ls -R`
 search the directory they are in when given no path (`implicit_cwd`; never
-for a call carrying `--help` or `--version`). When such a simple command has
-no word after the command word that reads as a path, every base `scan`
-holds is tried as the directory it recurses from: one that is a strict
-ancestor of a denied prefix refuses ("`rg` recurses from `<base>`, an
-ancestor of `<rule>`; name a directory under it"). Unlike a named
-directory, there is no exemption for `$HOME` or `/`. A token with a slash
-always counts as a path, even one that does not exist yet (`rg x newdir/`).
-A glob with no slash is dropped everywhere else, because a bare star is
+for a call carrying `--help` or `--version`). Whether the command was given
+a path is decided by position and existence (`names_root`), never by a word
+looking like one: an option's value (`rg -g '*.py' gizmo`, `find -name
+'*.md'`, `tree -P '*.py'`) and the search pattern itself (`rg gizmo/x`, `rg
+NOTES` with a file of that name beside it) both look like paths. `find`'s
+first word after its leading `-H -L -P -O -D` options is a root by
+position. For the rest, a word after the options (or after a lone `--`) is a
+root when it has a glob character or exists; the first one of a
+pattern-first command (`grep`, `rg`, `ag`, `ack`, `fd`) is the pattern, and
+one straight after an option may be that option's value, so neither counts
+(`--files`, `-r` and the other recursive flags take none; `du`, `tree` and
+`ls` guard only after a `--long` option or one ending in `P` or `I`, so `du
+-sh src` still names `src`). When no root is named, every base `scan` holds
+is tried as the directory it recurses from: one that is a strict ancestor of
+a denied prefix refuses ("`rg` recurses from `<base>`, an ancestor of
+`<rule>`; name an existing directory under it, after the pattern"). Unlike
+a named directory, there is no exemption for `$HOME` or `/`. A root that
+does not exist yet is not a root (`rg x newdir/` is refused). A heredoc body
+line read as a command gets the same test, and its refusal adds "pass prose
+through cat". `rg` and `ack` fed by a pipe and given no path read stdin,
+not the directory, and are exempt; `grep -r`, `find`, `du`, `tree`, `fd` and
+`ls -R` ignore stdin and are not. A glob with no slash is dropped everywhere else, because a bare star is
 also a markdown bullet, a SQL column list and a product; under a recursive,
 non-data command it is resolved against each base and matched like any
 other glob, so `cp -r * dest` from above a denied tree refuses, and it
@@ -139,6 +153,14 @@ followed by the path) is not read either: only the text after an `=` or a
 leading `@` is tried as a path.
 `ls` of a slash-less glob without `-R` (one directory level, names only) is
 likewise not examined.
+An option's separate value that names an existing file is taken for a root
+(`rg -t py NOTES`, `tree -o FILE`, `du -X FILE`).
+A pattern glued to its short option (`-ePAT`) is not recognised as one.
+`ag` fed by a pipe is refused though it reads stdin (not verified, so not
+exempted).
+False positives of the same test: an option between the pattern and the root
+hides the root (`rg foo --hidden src`: put options first, or write `--`
+before the roots).
 One gap is worth stating separately because a rule's *shape* invites
 over-trust: a token containing a glob is matched only against rules that
 carry a directory prefix, so a bare any-depth rule (`Read(**/*.env)`) does

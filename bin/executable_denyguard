@@ -134,6 +134,11 @@ FLAG_RECURSIVE = {
 IMPLICIT_CWD = {"find", "fd", "rg", "ag", "ack", "du", "tree"}
 GREP_LIKE = {"grep", "egrep", "fgrep"}
 GREP_RECURSIVE_FLAGS = {"-r", "-R", "--recursive", "--dereference-recursive"}
+# Commands whose first positional is a search pattern, never a place (names_root).
+PATTERN_FIRST = GREP_LIKE | {"rg", "ag", "ack", "fd"}
+# Programs that read stdin, not the directory, when a pipe feeds them and
+# they are given no path (rg's usage text lists `command | rg PATTERN`).
+STDIN_SEARCHERS = {"rg", "ack"}
 RULE_RE = re.compile(r"^(Read|Edit)\((.+)\)$")
 # Split a command string the way a lexical (not a real shell) scanner can:
 # on whitespace, the metacharacters that separate commands/arguments, and
@@ -342,24 +347,24 @@ def recursion_signal(words, command_word):
 
 def split_simple_commands(text):
     """A heredoc-free fragment, split on `; && || | & ( )` into simple
-    commands: (words, command_word, is_heredoc_body=False, is_data=False)."""
+    commands: (words, command_word, is_heredoc_body=False, is_data=False,
+    piped_in) — piped_in is true when exactly `|` or `|&` sits between this
+    command and the previous one on the line."""
     segments = []
     current = []
-    for part in SEP_RE.split(text):
-        if part is None:
-            continue
-        if SEP_RE.fullmatch(part):
-            if current:
-                words = split_words("".join(current))
-                if words:
-                    segments.append((words, command_word_of(words), False, False))
-                current = []
-        else:
+    seps = ""
+    for part in SEP_RE.split(text) + [None]:
+        if part is not None and not SEP_RE.fullmatch(part):
             current.append(part)
-    if current:
+            continue
         words = split_words("".join(current))
+        current = []
         if words:
-            segments.append((words, command_word_of(words), False, False))
+            segments.append((words, command_word_of(words), False, False,
+                             bool(segments) and seps in ("|", "|&")))
+            seps = ""
+        if part is not None:
+            seps += part
     return segments
 
 
@@ -388,9 +393,9 @@ def heredoc_of(lines, i, last_exact, last_stripped):
 
 def segments_of(text):
     """Every simple command in `text`, in order, as (words, command_word,
-    is_heredoc_body, is_data) — a heredoc body is its own run of segments
-    carrying the word that opened it and whether that body is DATA (fed to
-    cat/tee/printf, unpiped) or kept under the full rule set. The line that
+    is_heredoc_body, is_data, piped_in) — a heredoc body is its own run of
+    segments carrying the word that opened it and whether that body is DATA
+    (fed to cat/tee/printf, unpiped) or kept under the full rule set. The line that
     opens a heredoc is a command line like any other: it is scanned whole,
     less the `<<WORD` operator itself, so a redirect, an argument or a
     chained command written after the marker is never skipped."""
@@ -421,10 +426,10 @@ def segments_of(text):
             if is_data:
                 words = split_words(body_line)
                 if words:
-                    segments.append((words, consumer, True, True))
+                    segments.append((words, consumer, True, True, False))
             else:
-                for words, cw, _, _ in split_simple_commands(body_line):
-                    segments.append((words, cw, True, False))
+                for words, cw, _, _, piped in split_simple_commands(body_line):
+                    segments.append((words, cw, True, False, piped))
         i = end + 1
     return segments
 
@@ -503,6 +508,61 @@ def implicit_cwd(words, command_word):
         and recursion_signal(words, command_word)
 
 
+def names_root(words, command_word, bases):
+    """Does this ONE recursive simple command name a place to search? Decided
+    by position and by existence, never by whether a word looks like a path:
+    an option's value and the search pattern can both look like one. `find`
+    takes its roots first, so the first word after its leading options is
+    one. Elsewhere a positional (a word after the options, or after a lone
+    `--`) counts when it has a glob character or exists; the first
+    positional of a pattern-first command is the pattern, and a positional
+    straight after an option may be that option's value, so neither counts
+    (bar the options known to take none)."""
+    rest = words[1:]
+    if command_word == "find":
+        i = 0
+        while i < len(rest):
+            if rest[i] in ("-H", "-L", "-P") or rest[i].startswith("-O"):
+                i += 1
+            elif rest[i] == "-D":
+                i += 2
+            else:
+                break
+        return i < len(rest) and not rest[i].startswith("-") and rest[i] != "!"
+    pattern_first = command_word in PATTERN_FIRST
+    if command_word in GREP_LIKE | {"rg", "ack"} and any(
+            w == "--files" or w.startswith(("--regexp=", "--file=")) for w in rest):
+        pattern_first = False
+    options_over = False
+    option = None  # the option the previous word was, if it was one
+    number = 0
+    for w in rest:
+        if not options_over and w == "--":
+            options_over, option = True, None
+            continue
+        if not options_over and w.startswith("-") and len(w) > 1:
+            option = w
+            continue
+        number += 1
+        guarded = option is not None and (
+            (command_word in PATTERN_FIRST
+             and option != "--files" and option not in GREP_RECURSIVE_FLAGS)
+            or (command_word not in PATTERN_FIRST
+                and (option.startswith("--") or option[-1] in "PI")))
+        option = None
+        if guarded or (pattern_first and number == 1):
+            continue
+        tok = substitute_home(w)
+        if any(c in tok for c in GLOB_CHARS):
+            return True
+        if tok.startswith("/"):
+            if os.path.lexists(tok):
+                return True
+        elif any(os.path.lexists(os.path.join(b, tok)) for b in bases):
+            return True
+    return False
+
+
 def glob_reach(cand, prefix):
     """How an absolute glob-bearing `cand` can reach the denied `prefix`:
     "inside" (it can name the tree or something in it), "ancestor" (only a
@@ -535,16 +595,15 @@ def scan(text, cwd, rules):
     left the shell in. It only grows — a subshell's `cd` is not undone, the
     strict reading — and a `cd` that would take it past MAX_BASES is refused
     (rule None), not dropped. No rules, nothing to protect: None at once.
-    A recursive command with no path argument starts at each base: a base
-    above a denied tree is refused. A slash-less glob is a path under a
-    recursive command only."""
+    A recursive command that names no search root (names_root) starts at
+    each base: a base above a denied tree is refused. A slash-less glob is a
+    path under a recursive command only."""
     if not rules:
         return None
     bases = [cwd]
-    for words, command_word, _is_heredoc, is_data in segments_of(text):
+    for words, command_word, is_heredoc, is_data, piped_in in segments_of(text):
         recursive = False if is_data else recursion_signal(words, command_word)
-        named = False
-        for idx, raw_tok in enumerate(words):
+        for raw_tok in words:
             seen = set()
             cands = []
             for v in token_variants(raw_tok):
@@ -553,7 +612,6 @@ def scan(text, cwd, rules):
                         if c[1:] not in seen:
                             seen.add(c[1:])
                             cands.append(c)
-            named = named or (idx > 0 and bool(cands))
             for tok, cand, has_glob in cands:
                 if has_glob:
                     for rule in rules:
@@ -591,14 +649,19 @@ def scan(text, cwd, rules):
                         "name the file under it directly, or drop the "
                         "recursive flag" % (tok, rule.raw, command_word)
                     )
-        if recursive and not named and implicit_cwd(words, command_word):
+        if recursive and implicit_cwd(words, command_word) \
+                and not (piped_in and command_word in STDIN_SEARCHERS) \
+                and not names_root(words, command_word, bases):
             for b in bases:
                 for rule in rules:
                     if rule.evaluable and rule.prefix is not None \
                             and rule.prefix.startswith(os.path.join(b, "")):
                         return " ".join(words), rule, (
-                            "%s recurses from %s, an ancestor of %s; name a "
-                            "directory under it" % (command_word, b, rule.raw)
+                            "%s recurses from %s, an ancestor of %s; name an "
+                            "existing directory under it, after the pattern%s"
+                            % (command_word, b, rule.raw, " (this line is "
+                               "inside a heredoc read as commands; pass "
+                               "prose through cat)" if is_heredoc else "")
                         )
         for d in cd_targets(words, command_word, bases):
             if d in bases:
