@@ -125,3 +125,17 @@ http://localhost:4/#ab12cd34q2x" ]
   # Only the last case got as far as the script; the others never ran it.
   [ "$(cat "$ITERM_LOG")" = "create_tab w1 open-as" ]
 }
+
+@test "iterm2: finds iTerm2's runtime under uv/venvs (3.7) or iterm2env (older)" {
+  support="$HOME/Library/Application Support/iTerm2"
+  for layout in iterm2env/versions/3.10.4 uv/venvs/3.12; do
+    rm -rf "$support"
+    mkdir -p "$support/$layout/bin"
+    cp "$BIN/fakepy" "$support/$layout/bin/python3"
+    : > "$ITERM_LOG"
+    FAKE_SESSIONS="caller:w1:-" OPEN_AS_PYTHON= run open-as iterm2 http://localhost:5/
+    [ "$status" -eq 0 ]
+    [ "$(cat "$ITERM_LOG")" = "create_tab w1 open-as
+load_url new http://localhost:5/" ]
+  done
+}
