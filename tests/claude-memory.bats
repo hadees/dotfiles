@@ -12,6 +12,18 @@ RULES="$ROOT/.claude/rules"
 CLAUDE_MD_MAX=25000   # characters; the always-loaded file
 RULE_MAX=40000        # characters; the on-demand per-file limit
 
+# Code points, counted by python: wc -m counts bytes under the C locale of the
+# Rocky CI container.
+chars() { python3 -c 'import sys; print(len(open(sys.argv[1], encoding="utf-8").read()))' "$1"; }
+
+setup() {
+  # Container CI checkouts are owned by another uid and git refuses to read
+  # them ("dubious ownership"). Point the global config at a per-test file
+  # so marking the repo safe never touches the real machine's config.
+  export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig"
+  git config --file "$GIT_CONFIG_GLOBAL" safe.directory '*'
+}
+
 # The `paths:` entries of a rule file, one per line, quotes stripped. Fails if
 # the file does not open with a frontmatter block.
 rule_paths() {
@@ -38,14 +50,14 @@ map_names() {
 }
 
 @test "CLAUDE.md stays under the always-loaded budget" {
-  n="$(wc -m < "$ROOT/CLAUDE.md")"
+  n="$(chars "$ROOT/CLAUDE.md")"
   [ "$n" -le "$CLAUDE_MD_MAX" ] || { echo "CLAUDE.md is $n characters, limit $CLAUDE_MD_MAX"; false; }
 }
 
 @test "every rule file opens with frontmatter that has a paths list, and is under the size limit" {
   for f in "$RULES"/*.md; do
     [ -n "$(rule_paths "$f")" ] || { echo "$f: no frontmatter paths"; false; }
-    n="$(wc -m < "$f")"
+    n="$(chars "$f")"
     [ "$n" -le "$RULE_MAX" ] || { echo "$f: $n characters, limit $RULE_MAX"; false; }
   done
 }

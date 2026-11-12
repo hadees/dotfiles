@@ -33,14 +33,25 @@ longer an ancestor of what is being pushed.
 
 Two details are load-bearing. git hands the hook the remote's **live** sha,
 read over the push connection, so on a shared branch it is routinely a
-commit this clone has never fetched — the scan falls back to "everything
-this remote has not got" rather than letting `rev-list` fail into an empty,
-silently passing range, which is how a gate like this quietly disarms on
-exactly the branches that need it. And `GIT_PUSH_CHECK=0` bypasses both
-gates for one push but still **chains**: the ref list is drained before the
-bypass, so `hook.pre-push.run` — where the private overlay hangs its leak
-guard — runs on a forced push too. That is not this gate's to switch off.
-It also has no opinion on a ref deletion. Unlike `run-local-hook` it must
+commit this clone has never fetched — and that state is how a gate like this
+quietly disarms on exactly the branches that need it, so both gates stay
+armed in it. The marker scan falls back to "everything this remote has not
+got" rather than letting `rev-list` fail into an empty, silently passing
+range. The force gate **refuses**: a tip missing from the object store
+cannot be an ancestor of anything local, git itself rejects that push
+unforced ("fetch first"), and forced it is the stale-clone-then-`--force`
+sequence that drops commits nobody here has seen. It read "not fetched; no
+verdict" until an audit forced a stale clone straight through it
+(2026-11-11). The refusal says to fetch, after which a fast-forward passes
+and a divergence gets the ordinary non-fast-forward refusal. git runs the
+hook before reporting its own rejection, so a plain stale push meets the
+same message; a `--force-with-lease` whose lease is stale never does — git
+withholds that ref from the hook and rejects it itself. And
+`GIT_PUSH_CHECK=0` bypasses both gates for one push but still **chains**:
+the ref list is drained before the bypass, so `hook.pre-push.run` — where
+the private overlay hangs its leak guard — runs on a forced push too. That
+is not this gate's to switch off. It has no opinion on a ref deletion, and
+the force gate has none on a branch the remote does not have yet. Unlike `run-local-hook` it must
 not `exec` into the chain: an EXIT trap does not survive `exec`, and at one
 leaked ref list per push per repo that is unbounded. Every hook name there is
 a shim that first runs any `hook.<name>.run` git-config commands (repeatable,

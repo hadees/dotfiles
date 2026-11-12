@@ -30,7 +30,12 @@
 # later — the write itself is data (so it is scanned for a direct hit only,
 # never an ancestor guess, letting prose that names a denied path pass), but
 # whatever ends up in that file is unseen the moment it runs as its own
-# command. That is a guard against the accidental and default case (Bash
+# command. The line that OPENS a heredoc is not data: it is scanned whole,
+# less the `<<WORD` operator, so a redirect or a command written after the
+# marker is read like any other. And only a `<<WORD` that a later line
+# terminates opens one — `<<<`, a shift inside `$(( ))`, and an opener with
+# no terminator leave every line under the full rule set.
+# That is a guard against the accidental and default case (Bash
 # preferred over Read), not against a determined command. OS-level
 # enforcement exists — the Bash sandbox's `sandbox.filesystem.denyRead`
 # applies to "all commands running inside the sandbox, including their
@@ -132,7 +137,9 @@ SPLIT_RE = re.compile(r"""[\s;|&()<>'"]+""")
 SEP_RE = re.compile(r"(\|\||&&|[;|&()])")
 # `<<WORD`, `<<-WORD`, `<<'WORD'`, `<<"WORD"` — the body runs to a line
 # that equals WORD (leading whitespace ignored only for the `<<-` form).
-HEREDOC_RE = re.compile(r"<<(-)?\s*(['\"]?)(\w+)\2")
+# Never `<<<`: a here-string takes one word and has no body. A match is
+# only a candidate — `heredoc_of` decides whether it opens anything.
+HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)(-)?\s*(['\"]?)(\w+)\2")
 # A heredoc fed to one of these, unpiped, is DATA being written — text
 # about a path, not a path being opened — so only a direct hit still
 # refuses it; every other consumer (an interpreter, or any piped body)
@@ -331,34 +338,61 @@ def split_simple_commands(text):
     return segments
 
 
+def heredoc_of(lines, i, last_exact, last_stripped):
+    """The heredoc `lines[i]` opens, as (match, terminator_index) — or None.
+    Reading a line as a heredoc opener only ever RELAXES the scan (a data
+    body is checked for a direct hit only), so every doubtful candidate is
+    turned down: a shift inside `$(( ))`, and any `<<WORD` that no later
+    line terminates. A real shell reads an unterminated heredoc to end of
+    input as body; scanning those lines as commands is the stricter
+    reading. `last_exact`/`last_stripped` map a line (as written /
+    whitespace-stripped, for `<<-`) to the last index it occurs at, so a
+    candidate with no terminator costs one lookup, not a walk to the end."""
+    line = lines[i]
+    for m in HEREDOC_RE.finditer(line):
+        head = line[: m.start()]
+        if head.count("((") > head.count("))"):
+            continue  # inside an unclosed `((`: arithmetic, not a redirection
+        dash, delim = m.group(1), m.group(3)
+        last = (last_stripped if dash else last_exact).get(delim, -1)
+        for j in range(i + 1, last + 1):
+            if (lines[j].strip() if dash else lines[j]) == delim:
+                return m, j
+    return None
+
+
 def segments_of(text):
     """Every simple command in `text`, in order, as (words, command_word,
     is_heredoc_body, is_data) — a heredoc body is its own run of segments
     carrying the word that opened it and whether that body is DATA (fed to
-    cat/tee/printf, unpiped) or kept under the full rule set."""
+    cat/tee/printf, unpiped) or kept under the full rule set. The line that
+    opens a heredoc is a command line like any other: it is scanned whole,
+    less the `<<WORD` operator itself, so a redirect, an argument or a
+    chained command written after the marker is never skipped."""
     lines = text.split("\n")
     segments = []
+    last_exact, last_stripped = {}, {}
+    if "<<" in text:
+        for k, entry in enumerate(lines):
+            last_exact[entry] = k
+            last_stripped[entry.strip()] = k
     i, n = 0, len(lines)
     while i < n:
         line = lines[i]
-        m = HEREDOC_RE.search(line)
-        if not m:
+        opener = heredoc_of(lines, i, last_exact, last_stripped) if "<<" in line else None
+        if opener is None:
             segments.extend(split_simple_commands(line))
             i += 1
             continue
-        dash = m.group(1)
-        delim = m.group(3)
-        segments.extend(split_simple_commands(line[: m.start()]))
-        opening_words = split_words(line[: m.start()])
-        consumer = command_word_of(opening_words)
-        piped = "|" in line[m.end():]
-        is_data = consumer in DATA_HEREDOC_CONSUMERS and not piped
-        j = i + 1
-        while j < n:
-            body_line = lines[j]
-            probe = body_line.strip() if dash else body_line
-            if probe == delim:
-                break
+        m, end = opener
+        head, tail = line[: m.start()], line[m.end():]
+        # Head and tail are one command line with the operator lifted out —
+        # joined, not scanned apart, so `grep -r x <<EOF dir` keeps its
+        # recursion signal and its directory in the same simple command.
+        segments.extend(split_simple_commands(head + " " + tail))
+        consumer = command_word_of(split_words(head))
+        is_data = consumer in DATA_HEREDOC_CONSUMERS and "|" not in tail
+        for body_line in lines[i + 1:end]:
             if is_data:
                 words = split_words(body_line)
                 if words:
@@ -366,8 +400,7 @@ def segments_of(text):
             else:
                 for words, cw, _, _ in split_simple_commands(body_line):
                     segments.append((words, cw, True, False))
-            j += 1
-        i = j + 1
+        i = end + 1
     return segments
 
 

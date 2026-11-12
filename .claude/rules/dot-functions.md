@@ -17,7 +17,7 @@ the rule before changing them:
 - the `ssh`/`scp`/`sftp`/`curl` wrappers and `tailnet-doctor`: `tailnet.md`
 - `workset()`, `workset_profile()`, `workset-doctor`: `workset.md`
 - `update()`: `packages.md`
-- `tabstatus`, and the terminal-title export in `claude()`: `cc-status-shim.md`
+- `tabstatus`, `tabstatus_wiring`, `iterm2-cookie` and `iterm2_cookie_state`, and the terminal-title export in `claude()`: `cc-status-shim.md`
 - the `BROWSER` pair in `claude()`, `claude_browser_alias`: `browser-routing.md`
 - `onepassword-doctor`: `onepassword.md`
 - `iterm2-doctor` and its `stamp`: `iterm2-skill.md`

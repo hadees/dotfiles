@@ -395,6 +395,87 @@ push_repo() {
   [[ "$output" == *"still carries unfinished commits"* ]]
 }
 
+@test "pre-push: forcing the default branch over a remote tip this clone never fetched is refused" {
+  # The stale-clone-then-force sequence: git hands the hook the remote's live
+  # sha, it is not in this clone, and until 2026-11-11 that meant "no
+  # verdict" — the push went through and the other clone's commit was gone.
+  repo=$(push_repo)
+  bare="$BATS_TEST_TMPDIR/pushbare.git"
+  other="$BATS_TEST_TMPDIR/other"
+  git clone -q "$bare" "$other"
+  echo o >> "$other/f"; git -C "$other" add f
+  git -C "$other" -c user.email=personal@example.org commit -q -m "feat: theirs"
+  git -C "$other" push -q origin main
+  theirs=$(git -C "$other" rev-parse HEAD)
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: mine"
+  run git -C "$repo" push -q --force origin main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"is not in this clone"* ]]
+  [[ "$output" == *"Fetch origin and retry, or bypass once with GIT_PUSH_CHECK=0."* ]]
+  [ "$(git -C "$bare" rev-parse refs/heads/main)" = "$theirs" ]
+  # Fetching is the remedy it names: after it the tip is known and the same
+  # push gets the ordinary verdict.
+  git -C "$repo" fetch -q origin
+  run git -C "$repo" push -q --force origin main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"non-fast-forward push of main"* ]]
+  [ "$(git -C "$bare" rev-parse refs/heads/main)" = "$theirs" ]
+}
+
+@test "pre-push: a plain push onto an unfetched tip gets the same fetch advice" {
+  # git runs the hook before it reports its own "fetch first" rejection, and
+  # the hook cannot tell this from the forced case — both need the fetch.
+  repo=$(push_repo)
+  bare="$BATS_TEST_TMPDIR/pushbare.git"
+  other="$BATS_TEST_TMPDIR/other"
+  git clone -q "$bare" "$other"
+  echo o >> "$other/f"; git -C "$other" add f
+  git -C "$other" -c user.email=personal@example.org commit -q -m "feat: theirs"
+  git -C "$other" push -q origin main
+  theirs=$(git -C "$other" rev-parse HEAD)
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: mine"
+  run git -C "$repo" push -q origin main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"is not in this clone"* ]]
+  [ "$(git -C "$bare" rev-parse refs/heads/main)" = "$theirs" ]
+}
+
+@test "pre-push: GIT_PUSH_CHECK=0 still forces over an unfetched tip, and still chains" {
+  repo=$(push_repo)
+  bare="$BATS_TEST_TMPDIR/pushbare.git"
+  other="$BATS_TEST_TMPDIR/other"
+  git clone -q "$bare" "$other"
+  echo o >> "$other/f"; git -C "$other" add f
+  git -C "$other" -c user.email=personal@example.org commit -q -m "feat: theirs"
+  git -C "$other" push -q origin main
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: mine"
+  git -C "$repo" config --add hook.pre-push.run 'echo "GUARD $(wc -l < /dev/stdin | tr -d " ")" >&2'
+  run env GIT_PUSH_CHECK=0 git -C "$repo" push -q --force origin main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"GUARD 1"* ]]
+  [ "$(git -C "$bare" rev-parse refs/heads/main)" = "$(git -C "$repo" rev-parse HEAD)" ]
+}
+
+@test "pre-push: force-pushing a topic branch over an unfetched tip is still ordinary work" {
+  repo=$(push_repo)
+  git -C "$repo" checkout -q -b topic
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "feat: one"
+  git -C "$repo" push -q origin topic
+  other="$BATS_TEST_TMPDIR/other"
+  git clone -q "$BATS_TEST_TMPDIR/pushbare.git" "$other"
+  git -C "$other" checkout -q -b topic origin/topic
+  echo o >> "$other/f"; git -C "$other" add f
+  git -C "$other" -c user.email=personal@example.org commit -q -m "feat: theirs"
+  git -C "$other" push -q origin topic
+  git -C "$repo" commit -q --amend -m "feat: one, reworded"
+  run git -C "$repo" push -q --force origin topic
+  [ "$status" -eq 0 ]
+}
+
 @test "pre-push: the bypass still chains, so the overlay leak guard is never switched off with it" {
   repo=$(push_repo)
   echo y >> "$repo/f"; git -C "$repo" add f

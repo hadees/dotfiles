@@ -80,10 +80,30 @@ The documented drawbacks: connecting takes longer, many features need Python
 3 remotely, there is added typing latency that is noticeable on a slow link,
 and the remote-side script uses CPU (mostly polling the job list).
 
+## Changed in 3.7.7
+
+From the release notes:
+
+- `it2` on the remote host is a real command in `~/.iterm2/bin`, not a shell
+  function, so scripts, `sh -c` and Claude Code's Bash tool can run it. A
+  command that names no session acts on the session it runs in. It also works
+  under tcsh and without shell integration (then nothing is copied, so `it2`
+  must be installed there).
+- When a host asks to use `it2`, **Always Allow This Host** stops the
+  question; Settings > General > Magic > **API access over ssh** lists them.
+- `it2ssh` loads shell integration on the remote host by default, whatever
+  the profile says; `--no-shell-integration` skips it. SSH profiles still
+  follow their own setting. A remote bash gets a login shell.
+- `it2ssh` exits with ssh's status, runs a command after the host exactly as
+  ssh would (quotes and non-ASCII used to be mangled), and no longer waits for
+  Return when ssh fails before connecting.
+- Output from the remote host is paced, so Control-C works at once on a slow
+  link. Downloads are much faster and report failures honestly.
+
 ## How `it2ssh` actually works
 
 Read straight out of `/Applications/iTerm.app/Contents/Resources/utilities/it2ssh`
-(193 lines of bash in 3.7.6, worth reading when something misbehaves):
+(193 lines of bash in 3.7.6, 286 in 3.7.7, worth reading when something misbehaves):
 
 1. It fetches a **token from a unix socket** — the first that answers of
    `~/.config/iterm2/sockets/secrets`, `~/.iterm2/sockets/secrets`,

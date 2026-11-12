@@ -555,37 +555,62 @@ background task stops pinning a tab at "working" (see
 the *file* that names it is private, because each profile's `settings.json`
 is overlay-owned. Do not paste `cc-status settings`'s output by hand — it
 bakes in whatever `$HOME` was when it ran. Write the command as a template
-rule in the settings source, with the home directory from chezmoi:
+rule in the settings source, with the home directory from chezmoi. The rule is
+stat-gated, four tiers, the most specific last:
+
+1. the guarded `[ -x … ] && exec … || true` form, when neither file below
+   exists (or the machine is not a mac), so a box with neither never errors per
+   event;
+2. iTerm2's own `~/.config/iterm2/cc-status` path (expanded the same way), when
+   only the integration exists;
+3. the shim's bare path, `{{ .chezmoi.homeDir }}/.local/libexec/cc-status-shim/cc-status`,
+   when the shim is deployed (iTerm2 3.7.3's health check tests the literal
+   string with `isExecutableFile` and wants it to end in `/cc-status`, so `~`,
+   `$HOME` or any other name makes the app report its integration broken);
+4. **C**, when the shim is deployed **and** `~/.config/iterm2/it2` exists
+   (only 3.7.7+ makes that symlink): iTerm2's own `it2 handle-agent-hook`
+   first, then `cc-status after`, in one command, because 3.7.7 only accepts a
+   hook entry that runs a program inside `~/.config/iterm2`. It reads the API
+   cookie before either program runs (see `iterm2-cookie`). Build it in the
+   template like this:
 
 ```
-{{ .chezmoi.homeDir }}/.local/libexec/cc-status-shim/cc-status
+{{- $shim := joinPath .chezmoi.homeDir ".local/libexec/cc-status-shim/cc-status" -}}
+{{- $it2 := joinPath .chezmoi.homeDir ".config/iterm2/it2" -}}
+{{- $cookie := joinPath .chezmoi.homeDir ".local/state/iterm2/api-cookie" -}}
+{{- $sock := joinPath .chezmoi.homeDir "Library/Application Support/iTerm2/private/socket" -}}
+{{- if and (stat $shim) (stat $it2) -}}
+{{-   $cc = printf "p=$(cat); [ %s -nt \"%s\" ] && read -r ITERM2_COOKIE ITERM2_KEY <%s && [ -n \"$ITERM2_KEY\" ] && export ITERM2_COOKIE ITERM2_KEY; printf '%%s' \"$p\" | %s handle-agent-hook; printf '%%s' \"$p\" | %s after" $cookie $sock $cookie $it2 $shim -}}
+{{- end -}}
 ```
 
-iTerm2 3.7.3's health check tests the literal string with `isExecutableFile`
-and wants it to end in `/cc-status`, so `~`, `$HOME`, a `[ -x … ] || true`
-guard or any other name makes the app report its integration broken (and a
-Reinstall append a raw cc-status beside yours). The rule that works is
-stat-gated: render the shim's bare path when that file exists, iTerm2's own
-`~/.config/iterm2/cc-status` path (expanded the same way) when only the
-integration does, and the guarded `[ -x … ] && exec … || true` form
-otherwise, so a box with neither never errors per event. Apply it to the ten
-events iTerm2 wires — `SessionStart`, `SessionEnd`, `UserPromptSubmit`,
-`PreToolUse`, `PostToolUse`, `PermissionRequest`, `Notification`, `Stop`,
-`StopFailure`, `SubagentStop` — **and add `SubagentStart`**, which iTerm2
-does not wire and the shim's seat state file relies on; without it seats are
-never recorded and a Stop over a background seat paints amber or orange
-rather than its colour. `cc-status settings` still prints the event list and
-the reasoning, and is the reference for what belongs there. iTerm2 >
-Reinstall rewrites the entries back to the raw binary and Uninstall strips
-them; `dotfiles` restores them, so re-apply after either.
+   The settings JSON then uses `{{ $cc | quote }}`, which escapes the quotes.
+   `cc-status settings` prints the same line for the machine it runs on, and the
+   whole line is compared by whoever consumes it, so a wrong space or quote
+   shows up. Do not switch a profile to C until `iterm2-cookie status` says
+   `fresh accepted`: without a cookie every event starts an `osascript` and the
+   line doubles them inside subagent seats.
+
+Apply it to the ten events iTerm2 wires — `SessionStart`, `SessionEnd`,
+`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`,
+`Notification`, `Stop`, `StopFailure`, `SubagentStop` — **and add
+`SubagentStart`**, which iTerm2 does not wire and the shim's seat state file
+relies on; without it seats are never recorded and a Stop over a background
+seat paints amber or orange rather than its colour. `cc-status settings` still
+prints the event list and the reasoning, and is the reference for what belongs
+there. iTerm2 > Reinstall may rewrite the entries of the older tiers back to the
+raw binary and Uninstall strips them; `dotfiles` restores them, so re-apply
+after either. C survives both (Reinstall keeps it, Uninstall leaves it).
 
 `claude-doctor`'s `tabstatus:` line, run inside a repo of each profile, is
-the check: `shim on 11/11 events, raw cc-status on 0, none on 0` with the
-shim path printed (not `MISSING`). `raw cc-status on 1` is an event the rule
-missed; iTerm2's "Claude Code Integration Looks Broken" alert means a
+the check: `shim on 11/11 events (handler first on 11), raw iTerm2 hook on 0,
+both on 0, none on 0` with the shim path printed (not `MISSING`). `raw iTerm2
+hook on 1` is an event with an entry the rule missed or that a Reinstall
+added; `both` counts events where it sits beside the shim, and the two then
+run in parallel. iTerm2's "Claude Code Integration Looks Broken" alert means a
 command that is not the bare expanded path, or a shim file that is not
-executable. Note that 3.7.3 reads only `~/.claude/settings.json` for its
-health check, so a profile elsewhere is judged by the doctor, not the alert.
+executable. Note that the alert reads the directory recorded at the last install,
+so a profile elsewhere is judged by the doctor, not the alert.
 
 A machine that wires the shim also stops Claude Code's own OSC 0 tab titles
 from displacing the name the shim sets, with one line in its gitconfig

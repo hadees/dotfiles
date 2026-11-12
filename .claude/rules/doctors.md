@@ -38,3 +38,28 @@ silent there and this is where it shows. `doctor` itself opens with a
 the caller, and the calling shell's non-default pattern/glob options —
 read before any `emulate`, so a pasted transcript says which shell it
 came from.
+
+`iterm2-cookie` is the verb `iterm2-doctor` will point at, not a doctor: it
+mints the API cookie the hooks read, and `iterm2_cookie_state` names whether
+that cookie is fresh, stale, rejected or absent (see `cc-status-shim.md`).
+
+`iterm2-doctor` prints two lines after `cc-status:`. `cookie:` is the static
+state (`fresh`, `stale`, `rejected`, `absent`, each with the fix); whether
+iTerm2 accepts the cookie is `iterm2-cookie status`'s question. `osascript:`
+is the size of `~/.local/state/iterm2/uncookied` (hook events that ran without a
+cookie), that file's birth time, and the number of processes whose command
+line contains `request cookie and key for app named`, from one `ps`; `0 … since
+never` when the file does not exist. `iterm2_cookie_state` is in its `defined:`
+list.
+
+`iterm2-doctor` then prints `hooks:` and `shim:`. `hooks:` is one line per
+profile directory that has a `settings.json` (from `claude_profile_dirs`:
+`~/.claude`, `$CLAUDE_CONFIG_DIR`, every `claude.profile.*` value): iTerm2
+3.7.7's health check `passes (10/10 owned)` or `FAILS (K/10 owned)`, how many
+events run the handler first and how many carry a raw iTerm2 entry beside the
+shim, and a marker on the directory iTerm2's launch alert reads
+(`NoSyncClaudeCodeConfigDirPath`). The judgement is the 3.7.7 rule, so read it
+with the `skill:` line. `shim:` is `can paint`, `cannot paint: <reason>` or
+`MISSING`, decided from the shim's `explain after` (which calls nothing; the
+doctor still runs nothing of iTerm2's). `tabstatus_wiring` and
+`claude_profile_dirs` are in its `defined:` list.
