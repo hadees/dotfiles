@@ -523,6 +523,15 @@ repo() { # dir — a fixture repo with one commit on main
   [[ "${output%%alpha*}" == *zeta* ]]
 }
 
+@test "alfred-install: warns when no Alfred app is installed, and not when one is" {
+  mkdir -p "$BATS_TEST_TMPDIR/Applications"
+  WORKTABS_APPLICATIONS="$BATS_TEST_TMPDIR/Applications" ws alfred-install "$BATS_TEST_DIRNAME/../alfred/worktabs"
+  [[ "$output" == *"Alfred does not appear to be installed"* ]]
+  mkdir -p "$BATS_TEST_TMPDIR/Applications/Alfred.app"
+  WORKTABS_APPLICATIONS="$BATS_TEST_TMPDIR/Applications" ws alfred-install "$BATS_TEST_DIRNAME/../alfred/worktabs"
+  [[ "$output" != *"Alfred does not appear to be installed"* ]]
+}
+
 @test "alfred: output is valid JSON" {
   entry a dir "$PROJ/one"; entry a window grp
   entry b dir "$PROJ/two"

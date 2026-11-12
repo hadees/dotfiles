@@ -196,3 +196,5 @@ workflow holds no logic and therefore no identity — the group names come from
 the overlay at run time. It is **not** a chezmoi target: Alfred rewrites
 `info.plist` whenever the workflow is edited in its GUI, which would show as
 permanent drift, so the repo keeps the source and `alfred-install` copies it.
+It warns when no `Alfred*.app` sits in `/Applications` or `~/Applications`
+(`WORKTABS_APPLICATIONS` replaces the first, for tests).

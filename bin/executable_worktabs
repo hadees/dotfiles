@@ -818,8 +818,11 @@ cmd_alfred_install() {
   dir=$(workflow_source "${1-}") ||
     die "cannot locate the workflow source (chezmoi not installed?) — pass the path: worktabs alfred-install <dir>"
   [ -f "$dir/info.plist" ] || die "no info.plist in $dir"
-  [ -d /Applications/Alfred*.app ] 2>/dev/null || command -v osascript >/dev/null 2>&1 ||
-    warn "Alfred does not appear to be installed"
+  found=
+  for app in "${WORKTABS_APPLICATIONS:-/Applications}"/Alfred*.app "$HOME"/Applications/Alfred*.app; do
+    [ -d "$app" ] && found=1
+  done
+  [ -n "$found" ] || warn "Alfred does not appear to be installed"
   tmp=$(mktemp -d) || die "cannot create a temp directory"
   out=$tmp/Worktabs.alfredworkflow
   # An .alfredworkflow is a zip of the workflow directory's *contents*, and
