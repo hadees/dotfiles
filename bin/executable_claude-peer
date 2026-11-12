@@ -1416,6 +1416,23 @@ log_scan() { # mode
       } }'
 }
 
+# A line by anyone but Lead reaches Lead: postbox lead-news, detached and
+# silent, for the leader of this directory's live claim (and the handing-over
+# session, claim lines 9 and 10), else the main checkout. Always returns 0.
+log_tell() {
+  [ "$lg_me" != Lead ] || return 0
+  lt_pb=${CLAUDE_PEER_POSTBOX:-$HOME/bin/postbox}
+  [ -x "$lt_pb" ] || return 0
+  lt_lead= lt_pid=- lt_sid=-
+  if claim_live "$PWD"; then
+    lt_f=$(claim_file "$PWD")
+    lt_lead=$(sed -n 2p "$lt_f"); lt_pid=$(sed -n 9p "$lt_f"); lt_sid=$(sed -n 10p "$lt_f")
+  fi
+  [ -n "$lt_lead" ] || lt_lead=$(repo_root_q) || return 0
+  ( "$lt_pb" lead-news "$lt_lead" "${lt_pid:--}" "${lt_sid:--}" </dev/null >/dev/null 2>&1 & )
+  return 0
+}
+
 # [--as <name>] claim <task> [-- <path>...] | note <text> | done [<text>] | show [--all]
 cmd_log() {
   lg_as=
@@ -1435,8 +1452,8 @@ cmd_log() {
         LG_CUT=$(date -u -d "@$lg_t" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$lg_t" +%Y-%m-%dT%H:%M:%SZ) \
           log_scan show <"$lg_file"
       fi;;
-    note) [ $# -ge 1 ] || usage; log_add "$lg_me" note "$*";;
-    done) log_add "$lg_me" done "$*";;
+    note) [ $# -ge 1 ] || usage; log_add "$lg_me" note "$*" && log_tell;;
+    done) log_add "$lg_me" done "$*" && log_tell;;
     claim)
       lg_task=
       while [ $# -gt 0 ] && [ "$1" != -- ]; do lg_task=${lg_task:+$lg_task }$1; shift; done
@@ -1449,6 +1466,7 @@ cmd_log() {
         lg_paths=$lg_paths$lg_tab$lg_r lg_mine=${lg_mine:+$lg_mine$lg_tab}$lg_r
       done
       log_add "$lg_me" claim "$lg_task" "$lg_paths" || exit 1
+      log_tell
       [ -n "$lg_mine" ] && LG_ME=$lg_me LG_MINE=$lg_mine log_scan overlap <"$lg_file"
       exit 0;;
   esac

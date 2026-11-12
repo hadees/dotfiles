@@ -66,6 +66,12 @@
 #   postbox guard             Claude Code PreToolUse hook on the mail tools
 #   postbox courier           Claude Code PostToolUse hook on the mail tools:
 #                             wakes each recipient's idle session
+#   postbox lead [dir]        the Lead session(s) of dir's Claude Peers tab (or
+#                             of dir): name, profile, status; exit 1 for none
+#   postbox lead-news [--again] <leader-dir> [<pid> <session-id>]
+#                             wake the leader's idle Lead with what its tabs
+#                             logged (claude-peer log calls it); every wake and
+#                             every decline is a line in courier.log
 #   postbox settings          the settings.json hook block the overlays wire
 #   postbox dir               the state directory
 set -u
@@ -675,10 +681,13 @@ is_peer() { # cwd
 # leader directory itself, from the last 24 hours, at most five and a count of
 # the rest. One counter per leader directory, $STATE/rollcall/log/<key> (the
 # physical path, characters outside A-Za-z0-9._- as _), holds how many log
-# lines are dealt with, so every caller delivers a line once. Sets pn_ended to
+# lines are dealt with, so every caller delivers a line once. With <kinds> (a
+# space-separated list), nothing is printed or counted unless a pending line
+# has one of them; with peek, the counter is never moved. Sets pn_ended to
 # the lower-cased labels whose end or gone line it printed. Needs PEERCMD.
-peer_news() { # leader-dir
-  pn_ended=''
+peer_news() { # leader-dir [kinds [peek]]
+  pn_ended='' pn_filt=0 pn_want=${2-} pn_peek=${3-}
+  [ $# -ge 2 ] && pn_filt=1
   pn_dir=$(cd "$1" 2>/dev/null && pwd -P) || return 0
   pn_log=$(cd "$pn_dir" && "$PEERCMD" log show --all 2>/dev/null)
   [ -n "$pn_log" ] || return 0
@@ -686,28 +695,112 @@ peer_news() { # leader-dir
   pn_seen=$(cat "$pn_f" 2>/dev/null); case $pn_seen in ''|*[!0-9]*) pn_seen=0 ;; esac
   pn_t=$(( ${POSTBOX_NOW:-$(date +%s)} - 86400 ))
   pn_cut=$(date -u -d "@$pn_t" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$pn_t" +%Y-%m-%dT%H:%M:%SZ)
-  pn_out=$(printf '%s\n' "$pn_log" | awk -F'\t' -v seen="$pn_seen" -v cut="$pn_cut" -v base="${pn_dir##*/}" '
+  pn_out=$(printf '%s\n' "$pn_log" | awk -F'\t' -v seen="$pn_seen" -v cut="$pn_cut" -v base="${pn_dir##*/}" \
+    -v filt="$pn_filt" -v want="$pn_want" '
+BEGIN { n = split(want, a, " "); for (i = 1; i <= n; i++) wk[a[i]] = 1 }
 { ln[NR] = $0 }
 END {
   if (seen > NR) seen = 0   # the log was replaced: start over, the cut still guards
   for (i = seen + 1; i <= NR; i++) {
     split(ln[i], f, "\t"); w = f[2]; k = f[3]; t = f[4]
     if (k !~ /^(claim|note|done|end|idle|gone)$/ || w == "Lead" || w == base || f[1] < cut) continue
+    if (k in wk) hit = 1
     if (k == "claim") m = w " claimed: " t
     else if (k == "note") m = w " noted: " t
     else if (k == "done") m = (t == "" ? w " done." : w " done: " t)
     else m = t
     if (++c > 5) continue
-    print "N postbox: Claude Peers: " m
-    if (k == "end" || k == "gone") print "E " tolower(w)
+    out = out "N postbox: Claude Peers: " m "\n"
+    if (k == "end" || k == "gone") out = out "E " tolower(w) "\n"
   }
-  if (c > 5) print "N postbox: Claude Peers: " (c - 5) " more in claude-peer log show --all"
-  print "C " NR
+  if (filt && !hit) exit
+  if (c > 5) out = out "N postbox: Claude Peers: " (c - 5) " more in claude-peer log show --all\n"
+  printf "%sC %d\n", out, NR
 }')
   printf '%s\n' "$pn_out" | sed -n 's/^N //p'
   pn_ended=$(printf '%s\n' "$pn_out" | sed -n 's/^E //p' | tr '\n' ' ')
-  mkdir -p "$STATE/rollcall/log" 2>/dev/null && printf '%s\n' "$pn_out" | sed -n 's/^C //p' > "$pn_f" 2>/dev/null
+  pn_n=$(printf '%s\n' "$pn_out" | sed -n 's/^C //p')
+  [ -n "$pn_n" ] && [ -z "$pn_peek" ] && mkdir -p "$STATE/rollcall/log" 2>/dev/null && printf '%s\n' "$pn_n" > "$pn_f" 2>/dev/null
   return 0
+}
+
+# The kinds that give Lead a turn, by `git config claude-peer.wake-lead` read in
+# the leader directory: all (the default, and any unknown value), done, off.
+wake_kinds() { # leader-dir
+  case $(git -C "$1" config --get claude-peer.wake-lead 2>/dev/null) in
+    off) ;;
+    done) printf '%s\n' 'done idle gone' ;;
+    *) printf '%s\n' 'claim note done idle gone' ;;
+  esac
+}
+
+# A leader directory's Lead sessions, read from every mapped profile's
+# registry (live by kill -0): the record whose pid is <pid>; else every record
+# whose sessionId is <session-id>; else every record whose cwd, resolved
+# physically, is the leader directory. `-` skips a rung. lead_rows prefixes the
+# rung that answered; lead_sessions prints profile-dir, pid, name, status.
+lead_rows() { # leader-dir [pid session-id]
+  mapped_dirs | python3 -c '
+import glob, json, os, sys
+lead, pid, sid = sys.argv[1:4]
+real = os.path.realpath(lead)
+recs = []
+for d in (l.rstrip("\n") for l in sys.stdin):
+    for f in sorted(glob.glob(os.path.join(d, "sessions", "*.json"))) if d else []:
+        try:
+            with open(f) as fh:
+                r = json.load(fh)
+            os.kill(int(r["pid"]), 0)
+        except Exception:
+            continue
+        recs.append((d, r))
+def field(v):
+    s = str(v).replace("\t", " ").strip()
+    return s if s else "-"
+rungs = ((1, lambda r: pid != "-" and str(r.get("pid")) == pid),
+         (2, lambda r: sid != "-" and str(r.get("sessionId") or "") == sid),
+         (3, lambda r: bool(r.get("cwd")) and os.path.realpath(r["cwd"]) == real))
+for n, test in rungs:
+    hit = [(d, r) for d, r in recs if test(r)]
+    if n == 1:
+        hit = hit[:1]
+    for d, r in hit:
+        print("\t".join([str(n)] + [field(x) for x in (d, r["pid"], r.get("name") or os.path.basename(r.get("cwd") or ""), r.get("status") or "-")]))
+    if hit:
+        break
+' "$1" "${2:--}" "${3:--}" 2>/dev/null
+}
+lead_sessions() { lead_rows "$@" | cut -f2-; }
+
+# leader-dir, pid, session id for <dir>: from `claude-peer claim` when it
+# answers, else column 3 of the `peers` row whose worktree is <dir> or holds
+# it, else <dir> itself with no pid or session id. Needs PEERCMD.
+lead_of() { # dir
+  lo_t=$(printf '\t')
+  if [ -x "$PEERCMD" ] && lo_c=$("$PEERCMD" claim "$1" 2>/dev/null) && [ -n "$lo_c" ]; then
+    printf '%s\n' "$lo_c" | awk -F'\t' -v d="$1" '{ v[$1] = $2 }
+      END { l = v["leader"]; p = v["lead-pid"]; s = v["lead-sid"]
+            printf "%s\t%s\t%s\n", (l == "" || l == "-") ? d : l, p == "" ? "-" : p, s == "" ? "-" : s }'
+    return 0
+  fi
+  lo_p=$(cd "$1" 2>/dev/null && pwd -P) || lo_p=$1
+  lo_l=''
+  [ -x "$PEERCMD" ] && lo_l=$("$PEERCMD" peers "$1" 2>/dev/null | while IFS=$lo_t read -r w p l lab; do
+    wp=$(cd "$w" 2>/dev/null && pwd -P) || wp=$w
+    case $lo_p in ("$wp"|"$wp"/*) printf '%s\n' "$l"; break ;; esac
+  done)
+  printf '%s\t-\t-\n' "${lo_l:-$1}"
+}
+
+cmd_lead() {
+  command -v python3 >/dev/null 2>&1 || exit 1
+  PEERCMD=${POSTBOX_CLAUDE_PEER:-$HOME/bin/claude-peer}
+  IFS=$(printf '\t') read -r cl_dir cl_pid cl_sid <<EOF
+$(lead_of "${1:-$PWD}")
+EOF
+  cl_out=$(lead_sessions "$cl_dir" "$cl_pid" "$cl_sid" | awk -F'\t' -v OFS='\t' '{ n = split($1, a, "/"); print $3, a[n], $4 }')
+  [ -n "$cl_out" ] || exit 1
+  printf '%s\n' "$cl_out"
 }
 
 # The leader's roll-call, per peer: which of its Claude Peers (claims written
@@ -842,6 +935,40 @@ EOF
   return 0
 }
 
+# Stop, mail first: block once per new message. Returns 1 when it did not block.
+stop_mail() {
+  s=$(inbox_summary "$name") || return 1
+  count=$(printf '%s\n' "$s" | sed -n 1p); newest=$(printf '%s\n' "$s" | sed -n 2p)
+  [ "${count:-0}" -gt 0 ] 2>/dev/null || return 1
+  [ "${newest:-0}" -gt "$(seen_of "$sid")" ] 2>/dev/null || return 1
+  [ -n "$sid" ] && mark_seen "$sid" "$newest"
+  printf '%s\n' "$s" | sed -n '3,$p' | python3 -c '
+import json, sys
+subs = [l.rstrip("\n") for l in sys.stdin if l.strip()]
+reason = ("postbox: %s new message(s) for %s: " % (sys.argv[1], sys.argv[2])) + "; ".join(subs) + \
+    ". Read them with fetch_inbox, act or reply as appropriate (a reply in a multi-party thread keeps every recipient), mark them read, then stop."
+print(json.dumps({"decision": "block", "reason": reason}))' "$count" "$name"
+}
+
+# Stop, then the tabs' news, for a session that is or was a Lead (it has a
+# roll-call state file): the pending lines, when one of them is a turn kind,
+# hold the stop for one turn.
+stop_news() {
+  is_peer "$sdir" && return 0
+  [ -n "$sid" ] && [ -f "$STATE/rollcall/$sid" ] || return 0
+  PEERCMD=${POSTBOX_CLAUDE_PEER:-$HOME/bin/claude-peer}
+  [ -x "$PEERCMD" ] || return 0
+  sn_kinds=$(wake_kinds "$sdir")
+  [ -n "$sn_kinds" ] || return 0
+  sn_news=$(peer_news "$sdir" "$sn_kinds")
+  [ -n "$sn_news" ] || return 0
+  printf '%s\n' "$sn_news" | python3 -c '
+import json, sys
+lines = [l.rstrip("\n") for l in sys.stdin if l.strip()]
+reason = "; ".join(lines) + " Take this as news from your tabs: tell the operator what matters, then stop."
+print(json.dumps({"decision": "block", "reason": reason}))'
+}
+
 cmd_hook() {
   [ $# -ge 1 ] || exit 0
   need_python
@@ -866,7 +993,15 @@ cmd_hook() {
         printf ' The postbox daemon is not answering right now (postbox status).'
         is_peer "$sdir" || tell=1
       fi
-      if ! is_peer "$sdir"; then
+      if is_peer "$sdir"; then
+        # Who Lead is, when it can be found; never the tab itself.
+        PEERCMD=${POSTBOX_CLAUDE_PEER:-$HOME/bin/claude-peer}
+        sl_lead=$(lead_of "$sdir" | cut -f1)
+        if [ "$(cd "$sl_lead" 2>/dev/null && pwd -P)" != "$(cd "$sdir" && pwd -P)" ]; then
+          sl_name=$(cmd_lead "$sdir" 2>/dev/null | sed -n '1s/\t.*//p')
+          [ -z "$sl_name" ] || printf ' You are a Claude Peers tab; Lead is the session %s (SendMessage). If that name stops answering, postbox lead prints the current one.' "$sl_name"
+        fi
+      else
         [ -S "${CLAUDE_CODE_MESSAGING_SOCKET:-}" ] || { printf ' This session has no native inbox (/status, Peer address), so other sessions cannot SendMessage to it.'; tell=1; }
         connected "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" || { printf ' The postbox MCP server is not connected in this profile (postbox connect, then restart the session), so cross-profile mail is unavailable here.'; tell=1; }
       fi
@@ -894,17 +1029,7 @@ cmd_hook() {
       # Block the stop once per new message, never while already in a
       # blocked-stop turn (stop_hook_active) — that is the loop guard.
       [ "$(json_field stop_hook_active)" = true ] && exit 0
-      s=$(inbox_summary "$name") || exit 0
-      count=$(printf '%s\n' "$s" | sed -n 1p); newest=$(printf '%s\n' "$s" | sed -n 2p)
-      [ "${count:-0}" -gt 0 ] 2>/dev/null || exit 0
-      [ "${newest:-0}" -gt "$(seen_of "$sid")" ] 2>/dev/null || exit 0
-      [ -n "$sid" ] && mark_seen "$sid" "$newest"
-      printf '%s\n' "$s" | sed -n '3,$p' | python3 -c '
-import json, sys
-subs = [l.rstrip("\n") for l in sys.stdin if l.strip()]
-reason = ("postbox: %s new message(s) for %s: " % (sys.argv[1], sys.argv[2])) + "; ".join(subs) + \
-    ". Read them with fetch_inbox, act or reply as appropriate (a reply in a multi-party thread keeps every recipient), mark them read, then stop."
-print(json.dumps({"decision": "block", "reason": reason}))' "$count" "$name"
+      stop_mail || stop_news
       ;;
     *) exit 0 ;;
   esac
@@ -1035,10 +1160,17 @@ relay() { # profile-dir session-name recipient sender
   # Who and where, never what: the names come from the server's closed
   # vocabulary, but a subject is whatever the sending agent wrote, and this
   # text becomes a prompt in the recipient's profile.
-  r_msg="postbox: new mail for $r_to from $r_from. Use fetch_inbox as $r_to in project $(project), act or reply as the message warrants, then mark_message_read."
-  r_prompt="Use the built-in SendMessage tool (not any MCP tool) exactly once: to=\"$r_session\", message=\"$r_msg\". Then stop. Do nothing else."
   mkdir -p "$STATE/logs" 2>/dev/null
   printf '%s courier: %s -> %s (%s) via %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$r_from" "$r_to" "$r_session" "$r_dir" >> "$STATE/logs/courier.log" 2>/dev/null
+  relay_text "$r_dir" "$r_session" "postbox: new mail for $r_to from $r_from. Use fetch_inbox as $r_to in project $(project), act or reply as the message warrants, then mark_message_read."
+}
+
+# One native SendMessage of <message> to <session-name>, from a headless relay
+# session run as <profile-dir>. The message must hold no double quote.
+relay_text() { # profile-dir session-name message
+  r_dir=$1
+  r_prompt="Use the built-in SendMessage tool (not any MCP tool) exactly once: to=\"$2\", message=\"$3\". Then stop. Do nothing else."
+  mkdir -p "$STATE/logs" 2>/dev/null
   # Detached: the hook must return now, and must not hand the relay the
   # hook's stdin (the pipe Claude Code wrote the event to).
   ( cd "$STATE" 2>/dev/null || cd /
@@ -1108,6 +1240,56 @@ print("\n".join(names))' 2>/dev/null)
       relay "$sdir" "$sname" "$to" "$sender"
     done
   done
+  exit 0
+}
+
+# Wake the leader's idle Lead with what its tabs logged; `claude-peer log`
+# runs it detached after a tab's claim, note or done. Never advances the
+# delivered count (Lead's own prompt or Stop hook does), and relays once per
+# state of the log (rollcall/relayed/<key>) unless --again. Every early end is
+# one line in courier.log.
+cmd_lead_news() {
+  ln_again=''
+  [ "${1-}" = --again ] && { ln_again=1; shift; }
+  [ $# -ge 1 ] || usage
+  ln_dir=$1 ln_pid=${2:--} ln_sid=${3:--}
+  ln_say() {
+    mkdir -p "$STATE/logs" 2>/dev/null
+    printf '%s lead-news: %s: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$ln_dir" "$1" >> "$STATE/logs/courier.log" 2>/dev/null
+  }
+  need_python
+  ln_kinds=$(wake_kinds "$ln_dir")
+  [ -n "$ln_kinds" ] || { ln_say off; exit 0; }
+  courier_enabled || { ln_say 'courier disabled'; exit 0; }
+  command -v claude >/dev/null 2>&1 || { ln_say 'no claude on PATH'; exit 0; }
+  PEERCMD=${POSTBOX_CLAUDE_PEER:-$HOME/bin/claude-peer}
+  ln_news=''
+  [ -x "$PEERCMD" ] && ln_news=$(peer_news "$ln_dir" "$ln_kinds" peek)
+  [ -n "$ln_news" ] || { ln_say 'nothing pending'; exit 0; }
+  ln_rows=$(lead_rows "$ln_dir" "$ln_pid" "$ln_sid")
+  [ -n "$ln_rows" ] || { ln_say 'no Lead session'; exit 0; }
+  ln_idle=$(printf '%s\n' "$ln_rows" | awk -F'\t' '$5 == "idle" || $5 == "shell" || $5 == "-"')
+  [ -n "$ln_idle" ] || { ln_say 'Lead busy (its Stop hook delivers)'; exit 0; }
+  ln_phys=$(cd "$ln_dir" && pwd -P)
+  ln_f=$STATE/rollcall/relayed/$(printf '%s' "$ln_phys" | tr -c 'A-Za-z0-9._-' '_')
+  ln_count=$(cd "$ln_phys" && "$PEERCMD" log show --all 2>/dev/null | wc -l | tr -d ' ')
+  if [ -z "$ln_again" ] && [ "$(cat "$ln_f" 2>/dev/null)" = "$ln_count" ]; then ln_say 'already relayed'; exit 0; fi
+  ln_n=$(printf '%s\n' "$ln_news" | grep -c .)
+  ln_msg=$(printf '%s\n' "$ln_news" | awk 'NR > 1 { sub(/^postbox: Claude Peers: /, "") } { printf "%s%s", (NR > 1 ? "; " : ""), $0 }' \
+    | tr -d "\"'\\\\\n" | cut -c1-400)
+  ln_k=$(printf '%s\n' "$ln_idle" | grep -c .)
+  case $ln_idle in 3*)
+    [ "$ln_pid$ln_sid" = -- ] || ln_say "handed over by pid $ln_pid, now gone; told $ln_k session(s) in the directory" ;;
+  esac
+  ln_t=$(printf '\t')
+  while IFS=$ln_t read -r ln_rung ln_prof ln_spid ln_name ln_st; do
+    [ -n "$ln_prof" ] || continue
+    relay_text "$ln_prof" "$ln_name" "$ln_msg (from the tabs' log; no reply needed)"
+    ln_say "woke $ln_name with $ln_n line(s)"
+  done <<EOF
+$ln_idle
+EOF
+  mkdir -p "${ln_f%/*}" 2>/dev/null && printf '%s\n' "$ln_count" > "$ln_f" 2>/dev/null
   exit 0
 }
 
@@ -1222,6 +1404,8 @@ case $cmd in
   hook)        cmd_hook "$@" ;;
   guard)       cmd_guard ;;
   courier)     cmd_courier ;;
+  lead)        cmd_lead "$@" ;;
+  lead-news)   cmd_lead_news "$@" ;;
   settings)    cmd_settings ;;
   dir)         printf '%s\n' "$STATE" ;;
   -h|--help|help) usage ;;

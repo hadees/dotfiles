@@ -97,6 +97,7 @@ STUB
 
 teardown() {
   cd / || true
+  [ -z "${SLEEPERS:-}" ] || kill $SLEEPERS 2>/dev/null || true
   rm -rf "${SOCKDIR:-}"
 }
 
@@ -1197,4 +1198,166 @@ SEND='{"tool_name":"mcp__postbox__send_message","tool_input":{"to":["GreenCastle
   [ "$n" = "$nn" ]
   [ "$a" = 75 ]
   [ "$n" = 132 ]
+}
+
+# --- Lead: postbox lead, lead-news, the Stop hook's news ------------------------
+
+# A live Lead record (its own sleeping pid) in profile $1 at cwd $2, named $3,
+# status $4, sessionId $5. Sets LPID.
+lead_rec() {
+  sleep 300 </dev/null >/dev/null 2>&1 &
+  LPID=$!; SLEEPERS="${SLEEPERS:-} $LPID"
+  mkdir -p "$1/sessions"
+  printf '{"pid":%s,"cwd":"%s","name":"%s","status":"%s","sessionId":"%s"}\n' "$LPID" "$2" "$3" "$4" "${5:-}" > "$1/sessions/$LPID.json"
+}
+rkey() { printf '%s' "$(cd "$WORK" && pwd -P)" | tr -c 'A-Za-z0-9._-' '_'; }
+counter() { cat "$POSTBOX_STATE/rollcall/log/$(rkey)" 2>/dev/null || echo none; }
+STOP='{"cwd":"'"$HOME/code/some-project"'","session_id":"s1","stop_hook_active":false}'
+
+@test "lead: prints the Lead for the leader directory and for a tab's worktree; none is exit 1" {
+  news_leader
+  lead_rec "$CLAUDE_CONFIG_DIR" "$WORK" proj-7 idle
+  run "$PB" lead "$WORK"
+  [ "$status" -eq 0 ]
+  [ "$output" = "proj-7"$'\t'".claude-a"$'\t'"idle" ]
+  run "$PB" lead "$wt"
+  [ "$output" = "proj-7"$'\t'".claude-a"$'\t'"idle" ]
+  rm "$CLAUDE_CONFIG_DIR/sessions/$LPID.json"
+  run "$PB" lead "$wt"
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+@test "hook start: a tab's line names its Lead, and is unchanged without one" {
+  news_leader
+  export CLAUDE_PEER_WORKTREE="$wt"
+  run payload '{"cwd":"'"$wt"'","session_id":"p1"}' hook start
+  base=$output
+  [[ "$base" != *"Claude Peers tab"* ]]
+  run env POSTBOX_CLAUDE_PEER=/nonexistent "$PB" hook start <<< '{"cwd":"'"$wt"'","session_id":"p1"}'
+  [ "$output" = "$base" ]
+  lead_rec "$CLAUDE_CONFIG_DIR" "$WORK" proj-7 idle
+  run payload '{"cwd":"'"$wt"'","session_id":"p1"}' hook start
+  [[ "$output" == *" You are a Claude Peers tab; Lead is the session proj-7 (SendMessage). If that name stops answering, postbox lead prints the current one."* ]]
+}
+
+@test "lead-news: wakes an idle Lead once per state of the log, never counts, and the next prompt delivers" {
+  news_leader
+  lead_rec "$CLAUDE_CONFIG_DIR" "$WORK" proj-7 idle
+  logl 1799999500 Alpha claim "fix thing"
+  run "$PB" lead-news "$WORK"
+  [ "$status" -eq 0 ]
+  wait_relays 1
+  [ "$(grep -c . "$CLAUDE_LOG")" -eq 1 ]
+  grep -q "^$CLAUDE_CONFIG_DIR	-p " "$CLAUDE_LOG"
+  grep -qF 'to="proj-7"' "$CLAUDE_LOG.stdin"
+  grep -qF 'postbox: Claude Peers: Alpha claimed: fix thing (from the tabs' "$CLAUDE_LOG.stdin"
+  grep -q 'lead-news: .*: woke proj-7 with 1 line(s)' "$POSTBOX_STATE/logs/courier.log"
+  [ "$(counter)" = none ]
+  [ "$(cat "$POSTBOX_STATE/rollcall/relayed/$(rkey)")" = 1 ]
+  "$PB" lead-news "$WORK"
+  grep -q 'already relayed' "$POSTBOX_STATE/logs/courier.log"
+  [ "$(grep -c . "$CLAUDE_LOG")" -eq 1 ]
+  "$PB" lead-news --again "$WORK"
+  wait_relays 2
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: Alpha claimed: fix thing" ]
+  [ "$(counter)" = 1 ]
+}
+
+@test "lead-news: a busy Lead is left to its Stop hook, which blocks once with the line" {
+  news_leader
+  lead_rec "$CLAUDE_CONFIG_DIR" "$WORK" proj-7 busy
+  logl 1799999500 Alpha claim "fix thing"
+  run "$PB" lead-news "$WORK"
+  [ "$status" -eq 0 ]
+  [ ! -e "$CLAUDE_LOG" ]
+  [ "$(counter)" = none ]
+  grep -q 'lead-news: .*: Lead busy (its Stop hook delivers)' "$POSTBOX_STATE/logs/courier.log"
+  run payload "$STOP" hook stop
+  [ "$output" = '{"decision": "block", "reason": "postbox: Claude Peers: Alpha claimed: fix thing Take this as news from your tabs: tell the operator what matters, then stop."}' ]
+  run payload "$STOP" hook stop
+  [ -z "$output" ]
+}
+
+@test "lead-news: no Lead session runs nothing and says so" {
+  news_leader
+  logl 1799999500 Alpha claim "fix thing"
+  run "$PB" lead-news "$WORK"
+  [ "$status" -eq 0 ]
+  [ ! -e "$CLAUDE_LOG" ]
+  grep -q 'lead-news: .*: no Lead session' "$POSTBOX_STATE/logs/courier.log"
+}
+
+@test "lead-news: wake-lead done holds a claim for the next prompt; off and postbox.courier false run nothing" {
+  news_leader
+  lead_rec "$CLAUDE_CONFIG_DIR" "$WORK" proj-7 idle
+  logl 1799999500 Alpha claim "fix thing"
+  git config --file "$GIT_CONFIG_GLOBAL" claude-peer.wake-lead done
+  "$PB" lead-news "$WORK"
+  grep -q 'nothing pending' "$POSTBOX_STATE/logs/courier.log"
+  run payload "$STOP" hook stop
+  [ -z "$output" ]
+  [ ! -e "$CLAUDE_LOG" ]
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: Alpha claimed: fix thing" ]
+  logl 1799999600 Alpha done "ok"
+  git config --file "$GIT_CONFIG_GLOBAL" claude-peer.wake-lead off
+  "$PB" lead-news "$WORK"
+  grep -q ': off$' "$POSTBOX_STATE/logs/courier.log"
+  run payload "$STOP" hook stop
+  [ -z "$output" ]
+  git config --file "$GIT_CONFIG_GLOBAL" --unset claude-peer.wake-lead
+  git config --file "$GIT_CONFIG_GLOBAL" postbox.courier false
+  "$PB" lead-news "$WORK"
+  grep -q 'courier disabled' "$POSTBOX_STATE/logs/courier.log"
+  [ ! -e "$CLAUDE_LOG" ]
+}
+
+@test "lead-news: a double quote and a backslash in a tab's text do not reach the relay" {
+  news_leader
+  lead_rec "$CLAUDE_CONFIG_DIR" "$WORK" proj-7 idle
+  logl 1799999500 Alpha note 'say "hi" back\slash'
+  "$PB" lead-news "$WORK"
+  wait_relays 1
+  grep -qF 'Alpha noted: say hi backslash (from' "$CLAUDE_LOG.stdin"
+}
+
+@test "lead-news: Lead by pid, then by session id, then every session in the directory" {
+  news_leader
+  lead_rec "$CLAUDE_CONFIG_DIR" "$WORK" L-one idle
+  lead_rec "$CLAUDE_CONFIG_DIR" "$WORK" L-two idle; two=$LPID
+  mkdir -p "$HOME/code/moved"
+  lead_rec "$CLAUDE_CONFIG_DIR" "$HOME/code/moved" L-three idle sid-3
+  logl 1799999500 Alpha claim "fix thing"
+  "$PB" lead-news "$WORK" "$two" -
+  wait_relays 1; sleep 0.3
+  [ "$(grep -c . "$CLAUDE_LOG")" -eq 1 ]
+  grep -qF 'to="L-two"' "$CLAUDE_LOG.stdin"
+  "$PB" lead-news --again "$WORK" 2147483000 sid-3
+  wait_relays 2; sleep 0.3
+  [ "$(grep -c . "$CLAUDE_LOG")" -eq 2 ]
+  grep -qF 'to="L-three"' "$CLAUDE_LOG.stdin"
+  "$PB" lead-news --again "$WORK" 2147483000 sid-none
+  wait_relays 4
+  grep -qF 'to="L-one"' "$CLAUDE_LOG.stdin"
+  grep -q 'handed over by pid 2147483000, now gone; told 2 session(s) in the directory' "$POSTBOX_STATE/logs/courier.log"
+}
+
+@test "hook stop: a session that never led never runs claude-peer" {
+  peer_stub
+  run payload '{"cwd":"'"$WORK"'","session_id":"s9","stop_hook_active":false}' hook stop
+  [ -z "$output" ]
+  [ ! -e "$PEER_LOG" ]
+}
+
+@test "hook stop: with mail and news both pending the mail blocks and the news waits for the next prompt" {
+  news_leader
+  logl 1799999500 Alpha claim "fix thing"
+  export FAKE_INBOX='{"unread_count":1,"messages":[{"id":3,"subject":"review please","from":"BlueLake"}]}'
+  run payload "$STOP" hook stop
+  [[ "$output" == *'new message(s)'* ]]
+  [[ "$output" != *'claimed'* ]]
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [[ "$output" == *"postbox: Claude Peers: Alpha claimed: fix thing"* ]]
 }

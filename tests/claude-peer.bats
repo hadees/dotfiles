@@ -831,6 +831,57 @@ LOG=.git/claude-peer.log
   [ "$status" -eq 1 ]
 }
 
+# A postbox stub that records each call; the call is detached, so wait for it.
+pb_stub() {
+  export CLAUDE_PEER_POSTBOX="$BATS_TEST_TMPDIR/bin/postbox" PB_CALLS="$BATS_TEST_TMPDIR/pb.calls"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"$PB_CALLS"\n' >"$CLAUDE_PEER_POSTBOX"
+  chmod +x "$CLAUDE_PEER_POSTBOX"
+}
+pb_wait() { # count
+  local i
+  for i in $(seq 1 40); do [ "$(grep -c . "$PB_CALLS" 2>/dev/null || echo 0)" -ge "$1" ] && return 0; sleep 0.05; done
+  return 1
+}
+
+@test "log: a tab's claim, note and done each call postbox lead-news for its claim's leader" {
+  pb_stub; slot_wt alpha Alpha
+  cd "$REPO/.claude/worktrees/alpha"
+  sh "$BIN" log claim fix thing -- lib; pb_wait 1
+  sh "$BIN" log note halfway; pb_wait 2
+  sh "$BIN" log done; pb_wait 3
+  [ "$(cat "$PB_CALLS")" = "lead-news $REPO - -"$'\n'"lead-news $REPO - -"$'\n'"lead-news $REPO - -" ]
+}
+
+@test "log: Lead's lines, the leader directory's while a tab runs, and log show call nothing" {
+  pb_stub; slot_wt alpha Alpha
+  cd "$REPO"
+  sh "$BIN" log --as Lead note mine
+  sh "$BIN" log note from the leader
+  sh "$BIN" log show >/dev/null
+  cd "$REPO/.claude/worktrees/alpha"
+  sh "$BIN" log --as Lead note also mine
+  sleep 0.5
+  [ ! -e "$PB_CALLS" ]
+}
+
+@test "log: Hermes from a directory with no claim passes the main checkout" {
+  pb_stub
+  mkdir "$BATS_TEST_TMPDIR/elsewhere"; git -C "$REPO" worktree add -q --detach "$BATS_TEST_TMPDIR/elsewhere/h" HEAD
+  cd "$BATS_TEST_TMPDIR/elsewhere/h"
+  sh "$BIN" log --as Hermes note x; pb_wait 1
+  [ "$(cat "$PB_CALLS")" = "lead-news $REPO - -" ]
+}
+
+@test "log: without an executable postbox, claim exits 0 and prints exactly its overlap lines" {
+  export CLAUDE_PEER_POSTBOX="$BATS_TEST_TMPDIR/nope"
+  slot_wt alpha Alpha; slot_wt beta Beta
+  cd "$REPO/.claude/worktrees/alpha"; sh "$BIN" log claim a -- lib
+  cd "$REPO/.claude/worktrees/beta"
+  run sh "$BIN" log claim b -- lib
+  [ "$status" -eq 0 ]
+  [ "$output" = "overlap"$'\t'"Alpha"$'\t'"lib"$'\t'"a" ]
+}
+
 @test "log: every worktree reads the one file in the common git directory; a bad verb is usage" {
   slot_wt alpha Alpha
   cd "$REPO/.claude/worktrees/alpha"

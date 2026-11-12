@@ -111,6 +111,42 @@ the history. The counter is per leader directory, not per session,
 caller delivers a line once. A label whose `end` or `gone` line printed gets no
 bare "has stopped" line in the same pass.
 
+**Lead gets a turn when a tab logs.** The *turn kinds*, from `git config
+claude-peer.wake-lead` read in the leader directory, are `claim note done idle
+gone` (`all`, the default and any unknown value), `done idle gone` (`done`), or
+none (`off`); every other line still waits for Lead's next prompt. Three
+delivery points, no daemon. `peer_news <dir> <kinds> [peek]` prints nothing and
+counts nothing unless a pending line has a turn kind; `peek` never moves the
+counter. *Lead's Stop hook*: after the mail check, when that would not block, a
+non-peer session with a roll-call state file (one that is or was a Lead) runs
+`peer_news "$sdir" <turn kinds>` and blocks once with the lines, then
+`Take this as news from your tabs: tell the operator what matters, then stop.`
+*An idle Lead*: `claude-peer log` runs `postbox lead-news [--again]
+<leader-dir> [<pid> <session-id>]`, which declines, one `courier.log` line each
+(`<time> lead-news: <dir>: <reason>`), on `off`, `courier disabled` / `no
+claude on PATH`, `nothing pending` (the peek), `no Lead session`, `Lead busy
+(its Stop hook delivers)`, and `already relayed` (the log's line count equals
+`rollcall/relayed/<key>`; `--again` skips that). Else it relays to each idle
+(`idle`, `shell`, `-`) Lead session with `relay_text`, the courier's headless
+`SendMessage`, the lines joined with `; ` (the prefix kept on the first),
+quotes, backslashes and newlines removed, cut to 400 characters, plus ` (from
+the tabs' log; no reply needed)`; logs `woke <name> with <n> line(s)`; and
+records the count. It never advances the delivered count: the woken turn's
+prompt hook prints the lines again (twice in one turn, by design) and counts
+them, or Stop delivers them. Lead is found by `lead_sessions <dir> [<pid>
+<session-id>]`, from the registries: the record with that pid, else those with
+that `sessionId`, else those whose physical `cwd` is the leader directory
+(`courier.log`: `handed over by pid <n>, now gone; told <k> session(s) in the
+directory` when the first two missed). `postbox lead [<dir>]` prints `name
+profile status` per Lead of `<dir>`'s tab (leader from `claude-peer claim`
+when that answers, else the `peers` row holding `<dir>`, else `<dir>`), exit 1
+for none; a peer's start line gains `You are a Claude Peers tab; Lead is the
+session <name> (SendMessage). …` when one is found. Cost: a tab's start adds
+one `claude-peer peers` and one `python3`; each tab claim, note and done one
+detached `postbox` and, when Lead is idle, one small headless run; Lead's
+Stop one `claude-peer log show --all` and an `awk` (none for a session that
+never led); expect two to four extra Lead turns per task per tab under `all`.
+
 Cost, over a session start that is otherwise unchanged (one `sh`, a few
 `python3` starts, one `curl` capped at two seconds, one `am check-inbox`,
 about 95 words): a non-peer start adds one socket test and one `python3` for
@@ -176,7 +212,7 @@ when it does.
 
 Commands: `name [--source] [dir]`, `names [root...]`, `install`, `uninstall
 [--purge]`, `start|stop|restart|status|logs`, `connect|disconnect`, `hook
-<event>`, `guard`, `courier`, `settings`, `dir`. `postbox-doctor` joins
+<event>`, `guard`, `courier`, `lead [dir]`, `lead-news`, `settings`, `dir`. `postbox-doctor` joins
 `doctor`.
 Tests: `tests/postbox.bats` (stub am/curl/minisign/launchctl/claude,
 sandboxed HOME and state, fixture directories only).

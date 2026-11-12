@@ -203,7 +203,8 @@ usage; 3 already in the requested state (running, not running, no slot free);
 **A peer is a separate project, not a helper of the leader.** It has its own
 context, branch and pull requests, and plans and delegates inside itself like any
 session; `start` passes its prompt through untouched and nothing here briefs,
-merges or supervises a peer. The one shared thing is the coordination log,
+merges or supervises a peer. A tab's log lines are relayed to Lead (postbox's
+`lead-news` and Stop hook), and a tab is still not briefed, merged or supervised. The one shared thing is the coordination log,
 `<git common dir>/claude-peer.log`, so every worktree of the repository reads the
 same file and it outlives any session. It is append-only, one line per entry,
 tab-separated: `<UTC time><TAB><who><TAB><kind><TAB><text>[<TAB><path>…]`, with
@@ -220,7 +221,11 @@ anything overlaps, because a claim is advisory and a non-zero exit reads as
 is open until the same `who` logs `done`, or a `stop` or `end` line for that
 label follows it, so a stopped or ended peer never leaves a claim open. `log
 show` prints the open claims and the last 24 hours of notes, `--all` the file.
-`start` and `stop` each append `<label> by <who>`. When a session in a pane
+`start` and `stop` each append `<label> by <who>`. A `claim`, `note` or `done`
+by anyone but `Lead` then runs `postbox lead-news <leader> <pid> <session id>`
+(`CLAUDE_PEER_POSTBOX`, default `~/bin/postbox`), detached and silent, for the
+leader of the caller's live claim (pid and session id its lines 9 and 10, `-`
+when missing), else the main checkout; `log`'s output and status do not change. When a session in a pane
 returns, the pane appends `end` as the slot's label, text `<Label> ended after
 <dur>` (`dur_of`: `45s`, `12m`, `3h`, `2d`) plus ` (<task>)` when it had one; a
 refused start writes none, and a pane killed outright writes none (its claim is
