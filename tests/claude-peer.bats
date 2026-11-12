@@ -2678,6 +2678,15 @@ opane() {
   until_ok "[ -f '$r/.git/claude-peer.wait/overlay.$LAST_PANE' ]"
 }
 
+# obg <arg> <tag>: `overlay <arg>` in the background from $REPO, output in bg-<tag>.out, then
+# wait for the plain shell (a version that wrongly makes it a waiting pane must fail the
+# test, not hang it)
+obg() {
+  ( cd "$REPO" && exec sh "$BIN" overlay "$1" >"$BATS_TEST_TMPDIR/bg-$2.out" 2>&1 3>&- ) &
+  PANES="$PANES $!"
+  until_ok "grep -q '^args=-i\$' '$BATS_TEST_TMPDIR/bg-$2.out'"
+}
+
 @test "overlay: a waiting pane stands in the overlay and leaves the leader's repository alone" {
   overlay_stub
   OV1=$(overlay_repo ov1)
@@ -2764,7 +2773,7 @@ opane() {
   [[ "$output" == "claude-peer: no overlay 'nope' on this machine (claude-peer overlays lists them; a changed set needs claude-peer install with iTerm2 quit); plain shell"$'\n'"pwd=$REPO"$'\n'* ]]
   [[ "$output" == *"args=-i" ]]
   run sh "$BIN" overlay 2
-  [[ "$output" == *"no overlay '2' on this machine"* ]]
+  [[ "$output" == *"no overlay pane 2 is installed on this machine"* ]]
   rm -rf "$OV1"
   run sh "$BIN" overlay fake1
   [ "$status" -eq 0 ]
@@ -2782,7 +2791,7 @@ opane() {
   [ "$status" -eq 2 ]
 }
 
-@test "overlay: CLAUDE_PROFILE is unset for the session, and a number reaches that row's root" {
+@test "overlay: CLAUDE_PROFILE is unset for the session, and a number reaches the pane install wrote" {
   overlay_stub
   OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
   overlay_cfg fake_a.toml "$OV1"
@@ -2795,11 +2804,46 @@ STUB
   chmod +x "$BATS_TEST_TMPDIR/bin/profshell"
   export SHELL="$BATS_TEST_TMPDIR/bin/profshell"
   export CLAUDE_PROFILE=x
-  # rows sort fake-b, fake_a: 1 is the second repository
+  # rows sort fake-b, fake_a; the state file says pane 1 is fake-b
+  mkdir -p "$XDG_STATE_HOME/claude-peer"
+  printf 'fake-b fake_a\n' >"$XDG_STATE_HOME/claude-peer/overlays"
   opane 1 "$OV2" "$REPO" one
   press one ''
   until_ok 'grep -q "^pwd=$OV2/.claude/worktrees/overlay profile=unset\$" "$FAKE_SHELL_LOG"'
   grep -q "^Fake-b: Return" "$BATS_TEST_TMPDIR/pane-one.out"
+}
+
+@test "overlay: a number is the pane install wrote, by the state file, not the row of overlays now" {
+  overlay_stub
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg fake_a.toml "$OV1"
+  overlay_cfg fake-b.toml "$OV2"
+  mkdir -p "$XDG_STATE_HOME/claude-peer"
+  printf 'fake_a\n' >"$XDG_STATE_HOME/claude-peer/overlays"
+  # row 1 of `overlays` is fake-b; the pane install wrote as 1 is fake_a
+  opane 1 "$OV1"
+  grep -q "^Fake_a: Return" "$BATS_TEST_TMPDIR/pane-1.out"
+  [ ! -e "$OV2/.git/claude-peer.wait" ]
+}
+
+@test "overlay: a number with no pane behind it is one line and a plain shell" {
+  overlay_stub
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  local f="$XDG_STATE_HOME/claude-peer/overlays" m
+  obg 1 nofile
+  mkdir -p "${f%/*}"
+  printf 'fake1\n' >"$f"
+  obg 2 past
+  obg 0 zero
+  for m in "nofile 1" "past 2" "zero 0"; do
+    [ "$(sed -n 1p "$BATS_TEST_TMPDIR/bg-${m% *}.out")" = "claude-peer: no overlay pane ${m#* } is installed on this machine (claude-peer status says what is; claude-peer install with iTerm2 quit writes them); plain shell" ]
+    grep -qx "pwd=$REPO" "$BATS_TEST_TMPDIR/bg-${m% *}.out"
+  done
+  # a name in the state file that this machine no longer has
+  printf 'gone fake1\n' >"$f"
+  obg 1 gone
+  [ "$(sed -n 1p "$BATS_TEST_TMPDIR/bg-gone.out")" = "claude-peer: no overlay 'gone' on this machine (claude-peer overlays lists them; a changed set needs claude-peer install with iTerm2 quit); plain shell" ]
+  grep -qx "pwd=$REPO" "$BATS_TEST_TMPDIR/bg-gone.out"
 }
 
 # ov_prefs: the stubs, a chezmoi stub and a fixture store with iTerm2 quit
@@ -2834,16 +2878,16 @@ ov_prefs() {
   o=$(pyget "$g" 'json.dumps(g[3])'); oh=$(pyget "$g" 'json.dumps(g[4])'); h=$(pyget "$g" 'json.dumps(g[2])')
   [ "$(pyget "$o" 'g["name"]')" = "Claude Peers + Overlays" ]
   [ "$(pyget "$oh" 'g["name"]')" = "Claude Peers + Hermes + Overlays" ]
-  [ "$(pyget "$o" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Fake1', 'Fake2']" ]
-  [ "$(pyget "$oh" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Hermes', 'Fake1', 'Fake2']" ]
+  [ "$(pyget "$o" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Overlay 1', 'Overlay 2']" ]
+  [ "$(pyget "$oh" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Hermes', 'Overlay 1', 'Overlay 2']" ]
   [ "$(pyget "$o" 'all(s["uniqueIdentifier"].startswith(g["uniqueIdentifier"] + ".") for s in g["sessions"])')" = True ]
   [ "$(pyget "$oh" 'all(s["uniqueIdentifier"].startswith(g["uniqueIdentifier"] + ".") for s in g["sessions"])')" = True ]
   [ "$(pyget "$o" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.v.overlays.main'}" ]
   [ "$(pyget "$oh" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.v.overlays.h.main'}" ]
-  [ "$(pyget "$oh" '[s["uniqueIdentifier"] for s in g["sessions"]][4:]')" = "['claudePeer.v.overlays.h.hermes', 'claudePeer.v.overlays.h.o.fake1', 'claudePeer.v.overlays.h.o.fake2']" ]
+  [ "$(pyget "$oh" '[s["uniqueIdentifier"] for s in g["sessions"]][4:]')" = "['claudePeer.v.overlays.h.hermes', 'claudePeer.v.overlays.h.o.1', 'claudePeer.v.overlays.h.o.2']" ]
   [ "$(pyget "$oh" '[s["command"] for s in g["sessions"]][:5]')" = "$(pyget "$h" '[s["command"] for s in g["sessions"]]')" ]
-  [ "$(pyget "$o" '[s["command"] for s in g["sessions"]][4:]')" = "['claude-peer overlay fake1', 'claude-peer overlay fake2']" ]
-  [ "$(pyget "$oh" '[s["command"] for s in g["sessions"]][5:]')" = "['claude-peer overlay fake1', 'claude-peer overlay fake2']" ]
+  [ "$(pyget "$o" '[s["command"] for s in g["sessions"]][4:]')" = "['claude-peer overlay 1', 'claude-peer overlay 2']" ]
+  [ "$(pyget "$oh" '[s["command"] for s in g["sessions"]][5:]')" = "['claude-peer overlay 1', 'claude-peer overlay 2']" ]
   [ "$(pyget "$o" 'set(s["kind"]["kind"] for s in g["sessions"][1:])')" = "{'peer'}" ]
   [ "$(pyget "$o" 'g["sessions"][-1]["toolbarItems"]')" = "[{'kind': 'modeSwitcher'}]" ]
   [ "$(cat "$OV_STATE")" = "fake1 fake2" ]
@@ -2868,7 +2912,7 @@ ov_prefs() {
   [ "$status" -eq 0 ]
   [[ "$output" == *'"Claude Peers + Overlays" replaced'* ]]
   g=$(groups "$CLAUDE_PEER_PREFS")
-  [ "$(pyget "$g" '[s["displayName"] for s in g[3]["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Fake2']" ]
+  [ "$(pyget "$g" '[s["displayName"] for s in g[3]["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Overlay 1']" ]
   [ "$(cat "$OV_STATE")" = fake2 ]
   rm "$HOME/.config/chezmoi/fake2.toml"
   run sh "$BIN" install
@@ -2925,6 +2969,68 @@ PY
   [ "$(cat "$OV_STATE")" = fake1 ]
 }
 
+# ov_store_strings <plist>: every string the store holds, one per line; data values are
+# decoded and, where they are JSON, walked
+ov_store_strings() {
+  python3 -I - "$1" <<'PY'
+import json, plistlib, sys
+def walk(v):
+    if isinstance(v, dict):
+        for k, x in v.items():
+            yield str(k)
+            yield from walk(x)
+    elif isinstance(v, (list, tuple)):
+        for x in v:
+            yield from walk(x)
+    elif isinstance(v, bytes):
+        t = v.decode("utf-8", "replace")
+        yield t
+        try:
+            yield from walk(json.loads(t))
+        except ValueError:
+            pass
+    elif isinstance(v, str):
+        yield v
+for s in walk(plistlib.load(open(sys.argv[1], "rb"))):
+    print(s)
+PY
+}
+
+@test "install overlays: the store holds positions and no overlay name, config name or path" {
+  ov_prefs
+  addprofiles "$CLAUDE_PEER_PREFS"
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg fake1.toml "$OV1"
+  overlay_cfg Fake.Two.toml "$OV2"
+  sh "$BIN" install >/dev/null
+  sh "$BIN" default peers >/dev/null
+  sh "$BIN" install >/dev/null
+  local s; s=$(ov_store_strings "$CLAUDE_PEER_PREFS")
+  [[ "$s" == *"claudePeer.v.overlays.h.o.2"* ]]
+  [[ "$s" == *"claude-peer overlay 2"* ]]
+  [[ "$s" == *"Overlay 2"* ]]
+  [[ "${s,,}" != *fake* ]]
+  [[ "$s" != *ov1* ]]
+  [[ "$s" != *ov2* ]]
+  [[ "$s" != *"$BATS_TEST_TMPDIR"* ]]
+  [ "$(cat "$OV_STATE")" = "fake-two fake1" ]
+}
+
+@test "install overlays: the command install wrote reaches its overlay, and a new overlay does not re-point it" {
+  ov_prefs
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg fake1.toml "$OV1"
+  overlay_cfg fake2.toml "$OV2"
+  sh "$BIN" install >/dev/null
+  local g; g=$(groups "$CLAUDE_PEER_PREFS")
+  [ "$(pyget "$g" 'g[3]["sessions"][-1]["command"]')" = "claude-peer overlay 2" ]
+  overlay_cfg fake0.toml "$(overlay_repo ov0)"
+  opane 2 "$OV2"
+  grep -q "^Fake2: Return" "$BATS_TEST_TMPDIR/pane-2.out"
+  ov_status
+  [[ "$output" == *"overlays: installed, out of date (Overlay 1 = Fake1, Overlay 2 = Fake2); this machine has 3 (Overlay 1 = Fake0, Overlay 2 = Fake1, Overlay 3 = Fake2) — claude-peer install (with iTerm2 quit)"* ]]
+}
+
 # --- overlays: status ---------------------------------------------------------------
 
 # ov_status: status, from inside $REPO, with the public source at $REPO
@@ -2958,15 +3064,15 @@ ov_status() { FAKE_CHEZMOI_SOURCE="$REPO" run --separate-stderr sh "$BIN" status
   overlay_cfg fake2.toml "$(overlay_repo ov2)"
   sh "$BIN" install >/dev/null
   ov_status
-  [[ "$output" == *"overlays: installed (2 panes: Fake1, Fake2)"* ]]
+  [[ "$output" == *"overlays: installed (2 panes: Overlay 1 = Fake1, Overlay 2 = Fake2)"* ]]
   [[ "$output" != *"out of date"* ]]
   [[ "$output" != *"state file"* ]]
   overlay_cfg fake3.toml "$(overlay_repo ov3)"
   ov_status
-  [[ "$output" == *"overlays: installed, out of date (Fake1, Fake2); this machine has 3 (Fake1, Fake2, Fake3) — claude-peer install (with iTerm2 quit)"* ]]
+  [[ "$output" == *"overlays: installed, out of date (Overlay 1 = Fake1, Overlay 2 = Fake2); this machine has 3 (Overlay 1 = Fake1, Overlay 2 = Fake2, Overlay 3 = Fake3) — claude-peer install (with iTerm2 quit)"* ]]
   rm "$HOME"/.config/chezmoi/fake*.toml
   ov_status
-  [[ "$output" == *"overlays: installed (Fake1, Fake2), but this machine has none now — claude-peer install (with iTerm2 quit) removes them"* ]]
+  [[ "$output" == *"overlays: installed (Overlay 1 = Fake1, Overlay 2 = Fake2), but this machine has none now — claude-peer install (with iTerm2 quit) removes them"* ]]
 }
 
 @test "status overlays: one group of the pair missing is out of date" {
@@ -2981,7 +3087,17 @@ pl["Workgroups"] = json.dumps(gs).encode()
 plistlib.dump(pl, open(sys.argv[1], "wb"))
 PY
   ov_status
-  [[ "$output" == *"overlays: installed, out of date (Fake1); this machine has 1 (Fake1)"* ]]
+  [[ "$output" == *"overlays: installed, out of date (Overlay 1 = Fake1); this machine has 1 (Overlay 1 = Fake1)"* ]]
+}
+
+@test "status overlays: as many overlays under other names is out of date" {
+  ov_prefs
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  sh "$BIN" install >/dev/null
+  rm "$HOME/.config/chezmoi/fake1.toml" "$HOME/.config/chezmoi/fake1.toml.src"
+  overlay_cfg fake9.toml "$(overlay_repo ov9)"
+  ov_status
+  [[ "$output" == *"overlays: installed, out of date (Overlay 1 = Fake1); this machine has 1 (Overlay 1 = Fake9) — claude-peer install (with iTerm2 quit)"* ]]
 }
 
 @test "status overlays: the state file and the store disagree in both directions" {
@@ -2990,8 +3106,8 @@ PY
   sh "$BIN" install >/dev/null
   rm "$OV_STATE"
   ov_status
-  [[ "$output" == *"overlays: installed (1 panes: Fake1)"* ]]
-  [[ "$output" == *"overlays: installed, but the state file is missing, so claude-peer here stays base — claude-peer install (with iTerm2 quit)"* ]]
+  [[ "$output" == *"overlays: installed (1 panes: Overlay 1 = Fake1)"* ]]
+  [[ "$output" == *"overlays: installed, but the state file is missing, so claude-peer here stays base and no overlay pane finds its overlay — claude-peer install (with iTerm2 quit)"* ]]
   mkdir -p "${OV_STATE%/*}"
   printf 'fake1 fake9\n' >"$OV_STATE"
   mkprefs "$CLAUDE_PEER_PREFS"
@@ -3011,7 +3127,7 @@ PY
   mkprefs "$BATS_TEST_TMPDIR/domain.plist"
   export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist"
   ov_status
-  [[ "$output" == *"overlays: installed (1 panes: Fake1)"* ]]
+  [[ "$output" == *"overlays: installed (1 panes: Overlay 1 = Fake1)"* ]]
   FAKE_PROCS=iTerm2 ov_status
   [[ "$output" == *"overlays: not installed — this machine has 1 (Fake1)"* ]]
 }
