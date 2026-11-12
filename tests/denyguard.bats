@@ -872,3 +872,71 @@ EOF")"
     [ -z "$output" ] || { echo "uppercase refused off macOS: $output"; false; }
   fi
 }
+
+# --- a heredoc belongs to the command its << is written in ---------------------
+#
+# `git commit -m "$(cat <<'EOF' ... EOF)"` is the usual way an agent writes a
+# message: the body goes to cat, whose output git takes as an argument, so it
+# is data. Under `bash -c`, `ssh` or `eval` the same text is code.
+
+@test "heredoc owner: prose in a message built with \$(cat <<EOF) for git, gh or an assignment is data" {
+  local cmd
+  cmd="git commit -m \"\$(cat <<'EOF'
+rg is now the default searcher
+EOF
+)\""
+  run hook "$(evt_ml "$HOME/code" "$cmd")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || { echo "git refused: $output"; false; }
+  cmd="gh pr create --body \"\$(cat <<'EOF'
+tree output is sorted
+EOF
+)\""
+  run hook "$(evt_ml "$HOME/code" "$cmd")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || { echo "gh refused: $output"; false; }
+  cmd="body=\"\$(cat <<'EOF'
+du was wrong
+EOF
+)\""
+  run hook "$(evt_ml "$HOME/code" "$cmd")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || { echo "assignment refused: $output"; false; }
+}
+
+@test "heredoc owner controls: bash -c, an env-prefixed bash -c, sh and a piped cat keep the body as commands" {
+  local cmd
+  for cmd in "bash -c \"\$(cat <<'EOF'
+rg gizmo
+EOF
+)\"" "X=1 bash -c \"\$(cat <<'EOF'
+rg gizmo
+EOF
+)\"" "sh <<'EOF'
+rg gizmo
+EOF" "cat <<'EOF' | sh
+rg gizmo
+EOF"; do
+    run hook "$(evt_ml "$HOME/code" "$cmd")"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"recurses from $HOME/code"* ]] || { echo "$cmd: $output"; false; }
+  done
+}
+
+@test "heredoc owner: a message body that names a denied file is still a hit; a plain subshell around cat is still data" {
+  local cmd
+  cmd="git commit -m \"\$(cat <<'EOF'
+see $HOME/code/octo-secret/x
+EOF
+)\""
+  run hook "$(evt_ml "$HOME/code" "$cmd")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"octo-secret/x is inside"* ]] || { echo "$output"; false; }
+  cmd="( cat <<'EOF'
+rg gizmo
+EOF
+)"
+  run hook "$(evt_ml "$HOME/code" "$cmd")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || { echo "subshell refused: $output"; false; }
+}

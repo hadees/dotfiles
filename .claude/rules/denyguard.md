@@ -44,7 +44,15 @@ rule is not itself a hit — `ls ~/.claude` over a profile that only denies
 `~/.claude/projects/**` passes, and so does a heredoc body written as
 documentation (`cat <<EOF … EOF`), which is scanned for a direct hit only,
 never an ancestor guess, so prose that names a denied path passes while a
-script that actually opens it still refuses. A hit fires only when that
+script that actually opens it still refuses. Whose heredoc it is decides
+this (`heredoc_consumer`): the command word of the last simple command before
+the `<<`, never the first word of the line. A body is data when that is `cat`,
+`tee` or `printf` with no pipe after the marker, and, when it sits inside
+`$( )`, when the command that takes the substitution is an assignment or one of
+`SUBSTITUTION_HOSTS` (`git`, `gh`, `local`, `export`, `declare`, `typeset`,
+`readonly`): `git commit -m "$(cat <<'EOF' … EOF)"` is a message. Under
+`bash -c`, `ssh`, `eval` or an unknown tool the same text becomes that
+program's argument and stays under the full rule set. A hit fires only when that
 SAME command also carries a genuine recursion signal — `find`/`rg`/`du`/…
 by nature, or `-r`/`-R`/`--recursive` on `grep`/`cp`/`rm`/`ls`/… — never a
 bare mention of a recursive-sounding word or a flag cluster that merely
@@ -165,10 +173,11 @@ or any program that computes the path at run time all pass through unseen.
 So does a path assembled by shell quoting, backslashes or brace expansion
 (`~/co''de/...`, `~/code/octo-{secret,x}`), and a case-insensitive mount on
 Linux or WSL (case is folded on macOS only).
-Heredoc reading has two soft spots of its own: a `<<WORD` inside a quoted
+Heredoc reading has soft spots of its own: a `<<WORD` inside a quoted
 string still counts as an opener when a later line happens to be exactly
-`WORD` (and its lines get the data reading if that line starts with
-`cat`/`tee`/`printf`), and a delimiter with characters outside
+`WORD` (and its lines get the data reading if the command before the `<<` is
+`cat`/`tee`/`printf`), a git alias that shells out and is fed by
+`$(cat <<EOF)` (the host is taken to be harmless text), and a delimiter with characters outside
 `[A-Za-z0-9_]`, or a second heredoc opened on the same line, is not
 recognised — its body is read as ordinary commands, which is strict, not
 blind.

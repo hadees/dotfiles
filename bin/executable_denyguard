@@ -158,6 +158,11 @@ HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)(-)?\s*(['\"]?)(\w+)\2")
 # refuses it; every other consumer (an interpreter, or any piped body)
 # keeps the full rule set, including the ancestor/recursion check.
 DATA_HEREDOC_CONSUMERS = {"cat", "tee", "printf"}
+# `cat <<EOF` inside `$( )` hands its output to the command around it. Under
+# these that output is text (a message, a body, a value); under anything else
+# (`bash -c`, `ssh`, `eval`, an unknown tool) it may be run.
+SUBSTITUTION_HOSTS = {"git", "gh", "local", "export", "declare", "typeset", "readonly"}
+ASSIGNMENT_RE = re.compile(r"^[A-Za-z_]\w*=")
 # `~` counts as $HOME only at the start of a token or right after `=`/`:`
 # (VAR=~/x, --opt=~/x) — a bare `~` elsewhere is an ordinary character.
 TILDE_RE = re.compile(r"""(?:(?<=[\s;|&()<>'"=:])~|^~)(?=/|$)""")
@@ -408,6 +413,27 @@ def split_simple_commands(text):
     return segments
 
 
+def heredoc_consumer(head):
+    """Whose heredoc is it? `head` is the opener line up to the `<<`: the
+    consumer is the command word of its LAST simple command, the one the
+    operator is written in. `substituted` is true when that command is opened
+    by `$(`; `host` is then the command that takes the substitution's output
+    as an argument (assignment words skipped; empty for a plain assignment)."""
+    parts = SEP_RE.split(head)  # text, separator, text, separator, ...
+    for k in range(len(parts) - 1, -1, -2):
+        words = split_words(parts[k])
+        if words:
+            break
+    else:
+        return "", False, ""
+    if k < 2 or parts[k - 1] != "(" or not parts[k - 2].endswith("$"):
+        return command_word_of(words), False, ""
+    host_words = split_words(parts[k - 2][:-1])
+    while host_words and ASSIGNMENT_RE.match(host_words[0]):
+        host_words.pop(0)
+    return command_word_of(words), True, command_word_of(host_words)
+
+
 def heredoc_of(lines, i, last_exact, last_stripped):
     """The heredoc `lines[i]` opens, as (match, terminator_index) — or None.
     Reading a line as a heredoc opener only ever RELAXES the scan (a data
@@ -460,8 +486,9 @@ def segments_of(text):
         # joined, not scanned apart, so `grep -r x <<EOF dir` keeps its
         # recursion signal and its directory in the same simple command.
         segments.extend(split_simple_commands(head + " " + tail))
-        consumer = command_word_of(split_words(head))
-        is_data = consumer in DATA_HEREDOC_CONSUMERS and "|" not in tail
+        consumer, substituted, host = heredoc_consumer(head)
+        is_data = (consumer in DATA_HEREDOC_CONSUMERS and "|" not in tail
+                   and (not substituted or not host or host in SUBSTITUTION_HOSTS))
         for body_line in lines[i + 1:end]:
             if is_data:
                 words = split_words(body_line)
