@@ -6,7 +6,7 @@
 # repository facts there has existed since 2026-09 without holding.
 # memoryguard asks two typed questions of the note's text — which of seven
 # homes does it belong in, and does it name anything private — and `hook pre`
-# refuses a write that confidently belongs somewhere other than memory and
+# refuses a write that confidently belongs in a public home (or nowhere) and
 # names nothing private, naming the destination. A note that names something
 # private, or whose home is unclear, is saved with a note to the session;
 # only a note not worth saving is refused whatever it names. It writes
