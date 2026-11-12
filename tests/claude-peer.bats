@@ -3115,7 +3115,8 @@ STUB
   printf 'fake_a\n' >"$XDG_STATE_HOME/claude-peer/overlays"
   # row 1 of `overlays` is fake-b; the pane install wrote as 1 is fake_a
   opane 1 "$OV1"
-  grep -q "^Fake_a: Return" "$BATS_TEST_TMPDIR/pane-1.out"
+  # the pane writes its wait file before its first line
+  until_ok 'grep -q "^Fake_a: Return" "$BATS_TEST_TMPDIR/pane-1.out"'
   [ ! -e "$OV2/.git/claude-peer.wait" ]
 }
 
@@ -3319,7 +3320,7 @@ PY
   [ "$(pyget "$g" 'g[3]["sessions"][-1]["command"]')" = "claude-peer overlay 2" ]
   overlay_cfg fake0.toml "$(overlay_repo ov0)"
   opane 2 "$OV2"
-  grep -q "^Fake2: Return" "$BATS_TEST_TMPDIR/pane-2.out"
+  until_ok 'grep -q "^Fake2: Return" "$BATS_TEST_TMPDIR/pane-2.out"'
   ov_status
   [[ "$output" == *"overlays: installed, out of date (Overlay 1 = Fake1, Overlay 2 = Fake2); this machine has 3 (Overlay 1 = Fake0, Overlay 2 = Fake1, Overlay 3 = Fake2) — claude-peer install (with iTerm2 quit)"* ]]
 }
