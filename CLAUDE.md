@@ -165,7 +165,12 @@ Add `~/.extra` (from the private overlay, or hand-written) for per-machine overr
 **This repo is public and must stay identity-free.** Anything that names a
 person, an account, an organization, or a private repo lives in **private
 chezmoi overlays** — additional chezmoi configs in `~/.config/chezmoi/*.toml`,
-each pointing at its own source clone. `docs/private-overlays.md` is the
+each pointing at its own source clone. One exception: the GitHub login that
+owns this repository is public by construction (the clone URL, the install
+one-liner, the Homebrew tap and the personal profile's directory name all
+carry it), and the personal overlay is referred to by its slug under that
+login; nothing else about a person, and nothing about a work account,
+organization or repository, may appear. `docs/private-overlays.md` is the
 full manual (building an overlay, loading it, what goes where, the leak
 test, the add-an-account checklist); this section is the summary. Ownership
 follows content:

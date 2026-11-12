@@ -73,7 +73,7 @@ would change without doing it; the driver never applies to the real home.
 ## Test
 
 ```bash
-.claude/skills/run-dotfiles/driver.sh test        # = bats tests; ~135 tests, a few minutes
+.claude/skills/run-dotfiles/driver.sh test        # = bats tests; the whole suite, several minutes
 ```
 
 CI runs the same on ubuntu, macOS, Rocky 9, and WSL. Some tests use

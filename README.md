@@ -14,7 +14,8 @@ time (`mac` / `linux` / `wsl` / `ephemeral`) controls what gets deployed.
 sh -c "$(curl -fsLS get.chezmoi.io)" -- init --apply hadees
 ```
 
-Installs chezmoi to `~/.local/bin`, clones this repo, prompts once for the
+Installs chezmoi to `./bin` (from your home directory that is `~/bin`, which
+these dotfiles put on PATH), clones this repo, prompts once for the
 machine class, and applies.
 
 ### Disposable box (leave no trace)
@@ -39,7 +40,7 @@ chezmoi init --source ~/code/dotfiles --apply
 
 The `mac` machine class pins chezmoi’s `sourceDir` to the clone, so the
 day-to-day loop is: edit files in `~/code/dotfiles`, review with
-`chezmoi diff`, deploy with `chezmoi apply` (aliased to `dotfiles`).
+`chezmoi diff`, deploy with `chezmoi apply` (the `dotfiles` function runs it, then applies any private overlays).
 
 ### Specify the `$PATH`
 

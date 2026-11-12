@@ -38,10 +38,9 @@ turning `commit.gpgsign` off.
 `onepassword-doctor` reports all three channels separately (`ssh -G` for the
 `IdentityAgent`, `$SSH_AUTH_SOCK` on its own line), whether `~/.extra`
 mentions a routed token (**names only, never a value**), and a `skill:` line
-comparing the notes' version stamp to what is installed. `doctor` runs it
-last. Versions come off the install without executing anything — the CLI is a
-**cask**, so `bin_trace` reads it out of the Caskroom path, and the app's
-version comes from its `Info.plist`.
+comparing the notes' version stamp to what is installed. `doctor` runs it. Versions come off the install without executing anything
+— the CLI is a **cask**, so `bin_trace` reads it out of the Caskroom path,
+and the app's version comes from its `Info.plist`.
 
 The long form lives in the **`onepassword` skill**
 (`.claude/skills/onepassword/`, dot-prefixed so chezmoi never deploys it):
