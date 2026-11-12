@@ -537,3 +537,42 @@ cat $HOME/code/octo-secret/x"
   [[ "$output" == *"settings.json"* ]]
   [[ "$output" != *dotfiles* ]]
 }
+
+# --- a glob is matched by component, not by its literal prefix ---------------
+@test "glob: a home-anchored pattern that names nothing denied is silent" {
+  run hook "$(evt "$HOME/code" "ls $HOME/.zsh*")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "glob: a pattern that can only name an ancestor is silent without a recursion signal" {
+  run hook "$(evt "$HOME/code" "ls $HOME/.clau*")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "glob: a data heredoc body mentioning a home glob is silent" {
+  run hook "$(evt_ml "$HOME/code" "cat <<EOF > notes.md
+the pattern $HOME/.z* is shell startup
+EOF")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "glob: a pattern that can name the denied tree is refused (trailing star)" {
+  run hook "$(evt "$HOME/code" "ls $HOME/code/*")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"may expand into"* ]]
+}
+
+@test "glob: a pattern that can name the denied tree is refused (star mid-name)" {
+  run hook "$(evt "$HOME/code" "ls $HOME/code/octo-*/x")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"may expand into"* ]]
+}
+
+@test "glob: a pattern naming only an ancestor is refused when the command recurses" {
+  run hook "$(evt "$HOME/code" "grep -r gizmo $HOME/co*")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"recurses here"* ]]
+}

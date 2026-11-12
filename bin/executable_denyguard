@@ -221,8 +221,7 @@ def strip_recursive_suffix(s):
 
 def literal_prefix(path):
     """Text before the first glob character, cut back to the last `/` —
-    used both for a rule's own glob remainder and for a glob-bearing
-    command fragment, so the two compare on the same footing."""
+    a glob rule's fixed directory (a command's glob goes to glob_reach)."""
     idx = next((i for i, c in enumerate(path) if c in GLOB_CHARS), None)
     if idx is None:
         return path
@@ -455,6 +454,28 @@ def candidate_of_token(raw_tok, cwd):
     return out
 
 
+def glob_reach(cand, prefix):
+    """How an absolute glob-bearing `cand` can reach the denied `prefix`:
+    "inside" (it can name the tree or something in it), "ancestor" (only a
+    directory above it) or "" (neither). Components are compared one by
+    one, so `.claude*` cannot name `~/code/x` just because both sit under
+    the home directory. Case-sensitive on purpose (fnmatchcase)."""
+    cparts = [p for p in cand.split("/") if p]
+    pparts = [p for p in prefix.split("/") if p]
+    for i, pp in enumerate(pparts):
+        if i == len(cparts):
+            return "ancestor"
+        cp = cparts[i]
+        if cp == "**":
+            return "inside"
+        if any(c in cp for c in GLOB_CHARS):
+            if not fnmatch.fnmatchcase(pp, cp):
+                return ""
+        elif cp != pp:
+            return ""
+    return "inside"
+
+
 def scan(text, cwd, rules):
     """First rule this text trips, as (fragment, rule, reason) — or None.
     A recursion signal only counts within the SAME simple command as the
@@ -465,15 +486,18 @@ def scan(text, cwd, rules):
         for raw_tok in words:
             for tok, cand, has_glob in candidate_of_token(raw_tok, cwd):
                 if has_glob:
-                    gp = literal_prefix(cand)
-                    if not gp:
-                        continue
                     for rule in rules:
                         if not rule.evaluable or rule.prefix is None:
                             continue
-                        if gp == rule.prefix or gp.startswith(rule.prefix + os.sep) \
-                                or rule.prefix.startswith(gp + os.sep):
+                        reach = glob_reach(cand, rule.prefix)
+                        if reach == "inside":
                             return tok, rule, "%s may expand into %s" % (tok, rule.raw)
+                        if reach == "ancestor" and recursive:
+                            return tok, rule, (
+                                "%s is an ancestor of %s and %s recurses here; "
+                                "name the file under it directly, or drop the "
+                                "recursive flag" % (tok, rule.raw, command_word)
+                            )
                     continue
                 for rule in rules:
                     if rule.anchor == "any-depth":

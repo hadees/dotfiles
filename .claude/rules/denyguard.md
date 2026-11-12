@@ -50,6 +50,23 @@ contains the letter (`sort -nr`, `ls -ltr`). First three real firings were
 all false positives of the OLD, whole-command version of this check
 (2026-09-18); this narrowing is that fix.
 
+**A glob is matched component by component, not by its literal prefix.**
+`glob_reach` walks the glob's path and a denied rule's prefix together: a
+component with a glob character must `fnmatchcase` the rule's component
+(case-sensitive on purpose), a literal one must equal it, and a component
+that is exactly `**` reaches the tree at once. Running out of the rule's
+components first, or both together, is "inside" — the pattern can name the
+denied tree or something in it — and is refused ("may expand into"), so
+`ls ~/code/*` and `ls ~/code/octo-*/x` still refuse. Running out of the
+glob's components first is "ancestor": the pattern can only name a
+directory above the denied tree, so it refuses only when that same simple
+command recurses (`grep -r x ~/co*`), and a data heredoc body, which never
+counts as recursive, passes. Until 2026-11-11 the test was the glob's
+literal directory prefix being an ancestor of any rule, so a home-anchored
+pattern such as `~/.zsh*` was cut back to `$HOME` and refused whenever any
+rule sat under it (found by the audit's own sessions, whose commands
+mentioned such a pattern).
+
 **A heredoc is only the lines between an opener and its terminator.** The
 line that opens one is a command line like any other: it is scanned whole,
 minus the `<<WORD` operator itself, so a redirect, an argument or a chained
