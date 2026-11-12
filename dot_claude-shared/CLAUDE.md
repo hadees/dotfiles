@@ -23,7 +23,7 @@ employer-specific — profile-specific memory belongs in that profile's own
   (`gh-doctor` prints `wrapper: gh: function` and the `account:` it resolved
   for the cwd). Where a pin matches, the wrapper replaces any `GH_TOKEN`
   you set, so the prefix does nothing; a pinned account with no stored token
-  warns and runs as the active account.
+  warns and runs as plain gh would.
 - If org-scoped gh output looks thin or wrong, run `gh-doctor` and read its
   `account:` line before anything else. A working per-repo call does NOT
   confirm the right account — per-repo access and org-wide visibility
