@@ -46,8 +46,8 @@ apply_class() {
   # IdentityAgent overrides $SSH_AUTH_SOCK. Pointing it at 1Password's macOS
   # path here would make ssh ignore a FORWARDED agent, which is the only way
   # a Linux box has a key at all.
-  ! grep -q 'IdentityAgent' "$TMPHOME/.ssh/config"
-  ! grep -q '1password' "$TMPHOME/.ssh/config"
+  ! grep -q 'IdentityAgent' "$TMPHOME/.ssh/config" || { echo "the ssh config names an IdentityAgent"; false; }
+  ! grep -q '1password' "$TMPHOME/.ssh/config" || { echo "the ssh config mentions 1password"; false; }
 }
 
 @test "wsl gets no POSIX ssh config at all" {
@@ -61,7 +61,7 @@ apply_class() {
   run grep -cE '^[[:space:]]*(Host|Match|IdentityFile|User|HostName|ForwardAgent)' \
     "$TMPHOME/.ssh/config"
   [ "$output" = "1" ]   # the lone `Host *`
-  ! grep -qE '^[[:space:]]*IdentityFile' "$TMPHOME/.ssh/config"
+  ! grep -qE '^[[:space:]]*IdentityFile' "$TMPHOME/.ssh/config" || { echo "the ssh config has an IdentityFile line"; false; }
 }
 
 @test "modes are ssh-safe: 0700 dir, 0600 file" {

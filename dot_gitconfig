@@ -235,6 +235,11 @@
 
 	allowedSignersFile = ~/.config/git/allowed_signers
 
+# What a status line runs for a detached HEAD (a claude-peer slot's base).
+[statusline]
+
+	detached-command = ~/bin/branchname
+
 # Machine-local overrides: signing key, user identity, work-specific config.
 # Not tracked in the repo — set user.name, user.email, user.signingkey per machine.
 [include]

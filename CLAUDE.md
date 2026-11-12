@@ -223,7 +223,7 @@ rule first.
 
 | Rule | Covers |
 | --- | --- |
-| `git-hooks` | the identity and push gates, the `hook.<name>.run` chain |
+| `git-hooks` | the identity, branch and push gates, the `hook.<name>.run` chain |
 | `git-identity` | signing setup, `bin/git-ssh-pinned`, credential routing |
 | `onepassword` | the three 1Password channels, `onepassword-doctor`, the skill's `VERSIONS` |
 | `packages` | Brewfile and apt lists, the install scripts, `update()` |
@@ -234,6 +234,7 @@ rule first.
 | `worktabs` | the iTerm2 tab launcher, `workspace.*` config, the Alfred workflow |
 | `claude-peer` | Workgroup peers, named slot worktrees, claims, the Hermes peer |
 | `claude-tab` | `claude-tab` list, focus, save, restore; `tabname` |
+| `branchname` | the branch label a prompt or status line shows, the detached-slot base record |
 | `postbox` | cross-profile session mail, its hooks, the courier, the roll-call |
 | `remote-mcp` | bearer-token MCP servers, the tailnet forwarder |
 | `wrangler` | Cloudflare auth profiles and bindings |

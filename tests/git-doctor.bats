@@ -153,7 +153,7 @@ doctor_in() {
   printf '#!/bin/sh\nexit 0\n' > "$BATS_TEST_TMPDIR/bin/gh"; chmod +x "$BATS_TEST_TMPDIR/bin/gh"
   run zsh -c "PATH='$BATS_TEST_TMPDIR/bin':\$PATH; source '$DOTFUNCTIONS'; cd '$REPO'; doctor"
   [ "$status" -eq 0 ]
-  [[ "$output" == "shell:   zsh "*"== git-doctor"*"== gh-doctor"*"== claude-doctor"*"== wrangler-doctor"*"== hermes-doctor"*"== tailnet-doctor"*"== worktabs-doctor"*"== onepassword-doctor"*"== iterm2-doctor"* ]]
+  [[ "$output" == "shell:   zsh "*"== git-doctor"*"== gh-doctor"*"== claude-doctor"*"== wrangler-doctor"*"== hermes-doctor"*"== tailnet-doctor"*"== worktabs-doctor"*"== postbox-doctor"*"== remote-mcp-doctor"*"== workset-doctor"*"== onepassword-doctor"*"== iterm2-doctor"* ]]
   [[ "$output" == *"author:  Octo Person <octo@example.com>"* ]]
 }
 

@@ -58,6 +58,7 @@ teardown() {
   [ -f "$TMPHOME/.functions" ]
   [ -x "$TMPHOME/bin/has-glyphs" ]
   [ -x "$TMPHOME/bin/tabname" ]
+  [ -x "$TMPHOME/bin/branchname" ]
   [ -x "$TMPHOME/bin/claude-peer" ]
   # Rendered shell files parse
   zsh -n "$TMPHOME/.zshrc"
@@ -87,7 +88,7 @@ teardown() {
 @test "mac class without the clone pins no sourceDir, and init --apply still applies" {
   cd "$BATS_TEST_DIRNAME/.."
   chez init --source "$PWD" --promptString machineClass=mac --apply --exclude scripts
-  ! grep -q 'sourceDir' "$TMPHOME/.config/chezmoi/chezmoi.toml"
+  ! grep -q 'sourceDir' "$TMPHOME/.config/chezmoi/chezmoi.toml" || { echo "chezmoi.toml pins sourceDir"; false; }
   grep -q 'machineClass = "mac"' "$TMPHOME/.config/chezmoi/chezmoi.toml"
   [ -f "$TMPHOME/.zshrc" ]
 }
