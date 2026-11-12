@@ -52,8 +52,9 @@ EOF
   printf -- '---\nname: x\n---\nthe staging box stays up for the demo\n' > "$NOTE"
 }
 
-answer() { # choice confidence
-  printf '{"answers":{"destination":{"choice":"%s","confidence":%s,"reason":"because"}}}' "$1" "$2"
+answer() { # choice confidence [private yes|no, default no] [its confidence, default 0.9]
+  printf '{"answers":{"destination":{"choice":"%s","confidence":%s,"reason":"because"},"private":{"choice":"%s","confidence":%s}}}' \
+    "$1" "$2" "${3:-no}" "${4:-0.9}"
 }
 
 runs() { wc -l < "$STUB_DIR/runs" 2>/dev/null | tr -d ' ' || echo 0; }
@@ -123,7 +124,7 @@ fixture_repo() {
 
 @test "the request carries v1, the seven destinations, and place criteria from the repository" {
   fixture_repo
-  export STUB_ANSWER='{"answers":{"destination":{"choice":"memory","confidence":0.9},"place":{"choice":"none","confidence":0.9}}}'
+  export STUB_ANSWER='{"answers":{"destination":{"choice":"memory","confidence":0.9},"private":{"choice":"no","confidence":0.9},"place":{"choice":"none","confidence":0.9}}}'
   run "$MG" decide --project "$HOME/repo" "$NOTE"
   [ "$status" -eq 0 ]
   run "$REAL_PYTHON3" -c '
@@ -132,6 +133,8 @@ r = json.load(open(sys.argv[1]))
 assert r["v"] == 1
 assert sorted(r["questions"]["destination"]["criteria"]) == sorted(
     ["memory","shared-memory","rule","claude-md","docs","overlay","nowhere"])
+assert sorted(r["questions"]["private"]["criteria"]) == ["no","yes"]
+assert list(r["questions"]) == ["destination","private","place"]
 assert sorted(r["questions"]["place"]["criteria"]) == sorted(
     ["none","claude-md:Layout","rule:frobnicate","doc:docs/watch.md"]), r["questions"]["place"]["criteria"]
 ' "$STUB_DIR/request.json"
@@ -144,7 +147,7 @@ assert sorted(r["questions"]["place"]["criteria"]) == sorted(
   [ "$status" -eq 0 ]
   run "$REAL_PYTHON3" -c '
 import json,sys
-assert list(json.load(open(sys.argv[1]))["questions"]) == ["destination"]' "$STUB_DIR/request.json"
+assert list(json.load(open(sys.argv[1]))["questions"]) == ["destination","private"]' "$STUB_DIR/request.json"
   [ "$status" -eq 0 ]
 }
 
@@ -169,11 +172,11 @@ assert "frobnicate" not in s.split("NOTE:")[0], s' "$STUB_DIR/request.json"
 
 @test "a place whose prefix disagrees with the destination is dropped" {
   fixture_repo
-  export STUB_ANSWER='{"answers":{"destination":{"choice":"rule","confidence":0.9},"place":{"choice":"claude-md:Layout","confidence":0.9}}}'
+  export STUB_ANSWER='{"answers":{"destination":{"choice":"rule","confidence":0.9},"private":{"choice":"no","confidence":0.9},"place":{"choice":"claude-md:Layout","confidence":0.9}}}'
   run "$MG" decide --json --project "$HOME/repo" "$NOTE"
   [[ "$output" == *'"place": null'* ]]
   printf 'another\n' > "$NOTE"
-  STUB_ANSWER='{"answers":{"destination":{"choice":"rule","confidence":0.9},"place":{"choice":"rule:frobnicate","confidence":0.9}}}'
+  STUB_ANSWER='{"answers":{"destination":{"choice":"rule","confidence":0.9},"private":{"choice":"no","confidence":0.9},"place":{"choice":"rule:frobnicate","confidence":0.9}}}'
   run "$MG" decide --json --project "$HOME/repo" "$NOTE"
   [[ "$output" == *'"place": "rule:frobnicate"'* ]]
 }
@@ -269,13 +272,13 @@ assert c["argv"] == ["-p","--agent","decide-haiku","--output-format","json","--n
   export STUB_ANSWER; STUB_ANSWER="$(answer rule 0.9)"
   run "$MG" selftest
   [ "$status" -eq 0 ]
-  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 6 ]
-  [[ "$output" == *"valid 5/5  matched 1/5  median "* ]]
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 8 ]
+  [[ "$output" == *"valid 7/7  matched 1/5  private 5/7 (missed 2)  median "* ]]
   [[ "$output" == *"mode lean" ]]
   [ ! -e "$LOG" ]
   STUB_EXIT=1 run "$MG" selftest
   [ "$status" -eq 1 ]
-  [[ "$output" == *"valid 0/5"* ]]
+  [[ "$output" == *"valid 0/7"* ]]
 }
 
 @test "log counts outcomes and the blocks a later keep reversed" {
@@ -423,6 +426,83 @@ write_note() { # body [frontmatter-extra] [file]
   [[ "$output" == "notes 2  placed 0  unplaced 2"* ]]
 }
 
+# The host-and-login note of the review: a tool gotcha that names invented private things.
+PRIVATE_NOTE="The mount works as user jdoe on host nas-attic.example.net"
+
+@test "hook pre: a private note headed for a public home is saved with a note saying which point goes where" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer shared-memory 0.9 yes 0.9)"
+  hook_pre "$(write_note "$PRIVATE_NOTE")"
+  [ "$(field "$output" permissionDecision)" = "-" ]
+  ctx="$(field "$output" additionalContext)"
+  [[ "$ctx" == *"names something private"* ]]
+  [[ "$ctx" == *"would belong in shared memory"* ]]
+  [[ "$ctx" == *"leave out whatever names"* ]]
+  [[ "$ctx" != *"jdoe"* ]]
+  [ "$(last_outcome)" = "allow-private" ]
+  [ "$(tail -1 "$LOG" | cut -f7)" = "shared-memory" ]
+}
+
+@test "hook pre: the decider missing the private part still gets the refusal with the leave-out wording" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer shared-memory 0.9 no 0.9)"
+  hook_pre "$(write_note "$PRIVATE_NOTE")"
+  [ "$(field "$output" permissionDecision)" = "deny" ]
+  [[ "$(field "$output" permissionDecisionReason)" == *"leave out whatever names a person"* ]]
+  [ "$(last_outcome)" = "block" ]
+}
+
+@test "hook pre: private is judged at 0.5 both ways; an unsure no counts as yes, an unsure yes does not" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer shared-memory 0.9 no 0.3)"
+  hook_pre "$(write_note "one")"
+  [ "$(last_outcome)" = "allow-private" ]
+  STUB_ANSWER="$(answer shared-memory 0.9 yes 0.3)"
+  hook_pre "$(write_note "two")"
+  [ "$(last_outcome)" = "block" ]
+  STUB_ANSWER="$(answer shared-memory 0.9 yes 0.5)"
+  hook_pre "$(write_note "three")"
+  [ "$(last_outcome)" = "allow-private" ]
+  STUB_ANSWER="$(answer shared-memory 0.9 no 0.5)"
+  hook_pre "$(write_note "four")"
+  [ "$(last_outcome)" = "allow-private" ]
+}
+
+@test "hook pre: a private note at 0.5 gets the private note, not the unsure one" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer rule 0.5 yes 0.9)"
+  hook_pre "$(write_note "$PRIVATE_NOTE")"
+  ctx="$(field "$output" additionalContext)"
+  [[ "$ctx" == *"names something private"* ]]
+  [[ "$ctx" != *"may belong in"* ]]
+  [ "$(last_outcome)" = "allow-private" ]
+}
+
+@test "hook pre: nowhere is refused whatever private says" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer nowhere 0.9 yes 0.9)"
+  hook_pre "$(write_note "$PRIVATE_NOTE")"
+  [ "$(field "$output" permissionDecision)" = "deny" ]
+  [ "$(last_outcome)" = "block" ]
+}
+
+@test "hook pre: an answer with no private key is allow-error, invalid, and the note is saved" {
+  export STUB_ANSWER='{"answers":{"destination":{"choice":"shared-memory","confidence":0.9}}}'
+  hook_pre "$(write_note "$PRIVATE_NOTE")"
+  [ "$(field "$output" permissionDecision)" = "-" ]
+  [ "$(last_outcome)" = "allow-error" ]
+  [ "$(tail -1 "$LOG" | cut -f10)" = "invalid" ]
+}
+
+@test "decide --json: private is true for a private answer and null for a cached one" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer shared-memory 0.9 yes 0.9)"
+  run "$MG" decide --json "$NOTE"
+  [[ "$output" == *'"private": true'* ]]
+  [[ "$output" == *'"outcome": "allow-private"'* ]]
+  STUB_ANSWER="$(answer shared-memory 0.9 no 0.9)"
+  printf 'a different note\n' > "$NOTE"
+  run "$MG" decide --json "$NOTE"
+  [[ "$output" == *'"private": false'* ]]
+  run "$MG" decide --json "$NOTE"
+  [[ "$output" == *'"cached": true'* ]]
+  [[ "$output" == *'"private": null'* ]]
+}
+
 @test "hook pre: until: (frontmatter or body line) lets a note through without the backend" {
   export STUB_ANSWER; STUB_ANSWER="$(answer shared-memory 0.9)"
   hook_pre "$(write_note "bridge one" "  until: 2031-01-01
@@ -496,16 +576,16 @@ Until: when the fix lands")"
   printf '#!/bin/sh\necho /src/dot_claude-shared/CLAUDE.md\n' > "$BIN/chezmoi"; chmod +x "$BIN/chezmoi"
   slug="$(printf '%s' "$HOME/repo" | tr -c 'A-Za-z0-9' '-')"
   inrepo() { payload Write "$CLAUDE_CONFIG_DIR/projects/${2:-$slug}/memory/n.md" "$(note_body "$1")" "" "$HOME/repo"; }
-  export STUB_ANSWER='{"answers":{"destination":{"choice":"shared-memory","confidence":0.9},"place":{"choice":"shared:Delegation","confidence":0.9}}}'
+  export STUB_ANSWER='{"answers":{"destination":{"choice":"shared-memory","confidence":0.9},"private":{"choice":"no","confidence":0.9},"place":{"choice":"shared:Delegation","confidence":0.9}}}'
   hook_pre "$(inrepo "one")"
   reason="$(field "$output" permissionDecisionReason)"
   [[ "$reason" == *'shared memory, /src/dot_claude-shared/CLAUDE.md, section "Delegation"'* ]]
   [[ "$reason" != *"another repository"* ]]
   printf '#!/bin/sh\nexit 1\n' > "$BIN/chezmoi"
-  STUB_ANSWER='{"answers":{"destination":{"choice":"shared-memory","confidence":0.9},"place":{"choice":"none","confidence":0.9}}}'
+  STUB_ANSWER='{"answers":{"destination":{"choice":"shared-memory","confidence":0.9},"private":{"choice":"no","confidence":0.9},"place":{"choice":"none","confidence":0.9}}}'
   hook_pre "$(inrepo "one b")"
   [[ "$(field "$output" permissionDecisionReason)" == *"in shared memory, the chezmoi source of ~/.claude-shared/CLAUDE.md."* ]]
-  STUB_ANSWER='{"answers":{"destination":{"choice":"rule","confidence":0.9},"place":{"choice":"rule:frobnicate","confidence":0.9}}}'
+  STUB_ANSWER='{"answers":{"destination":{"choice":"rule","confidence":0.9},"private":{"choice":"no","confidence":0.9},"place":{"choice":"rule:frobnicate","confidence":0.9}}}'
   hook_pre "$(inrepo "two")"
   reason="$(field "$output" permissionDecisionReason)"
   [[ "$reason" == *"$HOME/repo/.claude/rules/frobnicate.md."* ]]
@@ -793,17 +873,22 @@ hook_start() { run "$MG" hook start <<< "$(start_payload "$@")"; }
   [[ "$output" == *"# memoryguard audit: proposals only. Nothing below has been changed."* ]]
   [[ "$output" == *"leaving out whatever names"* ]]
   [[ "$output" == *"never to a public repository"* ]]
-  [[ "$output" == *"| note | chars | home | confidence | place | reason | marker |"* ]]
-  [[ "$output" == *"| a.md | "*" | rule | 0.80 | - | because | - |"* ]]
-  [[ "$output" == *"| k.md | "*" | - | - | - | marked, not asked | keep: the operator asked for it here |"* ]]
+  [[ "$output" == *"| note | chars | home | private | confidence | place | reason | marker |"* ]]
+  [[ "$output" == *"| a.md | "*" | rule | no | 0.80 | - | because | - |"* ]]
+  [[ "$output" == *"| k.md | "*" | - | - | - | - | marked, not asked | keep: the operator asked for it here |"* ]]
   [ "$(grep -c '^| [a-z]*\.md |' <<< "$output")" -eq 3 ]
   [ "$(runs)" -eq 2 ]
   [ "$(cut -f6 "$LOG" | sort | uniq -c | tr -s ' ')" = " 2 audit-move" ]
   [ "$(find "$MEMDIR" -type f -exec cksum {} + | sort)" = "$before" ]
+  # a public home with private yes shows yes and still logs audit-move
+  STUB_ANSWER="$(answer rule 0.8 yes 0.9)"
+  run "$MG" audit --propose "$HOME/work"
+  [[ "$output" == *"| a.md | "*" | rule | yes | 0.80 | - | because | - |"* ]]
+  [ "$(cut -f6 "$LOG" | sort | uniq -c | tr -s ' ')" = " 4 audit-move" ]
   # a failing backend is a row, not a crash
   STUB_EXIT=1 run "$MG" audit --propose "$HOME/work"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"| a.md | "*" | error | - | - | exit | - |"* ]]
+  [[ "$output" == *"| a.md | "*" | error | - | - | - | exit | - |"* ]]
 }
 
 @test "audit --mark-kept makes the note placed, and the same text passes the gate later" {

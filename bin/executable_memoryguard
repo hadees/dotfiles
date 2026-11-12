@@ -4,10 +4,10 @@
 # Claude Code writes per-project memory notes with the ordinary Write and
 # Edit tools, and an instruction not to put process rules or restated
 # repository facts there has existed since 2026-09 without holding.
-# memoryguard asks a typed question of the note's text — which of seven
-# homes does it belong in — and the hook (a later step) refuses a write
-# whose answer is not `memory`, naming the destination. It writes nothing
-# itself except its own log.
+# memoryguard asks two typed questions of the note's text — which of seven
+# homes does it belong in, and does it name anything private — and the hook
+# (a later step) refuses a write whose answer is not `memory`, naming the
+# destination. It writes nothing itself except its own log.
 #
 # This file so far: the decision (`decide`), its backends, the log and the
 # cache (`log`), a self-test of the real backend (`selftest`), the gate on
@@ -96,8 +96,9 @@ import subprocess
 import sys
 import time
 
-RUBRIC_V = 2
+RUBRIC_V = 3
 BLOCK_AT = 0.75
+PRIVATE_AT = 0.5
 BACKEND_TIMEOUT = 20
 NOTE_MAX = 12000
 INDEX_MAX = 8000
@@ -167,6 +168,21 @@ PLACE_INSTRUCTIONS = (
     "If the note's content were moved out of memory, which existing place is "
     "its nearest home? Choose none when nothing listed fits."
 )
+PRIVATE_INSTRUCTIONS = (
+    "Look only at the text under NOTE. Does it name anything private: a "
+    "person, an account or login, an organisation, a host or machine name, a "
+    "network address or port, a private repository, a path that is specific "
+    "to one machine or user, or where a secret is kept? A role or a generic "
+    "word (the operator, the work account, a host, the overlay), the name of "
+    "a tool, script, file or agent of the repository, and a path written from "
+    "the home directory with ~ name nothing private."
+)
+PRIVATE_CRITERIA = {
+    "yes": "It names at least one such thing.",
+    "no": "It names none: roles, generic words and repository names only.",
+}
+# Homes a note's general point may be written into, and which may be public.
+PUBLIC_HOMES = ("shared-memory", "rule", "claude-md", "docs")
 # Which place-id prefix agrees with which destination.
 PLACE_PREFIX = {
     "shared-memory": "shared:",
@@ -187,6 +203,11 @@ SELFTEST = [
     ("The operator wants the staging box left running over the weekend of "
      "the demo, because the client will try it. Revisit after the demo.",
      "memory"),
+    # No expected destination; these name something private (invented names).
+    ("The frobnicate mount works as user jdoe on host nas-attic.example.net, "
+     "port 2222; StrictModes has to be off on that box.", None),
+    ("For repositories of the examplecorp organisation, open pull requests "
+     "from the jdoe-examplecorp account, never the personal one.", None),
 ]
 
 # Side channel of the last claude-backend run (tokens, model, mode), for the
@@ -378,6 +399,7 @@ def build_request(name, text, project, outline, evidence):
             "criteria": dict(DESTINATION),
         }
     }
+    questions["private"] = {"type": "choice", "instructions": PRIVATE_INSTRUCTIONS, "criteria": dict(PRIVATE_CRITERIA)}
     if outline:
         criteria = {"none": "Nothing listed fits."}
         criteria.update(outline)
@@ -507,6 +529,13 @@ def run_backend(request):
     return answers, "ok", ms()
 
 
+def names_private(answers):
+    # An unsure "no" counts as yes: the boundary is inclusive both ways.
+    a = answers["private"]
+    c = float(a["confidence"])
+    return (c if a["choice"] == "yes" else 1 - c) >= PRIVATE_AT
+
+
 def verdict(answers):
     # -> (outcome, choice, confidence, place or None, reason)
     d = answers["destination"]
@@ -517,7 +546,7 @@ def verdict(answers):
         place = p
     if choice == "memory":
         outcome = "allow-memory"
-    elif choice == "overlay":
+    elif choice == "overlay" or (choice in PUBLIC_HOMES and names_private(answers)):
         outcome = "allow-private"
     elif conf >= BLOCK_AT:
         outcome = "block"
@@ -606,7 +635,7 @@ def cmd_decide(argv):
         refuse = cached[5] in CACHE_BLOCK
         outcome = "block-cached" if refuse else "allow-memory"
         res = {"outcome": outcome, "choice": cached[6], "confidence": cached[7], "place": None,
-               "reason": "-", "ms": 0, "cached": True}
+               "reason": "-", "private": None, "ms": 0, "cached": True}
         log_row(slug, name, sha, outcome, cached[6], cached[7])
         return emit(res, as_json, 0)
 
@@ -615,13 +644,13 @@ def cmd_decide(argv):
         outcome = "allow-nobackend" if detail == "nobackend" else "allow-error"
         log_row(slug, name, sha, outcome, ms=ms, detail=detail)
         res = {"outcome": outcome, "choice": None, "confidence": None, "place": None,
-               "reason": detail, "ms": ms, "cached": False}
+               "reason": detail, "private": None, "ms": ms, "cached": False}
         return emit(res, as_json, 3)
     outcome, choice, conf, place, reason = verdict(answers)
     extra = " ".join("%s=%s" % (k, LAST[k]) for k in ("api_ms", "tokens") if LAST.get(k) is not None)
     log_row(slug, name, sha, outcome, choice, conf, ms, extra or "-")
     res = {"outcome": outcome, "choice": choice, "confidence": conf, "place": place,
-           "reason": reason, "ms": ms, "cached": False}
+           "reason": reason, "private": names_private(answers), "ms": ms, "cached": False}
     return emit(res, as_json, 0)
 
 
@@ -642,23 +671,29 @@ def cmd_selftest(argv):
         return usage()
     rows, model = [], "-"
     for n, (text, expected) in enumerate(SELFTEST, 1):
+        # A fixture with no expected destination is the one that names something private.
+        want = "no" if expected else "yes"
         answers, detail, ms = run_backend(build_request("selftest-%d.md" % n, text, "selftest", {}, []))
         if answers is None:
-            rows.append((n, False, detail, expected, "-", ms, "-"))
+            rows.append((n, False, detail, expected or "-", "-", ms, "-", "-", want))
             continue
         d = answers["destination"]
         model = LAST.get("model") or model
-        rows.append((n, True, d["choice"], expected, d["confidence"], ms, LAST.get("tokens", "-")))
-    for n, ok, choice, expected, conf, ms, tok in rows:
-        print("\t".join(str(x) for x in (n, "valid" if ok else "invalid", choice, expected, conf, "%dms" % ms, tok, model)))
+        rows.append((n, True, d["choice"], expected or "-", d["confidence"], ms, LAST.get("tokens", "-"),
+                     "yes" if names_private(answers) else "no", want))
+    for n, ok, choice, expected, conf, ms, tok, priv, want in rows:
+        print("\t".join(str(x) for x in (n, "valid" if ok else "invalid", choice, expected, conf, "%dms" % ms, tok,
+                                         "private " + priv, "expected " + want, model)))
     times = sorted(r[5] for r in rows if r[1])
     valid = len(times)
     matched = sum(1 for r in rows if r[1] and r[2] == r[3])
+    right = sum(1 for r in rows if r[1] and r[7] == r[8])
+    missed = sum(1 for r in rows if r[1] and r[8] == "yes" and r[7] == "no")
     median = times[len(times) // 2] if times else 0
-    print("valid %d/5  matched %d/5  median %d ms  max %d ms  model %s  mode %s" % (
-        valid, matched, median, times[-1] if times else 0, model,
+    print("valid %d/7  matched %d/5  private %d/7 (missed %d)  median %d ms  max %d ms  model %s  mode %s" % (
+        valid, matched, right, missed, median, times[-1] if times else 0, model,
         MODE_OVERRIDE or LAST.get("mode") or os.environ.get("MEMORYGUARD_CLAUDE_MODE") or git_config("memoryguard.claudeMode") or CLAUDE_MODE_DEFAULT))
-    return 0 if valid == 5 else 1
+    return 0 if valid == 7 else 1
 
 
 def cmd_log(argv):
@@ -894,9 +929,14 @@ def hook_pre(p):
     log(outcome, sha, choice, conf, ms, extra or "-")
     if outcome == "allow-memory":
         return None
-    if outcome == "allow-private":
-        return note(OVERLAY_NOTE)
     home = describe_home(choice, place, root)
+    if outcome == "allow-private":
+        if choice == "overlay":
+            return note(OVERLAY_NOTE)
+        return note("memoryguard: saved, because it names something private and memory is private. "
+                    "Its general point reads as %s (%d%%) and would belong in %s. If you write that point there, "
+                    "leave out whatever names %s; then shorten this note to the part that names them."
+                    % (choice, round(conf * 100), home, PRIVATE_THINGS))
     if outcome == "allow-unsure":
         if choice == "nowhere":
             return note("memoryguard: saved, but this may belong in %s (%d%%). If so, move it there and delete the note."
@@ -1125,22 +1165,22 @@ def audit_propose(memdir, root, start):
         results = list(pool.map(lambda n: place_note(n["name"], n["text"], root, start), todo))
     got = {n["name"]: r for n, r in zip(todo, results)}
     print(PROCEDURE)
-    print("\n| note | chars | home | confidence | place | reason | marker |\n| --- | --- | --- | --- | --- | --- | --- |")
+    print("\n| note | chars | home | private | confidence | place | reason | marker |\n| --- | --- | --- | --- | --- | --- | --- | --- |")
     for n in notes:
         mk = n["mk"]
         marker = "until: " + mk["until"] if mk["until"] else "keep: " + mk["keep"] if mk["keep"] else "-"
         if n["name"] not in got:
-            home, conf, place, reason = "-", "-", "-", "marked, not asked"
+            home, priv, conf, place, reason = "-", "-", "-", "-", "marked, not asked"
         else:
             answers, detail, ms = got[n["name"]]
             if answers is None:
                 log_row(slug_of(memdir), n["name"], n["sha"], "audit-error", ms=ms, detail=detail)
-                home, conf, place, reason = "error", "-", "-", detail
+                home, priv, conf, place, reason = "error", "-", "-", "-", detail
             else:
                 outcome, home, c, pl, reason = verdict(answers)
                 log_row(slug_of(memdir), n["name"], n["sha"], "audit-memory" if home == "memory" else "audit-move", home, c, ms)
-                conf, place = "%.2f" % c, pl or "-"
-        print("| %s |" % " | ".join(cell(x) for x in (n["name"], len(n["text"]), home, conf, place, reason, marker)))
+                priv, conf, place = "yes" if names_private(answers) else "no", "%.2f" % c, pl or "-"
+        print("| %s |" % " | ".join(cell(x) for x in (n["name"], len(n["text"]), home, priv, conf, place, reason, marker)))
     return 0
 
 

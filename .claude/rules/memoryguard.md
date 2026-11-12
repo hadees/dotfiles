@@ -30,10 +30,11 @@ nothing below about them is more than the design.
 
 A `PreToolUse` hook on Write and Edit. When the target is a memory note it
 builds the note's resulting text (for an Edit, the replacement applied to
-the file on disk), asks one typed question, *which of seven homes does
-this text belong in*, and either lets the write through or refuses it
-with the destination file and section in the reason, so the session
-writes it there by a normal edit. The refusal carries the answer because
+the file on disk), asks two typed questions in one request, *which of
+seven homes does this text belong in* and *does it name anything private*
+(`yes` or `no`), and either lets the write through or refuses it with the
+destination file and section in the reason, so the session writes it
+there by a normal edit. The refusal carries the answer because
 a bare "this looks wrong" left the session to work out the right place,
 which is the step that kept failing. The hook never writes anything but
 its own log.
@@ -58,7 +59,8 @@ the note for the audit, where a full session and the operator look at it.
 | no seat, no `claude`, backend failed | allow, with a note | `allow-nobackend` / `allow-error` |
 | `memory` | allow | `allow-memory` |
 | `overlay`, any confidence | allow, with a note | `allow-private` |
-| anything else, confidence at or above `BLOCK_AT` (0.75) | **deny** | `block` |
+| `shared-memory`, `rule`, `claude-md` or `docs`, and the note names something private | allow, with a note | `allow-private` |
+| anything else (`nowhere` included, whatever `private` says), confidence at or above `BLOCK_AT` (0.75) | **deny** | `block` |
 | anything else, below it | allow, with a note | `allow-unsure` |
 
 **A refusal says how to move, not just where.** Moving a note is an edit
@@ -73,6 +75,16 @@ refused: memory is private, and most repositories have no overlay, so a
 refusal toward one would leave a private fact without a reachable home.
 The note says a private overlay's own docs are its home and a public
 repository never is.
+
+**The `private` question.** A refusal toward a public home assumes the
+note can be moved with the names left out; a note that is mostly names
+has nothing to move. So when the destination is a home that can be public
+and the note names something private, the hook saves it instead
+(`allow-private`) and tells the session which general point belongs in
+which home, without the names. The note stays unplaced until an audit
+marks it kept, and the audit's `private` column shows it. `names_private`
+errs toward yes: the answer counts as private when its probability of
+being private is at least `PRIVATE_AT` (0.5), so an unsure `no` is a yes.
 
 The index is never refused, only warned about: a refused index edit
 strands a note. `BLOCK_AT` is a starting value, not a calibrated one;
@@ -160,6 +172,9 @@ is why the entries carry their own `timeout`.
   thing for every home, and it is not the boundary between a private value
   and a public file: the wording above, the push-time leak guard and the
   review of the pull request are.
+- A private value the model does not recognise as one. The `private`
+  answer is a model's, and a miss leaves only the move wording, the
+  push-time leak guard and the review of the pull request standing.
 - The refusal text for a cached refusal carries no "It belongs in" line:
   the home is not logged, only the criteria id.
 
@@ -220,7 +235,9 @@ in the refusal, to the session that wrote the note. The log is also the
 cache (see the table for which outcomes replay). `memoryguard log
 [--since DAYS]` prints a count per outcome and `blocks later kept`.
 `RUBRIC_V` is part of the hash: changing the rubric or the texts a refusal
-carries bumps it and empties the cache.
+carries bumps it and empties the cache. `allow-private` beside `block` is
+the number to watch: a model that says `yes` too readily turns refusals
+into saves.
 
 Cost per decision, from the design and not yet measured: 2 to 5k input
 tokens of Haiku in lean mode, a few seconds, a fraction of a cent. Notes
