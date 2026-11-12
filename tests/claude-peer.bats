@@ -176,6 +176,59 @@ remote_head() {
   [ "$(grep -cxF '**/.claude/worktrees/' "$REPO/.git/info/exclude")" -eq 1 ]
 }
 
+@test "run --as: a new slot records its base beside the claim, outside the tree" {
+  remote_head
+  run --separate-stderr sh "$BIN" run --as alpha </dev/null
+  [ "$status" -eq 0 ]
+  wt=$REPO/.claude/worktrees/alpha
+  [ "$(cat "$REPO/.git/worktrees/alpha/claude-peer.base")" = $'main\nrefs/remotes/origin/main' ]
+  [ -z "$(git -C "$wt" status --porcelain)" ]
+  [[ "$stderr" != *base* ]]
+  run sh "$BATS_TEST_DIRNAME/../bin/executable_branchname" --state "$wt"
+  [ "$output" = "base"$'\t'"(main)"$'\t'"refs/remotes/origin/main"$'\t'"main" ]
+}
+
+@test "run --as: with no remote the base is the main checkout's branch; detached, no record" {
+  git switch -qc trunk
+  sh "$BIN" run --as alpha >/dev/null
+  [ "$(cat "$REPO/.git/worktrees/alpha/claude-peer.base")" = $'trunk\nrefs/heads/trunk' ]
+  git switch -q --detach
+  run sh "$BIN" run --as beta
+  [ "$status" -eq 0 ]
+  [ ! -e "$REPO/.git/worktrees/beta/claude-peer.base" ]
+}
+
+@test "run --as: a reused slot records from origin/HEAD only, and never rewrites a record" {
+  sh "$BIN" run --as alpha >/dev/null
+  rec=$REPO/.git/worktrees/alpha/claude-peer.base
+  rm "$rec"
+  sh "$BIN" run --as alpha >/dev/null
+  [ ! -e "$rec" ]
+  remote_head
+  sh "$BIN" run --as alpha >/dev/null
+  [ "$(cat "$rec")" = $'main\nrefs/remotes/origin/main' ]
+  printf 'sentinel\nkept' >"$rec"
+  sh "$BIN" run --as alpha >/dev/null
+  [ "$(cat "$rec")" = $'sentinel\nkept' ]
+}
+
+@test "run <branch>: a branch peer gets no base record" {
+  remote_head
+  sh "$BIN" run feat/x >/dev/null
+  [ ! -e "$REPO/.git/worktrees/feat-x/claude-peer.base" ]
+}
+
+@test "run --as: a record that cannot be written is one line on stderr, and the slot still starts" {
+  remote_head
+  sh "$BIN" run --as alpha >/dev/null
+  rec=$REPO/.git/worktrees/alpha/claude-peer.base
+  rm "$rec"; mkdir "$rec"
+  run --separate-stderr sh "$BIN" run --as alpha
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pwd=$REPO/.claude/worktrees/alpha"* ]]
+  [ "$stderr" = "claude-peer: alpha: could not record the base; the status line will show the commit" ]
+}
+
 @test "run --as: arguments after -- reach claude, after the session name" {
   run sh "$BIN" run --as alpha -- --continue
   [ "$status" -eq 0 ]
