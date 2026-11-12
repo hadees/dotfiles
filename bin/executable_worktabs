@@ -640,12 +640,19 @@ cmd_new() {
       die "'$entry': $dir is not the top of a git work tree — branches need a repository to make worktrees in"
     seen='
 '
+    slugs='
+'
     for b in "$@"; do
       git check-ref-format --branch "$b" >/dev/null 2>&1 || die "'$b' is not a branch name"
       case $seen in *"
 $b
 "*) die "'$b' given twice";; esac
+      s=$(slug_of "$b")
+      case $slugs in *"
+$s	"*) die "'$(printf '%s' "$slugs" | awk -F'\t' -v s="$s" '$1 == s { print $2; exit }')' and '$b' would share the worktree directory $s";; esac
       seen="$seen$b
+"
+      slugs="$slugs$s	$b
 "
     done
     plan=$(worktree_plan "$dir" "$@") || {

@@ -475,6 +475,15 @@ repo() { # dir — a fixture repo with one commit on main
   [ ! -s "$OSA_LOG" ]
 }
 
+@test "new branches: two branches that slug to one worktree directory are refused, nothing created" {
+  repo "$PROJ/one"; entry a dir "$PROJ/one"
+  ws new a a/b a-b
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"'a/b' and 'a-b' would share the worktree directory a-b"* ]]
+  [ ! -e "$PROJ/one/.claude/worktrees" ]
+  [ ! -s "$OSA_LOG" ]
+}
+
 @test "new branches: a directory that is not a repository top is refused" {
   entry a dir "$PROJ/two"
   ws new a feat/x

@@ -154,6 +154,7 @@ Claude in the same checkout is a second writer on the live tree, so each
 branch gets `<dir>/.claude/worktrees/<slug>` (`/` becomes `-`), made by the
 rules `workset checkout` follows: an existing branch is checked out, a new one
 is cut from `origin/HEAD` else `HEAD`, a branch checked out anywhere else is
+refused, two branches that slug to the same directory (`a/b`, `a-b`) are
 refused, and nothing is created if any branch is refused — validate, create,
 then open. The tab is the entry's row with its dir swapped for the worktree
 and is typed into the login shell like any other, so `claude` there is the
