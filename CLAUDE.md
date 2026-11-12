@@ -248,6 +248,7 @@ rule first.
 | `claude-profiles` | `claude()`, per-repo pins, the second-session question, agent stubs |
 | `browser-routing` | `open-as`, `chrome-pairing`, the iTerm2 browser tab, Finicky |
 | `denyguard` | the Bash deny hook, what it cannot see, why it fails closed |
+| `memoryguard` | the memory-write hook, the placement decision and its seat, stopgaps, the audit |
 | `loginguard` | the org pin per profile, the prompt hook, the removal after a wrong login, why it fails closed |
 | `worktabs` | the iTerm2 tab launcher, `workspace.*` config, the Alfred workflow |
 | `claude-peer` | Workgroup peers, named slot worktrees, claims, the Hermes peer, overlay peers |

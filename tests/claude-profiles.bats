@@ -212,6 +212,43 @@ JSON
   [[ "$output" == *"denies logged: 0"* ]]
 }
 
+@test "claude-doctor: memguard line reports the hook wiring, the seat and the log's counts" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  # memoryguard itself needs a real python3 (see setup).
+  [ -n "$REAL_PYTHON3" ] || skip "python3 not installed"
+  mkdir -p "$HOME/bin" "$HOME/.claude-personal"
+  doctor() { run zsh -c "export PATH='$HOME/bin':\$PATH; source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"; }
+
+  # Nothing deployed, nothing wired.
+  doctor
+  [[ "$output" == *"memguard: hook: not wired in $HOME/.claude-personal/settings.json; ~/bin/memoryguard: missing; seat: missing; decisions logged: ? (no memoryguard)"* ]]
+
+  # Deployed, seat present, wired; a log of 4 decisions, one of them an error,
+  # one block that the operator later kept.
+  ln -s "$BATS_TEST_DIRNAME/../bin/executable_memoryguard" "$HOME/bin/memoryguard"
+  mkdir -p "$HOME/.claude-personal/agents" "$HOME/.local/state/memoryguard"
+  : > "$HOME/.claude-personal/agents/decide-haiku.md"
+  printf '{"hooks": {"PreToolUse": [{"hooks": [{"command": "[ -x ~/bin/memoryguard ] && exec ~/bin/memoryguard hook pre || true"}]}]}}\n' \
+    > "$HOME/.claude-personal/settings.json"
+  t='2026-11-12T10:00:00Z'
+  {
+    printf '%s\tp\ts\taaaaaaaa\t1111111111111111\tblock\tdocs\t0.9\t100\t-\n' "$t"
+    printf '%s\tp\ts\taaaaaaaa\t2222222222222222\tallow-keep\t-\t-\t-\t-\n' "$t"
+    printf '%s\tp\ts\tbbbbbbbb\t3333333333333333\tallow-memory\tmemory\t0.9\t100\t-\n' "$t"
+    printf '%s\tp\ts\tcccccccc\t4444444444444444\tallow-error\t-\t-\t-\ttimeout\n' "$t"
+  } > "$HOME/.local/state/memoryguard/decisions.tsv"
+  doctor
+  [[ "$output" == *"memguard: hook: wired in $HOME/.claude-personal/settings.json; ~/bin/memoryguard: present; seat: deployed; decisions logged: 4 (1 refused, 1 errors, 1 refusals later kept)"* ]]
+
+  # A memoryguard that fails (no python3 makes it print nothing and exit 2)
+  # must not read as an empty, healthy log.
+  rm "$HOME/bin/memoryguard"
+  printf '#!/bin/sh\nexit 2\n' > "$HOME/bin/memoryguard"
+  chmod +x "$HOME/bin/memoryguard"
+  doctor
+  [[ "$output" == *"decisions logged: ? (memoryguard log failed)"* ]]
+}
+
 @test "claude-doctor: tabstatus counts events on the shim, on iTerm2's own hook, on neither" {
   repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
   command -v python3 >/dev/null || skip "python3 not installed"
