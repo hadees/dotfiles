@@ -1346,3 +1346,19 @@ home_repo() {
   doctor_in "$other"
   [[ "$output" == *"memory:  n/a: $other is not under the home directory"* ]]
 }
+
+@test "the wrappers and resolvers do not abort under nounset when optional variables are unset" {
+  # A shell that sourced .functions with `setopt nounset` (a script, another
+  # tool's zsh) must not die on CLAUDE_PROFILE, GH_TOKEN and the rest.
+  for tool in gh wrangler; do
+    printf '#!/bin/sh\necho "STUB %s $*"\n' "$tool" > "$BATS_TEST_TMPDIR/bin/$tool"
+    chmod +x "$BATS_TEST_TMPDIR/bin/$tool"
+  done
+  repo=$(home_repo 'git@github.com:octo-personal/some-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; setopt nounset
+    unset CLAUDE_PROFILE GH_TOKEN CLOUDFLARE_API_TOKEN WRANGLER_PROFILE SSH_CONNECTION
+    cd '$repo'
+    claude_profile_dir; claude; claude-as personal-account; gh --version; wrangler --version" 2>&1
+  [[ "$output" != *"parameter not set"* ]] || { echo "a wrapper aborted under nounset: $output"; false; }
+  [[ "$output" == *"STUB gh --version"* && "$output" == *"STUB wrangler --version"* ]] || { echo "not every call ran: $output"; false; }
+}
