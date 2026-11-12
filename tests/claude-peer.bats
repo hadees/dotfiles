@@ -42,6 +42,7 @@ echo "args=$*"
 [ -z "${FAKE_SHELL_LOG-}" ] || echo "pwd=$PWD args=$*" >>"$FAKE_SHELL_LOG"
 [ -z "${FAKE_SHELL_PID-}" ] || echo $$ >"$FAKE_SHELL_PID"
 [ -z "${FAKE_SHELL_LAST-}" ] || { for last; do :; done; printf '%s' "$last" >"$FAKE_SHELL_LAST"; echo $# >"$FAKE_SHELL_LAST.n"; }
+[ -z "${FAKE_SHELL_NOTERM-}" ] || trap '' TERM
 [ -z "${FAKE_SHELL_SLEEP-}" ] || sleep "$FAKE_SHELL_SLEEP"
 STUB
   chmod +x "$BATS_TEST_TMPDIR/bin/fakeshell"
@@ -917,7 +918,7 @@ pb_wait() { # count
   # the pane's `end` races `stop`'s line; both are there, in either order
   until_ok '[ "$(grep -c . "$REPO/$LOG")" -eq 3 ]'
   grep -qx "Lead"$'\t'"stop"$'\t'"Alpha by Lead" <(cut -f2,3,4 "$REPO/$LOG")
-  grep -Eqx "Alpha"$'\t'"end"$'\t'"Alpha ended after [0-9]+s \(some words\)" <(cut -f2,3,4 "$REPO/$LOG")
+  grep -Eqx "Alpha"$'\t'"end"$'\t'"Alpha ended after [0-9]+s \(some words\) \(stopped by Lead\)" <(cut -f2,3,4 "$REPO/$LOG")
 }
 
 @test "end: a session that ends logs one end line, which closes its label's claims" {
@@ -2401,4 +2402,62 @@ NOTE_END='A report left only in this pane reaches nobody.'
   [ -s "$tf" ]
   until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
   [ ! -e "$tf" ]
+}
+
+# --- how a handed-over session ended: gone, or end (stopped by …) -----------------
+
+stopmark() { echo "$(git -C "$REPO/.claude/worktrees/alpha" rev-parse --absolute-git-dir)/claude-peer.stop"; }
+
+@test "gone: a hand-off that ends by itself logs gone, closes its claims and tells Lead with both ids" {
+  pb_stub
+  FAKE_SHELL_SLEEP=1 pane alpha
+  sh "$BIN" log --as Alpha claim fixing -- some/file >/dev/null
+  CLAUDE_PID=4242 CLAUDE_CODE_SESSION_ID=aaaa-bbbb sh "$BIN" start alpha --handoff the task >/dev/null
+  until_ok 'grep -q "	gone	" "$REPO/$LOG"'
+  [[ "$(grep "	gone	" "$REPO/$LOG" | cut -f2,3,4)" =~ ^Alpha$'\t'gone$'\t'Alpha\ ended\ after\ [0-9]+s\ \(the\ task\)$ ]]
+  ! grep -q "	end	" "$REPO/$LOG"
+  pb_wait 2   # the fixture's own claim is one call
+  [ "$(grep -cx "lead-news $REPO 4242 aaaa-bbbb" "$PB_CALLS")" -eq 1 ]
+  ! sh "$BIN" log show | grep -q "	Alpha	claim	"
+}
+
+@test "gone: stop on a hand-off logs end (stopped by Lead), tells nobody, and leaves no mark" {
+  pb_stub
+  cfg=$BATS_TEST_TMPDIR/cfg; mkdir -p "$cfg/sessions"; export CLAUDE_CONFIG_DIR=$cfg
+  FAKE_SHELL_SLEEP=30 FAKE_SHELL_PID="$BATS_TEST_TMPDIR/shpid" pane alpha
+  CLAUDE_PID=4242 sh "$BIN" start alpha --handoff the task >/dev/null
+  until_ok '[ -s "$BATS_TEST_TMPDIR/shpid" ]'
+  sp=$(cat "$BATS_TEST_TMPDIR/shpid")
+  printf '{"pid": %s, "status": "idle"}\n' "$sp" >"$cfg/sessions/$sp.json"
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "	end	" "$REPO/$LOG"'
+  [[ "$(grep "	end	" "$REPO/$LOG" | cut -f4)" == *"(the task) (stopped by Lead)" ]]
+  ! grep -q "	gone	" "$REPO/$LOG"
+  sleep 0.5
+  [ ! -e "$PB_CALLS" ]
+  [ ! -e "$(stopmark)" ]
+}
+
+@test "gone: a plain session ends with T2's end and no call, whatever stale mark was left" {
+  pb_stub
+  FAKE_SHELL_SLEEP=1 pane alpha
+  git -C "$REPO" worktree add -q --detach "$REPO/.claude/worktrees/alpha" HEAD
+  echo Ghost >"$(stopmark)"
+  sh "$BIN" start alpha the task >/dev/null
+  until_ok 'grep -q "	end	" "$REPO/$LOG"'
+  [[ "$(grep "	end	" "$REPO/$LOG" | cut -f4)" =~ ^Alpha\ ended\ after\ [0-9]+s\ \(the\ task\)$ ]]
+  sleep 0.5
+  [ ! -e "$PB_CALLS" ]
+}
+
+@test "gone: a stop that times out leaves no mark" {
+  export CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/empty CLAUDE_PEER_STOP_WAIT=1
+  FAKE_SHELL_NOTERM=1 FAKE_SHELL_SLEEP=6 FAKE_SHELL_PID="$BATS_TEST_TMPDIR/shpid" pane alpha
+  sh "$BIN" start alpha >/dev/null
+  until_ok '[ -s "$BATS_TEST_TMPDIR/shpid" ]'
+  run sh "$BIN" stop alpha --force
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"did not exit within 1s"* ]]
+  [ ! -e "$(stopmark)" ]
 }

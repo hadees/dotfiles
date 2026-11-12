@@ -210,7 +210,7 @@ merges or supervises a peer. A tab's log lines are relayed to Lead (postbox's
 same file and it outlives any session. It is append-only, one line per entry,
 tab-separated: `<UTC time><TAB><who><TAB><kind><TAB><text>[<TAB><path>…]`, with
 tabs and newlines in text and paths written as spaces. `kind` is `claim`, `note`,
-`done`, `start`, `stop` or `end`. `who` is the label of the slot whose worktree the
+`done`, `start`, `stop`, `end`, `idle` or `gone`. `who` is the label of the slot whose worktree the
 caller stands in (a live claim), else `Lead` when a live claim names the caller's
 directory as its leader, else the directory's name; `log --as <name> …` overrides
 it. `log claim <task> [-- <path>…]` appends a claim and then prints, for every
@@ -296,6 +296,17 @@ the claim (missing: the claim's line 7), and sets the mark to now either way.
 `log --as <name> idle <text>` writes the line as given. `idle` closes no
 claim; every written line calls `lead-news` with the claim's lines 9 and 10.
 `run_session` removes the mark with the claim, `write_claim` a stale one.
+How a session ended is one of three lines, chosen by `pane_go` after
+`run_session` returns. `cmd_stop` writes the stop mark, `claude-peer.stop`
+beside the claim (who asked), after its busy check and before the first
+signal, and removes it when the session does not exit in time; with the mark
+there the line is `end` with ` (stopped by <who>)` and nobody is told (the
+mark goes). Without it, a hand-off is `gone` with T2's text, and `lead-news`
+is called with lines 9 and 10, so Lead's own `stop; start` never wakes it.
+Anything else is T2's `end`. `gone` closes that label's claims as `end` does.
+A file is used because `stop` logs only after the claim is gone, so the log's
+order cannot tell a requested stop from an ending; `write_claim` removes a
+stale mark.
 
 The public source ships seven top-level contexts, `dot_config/claude-peer/contexts/NN-<name>.ctx`
 (`ask`, `look-at`, `plan`, `prs`, `audit`, `catch-up`, `team`), which deploy on every class but
