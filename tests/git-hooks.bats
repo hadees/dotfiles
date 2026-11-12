@@ -555,3 +555,109 @@ push_repo() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"push v1"* ]]
 }
+
+# The branch gate: a claude-peer slot (a linked worktree, detached, with a
+# claude-peer.base record) takes no commit until it has a branch. The helper
+# is deployed to $HOME/bin the way chezmoi would, and found first on PATH.
+slot_repo() {
+  repo=$(make_repo "${1:-}")
+  GIT_IDENTITY_CHECK=0 git -C "$repo" commit -q -m init
+  SLOT="$BATS_TEST_TMPDIR/slot"
+  git -C "$repo" worktree add -q --detach "$SLOT"
+  SLOTGIT=$(git -C "$SLOT" rev-parse --absolute-git-dir)
+  printf 'main\nrefs/heads/main\n' > "$SLOTGIT/claude-peer.base"
+  echo y >> "$SLOT/f"; git -C "$SLOT" add f
+  mkdir -p "$HOME/bin"
+  cp "$BATS_TEST_DIRNAME/../bin/executable_branchname" "$HOME/bin/branchname"
+  chmod +x "$HOME/bin/branchname"
+  export PATH="$HOME/bin:$PATH"
+}
+
+@test "pre-commit: a slot with no branch is refused, with the fix; a branch lets it through" {
+  slot_repo
+  before=$(git -C "$SLOT" rev-parse HEAD)
+  run git -C "$SLOT" commit -q -m "feat: x"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no branch yet"* ]]
+  [[ "$output" == *"detached at main"* ]]
+  [[ "$output" == *"git switch -c"* ]]
+  [ "$(git -C "$SLOT" rev-parse HEAD)" = "$before" ]
+  git -C "$SLOT" switch -q -c feat/x
+  run git -C "$SLOT" commit -q -m "feat: x"
+  [ "$status" -eq 0 ]
+}
+
+@test "pre-commit: GIT_BRANCH_CHECK=0 and GIT_IDENTITY_CHECK=0 bypass only their own gate" {
+  slot_repo 'git@github-work:octo-work-org/some-repo.git'
+  run env GIT_BRANCH_CHECK=0 git -C "$SLOT" commit -q -m "feat: x"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"refusing to commit as"* ]]
+  run env GIT_IDENTITY_CHECK=0 git -C "$SLOT" commit -q -m "feat: x"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no branch yet"* ]]
+  run env GIT_BRANCH_CHECK=0 GIT_IDENTITY_CHECK=0 git -C "$SLOT" commit -q -m "feat: x"
+  [ "$status" -eq 0 ]
+}
+
+@test "pre-commit: the branch gate has no opinion when switched off, unrecorded, helperless or mid-rebase" {
+  slot_repo
+  git -C "$SLOT" config hook.pre-commit.branch false
+  run git -C "$SLOT" commit -q -m "feat: off"
+  [ "$status" -eq 0 ]
+  git -C "$SLOT" config --unset hook.pre-commit.branch
+
+  echo z >> "$SLOT/f"; git -C "$SLOT" add f
+  mkdir "$SLOTGIT/rebase-merge"
+  run git -C "$SLOT" commit -q -m "feat: mid-rebase"
+  [ "$status" -eq 0 ]
+  rmdir "$SLOTGIT/rebase-merge"
+
+  echo z >> "$SLOT/f"; git -C "$SLOT" add f
+  run env PATH="$(dirname "$(command -v git)"):/usr/bin:/bin" HOME="$BATS_TEST_TMPDIR/nohelper" git -C "$SLOT" commit -q -m "feat: helperless"
+  [ "$status" -eq 0 ]
+
+  rm "$SLOTGIT/claude-peer.base"
+  echo z >> "$SLOT/f"; git -C "$SLOT" add f
+  run git -C "$SLOT" commit -q -m "feat: unrecorded"
+  [ "$status" -eq 0 ]
+}
+
+@test "pre-commit: a custom detached-format does not change what the gate says" {
+  slot_repo
+  git config --file "$GIT_CONFIG_GLOBAL" branchname.detached-format '{worktree} : {base}'
+  run git -C "$SLOT" commit -q -m "feat: x"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"detached at main"* ]]
+}
+
+@test "git-doctor: branch-gate reads off, on, would-refuse and inert" {
+  slot_repo
+  doctor() { run zsh -c "source '$BATS_TEST_DIRNAME/../dot_functions'; cd '$1'; git-doctor"; }
+  doctor "$SLOT"
+  [[ "$output" == *"branch-gate: on — WOULD REFUSE: detached at main with no branch"* ]]
+  ! grep -qE '^(name|key|bg[a-z]*)=' <<<"$output"
+  doctor "$repo"
+  [[ "$output" == *$'\n'"branch-gate: on"$'\n'* ]]
+  git -C "$SLOT" config hook.pre-commit.branch off
+  doctor "$SLOT"
+  [[ "$output" == *"branch-gate: off (hook.pre-commit.branch=off)"* ]]
+  git -C "$SLOT" config --unset hook.pre-commit.branch
+  rm "$HOME/bin/branchname"
+  export PATH="$(dirname "$(command -v git)"):/usr/bin:/bin"
+  doctor "$SLOT"
+  [[ "$output" == *"branch-gate: inert (no ~/bin/branchname)"* ]]
+}
+
+@test "pre-commit: ~/bin/branchname wins over an unrelated branchname earlier on PATH" {
+  slot_repo
+  mkdir -p "$BATS_TEST_TMPDIR/other"
+  printf '#!/bin/sh\necho ran > "%s/other/ran"\nexit 0\n' "$BATS_TEST_TMPDIR" > "$BATS_TEST_TMPDIR/other/branchname"
+  chmod +x "$BATS_TEST_TMPDIR/other/branchname"
+  run env PATH="$BATS_TEST_TMPDIR/other:$PATH" git -C "$SLOT" commit -q -m "feat: x"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"detached at main"* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/other/ran" ]
+  run env PATH="$BATS_TEST_TMPDIR/other:$PATH" zsh -c "source '$BATS_TEST_DIRNAME/../dot_functions'; cd '$SLOT'; git-doctor"
+  [[ "$output" == *"WOULD REFUSE: detached at main"* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/other/ran" ]
+}

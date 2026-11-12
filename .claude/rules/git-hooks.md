@@ -15,6 +15,28 @@ when that per-repo pin exists (a side project committing under its own
 identity — mirrors `wrangler.<owner>/<repo>.profile`). `GIT_IDENTITY_CHECK=0` bypasses one
 commit; `git-doctor` shows the verdict (`gate:`).
 
+Above the identity gate sits the **branch gate**: `pre-commit` refuses a
+commit in a claude-peer slot that has no branch yet — HEAD detached and
+`branchname --state` answering `base` (a `claude-peer.base` record in the
+worktree's git dir, no rebase or bisect in progress). Such a commit would
+land on no branch while the prompt names the branch the slot was cut from;
+the refusal names the fix, `git switch -c <type>/<slug>`. It runs **first**
+because every exit of the identity gate leaves through `chain`'s `exec`;
+placed after, it would never run in an unpinned repository. HEAD on a branch
+is answered by `git symbolic-ref` alone, so an ordinary commit runs no helper.
+It reads the state word and the ref (field 3, `refs/remotes/` or
+`refs/heads/` stripped), never the label, so `branchname.detached-format`
+cannot change what it says. Switches: `GIT_BRANCH_CHECK=0` for one commit,
+`hook.pre-commit.branch = false` (`0`/`no`/`off`) for a repo or machine; the
+two bypasses are independent of `GIT_IDENTITY_CHECK`. No helper found
+(`~/bin/branchname` first, then PATH, so a stranger's unrelated `branchname`
+never runs inside a commit hook) means no opinion. Not
+covered: commits made by `cherry-pick`, `revert` or a rebase (the githooks
+page names only `git commit` for this hook), `--no-verify`, a repository
+with its own `core.hooksPath`, and a commit on the real `main` — not gated,
+by decision. `git-doctor` shows it as `branch-gate:` (`on`, `on — WOULD
+REFUSE: …`, `off (…)`, `inert (…)`).
+
 `pre-push` is the other real gate there, and it refuses two publications
 that cannot be taken back once a ref is on the remote: a commit still
 marked **unfinished**, and a **non-fast-forward push of a protected

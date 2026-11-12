@@ -2637,6 +2637,27 @@ function git-doctor() {
 			print -r -- "gate:    on — WOULD REFUSE: '${email:-<no email>}' is not one of $key ($expected)";
 		fi;
 	fi;
+	# The branch gate in the same hook: refuses a commit in a slot with no branch.
+	if [[ -n $hooks && -x ${hooks/#\~/$HOME}/pre-commit ]]; then
+		local bgval bgbin bgst bgref;
+		bgval="$(command git config --get hook.pre-commit.branch 2>/dev/null)";
+		bgbin=$HOME/bin/branchname;
+		[[ -x $bgbin ]] || bgbin=${commands[branchname]:-$bgbin};
+		if [[ $bgval == (false|0|no|off) ]]; then
+			print -r -- "branch-gate: off (hook.pre-commit.branch=$bgval)";
+		elif [[ ! -x $bgbin ]]; then
+			print -r -- "branch-gate: inert (no ~/bin/branchname)";
+		else
+			bgst="$("$bgbin" --state 2>/dev/null)";
+			bgref=${${(ps:\t:)bgst}[3]};
+			bgref=${${bgref#refs/remotes/}#refs/heads/};
+			if [[ $bgst == base$'\t'* ]]; then
+				print -r -- "branch-gate: on — WOULD REFUSE: detached at $bgref with no branch";
+			else
+				print -r -- "branch-gate: on";
+			fi;
+		fi;
+	fi;
 	# Every config file consulted from here — the include chain made visible.
 	print -r -- "configs: $(command git config --list --show-origin --name-only 2>/dev/null | command awk -F'\t' '$1 ~ /^file:/ {print substr($1, 6)}' | command awk '!seen[$0]++' | command paste -sd, - | command sed 's/,/, /g')";
 }

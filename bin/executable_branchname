@@ -1,0 +1,98 @@
+#!/bin/sh
+# branchname — what a prompt or status line shows where a branch name goes.
+#
+#   branchname [--state] [dir]   dir defaults to .
+#
+# Prints one line, the label. With --state, four tab-separated fields instead,
+# "<state><TAB><label><TAB><ref><TAB><name>", none ever empty (a renderer
+# splits on the tab, which is whitespace to `read`, so an empty field would
+# shift the rest left):
+#
+#   branch    HEAD is on a branch. label and name are the branch, ref is
+#             refs/heads/<branch>. Unborn branches included.
+#   base      HEAD is detached in a worktree whose git dir holds a usable
+#             claude-peer.base record (line 1 the display name, line 2 the
+#             full ref it was cut from, written by claude-peer when it makes a
+#             slot), and no rebase or bisect is in progress. name is the
+#             record's name shaped by branchname.detached-format, label is
+#             "(<name>)", ref is the recorded ref (for ahead/behind arrows).
+#   detached  anything else with a commit: label and name are the short sha,
+#             ref is "-".
+#
+# Not a repository, or no commit to name: nothing, exit 1 — never 0 with empty
+# output, since a renderer would blank its segment.
+#
+# The label is for people. Scripts and hooks use the state word and the ref, or
+# ask git. The helper never prints a private-use glyph: the renderer draws its
+# own mark (U+F417) in front of field 4 where it can, because a glyph is a tofu
+# box in any surface without a patched font.
+#
+# `git config branchname.detached-format '<format>'` shapes the name inside the
+# mark, default '{base}'. Placeholders: {base} (record line 1), {worktree}
+# (basename of the toplevel). The mark itself is not configurable.
+#
+# Read-only, no network; safe under GIT_OPTIONAL_LOCKS=0.
+set -u
+
+want_state=
+if [ "${1:-}" = --state ]; then want_state=1; shift; fi
+dir="${1:-.}"
+
+command -v git >/dev/null 2>&1 || exit 1
+
+emit() { # emit <state> <label> <ref> <name>
+	if [ -n "$want_state" ]; then
+		printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4"
+	else
+		printf '%s\n' "$2"
+	fi
+	exit 0
+}
+
+if b=$(git -C "$dir" symbolic-ref --quiet --short HEAD 2>/dev/null) && [ -n "$b" ]; then
+	emit branch "$b" "refs/heads/$b" "$b"
+fi
+
+out=$(git -C "$dir" rev-parse --absolute-git-dir --show-toplevel --short HEAD 2>/dev/null) || exit 1
+{
+	IFS= read -r gitdir
+	IFS= read -r top
+	IFS= read -r sha
+} <<EOF_PATHS
+$out
+EOF_PATHS
+[ -n "${sha:-}" ] || exit 1
+
+strip() { printf '%s' "$1" | tr -d '\000-\037\177'; }
+
+detached() { emit detached "$sha" - "$sha"; }
+
+rec=$gitdir/claude-peer.base
+[ -r "$rec" ] || detached
+base= ref=
+{ IFS= read -r base || :; IFS= read -r ref || :; } <"$rec"
+[ -n "$base" ] || detached
+case $ref in refs/heads/?* | refs/remotes/?*) ;; *) detached ;; esac
+for f in rebase-merge rebase-apply BISECT_LOG; do
+	[ -e "$gitdir/$f" ] && detached
+done
+git -C "$dir" rev-parse --verify --quiet "$ref^{commit}" >/dev/null 2>&1 || detached
+
+base=$(strip "$base")
+worktree=${top##*/}
+fmt=$(git -C "$dir" config --get branchname.detached-format 2>/dev/null) || fmt=
+[ -n "$fmt" ] || fmt='{base}'
+
+# A case loop, not sed: a name may hold the metacharacters (& | \) sed reads.
+res= f=$fmt
+while [ -n "$f" ]; do
+	case $f in
+		'{base}'*) res=$res$base; f=${f#'{base}'} ;;
+		'{worktree}'*) res=$res$worktree; f=${f#'{worktree}'} ;;
+		*) rest=${f#?}; res=$res${f%"$rest"}; f=$rest ;;
+	esac
+done
+name=$(strip "$res")
+[ -n "$name" ] || name=$base
+[ -n "$name" ] || detached
+emit base "($name)" "$ref" "$name"
