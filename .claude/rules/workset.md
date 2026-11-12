@@ -67,6 +67,12 @@ verdict for every configured set (a set name with a trailing `!` there means
 `workset_profile` refused it on this machine), so none of the three can ever
 disagree.
 
+**`plan` answers `conflict` before `checkout` creates anything.** A member
+whose worktree directory is free but whose branch is already checked out in
+any of its worktrees (`git worktree list --porcelain`, the live checkout
+included) is a conflict too, so `checkout` refuses before touching the earlier
+members instead of failing partway through.
+
 **Isolation is a hook plus instruction, not a sandbox.** Claude Code's own
 worktree-isolation checks (blocking `git -C` into the launch repo,
 unparsable commands refused) apply only to a `--worktree`/`EnterWorktree`

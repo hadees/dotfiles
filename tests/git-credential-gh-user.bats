@@ -78,3 +78,35 @@ ask() {
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
+
+# The helper answers for GitHub over https and nothing else: an overlay that
+# scopes a username to some other host must not get a token sent there.
+@test "declines silently for a host that is not GitHub" {
+  run sh -c "printf 'protocol=https\nhost=example.com\nusername=octo\n' | sh '$HELPER' get"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ ! -e "$GH_STUB_LOG" ]
+}
+
+@test "declines silently over plain http" {
+  run sh -c "printf 'protocol=http\nhost=github.com\nusername=octo\n' | sh '$HELPER' get"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ ! -e "$GH_STUB_LOG" ]
+}
+
+@test "answers for gist.github.com over https" {
+  run sh -c "printf 'protocol=https\nhost=gist.github.com\nusername=octo\n' | sh '$HELPER' get"
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "username=octo" ]
+  [ "${lines[1]}" = "password=fake-token-123" ]
+}
+
+# git sends the port as part of host only when the URL carried one, and the
+# credential pins never do, so declining github.com:443 is correct.
+@test "declines silently when host carries a port" {
+  run sh -c "printf 'protocol=https\nhost=github.com:443\nusername=octo\n' | sh '$HELPER' get"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ ! -e "$GH_STUB_LOG" ]
+}

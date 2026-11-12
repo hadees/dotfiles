@@ -46,3 +46,14 @@
   [ "$status" -eq 0 ]
   echo "$output" | grep -qx 'finicky'
 }
+
+@test "every Brewfile formula is installed or accounted for in packages-apt.txt" {
+  cd "$BATS_TEST_DIRNAME/.."
+  # CLAUDE.md: a tool on one platform only is noted in the list file. A name
+  # may be a package line or a comment, but it must appear somewhere.
+  missing=
+  for name in $(sed -nE "s/^brew '([^']+)'.*/\1/p" Brewfile | sed -E 's/@.*$//' | sort -u); do
+    grep -qwF -- "$name" packages-apt.txt || missing="$missing $name"
+  done
+  [ -z "$missing" ] || { echo "Brewfile formulae missing from packages-apt.txt:$missing"; false; }
+}
