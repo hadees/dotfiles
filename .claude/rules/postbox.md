@@ -187,6 +187,19 @@ directory, else its base name. Cost: one sleeping `sh` per hand-off; a pass
 is two `claude-peer` reads and one `peer_news`; `pgrep -f 'postbox
 handoff-check'` counts them.
 
+The clock also sees a live peer gone quiet without an event (between the
+live check and the gone check): the live registry record whose physical
+`cwd` is the worktree, in any mapped profile, not `busy`, with a
+`statusUpdatedAt` (milliseconds) at least `stall-minutes` old, and no log
+line by the label stamped later than a minute before it, gets `log --as
+<Label> idle "<Label> has been <status> for <dur> with nothing logged"` and
+`tell_operator "<repo> · <Label>" "<status> for <dur>, nothing logged"`, once
+per `statusUpdatedAt` (the state file's `quiet`). No record: one
+`handoff-check: <worktree>: no registry record` line. `status` and
+`statusUpdatedAt` are observed, not an interface: a renamed field makes this
+branch silent, a "working" status that is not `busy` makes it notify once
+per status change, and `courier.log` names the word.
+
 Cost, over a session start that is otherwise unchanged (one `sh`, a few
 `python3` starts, one `curl` capped at two seconds, one `am check-inbox`,
 about 95 words): a non-peer start adds one socket test and one `python3` for

@@ -1378,6 +1378,7 @@ hc_pass() {
     { grep -v "^$1=" "$hc_sf" 2>/dev/null; [ -z "$2" ] || printf '%s=%s\n' "$1" "$2"; } > "$hc_sf.tmp" && mv "$hc_sf.tmp" "$hc_sf"
   }
   hc_log=$(cd "$hc_dir" && "$PEERCMD" log show --all 2>/dev/null)
+  [ "$hc_live" = 0 ] || hc_quiet
   if [ "$hc_live" = 0 ] && [ -z "$(hc_get wrote)" ] && ! printf '%s\n' "$hc_log" | awk -F'\t' -v l="$hc_label" -v t="$hc_t0" '
       ($3 == "end" || $3 == "gone" || $3 == "stop") && $1 >= t { w = $4; sub(/ .*/, "", w); if ($2 == l || w == l) f = 1 } END { exit !f }'; then
     ( cd "$hc_dir" && "$PEERCMD" log --as "$hc_label" idle "$hc_label is gone: its session and its pane ended without a line" ) </dev/null >/dev/null 2>&1
@@ -1403,6 +1404,46 @@ hc_pass() {
   fi
   if [ "$hc_live" = 0 ] && [ -z "$hc_news" ]; then rm -f "$hc_sf"; return 1; fi
   return 0
+}
+
+# A live peer gone quiet without an event: its registry record (any mapped
+# profile, cwd the worktree) is not busy, its status is stall-minutes old, and
+# the label logged nothing since a minute before that status. Once per status.
+# statusUpdatedAt and status are observed registry fields, not an interface.
+hc_quiet() {
+  hq=$(mapped_dirs | python3 -c '
+import glob, json, os, sys
+real = os.path.realpath(sys.argv[1])
+for d in (l.rstrip("\n") for l in sys.stdin if l.strip()):
+    for f in sorted(glob.glob(os.path.join(d, "sessions", "*.json"))):
+        try:
+            with open(f) as fh:
+                r = json.load(fh)
+            os.kill(int(r["pid"]), 0)
+        except Exception:
+            continue
+        if r.get("cwd") and os.path.realpath(r["cwd"]) == real:
+            print("%s\t%s" % (str(r.get("status") or "-").replace("\t", " "), int(r.get("statusUpdatedAt") or 0)))
+            sys.exit(0)' "$hc_wt" 2>/dev/null)
+  if [ -z "$hq" ]; then
+    mkdir -p "$STATE/logs" 2>/dev/null
+    printf '%s handoff-check: %s: no registry record\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$hc_wt" >> "$STATE/logs/courier.log" 2>/dev/null
+    return 0
+  fi
+  hq_st=${hq%%"$(printf '\t')"*} hq_ms=${hq#*"$(printf '\t')"}
+  [ "$hq_st" != busy ] && [ "${hq_ms:-0}" -gt 0 ] 2>/dev/null || return 0
+  [ "$(hc_get quiet)" != "$hq_ms" ] || return 0
+  hq_at=$((hq_ms / 1000)) hq_now=${POSTBOX_NOW:-$(date +%s)}
+  [ $((hq_now - hq_at)) -ge $((hc_min * 60)) ] || return 0
+  hq_s=$((hq_at - 60))
+  hq_cut=$(date -u -d "@$hq_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$hq_s" +%Y-%m-%dT%H:%M:%SZ)
+  printf '%s\n' "$hc_log" | awk -F'\t' -v l="$hc_label" -v c="$hq_cut" '$2 == l && $1 > c { f = 1 } END { exit !f }' && return 0
+  hq_d=$((hq_now - hq_at))
+  if [ "$hq_d" -lt 60 ]; then hq_d="${hq_d}s"; elif [ "$hq_d" -lt 3600 ]; then hq_d="$((hq_d / 60))m"
+  elif [ "$hq_d" -lt 86400 ]; then hq_d="$((hq_d / 3600))h"; else hq_d="$((hq_d / 86400))d"; fi
+  ( cd "$hc_dir" && "$PEERCMD" log --as "$hc_label" idle "$hc_label has been $hq_st for $hq_d with nothing logged" ) </dev/null >/dev/null 2>&1
+  tell_operator "$hc_repo · $hc_label" "$hq_st for $hq_d, nothing logged"
+  hc_set quiet "$hq_ms"
 }
 
 cmd_handoff_check() {

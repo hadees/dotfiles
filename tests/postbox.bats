@@ -1535,3 +1535,42 @@ leadnews() { cat "$POSTBOX_STATE/logs/courier.log" 2>/dev/null | grep -c 'lead-n
   [ "$status" -eq 0 ]
   [ "$(grep -c 'is gone' "$PEER_LOG")" -eq 1 ]
 }
+
+# --- the clock sees a live peer gone quiet -------------------------------------------
+
+# PeerA's record in alpha, with status $1 updated $2 seconds before POSTBOX_NOW.
+quiet_rec() {
+  printf '{"pid":%s,"cwd":"%s","name":"PeerA","status":"%s","statusUpdatedAt":%s}\n' \
+    "$$" "$wt" "$1" "$(( (1800000000 - $2) * 1000 ))" > "$CLAUDE_CONFIG_DIR/sessions/PeerA.json"
+}
+
+@test "handoff-check: a peer waiting for 20 minutes with nothing logged is reported once" {
+  clock
+  quiet_rec waiting 1200
+  "$PB" "${HC[@]}"
+  grep -qx 'log --as Alpha idle Alpha has been waiting for 20m with nothing logged' "$PEER_LOG"
+  [ "$(grep -c . "$NOTIFY_LOG")" -eq 1 ]
+  grep -qF -- '-message waiting for 20m, nothing logged' "$NOTIFY_LOG"
+  "$PB" "${HC[@]}"
+  [ "$(grep -c 'has been' "$PEER_LOG")" -eq 1 ]
+  [ "$(grep -c . "$NOTIFY_LOG")" -eq 1 ]
+}
+
+@test "handoff-check: a busy peer, or one whose idle line H3 already wrote, is left alone" {
+  clock
+  quiet_rec busy 1200
+  "$PB" "${HC[@]}"
+  quiet_rec idle 1200
+  logl $((1800000000 - 1200 - 5)) Alpha idle "Alpha stopped after 1h without logging done"
+  "$PB" "${HC[@]}"
+  ! grep -q 'has been' "$PEER_LOG" || { echo "a quiet peer was reported anyway"; false; }
+  [ ! -e "$NOTIFY_LOG" ]
+}
+
+@test "handoff-check: a live claim with no registry record is logged and nothing else" {
+  clock
+  rm "$CLAUDE_CONFIG_DIR/sessions/PeerA.json"
+  "$PB" "${HC[@]}"
+  grep -q "handoff-check: $wt: no registry record" "$POSTBOX_STATE/logs/courier.log"
+  ! grep -q 'has been' "$PEER_LOG" || { echo "reported without a record"; false; }
+}
