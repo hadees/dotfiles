@@ -116,6 +116,9 @@
 #                            written by the Stop hook of a handed-over peer: a
 #                            turn that ended without a done or note (--as: the
 #                            line as given, <text> required)
+#   name <slot|lead> [<dir>] the session name that role gets in <dir>:
+#                            <repo>-<slot>; <repo>-lead in the main checkout,
+#                            <repo>-<worktree>-lead in a linked one
 #   claim [<dir>]            key<TAB>value for the live claim of <dir>: pid,
 #                            leader, label, by, context, task, started,
 #                            handoff, lead-pid, lead-sid (- when missing);
@@ -358,7 +361,11 @@ POOL_DEFAULT='alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu
 
 # LC_ALL=C: in a UTF-8 locale [a-z] also matches capitals. `next` is the word
 # `start` uses for "whatever the pane would take", so it is not a slot.
-slot_ok() { [ "$1" != next ] && printf '%s\n' "$1" | LC_ALL=C grep -Eq '^[a-z][a-z0-9_-]*$'; }
+# next is `start`'s word for "whatever the pane would take"; lead is Lead's
+# name; claude and hermes are kept free for an agent segment in names later.
+slot_ok() { case $1 in next|lead|claude|hermes) return 1;; esac; printf '%s\n' "$1" | LC_ALL=C grep -Eq '^[a-z][a-z0-9_-]*$'; }
+# The one place a session name is composed: <repo>-<slot>. Needs rname.
+session_name() { printf '%s-%s\n' "$rname" "$1"; }
 label_of() { printf '%s%s' "$(printf '%s' "$1" | cut -c1 | tr a-z A-Z)" "$(printf '%s' "$1" | cut -c2-)"; }
 rname_of() { printf '%s' "${1##*/}" | tr -c 'A-Za-z0-9._-' '-'; }
 settle() { st=${CLAUDE_PEER_SETTLE:-2}; [ "$st" -gt 0 ] && sleep "$st"; return 0; }
@@ -525,7 +532,7 @@ $(handoff_note)"; fi
   fi
   [ -z "$pg_prompt" ] || set -- "$@" "$pg_prompt"
   [ "$pg_mode" != resume ] || set -- "$@" --resume   # no value: Claude's own list chooses
-  run_session "$pg_wt" "$rname-$pg_taken" "$@"
+  run_session "$pg_wt" "$(session_name "$pg_taken")" "$@"
   # only after a session ran: a refused start returned above, and its `end`
   # would close a live peer's claims
   # A requested stop says who asked and wakes nobody; a hand-off that ended by
@@ -1157,11 +1164,12 @@ cmd_run() {
   rname=$(rname_of "$repo")
   if [ -n "$slot" ]; then
     out=$(slot_checkout "$repo" "$slot" "$label") || exit $?
-    name=$rname-$slot
+    name=$(session_name "$slot")
   else
     valid_branch "$b"
+    [ "$(slug_of "$b")" != lead ] || die "'$b' is not a branch a peer can run on: lead is Lead's name"
     out=$(worktree_checkout "$repo" "$b") || exit 1
-    name=$rname-$(slug_of "$b")
+    name=$(session_name "$(slug_of "$b")")
   fi
   printf '%s\n' "$out"
   wt=$(printf '%s\n' "$out" | cut -f2)
@@ -1258,7 +1266,7 @@ cmd_start() {
   if [ "$st_req" != next ]; then
     st_wt=$repo/.claude/worktrees/$st_req
     if claim_live "$st_wt"; then
-      printf '%s\t%s\trunning\t%s\n' "$st_req" "$st_wt" "$rname-$st_req"
+      printf '%s\t%s\trunning\t%s\n' "$st_req" "$st_wt" "$(session_name "$st_req")"
       exit 3
     fi
   fi
@@ -1324,7 +1332,7 @@ cmd_start() {
     if [ -n "$st_got" ]; then
       st_who=$(log_who)
       log_add "$st_who" start "$(label_of "${st_got##*/}") by $st_who" 2>/dev/null
-      printf '%s\t%s\tstarted\t%s\n' "${st_got##*/}" "$st_got" "$rname-${st_got##*/}"
+      printf '%s\t%s\tstarted\t%s\n' "${st_got##*/}" "$st_got" "$(session_name "${st_got##*/}")"
       # the stall clock: one detached postbox per hand-off, see postbox handoff-check
       st_pb=${CLAUDE_PEER_POSTBOX:-$HOME/bin/postbox}
       st_ld=$(printf '%s' "$st_pick" | cut -f3)
@@ -1419,10 +1427,10 @@ cmd_slots() {
   repo=$(repo_root_q) || exit 0
   rname=$(rname_of "$repo")
   { cmd_peers "$repo" | while IFS='	' read -r w p l _; do
-      printf '%s\trunning\t%s\t%s\t%s\t%s\n' "${w##*/}" "$w" "$p" "$l" "$rname-${w##*/}"
+      printf '%s\trunning\t%s\t%s\t%s\t%s\n' "${w##*/}" "$w" "$p" "$l" "$(session_name "${w##*/}")"
     done
     waiters "$repo" | while IFS='	' read -r sl p l; do
-      printf '%s\twaiting\t%s\t%s\t%s\t%s\n' "$sl" "$repo/.claude/worktrees/$sl" "$p" "$l" "$rname-$sl"
+      printf '%s\twaiting\t%s\t%s\t%s\t%s\n' "$sl" "$repo/.claude/worktrees/$sl" "$p" "$l" "$(session_name "$sl")"
     done
   } | LC_ALL=C sort
 }
@@ -1512,6 +1520,25 @@ tell_lead() {
   [ -x "$tl_pb" ] || return 0
   ( "$tl_pb" lead-news "$1" "${2:--}" "${3:--}" </dev/null >/dev/null 2>&1 & )
   return 0
+}
+
+# <slot|lead> [<dir>]: the session name that role gets in <dir>. Lead's is
+# <repo>-lead in the main checkout and <repo>-<worktree>-lead in a linked one,
+# so two leaders of one repository never share a name.
+cmd_name() {
+  [ $# -ge 1 ] && [ $# -le 2 ] || usage
+  nm_role=$1
+  cd -- "${2:-$PWD}" 2>/dev/null || exit 1
+  repo=$(repo_root_q) || exit 1
+  rname=$(rname_of "$repo")
+  if [ "$nm_role" = lead ]; then
+    nm_top=$(git rev-parse --show-toplevel 2>/dev/null) || exit 1
+    if [ "$(cd "$nm_top" && pwd -P)" = "$(cd "$repo" && pwd -P)" ]; then session_name lead
+    else session_name "$(rname_of "$nm_top")-lead"; fi
+  else
+    slot_ok "$nm_role" || die "'$nm_role' is not a slot name (lowercase letters, digits, - and _)"
+    session_name "$nm_role"
+  fi
 }
 
 # [<dir>]: the live claim's ten lines as key<TAB>value, - for a missing one
@@ -2183,6 +2210,7 @@ case $cmd in
   slots) cmd_slots "$@";;
   log) cmd_log "$@";;
   claim) cmd_claim "$@";;
+  name) cmd_name "$@";;
   path) cmd_path "$@";;
   plan) cmd_plan "$@";;
   here) cmd_here "$@";;

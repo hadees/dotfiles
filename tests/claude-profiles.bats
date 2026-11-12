@@ -1301,3 +1301,43 @@ home_repo() {
   doctor_in "$other"
   [[ "$output" == *"memory:  n/a: $other is not under the home directory"* ]]
 }
+
+# Lead's stable name: an attended launch that sent the workgroup key gets
+# `-n <claude-peer name lead>` unless a name was given or a live session here
+# already has it.
+lead_setup() {
+  peer_setup
+  printf '#!/bin/sh\ncase $1 in here) echo base;; name) [ "$2" = lead ] && echo repo-lead;; esac\n' > "$HOME/bin/claude-peer"
+  printf '#!/bin/sh\necho "args=$*"\n' > "$BATS_TEST_TMPDIR/bin/claude"
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+}
+args_sent() { printf '%s' "$output" | tr -d '\r' | sed -n 's/^.*args=/args=/p'; }
+
+@test "lead name: an attended launch in a workgroup tab is named repo-lead; --resume keeps it first" {
+  lead_setup
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [ "$(args_sent)" = "args=-n repo-lead" ]
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude --resume abc
+  [ "$(args_sent)" = "args=-n repo-lead --resume abc" ]
+}
+
+@test "lead name: a name given is left alone; a live session here already named so gets none" {
+  lead_setup
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude -n mine
+  [ "$(args_sent)" = "args=-n mine" ]
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude --name=mine
+  [ "$(args_sent)" = "args=--name=mine" ]
+  make_session "$HOME/.claude-personal" "$$" "$repo" repo-lead
+  PTY_DIR=$repo PTY_ANSWER=y pty_claude
+  [ "$(args_sent)" = "args=" ]
+}
+
+@test "lead name: none under -p, inside a peer, or without the enter file" {
+  lead_setup
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude -p hi
+  [ "$(args_sent)" = "args=-p hi" ]
+  (CLAUDE_PEER_WORKTREE=$repo PTY_DIR=$repo PTY_ANSWER=n pty_claude; [ "$(args_sent)" = "args=" ])
+  rm "$HOME/.local/state/claude-peer/enter"
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [ "$(args_sent)" = "args=" ]
+}

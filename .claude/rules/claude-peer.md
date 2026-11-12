@@ -15,7 +15,9 @@ leader's cwd and is pinned there, so the script moves, not the shell:
 `<repo>/.claude/worktrees/<slot>`, `cd`s there and runs `claude -n <repo>-<slot>`
 through an interactive shell, so it is the `.functions` wrapper and, being a
 directory no other session is in, raises no second-session question. A slot is a
-name (`alpha`, `beta`, …; lowercase letters, digits, `-` and `_`), and its
+name (`alpha`, `beta`, …; lowercase letters, digits, `-` and `_`; not `next`,
+`lead`, `claude` or `hermes`, and a branch whose slug is `lead` is refused),
+and its
 worktree is the slot's: new, it is detached at `origin/HEAD` (the branch is
 Claude's to create once it knows what it is working on); afterwards it is
 reused in whatever state it was left, dirty or on a branch, with nothing
@@ -269,6 +271,13 @@ unknown), the context name or `-`, the task line (at most 80 characters) or `-`,
 and the start time in epoch seconds; lines 1-3, `peers` and the session name are
 unchanged. The pane's header line is the slot's label, then ` · started by <by>`
 (not for Return) and ` · <task>`.
+
+**Names.** `session_name` is the one place a session name is composed,
+`<repo>-<slot>`. `claude-peer name <slot|lead> [<dir>]` prints the name a role
+gets there: a slot's, or Lead's, `<repo>-lead` in the main checkout and
+`<repo>-<worktree>-lead` in a linked worktree (so two leaders of one
+repository never share one); exit 1 outside a repository. `claude()` gives a
+workgroup tab's launch that name (claude-profiles.md).
 
 **Hand-offs.** `start --handoff` is Lead's way to hand a step to a peer. It is
 refused with exit 2 and one line, waking nothing, with neither a prompt nor a

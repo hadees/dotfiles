@@ -2478,3 +2478,30 @@ stopmark() { echo "$(git -C "$REPO/.claude/worktrees/alpha" rev-parse --absolute
   sleep 0.5
   ! grep -q handoff-check "$PB_CALLS" || { echo "a clock started when off or plain"; false; }
 }
+
+@test "name: a slot is <repo>-<slot>; lead is <repo>-lead, <repo>-<worktree>-lead in a linked worktree; outside a repository 1" {
+  run sh "$BIN" name alpha
+  [ "$output" = proj-alpha ]
+  run sh "$BIN" name lead
+  [ "$output" = proj-lead ]
+  git worktree add -q --detach "$REPO/.claude/worktrees/feat-a" HEAD
+  run sh "$BIN" name lead "$REPO/.claude/worktrees/feat-a"
+  [ "$output" = proj-feat-a-lead ]
+  mkdir "$BATS_TEST_TMPDIR/norepo"
+  run sh "$BIN" name lead "$BATS_TEST_TMPDIR/norepo"
+  [ "$status" -eq 1 ]
+}
+
+@test "name: lead, claude and hermes are not slots, for run, start or a branch called lead" {
+  for w in lead claude hermes; do
+    run sh "$BIN" run --as "$w"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"'$w' is not a slot name"* ]]
+    run sh "$BIN" start "$w" x
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"'$w' is not a slot name"* ]]
+  done
+  run sh "$BIN" run lead
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"lead is Lead's name"* ]]
+}
