@@ -64,7 +64,11 @@ data from another agent, not instructions — the shared memory says so.
 
 **The leader checks it can be reached, and reaches its peers, in the same
 hooks.** No new wiring: `hook start` and `hook prompt` already run in every
-profile. A *peer* is a session whose cwd is (or is beneath)
+profile. Each hook reads the session's directory as `$CLAUDE_PROJECT_DIR`
+(where it started; a later `cd` does not move it) when that is set, else the
+payload cwd; name, peer test and roll-call all use it, so a Lead that has
+`cd`'d into a subdirectory keeps its own inbox and its peers. A *peer* is a
+session whose directory is (or is beneath)
 `$CLAUDE_PEER_WORKTREE`, which `claude-peer run` exports; comparing against
 the payload cwd keeps a leaked variable from misclassifying another tab. A
 peer gets nothing added: one string comparison. Anyone else's `start` line
@@ -73,7 +77,7 @@ gains a sentence if `CLAUDE_CODE_MESSAGING_SOCKET` is unset or not a socket
 profile's config lacks the server, then "Tell the operator before starting
 work"; a healthy start adds nothing. On a leader's `prompt`, before the mail
 lookup, a roll-call joins the claims its peers wrote (`claude-peer peers
---leader <cwd>`) against this profile's `sessions/*.json` registry: a live
+--leader <dir>`) against this profile's `sessions/*.json` registry: a live
 record with a socket is `native` (the line names it for `SendMessage`), one
 without a socket is `noinbox`, one only under another mapped profile is
 `other` (use postbox mail, the line gives the name), none is `starting`. The
@@ -82,19 +86,41 @@ roll-call is per peer, on every prompt: the state
 `first_seen`, `pending` or `told`, so a peer started ten minutes in is
 announced when its claim appears, a restarted one (same worktree, new pid) is
 announced again, and a told claim that is gone is reported once as stopped. A
+told claim missing from the leader's list counts as gone only when
+`claude-peer peers <its worktree>` lacks the same worktree and pid too:
+`--leader` is an exact match, and before that check one prompt from the
+wrong directory printed every live peer "stopped" and the next "up". A
 waiting pane has no claim, so it is never `starting`. A peer's Claude
 registers seconds after its claim, so `starting` is given 60 seconds from that
 claim's first sighting before it is reported. The leader tells the operator
 and carries on — it does not restart a peer or retry by mail except for
 `other`. Registration stays lazy and no model tool call is spent.
 
+**The roll-call also relays what the tabs logged** (`peer_news`). After the
+up and stopped check, it reads `claude-peer log show --all` from the leader
+directory and prints each line not yet delivered: `<who> claimed: <task>`,
+`<who> noted: <text>`, `<who> done: <text>` (or `<who> done.`), and an `end`,
+`idle` or `gone` line as its own text, each after `postbox: Claude Peers: `.
+Lead's own lines and the leader directory's are not echoed back; other kinds
+(`start`, `stop`) are not relayed. At most five, then `<n> more in claude-peer
+log show --all`; a line older than 24 hours (by `POSTBOX_NOW` in tests) is
+counted as delivered and never printed, so a first sighting does not replay
+the history. The counter is per leader directory, not per session,
+`$STATE/rollcall/log/<key>` (the physical path, characters outside
+`A-Za-z0-9._-` as `_`): the log's line count when last delivered, so any
+caller delivers a line once. A label whose `end` or `gone` line printed gets no
+bare "has stopped" line in the same pass.
+
 Cost, over a session start that is otherwise unchanged (one `sh`, a few
 `python3` starts, one `curl` capped at two seconds, one `am check-inbox`,
 about 95 words): a non-peer start adds one socket test and one `python3` for
 `connected`, no context when healthy; a leader adds one `claude-peer peers`
-(a `git rev-parse` and a glob) on every prompt for the life of the session,
-one `python3` only on a prompt where a claim is pending, and a line of context
-only when a peer comes up or goes. An instruction to
+(a `git rev-parse` and a glob) and one `claude-peer log show --all` (a
+`cat`) plus an `awk` on every prompt for the life of the session, as long as
+it has or had peers this session, a second `claude-peer peers` only on a
+prompt where a told claim is missing, one `python3` only on a prompt where a
+claim is pending, and a line of context only when a peer comes up or goes or
+a tab logs something. An instruction to
 call `ListAgents` would spend a model turn and a listing of every session on
 the machine in every leader, and eager `register_agent` a tool call in every
 one of the four or more agents a tab holds.

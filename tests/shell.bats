@@ -96,10 +96,8 @@ setup() {
   mkdir -p "$fake/bin" "$fake/sbin" "$BATS_TEST_TMPDIR/stub"
   printf '#!/bin/sh\necho "%s"\n' "$fake" > "$BATS_TEST_TMPDIR/stub/brew"
   chmod +x "$BATS_TEST_TMPDIR/stub/brew"
-  # stderr is dropped: dot_exports sets LC_ALL=en_US.UTF-8, and on a box
-  # without that locale (the Rocky container) the brew subshell then warns
-  # about it, which `run` would fold into $output ahead of the PATH line.
-  run zsh -c "export PATH='$BATS_TEST_TMPDIR/stub:/usr/bin:/bin'; source dot_exports 2>/dev/null; print -r -- \$PATH"
+  run env -u HOMEBREW_PREFIX PATH="$BATS_TEST_TMPDIR/stub:/usr/bin:/bin" \
+    zsh -c "source dot_exports; print -r -- \$PATH"
   [ "$status" -eq 0 ]
   [[ "$output" == "$fake/bin:$fake/sbin:"* ]]
   [[ "$output" == *":/usr/bin:/bin"* ]]
@@ -117,18 +115,15 @@ setup() {
   brewp="$BATS_TEST_TMPDIR/brewprefix"
   mkdir -p "$sys/zsh-autosuggestions" "$sys/zsh-syntax-highlighting" \
            "$brewp/share/zsh-autosuggestions" "$brewp/share/zsh-syntax-highlighting" \
-           "$BATS_TEST_TMPDIR/stub" "$BATS_TEST_TMPDIR/empty"
+           "$BATS_TEST_TMPDIR/empty"
   echo 'AS=sys' > "$sys/zsh-autosuggestions/zsh-autosuggestions.zsh"
   echo 'SH=sys' > "$sys/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
   echo 'AS=brew' > "$brewp/share/zsh-autosuggestions/zsh-autosuggestions.zsh"
   echo 'SH=brew' > "$brewp/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
   sed "s|/usr/share|$sys|" "$BATS_TEST_TMPDIR/block.zsh" > "$BATS_TEST_TMPDIR/run.zsh"
 
-  printf '#!/bin/sh\necho %s\n' "$brewp" > "$BATS_TEST_TMPDIR/stub/brew"
-  chmod +x "$BATS_TEST_TMPDIR/stub/brew"
-
   # Homebrew present and carrying the plugins: its copies win.
-  run env PATH="$BATS_TEST_TMPDIR/stub:$PATH" \
+  run env HOMEBREW_PREFIX="$brewp" \
     zsh -c "source '$BATS_TEST_TMPDIR/run.zsh'; echo \$AS \$SH"
   [ "$status" -eq 0 ]
   [ "$output" = "brew brew" ]
@@ -138,8 +133,158 @@ setup() {
   # silently never source them. zsh is invoked by absolute path because env
   # resolves the command against the PATH it is setting, which is empty here.
   zsh_bin="$(command -v zsh)"
-  run env PATH="$BATS_TEST_TMPDIR/empty" \
+  run env -u HOMEBREW_PREFIX PATH="$BATS_TEST_TMPDIR/empty" \
     "$zsh_bin" -c "source '$BATS_TEST_TMPDIR/run.zsh'; echo \$AS \$SH"
   [ "$status" -eq 0 ]
   [ "$output" = "sys sys" ]
+}
+
+@test "bash -ic runs its command instead of handing over to zsh" {
+  # dot_bash_profile used to exec zsh for every interactive bash, so a tool's
+  # `$SHELL -ilc CMD` (or `bash -ic CMD`) lost its command and zsh read stdin.
+  cd "$BATS_TEST_DIRNAME/.."
+  home="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$home"
+  cp dot_bashrc "$home/.bashrc"
+  cp dot_bash_profile "$home/.bash_profile"
+  run env -i HOME="$home" PATH="/usr/bin:/bin" "$(command -v bash)" -ic 'echo marker-$((6*7))' </dev/null
+  [[ "$output" == *"marker-42"* ]] || { echo "bash -ic dropped its command: $output"; false; }
+}
+
+@test "exports pick code, else vim, else vi for the editors" {
+  cd "$BATS_TEST_DIRNAME/.."
+  home="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$home" "$BATS_TEST_TMPDIR/code" "$BATS_TEST_TMPDIR/vim" "$BATS_TEST_TMPDIR/none"
+  touch "$BATS_TEST_TMPDIR/code/code" "$BATS_TEST_TMPDIR/vim/vim"
+  chmod +x "$BATS_TEST_TMPDIR/code/code" "$BATS_TEST_TMPDIR/vim/vim"
+  zsh_bin="$(command -v zsh)"
+  ed() {
+    env -i HOME="$home" PATH="$1" "$zsh_bin" -c 'source ./dot_exports; print -r -- "$EDITOR|$GEM_EDITOR"' 2>/dev/null
+  }
+  [ "$(ed "$BATS_TEST_TMPDIR/code")" = "code --wait|code" ]
+  [ "$(ed "$BATS_TEST_TMPDIR/vim")" = "vim|vim" ]
+  [ "$(ed "$BATS_TEST_TMPDIR/none")" = "vi|vi" ]
+}
+
+@test "zshrc leaves extendedglob off so an unquoted caret reaches git" {
+  cd "$BATS_TEST_DIRNAME/.."
+  home="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$home"
+  run env -i HOME="$home" PATH="/usr/bin:/bin" "$(command -v zsh)" -c \
+    'source ./dot_zshrc; print -r -- HEAD^; [[ -o extendedglob ]] && print on || print off'
+  [ "${lines[-2]}" = "HEAD^" ] || { echo "caret did not survive: $output"; false; }
+  [ "${lines[-1]}" = "off" ] || { echo "extendedglob is on: $output"; false; }
+  [ "$(grep -c 'setopt EXTENDED_GLOB' dot_zshrc)" -eq 0 ] || { echo "dot_zshrc still sets EXTENDED_GLOB"; false; }
+  zsh -n dot_zshrc
+}
+
+@test "exports fill in LANG only when it is missing and the locale exists, and never force LC_ALL" {
+  cd "$BATS_TEST_DIRNAME/.."
+  home="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$home" "$BATS_TEST_TMPDIR/bare" "$BATS_TEST_TMPDIR/rich" "$BATS_TEST_TMPDIR/upper"
+  printf '#!/bin/sh\nprintf "C\\nC.utf8\\nPOSIX\\n"\n' > "$BATS_TEST_TMPDIR/bare/locale"
+  printf '#!/bin/sh\nprintf "C\\nen_US.utf8\\nPOSIX\\n"\n' > "$BATS_TEST_TMPDIR/rich/locale"
+  printf '#!/bin/sh\nprintf "C\\nen_US.UTF-8\\nPOSIX\\n"\n' > "$BATS_TEST_TMPDIR/upper/locale"
+  chmod +x "$BATS_TEST_TMPDIR"/{bare,rich,upper}/locale
+  zsh_bin="$(command -v zsh)"
+  loc() { # $1 stub dir, $2 OSTYPE, then optional VAR=value for the environment
+    local dir="$1" ostype="$2"; shift 2
+    env -i HOME="$home" PATH="$dir:/usr/bin:/bin" "$@" "$zsh_bin" -c \
+      "OSTYPE=$ostype; source ./dot_exports; print -r -- \"\${LANG-unset}|\${LC_ALL-unset}\"" 2>/dev/null
+  }
+  [ "$(loc "$BATS_TEST_TMPDIR/bare" linux-gnu)" = "unset|unset" ]
+  [ "$(loc "$BATS_TEST_TMPDIR/rich" linux-gnu)" = "en_US.UTF-8|unset" ]
+  [ "$(loc "$BATS_TEST_TMPDIR/upper" linux-gnu)" = "en_US.UTF-8|unset" ]
+  [ "$(loc "$BATS_TEST_TMPDIR/bare" linux-gnu LANG=de_DE.UTF-8)" = "de_DE.UTF-8|unset" ]
+  [ "$(loc "$BATS_TEST_TMPDIR/bare" darwin23.0)" = "en_US.UTF-8|unset" ]
+}
+
+@test "zshrc asks brew for its prefix once" {
+  # Every `$(brew --prefix ...)` is a ruby process; startup used to spawn six
+  # to eight of them. dot_exports exports HOMEBREW_PREFIX and the rest reuses it.
+  cd "$BATS_TEST_DIRNAME/.."
+  home="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$home" "$BATS_TEST_TMPDIR/stub"
+  cp dot_exports "$home/.exports"
+  printf '#!/bin/sh\necho call >> "%s"\necho "%s"\n' "$BATS_TEST_TMPDIR/brew.log" "$BATS_TEST_TMPDIR/prefix" \
+    > "$BATS_TEST_TMPDIR/stub/brew"
+  chmod +x "$BATS_TEST_TMPDIR/stub/brew"
+  run env -i HOME="$home" PATH="$BATS_TEST_TMPDIR/stub:/usr/bin:/bin" "$(command -v zsh)" -c 'source ./dot_zshrc'
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/brew.log")" -eq 1 ] || { echo "brew calls: $(cat "$BATS_TEST_TMPDIR/brew.log")"; false; }
+}
+
+@test "zshrc sources fzf bindings from Homebrew's prefix, else the Ubuntu examples directory" {
+  cd "$BATS_TEST_DIRNAME/.."
+  awk '/^# fzf key bindings/,/^unset _fzf_shell_dir _fzf_shell_dirs$/' dot_zshrc \
+    > "$BATS_TEST_TMPDIR/block.zsh"
+  [ -s "$BATS_TEST_TMPDIR/block.zsh" ]
+
+  sys="$BATS_TEST_TMPDIR/examples"
+  brewp="$BATS_TEST_TMPDIR/brewprefix"
+  mkdir -p "$sys" "$brewp/opt/fzf/shell" "$BATS_TEST_TMPDIR/bare/opt/fzf"
+  echo 'KB=sys' > "$sys/key-bindings.zsh"
+  echo 'CP=sys' > "$sys/completion.zsh"
+  echo 'KB=brew' > "$brewp/opt/fzf/shell/key-bindings.zsh"
+  echo 'CP=brew' > "$brewp/opt/fzf/shell/completion.zsh"
+  sed "s|/usr/share/doc/fzf/examples|$sys|" "$BATS_TEST_TMPDIR/block.zsh" > "$BATS_TEST_TMPDIR/run.zsh"
+  zsh_bin="$(command -v zsh)"
+
+  # Off Homebrew: the Ubuntu directory is found.
+  run env -u HOMEBREW_PREFIX "$zsh_bin" -c "source '$BATS_TEST_TMPDIR/run.zsh'; echo \$KB \$CP"
+  [ "$output" = "sys sys" ] || { echo "no Homebrew: $output"; false; }
+  # Homebrew carrying them: it wins.
+  run env HOMEBREW_PREFIX="$brewp" "$zsh_bin" -c "source '$BATS_TEST_TMPDIR/run.zsh'; echo \$KB \$CP"
+  [ "$output" = "brew brew" ] || { echo "Homebrew: $output"; false; }
+  # Homebrew without fzf's shell directory: fall through.
+  run env HOMEBREW_PREFIX="$BATS_TEST_TMPDIR/bare" "$zsh_bin" -c "source '$BATS_TEST_TMPDIR/run.zsh'; echo \$KB \$CP"
+  [ "$output" = "sys sys" ] || { echo "Homebrew without fzf: $output"; false; }
+}
+
+@test "exports point fzf at fd, else fdfind, else leave its default command alone" {
+  cd "$BATS_TEST_DIRNAME/.."
+  home="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$home" "$BATS_TEST_TMPDIR/fd" "$BATS_TEST_TMPDIR/fdfind" "$BATS_TEST_TMPDIR/neither"
+  for d in fd fdfind neither; do touch "$BATS_TEST_TMPDIR/$d/fzf"; chmod +x "$BATS_TEST_TMPDIR/$d/fzf"; done
+  touch "$BATS_TEST_TMPDIR/fd/fd" "$BATS_TEST_TMPDIR/fdfind/fdfind"
+  chmod +x "$BATS_TEST_TMPDIR/fd/fd" "$BATS_TEST_TMPDIR/fdfind/fdfind"
+  zsh_bin="$(command -v zsh)"
+  finder() { # PATH holds only the stub dir; LANG set so no `locale` is needed
+    env -i HOME="$home" LANG=C PATH="$BATS_TEST_TMPDIR/$1" "$zsh_bin" -c \
+      'source ./dot_exports; print -r -- "${FZF_DEFAULT_COMMAND-unset}|${FZF_CTRL_T_COMMAND-unset}|${FZF_ALT_C_COMMAND-unset}"' 2>/dev/null
+  }
+  [[ "$(finder fd)" == "fd --type f"*"|fd --type f"*"|fd --type d"* ]]
+  [[ "$(finder fdfind)" == "fdfind --type f"*"|fdfind --type f"*"|fdfind --type d"* ]]
+  [ "$(finder neither)" = "unset|unset|unset" ]
+}
+
+@test "diff is the system's, the word diff is worddiff, and fs stays the overmind alias" {
+  cd "$BATS_TEST_DIRNAME/.."
+  run zsh -c 'source ./dot_aliases; source ./dot_functions
+    print -r -- "diff:$(whence -w diff)"
+    print -r -- "worddiff:$(whence -w worddiff)"
+    print -r -- "fsize:$(whence -w fsize)"
+    print -r -- "fs:$(whence -w fs)"' 2>/dev/null
+  [[ "$output" != *"diff:diff: function"* ]] || { echo "diff is still a function: $output"; false; }
+  [[ "$output" == *"worddiff:worddiff: function"* ]] || { echo "no worddiff function: $output"; false; }
+  [[ "$output" == *"fsize:fsize: function"* ]] || { echo "no fsize function: $output"; false; }
+  [[ "$output" == *"fs:fs: alias"* ]] || { echo "fs is not the alias: $output"; false; }
+}
+
+@test "json pretty-prints a pipe with jq, else python3, and needs no bare python" {
+  cd "$BATS_TEST_DIRNAME/.."
+  zsh_bin="$(command -v zsh)"
+  mkdir -p "$BATS_TEST_TMPDIR/jq" "$BATS_TEST_TMPDIR/py"
+  # PATH holds one tool each, so neither run can fall back on the other.
+  printf '#!/bin/sh\nexec %s "$@"\n' "$(command -v jq)" > "$BATS_TEST_TMPDIR/jq/jq"
+  printf '#!/bin/sh\nexec %s "$@"\n' "$(command -v python3)" > "$BATS_TEST_TMPDIR/py/python3"
+  chmod +x "$BATS_TEST_TMPDIR/jq/jq" "$BATS_TEST_TMPDIR/py/python3"
+  legs=()
+  command -v jq >/dev/null 2>&1 && legs+=(jq)
+  command -v python3 >/dev/null 2>&1 && legs+=(py)
+  (( ${#legs[@]} )) || skip "neither jq nor python3 installed"
+  for d in "${legs[@]}"; do
+    run "$zsh_bin" -c "source ./dot_functions; PATH='$BATS_TEST_TMPDIR/$d'; print '{\"a\":1}' | json"
+    [ "$status" -eq 0 ] || { echo "$d: status $status: $output"; false; }
+    [[ "$output" == *'"a"'* ]] || { echo "$d: $output"; false; }
+  done
 }

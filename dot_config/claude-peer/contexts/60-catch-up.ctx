@@ -1,0 +1,6 @@
+title: Where are we? A status brief
+model: sonnet
+effort: low
+system: Read-only session: report, change nothing.
+
+Tell me where this repository stands, briefly: open pull requests and their checks; branches and worktrees with unmerged or uncommitted work; what `claude-peer slots` and `claude-peer log show` say is in flight; and anything waiting on me, such as questions left open in recent plans or reports. End with the three things most worth doing next.
