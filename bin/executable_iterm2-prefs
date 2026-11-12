@@ -36,7 +36,14 @@
 # ignored and counted. Unit names (keys and profile/<guid>/<key>) are printed;
 # values never are, except by `capture --values`.
 #
-# Built so far: lint, compose and status. The other verbs answer "not built yet".
+# Who captures where: `capture` writes only the destination it is given, never the
+# store, the record or a deployed fragment. A session writes with --file into its
+# own worktree (on a mac the public source's path from `chezmoi source-path` is the
+# live checkout, which a session must not edit on main); --into <fragment> is the
+# operator's shortcut and resolves the chezmoi source of the deployed fragment. An
+# overlay's fragment is captured by that overlay's own session.
+#
+# Built so far: lint, compose, status and capture. install answers "not built yet".
 set -u
 
 warn() { printf 'iterm2-prefs: %s\n' "$*" >&2; }
@@ -395,11 +402,12 @@ def truth(kind):
     return domain_prefs() if where == "domain" else load_or_empty(plist)
 
 
-def write_atomic(path, data):
+def write_atomic(path, data, mode=0o600):
     d = os.path.dirname(path)
     os.makedirs(d, mode=0o700, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".iterm2-prefs.")
     try:
+        os.fchmod(fd, mode)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
         os.replace(tmp, path)
@@ -565,10 +573,120 @@ def cmd_status(args):
     return 0
 
 
+class Raw:
+    def __init__(self, text):
+        self.text = text
+
+    def __repr__(self):
+        return self.text
+
+
+def show(value):
+    """repr cut at 200 characters, a data value as <data N bytes>."""
+    def hide(v):
+        if isinstance(v, bytes):
+            return Raw("<data %d bytes>" % len(v))
+        if isinstance(v, list):
+            return [hide(x) for x in v]
+        if isinstance(v, dict):
+            return {k: hide(x) for k, x in v.items()}
+        return v
+    return repr(hide(value))[:200]
+
+
+CAPTURE_USAGE = ("capture [--from domain|store|<plist>] [--all] [--values] [--owned <fragment>] "
+                 "[<unit>...] [--into <fragment> | --file <plist>]")
+
+
+def cmd_capture(args):
+    flags, opts, positional = set(), {}, []
+    rest = iter(args)
+    for a in rest:
+        if a in ("--all", "--values"):
+            flags.add(a)
+        elif a in ("--from", "--owned", "--file"):
+            v = next(rest, None)
+            if v is None or a in opts:
+                return usage(CAPTURE_USAGE)
+            opts[a] = v
+        elif a.startswith("-"):
+            return usage(CAPTURE_USAGE)
+        else:
+            positional.append(a)
+    dest = opts.get("--file")
+    if bool(dest) != bool(positional or "--owned" in opts):
+        return usage(CAPTURE_USAGE)
+    fragments, new, owner, order, ignored = sourced(False)
+    where = opts.get("--from") or ("domain" if running() else "store")
+    try:
+        tp = truth(where)
+    except Fail:
+        raise
+    except Exception:
+        raise Fail("cannot read %s" % where)
+    if not isinstance(tp, dict):
+        raise Fail("cannot read %s" % where)
+    cur = units_of(tp)
+    differ = [u for u in new if not same(cur.get(u, MISSING), new[u])]
+
+    if dest:
+        sel = []
+        for text in positional:
+            u = parse_unit(text)
+            if reserved(u):
+                raise Fail("%s is reserved and cannot be captured" % text)
+            if u == ("top", "New Bookmarks") or (u[0] == "profile" and (not u[1] or u[2] == "Guid")):
+                raise Fail("%s is not a unit" % text)
+            sel += [x for x in cur if x[:2] == u[:2]] if u[0] == "profile" and u[2] is None else [u]
+        if "--owned" in opts:
+            if opts["--owned"] not in [f[0] for f in fragments]:
+                raise Fail("no fragment named %s" % opts["--owned"])
+            sel += [u for u in differ if owner[u] == opts["--owned"]]
+        sel = list(dict.fromkeys(sel))
+        real = os.path.realpath(dest)
+        if real in (os.path.realpath(live_path()), os.path.realpath(record_path())) \
+                or os.path.dirname(real) == os.path.realpath(frag_dir()):
+            raise Fail("%s is a deployed file, not a source; capture into the chezmoi source" % dest)
+        out = load_or_empty(dest)
+        guids = list(dict.fromkeys(u[1] for u in sel if u[0] == "profile"))
+        apply_units(out, {u: cur.get(u, MISSING) for u in sel}, guids)
+        profs = out.get("New Bookmarks")
+        if isinstance(profs, list):
+            out["New Bookmarks"] = [p for p in profs if not (isinstance(p, dict) and p.get("Guid") in guids and len(p) == 1)]
+            if not out["New Bookmarks"]:
+                del out["New Bookmarks"]
+        os.makedirs(os.path.dirname(real), exist_ok=True)
+        write_atomic(dest, dump_plist(out), os.stat(dest).st_mode & 0o777 if os.path.exists(dest) else 0o644)
+        print("iterm2-prefs: wrote %d units to %s; commit it there, then run dotfiles" % (len(sel), dest))
+        return 0
+
+    changed = absent = 0
+    for u in differ:
+        c = cur.get(u, MISSING)
+        if c is MISSING:
+            absent += 1
+            print("absent\t%s\t%s" % (unit_text(u), owner[u]))
+        else:
+            changed += 1
+            row = "changed\t%s\t%s" % (unit_text(u), owner[u])
+            print(row + ("\t%s\t%s" % (show(new[u]), show(c)) if "--values" in flags else ""))
+    summary = "%d changed, %d absent" % (changed, absent)
+    if "--all" in flags:
+        profs = tp.get("New Bookmarks")
+        dyn = {p["Guid"] for p in (profs if isinstance(profs, list) else [])
+               if isinstance(p, dict) and isinstance(p.get("Guid"), str) and any(k.startswith("Dynamic Profile") for k in p)}
+        extra = sorted((u for u in cur if u not in new and (u[0] == "top" or u[1] not in dyn)), key=unit_text)
+        for u in extra:
+            print("unsourced\t%s\t-" % unit_text(u))
+        summary += ", %d unsourced" % len(extra) + ("; %d dynamic profiles not listed" % len(dyn) if dyn else "")
+    sys.stderr.write("iterm2-prefs: %s\n" % summary)
+    return 0
+
+
 def main():
     verb, args = sys.argv[1], sys.argv[2:]
     try:
-        return {"lint": cmd_lint, "compose": cmd_compose, "status": cmd_status}[verb](args)
+        return {"lint": cmd_lint, "compose": cmd_compose, "status": cmd_status, "capture": cmd_capture}[verb](args)
     except Fail as e:
         sys.stderr.write("iterm2-prefs: %s\n" % e)
         return 1
@@ -585,6 +703,20 @@ go() {
   prefs_py "$@"
 }
 
+# The chezmoi source path of a deployed fragment: the default config first, then
+# each overlay config, as dotfiles() enumerates them. The first answer that is a
+# file wins; `source-path` of an unmanaged target exits 1.
+frag_source() {
+  _t=${ITERM2_PREFS_FRAGMENTS:-${XDG_CONFIG_HOME:-$HOME/.config}/iterm2/prefs.d}/$1.plist
+  _p=$(chezmoi source-path "$_t" 2>/dev/null) && [ -f "$_p" ] && { printf '%s\n' "$_p"; return 0; }
+  for _c in "${XDG_CONFIG_HOME:-$HOME/.config}"/chezmoi/*.toml; do
+    [ -f "$_c" ] && [ "${_c##*/}" != chezmoi.toml ] || continue
+    _p=$(chezmoi --config "$_c" source-path "$_t" 2>/dev/null) && [ -f "$_p" ] && { printf '%s\n' "$_p"; return 0; }
+  done
+  warn "no chezmoi source manages $_t"
+  return 1
+}
+
 case ${1:-} in
   lint) shift; prefs_py lint "$@";;
   compose)
@@ -594,7 +726,28 @@ case ${1:-} in
     esac
     shift; go compose "$@";;
   status) need_macos status; shift; go status "$@";;
-  capture|install) die "$1 is not built yet";;
+  capture)
+    shift
+    # --into <fragment> becomes --file <chezmoi source path>; --from decides whether this needs macOS
+    from='' n=$#
+    while [ "$n" -gt 0 ]; do
+      a=$1; shift; n=$((n - 1))
+      case $a in
+        --from) from=${1:-}; set -- "$@" "$a";;
+        --into)
+          if [ "$n" -gt 0 ]; then
+            p=$(frag_source "$1") || exit 1
+            shift; n=$((n - 1))
+            set -- "$@" --file "$p"
+          else
+            set -- "$@" "$a"
+          fi;;
+        *) set -- "$@" "$a";;
+      esac
+    done
+    case $from in ''|domain|store) need_macos capture;; esac
+    go capture "$@";;
+  install) die "$1 is not built yet";;
   -h|--help|help) usage;;
   '') usage >&2; exit 2;;
   *) warn "unknown verb: $1"; usage >&2; exit 2;;

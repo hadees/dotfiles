@@ -231,12 +231,10 @@ has() { grep -Fxq -- "$1" <<<"$output"; }
   [[ "$output" == '<?xml'* ]]
 }
 
-@test "capture and install are not built yet" {
-  for v in capture install; do
-    run sh "$BIN" $v
-    [ "$status" -eq 1 ]
-    [ "$output" = "iterm2-prefs: $v is not built yet" ]
-  done
+@test "install is not built yet" {
+  run sh "$BIN" install
+  [ "$status" -eq 1 ]
+  [ "$output" = "iterm2-prefs: install is not built yet" ]
 }
 
 @test "no verb or an unknown one is usage, exit 2" {
@@ -541,4 +539,205 @@ skipped: 1 files in $FRAGS not named NN-<name>.plist"
   [ "$status" -eq 2 ]
   run sh "$BIN" compose --print
   [ "$status" -eq 0 ]
+}
+
+# truth_fixture <python expression>: the plist `capture --from "$TRUTH"` reads
+truth_fixture() { TRUTH="$BATS_TEST_TMPDIR/truth.plist"; mkplist "$TRUTH" "$1"; }
+
+@test "capture: lists changed and absent sourced keys with their owner and prints no value" {
+  frag 10-one '{"Alpha": "src-alpha", "Beta": 2, "Gamma": 3}'
+  frag 20-two '{"Delta": True}'
+  truth_fixture '{"Alpha": "SENTINEL-VALUE", "Beta": 2, "Delta": True, "Local": 1}'
+  run --separate-stderr sh "$BIN" capture --from "$TRUTH"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'changed\tAlpha\t10-one\nabsent\tGamma\t10-one')" ]
+  [ "$stderr" = "iterm2-prefs: 1 changed, 1 absent" ]
+  [[ "$output$stderr" != *SENTINEL* ]]
+}
+
+@test "capture --all: adds unsourced keys, never a reserved one, and counts dynamic profiles instead of listing them" {
+  frag 10-one '{"New Bookmarks": [{"Guid": "AAAA-1", "Name": "Fixture"}]}'
+  truth_fixture '{"Local": 1, "Workgroups": b"x", "NoSyncFixture": 1, "New Bookmarks": [
+    {"Guid": "AAAA-1", "Name": "Fixture", "Extra": 1, "Triggers": []},
+    {"Guid": "BBBB-2", "Name": "Dyn", "Dynamic Profile Filename": "x"}]}'
+  run --separate-stderr sh "$BIN" capture --from "$TRUTH" --all
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'unsourced\tLocal\t-\nunsourced\tprofile/AAAA-1/Extra\t-')" ]
+  [ "$stderr" = "iterm2-prefs: 0 changed, 0 absent, 2 unsourced; 1 dynamic profiles not listed" ]
+  run --separate-stderr sh "$BIN" capture --from "$TRUTH"
+  [ -z "$output" ]
+  [ "$stderr" = "iterm2-prefs: 0 changed, 0 absent" ]
+}
+
+@test "capture --values: shows the source's and the truth's value for a changed key" {
+  frag 10-one '{"Alpha": "src", "Blob": b"x"}'
+  truth_fixture '{"Alpha": "mine", "Blob": b"yy"}'
+  run --separate-stderr sh "$BIN" capture --from "$TRUTH" --values
+  has "$(printf "changed\tAlpha\t10-one\t'src'\t'mine'")"
+  has "$(printf 'changed\tBlob\t10-one\t<data 1 bytes>\t<data 2 bytes>')"
+}
+
+@test "capture --file: writes the named units into a new plist, and the result lints" {
+  frag 10-one '{"Alpha": "src"}'
+  truth_fixture '{"Alpha": "mine", "New Bookmarks": [{"Guid": "AAAA-1", "Name": "Fixture", "Other": 1}]}'
+  out="$BATS_TEST_TMPDIR/new/dir/out.plist"
+  run sh "$BIN" capture --from "$TRUTH" --file "$out" Alpha profile/AAAA-1/Name
+  [ "$status" -eq 0 ]
+  [ "$output" = "iterm2-prefs: wrote 2 units to $out; commit it there, then run dotfiles" ]
+  [ "$(pget "$out" 'd')" = "{'Alpha': 'mine', 'New Bookmarks': [{'Guid': 'AAAA-1', 'Name': 'Fixture'}]}" ]
+  [ "$(python3 -I -c 'import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))' "$out")" = 0o644 ]
+  run sh "$BIN" lint "$out"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "capture --owned: takes every changed key that fragment owns and none of another's" {
+  frag 10-one '{"Alpha": "a", "Beta": "b"}'
+  frag 20-two '{"Delta": "d", "Epsilon": "e"}'
+  truth_fixture '{"Alpha": "A", "Beta": "b", "Delta": "D"}'
+  out="$BATS_TEST_TMPDIR/out.plist"
+  run sh "$BIN" capture --from "$TRUTH" --owned 20-two --file "$out"
+  [ "$status" -eq 0 ]
+  [ "$output" = "iterm2-prefs: wrote 2 units to $out; commit it there, then run dotfiles" ]
+  [ "$(pget "$out" 'd')" = "{'Delta': 'D'}" ]
+  rm "$out"
+  run sh "$BIN" capture --from "$TRUTH" --owned 10-one --file "$out"
+  [ "$(pget "$out" 'd')" = "{'Alpha': 'A'}" ]
+  run sh "$BIN" capture --from "$TRUTH" --owned 30-none --file "$out"
+  [ "$status" -eq 1 ]
+}
+
+@test "capture: a key the truth lacks is removed from the destination, and a profile left with only its Guid goes too" {
+  out="$BATS_TEST_TMPDIR/out.plist"
+  mkplist "$out" '{"Gamma": 1, "Keep": 1, "New Bookmarks": [{"Guid": "AAAA-1", "Name": "Fixture"},
+    {"Guid": "BBBB-2"}, {"Guid": "CCCC-3", "Name": "Other"}]}'
+  truth_fixture '{"Keep": 2}'
+  run sh "$BIN" capture --from "$TRUTH" --file "$out" Gamma profile/AAAA-1/Name
+  [ "$status" -eq 0 ]
+  [ "$(pget "$out" 'd')" = "{'Keep': 1, 'New Bookmarks': [{'Guid': 'BBBB-2'}, {'Guid': 'CCCC-3', 'Name': 'Other'}]}" ]
+}
+
+@test "capture profile/<guid>: takes every key of the profile but its reserved ones" {
+  truth_fixture '{"New Bookmarks": [{"Guid": "AAAA-1", "Name": "Fixture", "Extra": 1, "Triggers": [],
+    "Dynamic Profile Filename": "x"}, {"Guid": "BBBB-2", "Name": "Other"}]}'
+  out="$BATS_TEST_TMPDIR/out.plist"
+  run sh "$BIN" capture --from "$TRUTH" --file "$out" profile/AAAA-1
+  [ "$status" -eq 0 ]
+  [ "$output" = "iterm2-prefs: wrote 2 units to $out; commit it there, then run dotfiles" ]
+  [ "$(pget "$out" 'd')" = "{'New Bookmarks': [{'Extra': 1, 'Guid': 'AAAA-1', 'Name': 'Fixture'}]}" ]
+}
+
+# fake_chezmoi: source-path answers from $FAKE_CHEZ/<config file name>, "default" without --config
+fake_chezmoi() {
+  mkdir -p "$BATS_TEST_TMPDIR/chez" "$HOME/.config/chezmoi"
+  touch "$HOME/.config/chezmoi/chezmoi.toml" "$HOME/.config/chezmoi/a.toml" "$HOME/.config/chezmoi/b.toml"
+  cat >"$BATS_TEST_TMPDIR/bin/chezmoi" <<'STUB'
+#!/bin/sh
+cfg=default
+if [ "$1" = --config ]; then cfg=${2##*/}; shift 2; fi
+[ "$1" = source-path ] || exit 2
+[ -f "$FAKE_CHEZ/$cfg" ] && { cat "$FAKE_CHEZ/$cfg"; exit 0; }
+echo "chezmoi: $2: not managed" >&2
+exit 1
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/chezmoi"
+  export FAKE_CHEZ="$BATS_TEST_TMPDIR/chez"
+}
+
+@test "capture --into: finds the source through chezmoi, the default config first, then each overlay config; an unmanaged fragment exits 1" {
+  fake_chezmoi
+  frag 10-one '{"Alpha": "src"}'
+  before="$(shasum "$FRAGS/10-one.plist")"
+  truth_fixture '{"Alpha": "mine"}'
+  mkdir -p "$BATS_TEST_TMPDIR/src" "$BATS_TEST_TMPDIR/src2"
+  src="$BATS_TEST_TMPDIR/src/10-one.plist"
+  src2="$BATS_TEST_TMPDIR/src2/10-one.plist"
+  # the default config answers with a path that is no file; a.toml with a file; b.toml with another
+  printf '%s\n' "$BATS_TEST_TMPDIR/src/absent.plist" >"$FAKE_CHEZ/default"
+  printf '%s\n' "$src2" >"$FAKE_CHEZ/a.toml"
+  printf '%s\n' "$src" >"$FAKE_CHEZ/b.toml"
+  mkplist "$src" '{}'; mkplist "$src2" '{}'
+  run sh "$BIN" capture --from "$TRUTH" --into 10-one Alpha
+  [ "$status" -eq 0 ]
+  [ "$output" = "iterm2-prefs: wrote 1 units to $src2; commit it there, then run dotfiles" ]
+  [ "$(pget "$src2" 'd')" = "{'Alpha': 'mine'}" ]
+  printf '%s\n' "$src" >"$FAKE_CHEZ/default"
+  run sh "$BIN" capture --from "$TRUTH" --into 10-one Alpha
+  [ "$output" = "iterm2-prefs: wrote 1 units to $src; commit it there, then run dotfiles" ]
+  [ "$(shasum "$FRAGS/10-one.plist")" = "$before" ]
+  rm -f "$FAKE_CHEZ/default" "$FAKE_CHEZ/a.toml" "$FAKE_CHEZ/b.toml"
+  run sh "$BIN" capture --from "$TRUTH" --into 10-one Alpha
+  [ "$status" -eq 1 ]
+  [ "$output" = "iterm2-prefs: no chezmoi source manages $FRAGS/10-one.plist" ]
+}
+
+@test "capture --from: a plist path is read as given; the domain is filtered as iTerm2 filters it" {
+  frag 10-one '{"Alpha": "src"}'
+  mkplist "$FAKE_DOMAIN" '{"Alpha": "dom", "NoSyncFixture": 1, "Local": 1}'
+  run --separate-stderr sh "$BIN" capture --from domain --all
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'changed\tAlpha\t10-one\nunsourced\tLocal\t-')" ]
+  # no --from: the domain while iTerm2 runs, the store (here the composed file) otherwise
+  installed_fixture
+  mkdir -p "$ITERM2_PREFS_DIR"
+  mkplist "$LIVEF" '{"Alpha": "src"}'
+  run --separate-stderr sh "$BIN" capture
+  [ -z "$output" ]
+  FAKE_PROCS=iTerm2 run --separate-stderr sh "$BIN" capture
+  [ "$output" = "$(printf 'changed\tAlpha\t10-one')" ]
+  # a plist path needs no macOS
+  truth_fixture '{"Alpha": "mine"}'
+  FAKE_OS=Linux run sh "$BIN" capture --from "$TRUTH"
+  [ "$status" -eq 0 ]
+  FAKE_OS=Linux run sh "$BIN" capture --from store
+  [ "$status" -eq 2 ]
+}
+
+@test "capture then compose: once the captured file is the deployed fragment, nothing is kept" {
+  installed_fixture
+  frag 10-one '{"Alpha": "src"}'
+  sh "$BIN" compose >/dev/null
+  edit_live 'd["Alpha"] = "mine"'
+  run sh "$BIN" compose
+  [[ "$output" == *"; 1 kept as changed"* ]]
+  out="$BATS_TEST_TMPDIR/captured.plist"
+  run sh "$BIN" capture --file "$out" Alpha
+  [ "$status" -eq 0 ]
+  cp "$out" "$FRAGS/10-one.plist"
+  run sh "$BIN" compose
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run sh "$BIN" status
+  has "kept: 0 units changed in iTerm2 (iterm2-prefs capture)"
+  [ "$(pget "$LIVEF" 'd["Alpha"]')" = mine ]
+}
+
+@test "capture: a reserved unit is refused by name" {
+  truth_fixture '{"Workgroups": b"x", "NoSyncFixture": 1, "New Bookmarks": [{"Guid": "AAAA-1", "Triggers": []}]}'
+  out="$BATS_TEST_TMPDIR/out.plist"
+  for u in Workgroups NoSyncFixture profile/AAAA-1/Triggers; do
+    run sh "$BIN" capture --from "$TRUTH" --file "$out" "$u"
+    [ "$status" -eq 1 ]
+    [ "$output" = "iterm2-prefs: $u is reserved and cannot be captured" ]
+  done
+  [[ ! -e "$out" ]]
+}
+
+@test "capture: a destination needs a selection, a selection needs a destination, and the deployed files are never written" {
+  frag 10-one '{"Alpha": "src"}'
+  truth_fixture '{"Alpha": "mine"}'
+  out="$BATS_TEST_TMPDIR/out.plist"
+  run sh "$BIN" capture --from "$TRUTH" --file "$out"
+  [ "$status" -eq 2 ]
+  run sh "$BIN" capture --from "$TRUTH" Alpha
+  [ "$status" -eq 2 ]
+  run sh "$BIN" capture --from "$TRUTH" --bogus
+  [ "$status" -eq 2 ]
+  before="$(shasum "$FRAGS/10-one.plist")"
+  run sh "$BIN" capture --from "$TRUTH" --file "$FRAGS/10-one.plist" Alpha
+  [ "$status" -eq 1 ]
+  [ "$(shasum "$FRAGS/10-one.plist")" = "$before" ]
+  run sh "$BIN" capture --from "$TRUTH" --file "$LIVEF" Alpha
+  [ "$status" -eq 1 ]
+  [[ ! -e "$LIVEF" ]]
 }
