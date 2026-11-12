@@ -140,7 +140,9 @@
 #                            print the sleeper a waiting pane shows (one frame,
 #                            its z's; cap colour by slot, git config
 #                            claude-peer.<slot>.cap; claude-peer.art false hides
-#                            it in panes, claude-peer.art-file replaces it)
+#                            it in panes, claude-peer.art-file replaces it,
+#                            claude-peer.art-seconds, default 20, is how long it
+#                            moves in fzf after the last key; 0 holds it still)
 #   art --screen [--slot <slot>]
 #                            the quiet waiting screen, padded as a pane pads it,
 #                            for this terminal or CLAUDE_PEER_SIZE
@@ -280,7 +282,28 @@ worktree_checkout() {
 
 # `git worktree add` and `checkout` ignore hangup and terminate: a pane torn
 # down mid-checkout would otherwise leave a half-made tree that looks dirty.
+# Only stdout is dropped: a slot's checkout is quieted with git's own -q, so a
+# failure still shows git's fatal: line.
 git_immune() { ( trap '' HUP TERM; exec git "$@" ) >/dev/null; }
+
+# A slot's base is recorded in <git dir of the worktree>/claude-peer.base: line 1
+# the name (main), line 2 the full ref. bin/branchname reads it to label a
+# detached slot. Written once, from origin/HEAD, or on creation from the main
+# checkout's branch; never rewritten, and a failed write is not an error.
+base_file() { d=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) && printf '%s/claude-peer.base\n' "$d"; }
+
+write_base() { # repo wt created|reused
+  f=$(base_file "$2") || return 0
+  [ -f "$f" ] && return 0
+  if ref=$(git -C "$1" symbolic-ref --quiet refs/remotes/origin/HEAD); then
+    name=${ref#refs/remotes/origin/}
+  elif [ "$3" = created ] && ref=$(git -C "$1" symbolic-ref --quiet HEAD); then
+    name=${ref#refs/heads/}
+  else return 0
+  fi
+  { printf '%s\n%s\n' "$name" "$ref" >"$f"; } 2>/dev/null ||
+    warn "$(basename "$2"): could not record the base; the status line will show the commit"
+}
 
 # repo slot label -> slot<TAB>wt<TAB>created|reused, claimed. The slot's
 # worktree is the slot's: a registered one is reused as it was left (no checkout,
@@ -311,9 +334,10 @@ slot_pick() {
     ensure_exclude "$1"
     base=HEAD
     git -C "$1" rev-parse --verify -q origin/HEAD >/dev/null 2>&1 && base=origin/HEAD
-    git_immune -C "$1" worktree add --detach "$wt" "$base" || die "$2: git worktree add failed"
+    git_immune -C "$1" worktree add -q --detach "$wt" "$base" || die "$2: git worktree add failed"
     act=created
   fi
+  write_base "$1" "$wt" "$act"
   write_claim "$wt" "$3"
   printf '%s\t%s\t%s\n' "$2" "$wt" "$act"
 }
@@ -461,8 +485,8 @@ task_line() { printf '%s\n' "$1" | sed -n 1p | tr '\t\r' '  ' | cut -c1-80; }
 # PG_TASK (one line); they are read, and cleared, here.
 pane_go() {
   pg_mode=$1 pg_req=$2 pg_prompt=$3; shift 3
-  pg_ctx=${PG_CTX-} pg_ctxname=${PG_CTXNAME-} pg_by=${PG_BY-} pg_task=${PG_TASK-}
-  PG_CTX= PG_CTXNAME= PG_BY= PG_TASK=
+  pg_ctx=${PG_CTX-} pg_ctxname=${PG_CTXNAME-} pg_by=${PG_BY-} pg_task=${PG_TASK-} pg_wake=${PG_WAKE-}
+  PG_CTX= PG_CTXNAME= PG_BY= PG_TASK= PG_WAKE=
   if [ "$pg_req" != - ]; then
     out=$(slot_checkout "$repo" "$pg_req" "$(label_of "$pg_req")"); pg_rc=$?
   else
@@ -481,6 +505,7 @@ pane_go() {
   fi
   case $pg_by in ''|pane) ;; *) pg_msg="$pg_msg · started by $pg_by";; esac
   [ -z "$pg_task" ] || pg_msg="$pg_msg · $pg_task"
+  [ -z "$pg_wake" ] || [ "${pn_lay:-none}" = none ] || art_wake
   echo "$pg_msg"
   pg_t0=$(date +%s)
   printf '%s\n%s\n%s\n%s\n' "${pg_by:--}" "${pg_ctxname:--}" "${pg_task:--}" "$pg_t0" >>"$(claim_file "$pg_wt")"
@@ -555,6 +580,63 @@ frame asleep
 ...OOOOOOOOOO...CW
 ...OOEEOOOEEO...WW
 ...OOEEOOOEEO.....
+.OOOOOOOOOOOOOO...
+.OOOOOOOOOOOOOO...
+...OOOOOOOOOO.....
+...OOOOOOOOOO.....
+...DDDDDDDDDD.....
+...DDDDDDDDDD.....
+...O.O....O.O.....
+...O.O....O.O.....
+frame asleep-sway
+..................
+..................
+......CCCCC.......
+....CCCCCCCCC.....
+...CCCCCCCCCCCC...
+...CCCCCCCCCCBCC..
+...BBBBBBBBBB..CC.
+...OOOOOOOOOO...C.
+...OOEEOOOEEO..WW.
+...OOEEOOOEEO...W.
+.OOOOOOOOOOOOOO...
+.OOOOOOOOOOOOOO...
+...OOOOOOOOOO.....
+...OOOOOOOOOO.....
+...DDDDDDDDDD.....
+...DDDDDDDDDD.....
+...O.O....O.O.....
+...O.O....O.O.....
+frame wake-1
+......CCCCC.......
+....CCCCCCCCC.....
+...CCCCCCCCCCCC...
+...CCCCCCCCCCBCC..
+...BBBBBBBBBB..CC.
+................CW
+...OOOOOOOOOO...WW
+...OOOOOOOOOO.....
+...OOEEOOOEEO.....
+...OOEEOOOEEO.....
+.OOOOOOOOOOOOOO...
+.OOOOOOOOOOOOOO...
+...OOOOOOOOOO.....
+...OOOOOOOOOO.....
+...DDDDDDDDDD.....
+...DDDDDDDDDD.....
+...O.O....O.O.....
+...O.O....O.O.....
+frame wake-2
+......CCCCC.......
+....CCCCCCCCC.....
+...CCCCCCCCCCCC...
+...CCCCCCCCCCBCC..
+...BBBBBBBBBB..CC.
+................CW
+...OOOOOOOOOO...WW
+...OOOOOOOOOO.....
+...OOKKOOOKKO.....
+...OOKKOOOKKO.....
 .OOOOOOOOOOOOOO...
 .OOOOOOOOOOOOOO...
 ...OOOOOOOOOO.....
@@ -684,9 +766,10 @@ art_cap() {
 # frame z slot [mode] -> the rendered rows: from git config claude-peer.art-file when
 # it parses (else one line saying why, and the built-in). Mode: truecolor when
 # COLORTERM says so, else 256.
+art_mode() { case ${COLORTERM-} in truecolor|24bit) echo truecolor;; *) echo 256;; esac; }
+
 art_lines() {
-  al_m=${4-}
-  [ -n "$al_m" ] || case ${COLORTERM-} in truecolor|24bit) al_m=truecolor;; *) al_m=256;; esac
+  al_m=${4:-$(art_mode)}
   art_cap "$3"
   al_f=$(git config --path --get claude-peer.art-file 2>/dev/null) || al_f=
   if [ -n "$al_f" ]; then
@@ -697,7 +780,21 @@ art_lines() {
   art_default | art_awk "$1" "$2" "$al_m" "$ac_cap" "$ac_band"
 }
 
-# second-line -> the art block: the asleep frame with its z's and, beside it on
+# slot -> hat_fzf (#rrggbb, or the 256-colour index the art draws the hat in) and
+# hat_sgr (the same as an SGR foreground), for the selector to match the hat.
+art_hat() {
+  art_cap "$1"
+  if [ "$(art_mode)" = truecolor ]; then
+    # shellcheck disable=SC2086
+    hat_fzf=$(printf '#%02x%02x%02x' $ac_cap) hat_sgr="38;2;$(echo "$ac_cap" | tr ' ' ';')"
+  else
+    hat_fzf=$(printf 'palette C 0 0 0\nmargin 0\nframe asleep\nC\nC\n' |
+      art_awk asleep none 256 "$ac_cap" "$ac_band" | sed 's/.*48;5;\([0-9]*\)m.*/\1/')
+    hat_sgr="38;5;$hat_fzf"
+  fi
+}
+
+# second-line [frame [z]] -> the art block: the frame (asleep, all z's) and, beside it on
 # character rows 4 and 5 (pn_lay beside) or under it (under), `✻ <Label> · <repo>`
 # and the second line, dim. <repo> is cut, never the label, to fit pn_w - 3 columns.
 art_block() {
@@ -705,7 +802,7 @@ art_block() {
   ab_r=$((ab_room - 5 - ${#label})); [ "$ab_r" -ge 0 ] || ab_r=0
   ab_repo=$(printf '%s' "$rname" | cut -c1-"$((ab_r > 0 ? ab_r : 1))"); [ "$ab_r" -gt 0 ] || ab_repo=
   ab_t=$(printf '✻ \033[1m%s\033[0m · %s' "$label" "$ab_repo") ab_s=$(printf '\033[2m%s\033[0m' "$1")
-  art_lines asleep all "$slot" | AB_T=$ab_t AB_S=$ab_s AB_L=$pn_lay awk '
+  art_lines "${2:-asleep}" "${3:-all}" "$slot" | AB_T=$ab_t AB_S=$ab_s AB_L=$pn_lay awk '
       { print $0 (ENVIRON["AB_L"] == "beside" ? (NR == 5 ? "  " ENVIRON["AB_T"] : NR == 6 ? "  " ENVIRON["AB_S"] : "") : "") }
       END { if (ENVIRON["AB_L"] == "under") { print ENVIRON["AB_T"]; print ENVIRON["AB_S"] } }'
 }
@@ -760,10 +857,10 @@ pane_geom() {
   pn_h=$((pn_head + 1 + pn_vis))
 }
 
-# fzf's header: the sleeper's block and an empty line when it shows, then the
-# hint, dim; the short one under 56 columns.
+# [frame [z]] -> fzf's header: the sleeper's block and an empty line when it shows,
+# then the hint, dim; the short one under 56 columns.
 pane_head() {
-  [ "$pn_lay" = none ] || { art_block 'waiting · ⏎ pick a context'; echo; }
+  [ "$pn_lay" = none ] || { art_block 'waiting · ⏎ pick a context' "$@"; echo; }
   if [ -n "$pn_cols" ] && [ "$pn_cols" -lt 56 ]; then ph_t='↵ start · ^T type a task · esc hide'
   else ph_t='↵ start · ^T type a task · ^S …and save it · esc hide'; fi
   printf '\033[2m%s\033[0m' "$ph_t"
@@ -775,6 +872,17 @@ pane_art() {
   [ "$pn_lay" != none ] || return 0
   art_block "$1" | sed "s/^/$pn_pad  /"
   echo
+}
+
+# The sleeper wakes where fzf has just erased itself: wake-1, then wake-2 over it.
+art_wake() {
+  aw_n=$pn_al
+  [ "$pn_lay" = beside ] || aw_n=$((pn_al + 2))
+  art_block '' wake-1 none | sed "s/^/$pn_pad  /"
+  sleep 0.25 2>/dev/null || :
+  printf '\033[%sA\r' "$aw_n"
+  art_block '' wake-2 none | sed "s/^/$pn_pad  /"
+  sleep 0.25 2>/dev/null || :
 }
 
 # The quiet state: the sleeper with the hint as its second line, else C4b's line.
@@ -805,7 +913,8 @@ pane_unquiet() {
 pane_ask() {
   printf '%s%s' "$pn_pad" "$1"
   pane_block
-  if [ -f "$pn_me.start" ]; then pn_why=request; return 1; fi
+  # a request leaves the cursor after the prompt: end its line for the header
+  if [ -f "$pn_me.start" ]; then echo; pn_why=request; return 1; fi
   if [ -n "$pn_intr" ]; then pn_intr=; pn_why=intr; return 1; fi
   if [ ! -f "$pn_me.key" ]; then
     [ "$pn_ended" != 1 ] || pn_reader=0
@@ -903,28 +1012,56 @@ fzf_colors() {
   printf '%s' "$fc_out"
 }
 
+# fzf's timer, once a second while a key was pressed in the last art-seconds: the
+# pose for that second (z's each second, the pom-pom every two), then the still
+# frame and the timer unbound, so an idle picker starts no process at all.
+PANE_TICK='t=$(( (FZF_IDLE_TIME_MS + 500) / 1000 ))
+if [ "$t" -ge "$CLAUDE_PEER_ART_SECONDS" ]; then
+  printf '"'"'unbind(every(1))+change-header:'"'"'; cat "$CLAUDE_PEER_FRAMES.still"
+else
+  printf '"'"'change-header:'"'"'; cat "$CLAUDE_PEER_FRAMES.$((t % 4))"
+fi'
+
 # fzf as a background child the pane waits on, like the reader, so a request
 # (USR1) still interrupts it. Status 1: fzf failed, use the list. Sets
 # pn_state=quiet on Esc, or when fzf ends with nothing chosen.
 pane_fzf() {
   while :; do
     rm -f "$pn_me.pick"
-    pn_header=$(pane_head)
+    # the moving sleeper: one header file per pose, which fzf's own timer shows; drawn
+    # again only when the layout changed, so a picker reopened at one size renders nothing
+    pn_anim=
+    if [ "$pn_lay" != none ] && [ "$pn_secs" -gt 0 ]; then
+      pn_anim=1 pf_key="$pn_lay $pn_w $pn_cols"
+      if [ "$(cat "$pn_me.frame.key" 2>/dev/null)" != "$pf_key" ]; then
+        pane_head asleep near >"$pn_me.frame.0"; pane_head asleep near-mid >"$pn_me.frame.1"
+        pane_head asleep-sway all >"$pn_me.frame.2"; pane_head asleep-sway none >"$pn_me.frame.3"
+        pane_head >"$pn_me.frame.still"
+        printf '%s\n' "$pf_key" >"$pn_me.frame.key"
+      fi
+      pn_header=$(cat "$pn_me.frame.0")
+    else
+      pn_header=$(pane_head)
+    fi
     # shellcheck disable=SC2086
     ( trap - TTIN TTOU; unset FZF_DEFAULT_OPTS FZF_DEFAULT_OPTS_FILE
-      exec fzf $pn_colors --color=header:-1 \
+      CLAUDE_PEER_FRAMES=$pn_me.frame CLAUDE_PEER_ART_SECONDS=$pn_secs
+      export CLAUDE_PEER_FRAMES CLAUDE_PEER_ART_SECONDS
+      exec fzf $pn_colors --color=header:-1 $pn_hatc \
         --no-multi --no-sort --no-mouse --layout=reverse --header-first \
         --height="$pn_h" --info=hidden --no-separator \
         --margin="0,$pn_right,0,$pn_left" --pointer='▸' --gutter=' ' \
         --delimiter='\t' --with-nth=2 --prompt="$label ▸ " \
         --header="$pn_header" --print-query --expect=ctrl-t,ctrl-s \
+        ${pn_anim:+"--with-shell=sh -c"} ${pn_anim:+"--bind=change,focus:rebind(every(1))"} \
+        ${pn_anim:+"--bind=every(1):bg-transform:$PANE_TICK"} \
         <"$pn_me.rows" >"$pn_me.pick" ) &
     pn_rpid=$!
     while :; do
       wait "$pn_rpid"; pf_rc=$?
       if [ -f "$pn_me.start" ]; then
         kill "$pn_rpid" 2>/dev/null; wait "$pn_rpid" 2>/dev/null
-        pn_rpid=
+        pn_rpid= pn_cut=1   # the request closed an open fzf: its session wakes the sleeper
         # a FIFO (the tests' terminal) would block the open until a writer comes
         [ ! -c "$pn_tty" ] || stty sane <"$pn_tty" 2>/dev/null
         return 0
@@ -941,11 +1078,11 @@ pane_fzf() {
     case $pf_k in
       ctrl-t|ctrl-s)
         [ -n "$pf_q" ] || continue   # nothing typed: the picker again
-        pane_task "$pf_q" "$([ "$pf_k" = ctrl-s ] && echo 1)" "$@"
+        PG_WAKE=1; pane_task "$pf_q" "$([ "$pf_k" = ctrl-s ] && echo 1)" "$@"; PG_WAKE=
         return 0;;
     esac
-    if [ "$pf_rc" = 0 ] && [ -n "$pf_id" ]; then pane_choose "$pf_id" "$@"
-    elif [ "$pf_rc" = 1 ] && [ -n "$pf_q" ]; then pane_task "$pf_q" "" "$@"
+    if [ "$pf_rc" = 0 ] && [ -n "$pf_id" ]; then PG_WAKE=1; pane_choose "$pf_id" "$@"; PG_WAKE=
+    elif [ "$pf_rc" = 1 ] && [ -n "$pf_q" ]; then PG_WAKE=1; pane_task "$pf_q" "" "$@"; PG_WAKE=
     else pn_state=quiet
     fi
     return 0
@@ -958,7 +1095,7 @@ pane_list() {
     pane_art 'waiting · ⏎ pick a context'
     awk -F'\t' -v p="$pn_pad" '{ printf "%s%2d  %s\n", p, NR, $2 }' "$pn_me.rows"
     printf '%sc continue · r resume · n task · s task, saved · q shell\n' "$pn_pad"
-    if ! pane_ask "$label ▸ "; then
+    if ! pane_ask "$pn_prompt"; then
       case $pn_why in intr) pane_shell;; eof) pn_state=quiet;; esac
       return 0
     fi
@@ -985,6 +1122,13 @@ pane_pick() {
   pane_size
   pick_rows "$pn_slug" >"$pn_me.rows"
   pane_geom
+  # the selector takes the hat's colour while the sleeper shows
+  pn_hatc= pn_prompt="$label ▸ "
+  if [ "$pn_lay" != none ]; then
+    art_hat "$slot"
+    pn_hatc="--color=pointer:$hat_fzf,prompt:$hat_fzf"
+    pn_prompt=$(printf '\033[%sm%s ▸\033[0m ' "$hat_sgr" "$label")
+  fi
   if [ "$pn_pick" = fzf ]; then
     pane_fzf "$@" && return 0
   fi
@@ -1015,6 +1159,9 @@ pane() {
     fi
   fi
   pn_colors=$(fzf_colors)
+  pn_secs=$(git config --get claude-peer.art-seconds 2>/dev/null) || pn_secs=20
+  case $pn_secs in ''|*[!0-9]*) pn_secs=20;; esac
+  pn_cut=
   pn_slug=
   [ "$pn_pick" = off ] || pn_slug=$(origin_slug) || pn_slug=
   if [ "$(git config --get claude-peer.start 2>/dev/null)" = auto ]; then
@@ -1058,12 +1205,12 @@ pane() {
         pn_cx=$(sed -n 's/^context=//p' "$pn_me.meta" 2>/dev/null | sed -n 1p)
         rm -f "$pn_me.start" "$pn_me.meta" "$pn_me"
         slot_ok "$pn_req" || pn_req=-
-        PG_BY=$pn_by
+        PG_BY=$pn_by PG_WAKE=$pn_cut pn_cut=
         if [ -z "$pn_cx" ]; then
           PG_TASK=$(task_line "$pn_prompt")
         else
           # the file can have gone since `start` looked; the reason is printed and the pane waits on
-          pn_cxp=$(ctx_find "$pn_cx" "$(origin_slug)") && ctx_check "$pn_cxp" || { PG_BY=; pn_show=1; continue; }
+          pn_cxp=$(ctx_find "$pn_cx" "$(origin_slug)") && ctx_check "$pn_cxp" || { PG_BY= PG_WAKE=; pn_show=1; continue; }
           PG_CTX=$pn_cxp PG_CTXNAME=$pn_cx
           PG_TASK=$(task_line "$pn_cx${pn_prompt:+: $pn_prompt}")
           pn_prompt=$(ctx_prompt "$pn_cxp" "$pn_prompt")

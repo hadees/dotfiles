@@ -10,6 +10,14 @@ bats_require_minimum_version 1.5.0
 
 setup() {
   BIN="$BATS_TEST_DIRNAME/../bin/executable_claude-peer"
+  # Pin python3 while HOME is still real: an asdf shim first on PATH finds no
+  # version under the fake HOME and exits 126 instead of running.
+  if py="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null)"; then
+    mkdir -p "$BATS_TEST_TMPDIR/pybin" && ln -s "$py" "$BATS_TEST_TMPDIR/pybin/python3"
+    export PATH="$BATS_TEST_TMPDIR/pybin:$PATH"
+  fi
+  # a suite run from inside a peer slot would otherwise inherit that slot
+  unset CLAUDE_PEER_WORKTREE CLAUDE_PEER_SELF
   export HOME="$BATS_TEST_TMPDIR/home"
   # a runner or a shell that exports XDG_CONFIG_HOME would put the script's
   # config root outside the sandbox
@@ -174,6 +182,59 @@ remote_head() {
   [ "$(git -C "$REPO/.claude/worktrees/alpha" rev-parse HEAD)" = "$(git rev-parse origin/HEAD)" ]
   [ "$(git branch --list | wc -l)" -eq 1 ]
   [ "$(grep -cxF '**/.claude/worktrees/' "$REPO/.git/info/exclude")" -eq 1 ]
+}
+
+@test "run --as: a new slot records its base beside the claim, outside the tree" {
+  remote_head
+  run --separate-stderr sh "$BIN" run --as alpha </dev/null
+  [ "$status" -eq 0 ]
+  wt=$REPO/.claude/worktrees/alpha
+  [ "$(cat "$REPO/.git/worktrees/alpha/claude-peer.base")" = $'main\nrefs/remotes/origin/main' ]
+  [ -z "$(git -C "$wt" status --porcelain)" ]
+  [[ "$stderr" != *base* ]]
+  run sh "$BATS_TEST_DIRNAME/../bin/executable_branchname" --state "$wt"
+  [ "$output" = "base"$'\t'"(main)"$'\t'"refs/remotes/origin/main"$'\t'"main" ]
+}
+
+@test "run --as: with no remote the base is the main checkout's branch; detached, no record" {
+  git switch -qc trunk
+  sh "$BIN" run --as alpha >/dev/null
+  [ "$(cat "$REPO/.git/worktrees/alpha/claude-peer.base")" = $'trunk\nrefs/heads/trunk' ]
+  git switch -q --detach
+  run sh "$BIN" run --as beta
+  [ "$status" -eq 0 ]
+  [ ! -e "$REPO/.git/worktrees/beta/claude-peer.base" ]
+}
+
+@test "run --as: a reused slot records from origin/HEAD only, and never rewrites a record" {
+  sh "$BIN" run --as alpha >/dev/null
+  rec=$REPO/.git/worktrees/alpha/claude-peer.base
+  rm "$rec"
+  sh "$BIN" run --as alpha >/dev/null
+  [ ! -e "$rec" ]
+  remote_head
+  sh "$BIN" run --as alpha >/dev/null
+  [ "$(cat "$rec")" = $'main\nrefs/remotes/origin/main' ]
+  printf 'sentinel\nkept' >"$rec"
+  sh "$BIN" run --as alpha >/dev/null
+  [ "$(cat "$rec")" = $'sentinel\nkept' ]
+}
+
+@test "run <branch>: a branch peer gets no base record" {
+  remote_head
+  sh "$BIN" run feat/x >/dev/null
+  [ ! -e "$REPO/.git/worktrees/feat-x/claude-peer.base" ]
+}
+
+@test "run --as: a record that cannot be written is one line on stderr, and the slot still starts" {
+  remote_head
+  sh "$BIN" run --as alpha >/dev/null
+  rec=$REPO/.git/worktrees/alpha/claude-peer.base
+  rm "$rec"; mkdir "$rec"
+  run --separate-stderr sh "$BIN" run --as alpha
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pwd=$REPO/.claude/worktrees/alpha"* ]]
+  [ "$stderr" = "claude-peer: alpha: could not record the base; the status line will show the commit" ]
 }
 
 @test "run --as: arguments after -- reach claude, after the session name" {
@@ -457,6 +518,28 @@ hold() {
   [ "$(find "$REPO/.git" -name claude-peer.claim | wc -l | tr -d ' ')" -eq 0 ]
   [ "$(grep -c "Return starts a Claude here" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 2 ]
   grep -qx "Alpha" "$BATS_TEST_TMPDIR/pane-alpha.out"
+}
+
+@test "run --as: a slot's first checkout prints nothing of git's, direct or in a pane" {
+  run --separate-stderr sh "$BIN" run --as alpha
+  [ "$status" -eq 0 ]
+  [[ "$output" == "alpha"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"created"* ]]
+  [[ "$stderr" != *"Preparing worktree"* ]]
+  [[ "$stderr" != *"HEAD is now at"* ]]
+  FAKE_SHELL_SLEEP=1 pane beta
+  press beta ''
+  until_ok 'grep -qx "Beta" "$BATS_TEST_TMPDIR/pane-beta.out"'
+  [ "$(grep -c "Preparing worktree" "$BATS_TEST_TMPDIR/pane-beta.out")" -eq 0 ]
+}
+
+@test "run --as: a checkout git refuses still shows git's own reason" {
+  git init -q "$BATS_TEST_TMPDIR/empty"
+  cd "$BATS_TEST_TMPDIR/empty"
+  run sh "$BIN" run --as alpha
+  [ "$status" -eq 1 ]
+  printf '%s\n' "$output" | grep -q '^fatal: '
+  printf '%s\n' "$output" | grep -qx 'claude-peer: alpha: git worktree add failed'
+  [[ "$output" != *"pwd="* ]]
 }
 
 @test "run --as --wait: c continues, q leaves a shell, anything else asks again" {
@@ -1717,7 +1800,9 @@ LISTHINT='c continue · r resume · n task · s task, saved · q shell'
   cl=$(claim_of "$REPO/.claude/worktrees/alpha")
   [ "$(sed -n 4p "$cl")" = pane ]
   [ "$(sed -n 6p "$cl")" = "fix the thing" ]
-  grep -qx "Alpha · fix the thing" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  # the FIFO echoes no Return, so an answered question and the header share a
+  # line here; on a terminal they are two lines
+  grep -q 'Task: Alpha · fix the thing$' "$BATS_TEST_TMPDIR/pane-alpha.out"
 }
 
 @test "picker list: q, and the number of the shell row, leave a shell and the wait file" {
@@ -1832,6 +1917,8 @@ LISTHINT='c continue · r resume · n task · s task, saved · q shell'
   pane_says alpha "$LISTHINT"
   CLAUDE_PEER_START_WAIT=10 run sh "$BIN" start alpha first
   [ "$status" -eq 0 ]
+  o=$BATS_TEST_TMPDIR/pane-alpha.out
+  until_ok 'grep -qx "Alpha · started by Lead · first" "$o"'
   until_ok '[ "$(cat "$BATS_TEST_TMPDIR/last" 2>/dev/null)" = first ]'
   until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
   until_ok '[ "$(pane_count alpha "$LISTHINT")" -eq 2 ]'
@@ -1840,6 +1927,10 @@ LISTHINT='c continue · r resume · n task · s task, saved · q shell'
   CLAUDE_PEER_START_WAIT=10 run sh "$BIN" start alpha hello
   [ "$status" -eq 0 ]
   until_ok '[ "$(cat "$BATS_TEST_TMPDIR/last")" = hello ]'
+  until_ok 'grep -qx "Alpha · started by Lead · hello" "$o"'
+  grep -qx 'Alpha ▸ Who: ' "$o"
+  [ "$(grep -c "Preparing worktree" "$o")" -eq 0 ]
+  [ "$(grep -cx '' "$o")" -eq 0 ]
 }
 
 @test "picker fzf: open with no key pressed, small and flat: the call's flags, the rows in order, and a canned pick starts that context" {
@@ -2029,6 +2120,23 @@ fzfsize() {
   until_ok '[ -f "$FAKE_FZF_LOG.term" ]'
   grep -qx "Alpha · started by Lead · hello" "$BATS_TEST_TMPDIR/pane-alpha.out"
   ! grep -q "picker closed" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  [ "$(grep -c "Preparing worktree" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 0 ]
+  [ "$(grep -cx '' "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 0 ]
+}
+
+@test "picker fzf: a start from outside cuts into the question a picked row asks, and its line starts a line" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  git -C "$REPO" worktree add -q --detach "$REPO/.claude/worktrees/alpha" HEAD
+  FAKE_FZF_OUT=$'\n\nhello\thello     Hello\n' FAKE_SHELL_SLEEP=2 pane alpha
+  pane_says alpha 'Who: '
+  CLAUDE_PEER_START_WAIT=10 run sh "$BIN" start alpha hi
+  [ "$status" -eq 0 ]
+  o=$BATS_TEST_TMPDIR/pane-alpha.out
+  until_ok 'grep -qx "Alpha · started by Lead · hi" "$o"'
+  grep -qx 'Who: ' "$o"
+  [ "$(grep -cx '' "$o")" -eq 0 ]
 }
 
 @test "picker fzf: a killed pane takes its fzf and its wait file with it" {
@@ -2133,6 +2241,162 @@ fzf_header() { sed -n '/^--header=/,/^--print-query$/p' "$FAKE_FZF_LOG" | sed '$
   fzfsize '40 120'
   ! fzf_header | grep -qF '▬'
   grep -qxF -- --height=13 "$FAKE_FZF_LOG"
+}
+
+@test "sleeper: the selector takes the hat's colour while the sleeper shows, and fzf keeps its own without it" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  COLORTERM=truecolor fzfsize '40 120'
+  grep -qxF -- '--color=pointer:#99cc99,prompt:#99cc99' "$FAKE_FZF_LOG"
+  COLORTERM= fzfsize '40 120'
+  grep -qxF -- '--color=pointer:114,prompt:114' "$FAKE_FZF_LOG"
+  git config --global claude-peer.alpha.cap '#f2777a'
+  COLORTERM=truecolor fzfsize '40 120'
+  grep -qxF -- '--color=pointer:#f2777a,prompt:#f2777a' "$FAKE_FZF_LOG"
+  COLORTERM=truecolor fzfsize '15 120'
+  [ "$(grep -c -- '--color=pointer' "$FAKE_FZF_LOG")" -eq 0 ]
+  git config --global claude-peer.art false
+  COLORTERM=truecolor fzfsize '40 120'
+  [ "$(grep -c -- '--color=pointer' "$FAKE_FZF_LOG")" -eq 0 ]
+}
+
+@test "sleeper above the list: the prompt takes the hat's colour; without the sleeper it is plain" {
+  hellofix
+  git config --global claude-peer.picker list
+  COLORTERM=truecolor CLAUDE_PEER_SIZE='40 120' pane alpha
+  pane_says alpha "$LISTHINT"
+  grep -qF $'\033[38;2;153;204;153mAlpha ▸\033[0m ' "$BATS_TEST_TMPDIR/pane-alpha.out"
+  COLORTERM=truecolor pane beta
+  pane_says beta "$LISTHINT"
+  grep -qF 'Beta ▸ ' "$BATS_TEST_TMPDIR/pane-beta.out"
+  [ "$(grep -c $'\033\\[38;' "$BATS_TEST_TMPDIR/pane-beta.out")" -eq 0 ]
+}
+
+# tick_of: the timer's script, cut out of the logged fzf arguments (it is the last one)
+tick_of() { sed -n '/^--bind=every(1):bg-transform:/,$p' "$FAKE_FZF_LOG" | sed '1s/^--bind=every(1):bg-transform://'; }
+
+@test "sleeper moves: the timer's arguments come last, five frame files, and the tick picks the pose" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  CLAUDE_PEER_SIZE='40 120' FAKE_FZF_SLEEP=30 pane alpha
+  until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+  grep -qxF -- '--with-shell=sh -c' "$FAKE_FZF_LOG"
+  grep -qxF -- '--bind=change,focus:rebind(every(1))' "$FAKE_FZF_LOG"
+  [ "$(grep -c '^--bind=every(1):bg-transform:' "$FAKE_FZF_LOG")" -eq 1 ]
+  [ "$(tick_of | sed 1d | grep -c '^--')" -eq 0 ]
+  f=$REPO/.git/claude-peer.wait/alpha.$LAST_PANE.frame
+  for k in 0 1 2 3 still; do
+    [ "$(grep -o '▬' "$f.$k" | wc -l | tr -d ' ')" -eq 4 ]
+  done
+  [ "$(cat "$f.0")" != "$(cat "$f.2")" ]
+  [ "$(grep -c $'\033\\[1mZ\\|\033\\[38;5;250mz\\|\033\\[2mz' "$f.3")" -eq 0 ]
+  [ "$(fzf_header | sed '1s/^--header=//')" = "$(cat "$f.0")" ]
+  tick=$(tick_of)
+  export CLAUDE_PEER_FRAMES=$f CLAUDE_PEER_ART_SECONDS=20
+  [ "$(FZF_IDLE_TIME_MS=1200 sh -c "$tick")" = "change-header:$(cat "$f.1")" ]
+  [ "$(FZF_IDLE_TIME_MS=6700 sh -c "$tick")" = "change-header:$(cat "$f.3")" ]
+  [ "$(FZF_IDLE_TIME_MS=25000 sh -c "$tick")" = "unbind(every(1))+change-header:$(cat "$f.still")" ]
+  still=$(cat "$f.still")
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  # the still frame is A1's header: what the pane shows when it never moves
+  git config --global claude-peer.art-seconds 0
+  fzfsize '40 120'
+  [ "$(fzf_header | sed '1s/^--header=//')" = "$still" ]
+}
+
+@test "sleeper moves: with art-seconds 0, with the art off, and at 15 rows there is no timer and no frame file" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  local how
+  for how in 'seconds 40 120' 'off 40 120' 'small 15 120'; do
+    set -- $how
+    git config --global --unset claude-peer.art-seconds || true
+    git config --global --unset claude-peer.art || true
+    case $1 in seconds) git config --global claude-peer.art-seconds 0;; off) git config --global claude-peer.art false;; esac
+    rm -f "$FAKE_FZF_LOG" "$FAKE_FZF_LOG.calls"
+    CLAUDE_PEER_SIZE="$2 $3" FAKE_FZF_SLEEP=30 pane alpha
+    until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+    [ "$(grep -c 'every(1)' "$FAKE_FZF_LOG")" -eq 0 ]
+    [ "$(grep -c -- '--with-shell' "$FAKE_FZF_LOG")" -eq 0 ]
+    [ "$(ls "$REPO/.git/claude-peer.wait" | grep -c frame)" -eq 0 ]
+    kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  done
+}
+
+# before <file> <fixed-a> <fixed-b>: a's first line comes before b's
+before() {
+  local x y
+  x=$(grep -nF -- "$2" "$1" | sed -n '1s/:.*//p'); y=$(grep -nF -- "$3" "$1" | sed -n '1s/:.*//p')
+  [ -n "$x" ] && [ -n "$y" ] && [ "$x" -lt "$y" ]
+}
+
+@test "wake: a canned pick opens the eyes above the pane's header, which stays alone on its line" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  COLORTERM=truecolor CLAUDE_PEER_SIZE='40 120' FAKE_FZF_OUT=$'\n\nhello\thello     Hello\n' FAKE_SHELL_SLEEP=2 pane alpha
+  pane_says alpha 'Who: '
+  typeline alpha World
+  o=$BATS_TEST_TMPDIR/pane-alpha.out
+  until_ok 'grep -qx "Alpha · hello: World" "$o"'
+  grep -qF $'48;2;15;15;15' "$o"
+  before "$o" $'\033[9A' 'Alpha · hello: World'
+}
+
+@test "wake: a start from outside while fzf is open wakes the same way" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  COLORTERM=truecolor CLAUDE_PEER_SIZE='40 120' FAKE_FZF_SLEEP=30 FAKE_SHELL_SLEEP=2 pane alpha
+  until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+  CLAUDE_PEER_START_WAIT=10 run sh "$BIN" start alpha hello
+  [ "$status" -eq 0 ]
+  o=$BATS_TEST_TMPDIR/pane-alpha.out
+  until_ok 'grep -qx "Alpha · started by Lead · hello" "$o"'
+  grep -qF $'48;2;15;15;15' "$o"
+  before "$o" $'\033[9A' 'Alpha · started by Lead · hello'
+}
+
+@test "wake: not with the list, not at an unknown size, and not for a refused slot" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker list
+  COLORTERM=truecolor CLAUDE_PEER_SIZE='40 120' FAKE_SHELL_SLEEP=1 pane alpha
+  pane_says alpha "$LISTHINT"
+  typeline alpha ''
+  # the FIFO echoes no Return: the header shares the prompt's line, so wait for the session
+  until_ok 'grep -q "^args=" "$BATS_TEST_TMPDIR/pane-alpha.out"'
+  [ "$(grep -c '48;2;15;15;15' "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 0 ]
+  git config --global claude-peer.picker fzf
+  COLORTERM=truecolor FAKE_FZF_OUT=$'\n\n@fresh\tfresh     A new session, no prompt\n' FAKE_SHELL_SLEEP=1 pane beta
+  until_ok 'grep -qx "Beta" "$BATS_TEST_TMPDIR/pane-beta.out"'
+  [ "$(grep -c '48;2;15;15;15' "$BATS_TEST_TMPDIR/pane-beta.out")" -eq 0 ]
+  # one slot in the pool, held by another leader: the pick is refused and nothing wakes
+  git config --global claude-peer.slots gamma
+  hold gamma
+  rm -f "$FAKE_FZF_LOG.calls"
+  COLORTERM=truecolor CLAUDE_PEER_SIZE='40 120' FAKE_FZF_OUT=$'\n\n@fresh\tfresh     A new session, no prompt\n' pane gamma "$REPO" g2
+  until_ok 'grep -q "slots are in use" "$BATS_TEST_TMPDIR/pane-g2.out"'
+  [ "$(grep -c '48;2;15;15;15' "$BATS_TEST_TMPDIR/pane-g2.out")" -eq 0 ]
+}
+
+@test "sleeper moves: a killed pane takes its fzf, its frame files and its wait file with it" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  CLAUDE_PEER_SIZE='40 120' FAKE_FZF_SLEEP=30 pane alpha
+  pp=$LAST_PANE
+  until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+  [ -f "$REPO/.git/claude-peer.wait/alpha.$pp.frame.still" ]
+  kids=$(ps -Ao pid=,ppid= | awk -v p="$pp" '$2 == p { print $1 }')
+  [ -n "$kids" ]
+  kill "$pp"
+  until_ok '! kill -0 $pp 2>/dev/null'
+  for k in $kids; do until_ok "! kill -0 $k 2>/dev/null"; done
+  [ -z "$(ls "$REPO/.git/claude-peer.wait")" ]
 }
 
 @test "sleeper: a repository name too long for the block is cut, the label never" {

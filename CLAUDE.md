@@ -71,7 +71,7 @@ shadow no bash. CI's macOS job adds Homebrew's `bin` itself; elsewhere use
 `PATH="$(brew --prefix)/bin:$PATH" bats tests`. A test that fakes `HOME` and
 needs `python3` must pin the real interpreter in `setup()` before it does,
 because an asdf shim cannot resolve a version under a fake `HOME` and exits
-126 (`tests/claude-peer.bats` does not pin yet).
+126.
 
 To *run* the dotfiles rather than test them — render a machine class into a
 sandbox `$HOME`, drive the resulting zsh (prompt, wrappers, doctors) one-shot
@@ -83,7 +83,7 @@ Skill directories are dot-prefixed, so chezmoi never deploys them.
 CI (`.github/workflows/tests.yml`) runs the suite on `ubuntu-latest`,
 `macos-latest`, Rocky Linux 9 (container), and WSL Ubuntu (windows runner), plus a container
 job that runs the one-shot install end to end.
-The macOS job additionally executes `.macos` for real and asserts settings
+A separate macOS job, `test-macos-apply`, executes `.macos` for real and asserts settings
 stuck (`tests/macos-apply.bats`) — safe there because runners are throwaway
 VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 
@@ -138,7 +138,7 @@ these run in every repo on the machine:
   configured). `GIT_PUSH_CHECK=0` bypasses both for one push; the
   `hook.pre-push.run` chain still runs.
 - **Merge** is gated on GitHub: the `main` ruleset
-  (`.github/rulesets/main.json`) requires the five CI checks on a branch that
+  (`.github/rulesets/main.json`) requires the six CI checks on a branch that
   contains main's tip, so `gh pr merge` refuses a stale or red pull request
   and `--auto` waits for it. The review a merge here needs is
   `public-clone-advocate` on the final diff; merging main into the branch
