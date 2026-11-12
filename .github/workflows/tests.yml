@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -23,7 +26,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
       - name: Install Bats on Ubuntu
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -47,17 +50,28 @@ jobs:
         run: |
           sh .github/install-fzf.sh "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      # tests/finicky.bats runs the .ts routing config under Node (>= 22.6
-      # strips types natively); without a recent Node it skips silently.
-      - uses: actions/setup-node@v4
+      # tests/finicky.bats and tests/chrome-pairing.bats run the .ts routing
+      # config under Node (>= 22.6 strips types natively); NODE_TESTS_REQUIRED
+      # (below) makes a missing or old Node fail them instead of skipping.
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Check that the fzf on PATH is the pinned one
         run: sh .github/install-fzf.sh --check
       - name: Run tests
-        run: SCREEN_TESTS_REQUIRE='tmux fzf' bats tests
+        run: NODE_TESTS_REQUIRED=1 SCREEN_TESTS_REQUIRE='tmux fzf' bats tests
+
+  # .macos applied for real and read back (tests/macos-apply.bats). Its own job
+  # so its ~5 minutes run beside the suite instead of after it on the macOS job.
+  test-macos-apply:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Bats
+        run: |
+          brew install bats-core bash
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
       - name: Apply .macos on the throwaway runner and verify
-        if: matrix.os == 'macos-latest'
         run: MACOS_APPLY_OK=1 bats tests/macos-apply.bats
 
   # The README's fresh-machine command, run for real end to end: the get.chezmoi.io
@@ -70,7 +84,7 @@ jobs:
     steps:
       - name: Install dependencies
         run: apt-get update && apt-get install -y curl git zsh rsync ca-certificates
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
       - name: One-shot bootstrap from a copy of this checkout
         # --one-shot purges the SOURCE directory after applying, so it must
         # run against a copy — pointing it at $GITHUB_WORKSPACE deletes the
@@ -91,8 +105,11 @@ jobs:
           test ! -e "$HOME/.extra"
           test ! -d "$HOME/.claude"
           test ! -d "$HOME/.claude-hadees"
-          # --one-shot removes chezmoi, its state, and the source copy
-          ! command -v chezmoi
+          # --one-shot removes chezmoi, its state, and the source copy. This step
+          # runs under `sh -e`, which ignores a failing `!`, hence the explicit if;
+          # the installer's default directory is bin under the cwd it ran from (/tmp).
+          if command -v chezmoi; then echo "chezmoi is still on PATH"; exit 1; fi
+          test ! -e /tmp/bin/chezmoi
           test ! -d "$HOME/.config/chezmoi"
           test ! -d "$HOME/.local/share/chezmoi"
           test ! -d /tmp/dotfiles-src
@@ -116,12 +133,12 @@ jobs:
         # assertion instead of a missing package. procps-ng is missing too
         # (no ps), which claude-peer needs to find the sessions it stops.
         run: dnf install -y git zsh rsync diffutils procps-ng
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
       - name: Install tmux for the screen tests
         run: dnf install -y tmux
       - name: Install Bats and chezmoi
         run: |
-          git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats-core
+          git clone --depth 1 --branch v1.14.0 https://github.com/bats-core/bats-core.git /tmp/bats-core
           /tmp/bats-core/install.sh /usr/local
           sh -c "$(curl -fsLS get.chezmoi.io)" -- -b /usr/local/bin
       - name: Install the pinned fzf
@@ -129,6 +146,9 @@ jobs:
       - name: Check that the fzf on PATH is the pinned one
         run: sh .github/install-fzf.sh --check
       - name: Run tests
+        # No Node here on purpose: tests/finicky.bats and tests/chrome-pairing.bats
+        # are OS-independent logic, run on ubuntu and macOS, so skipping them on
+        # Rocky is intended (NODE_TESTS_REQUIRED stays unset).
         # The image sets no locale, and the screen tests match glyphs as characters
         # (their harness test says so by name when the charmap is not UTF-8).
         env:
@@ -147,7 +167,7 @@ jobs:
       - name: Force LF line endings on checkout
         shell: pwsh
         run: git config --global core.autocrlf false
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v7
       - uses: Vampire/setup-wsl@v5
         with:
           distribution: Ubuntu-24.04
@@ -159,4 +179,7 @@ jobs:
       - name: Check that the fzf on PATH is the pinned one
         run: sh .github/install-fzf.sh --check
       - name: Run tests
+        # No Node here on purpose: tests/finicky.bats and tests/chrome-pairing.bats
+        # are OS-independent logic, run on ubuntu and macOS, so skipping them on
+        # WSL is intended (NODE_TESTS_REQUIRED stays unset).
         run: SCREEN_TESTS_REQUIRE='tmux fzf' bats tests

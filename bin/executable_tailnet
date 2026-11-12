@@ -293,6 +293,12 @@ cmd_install() {
       mkdir -p "$HOME/Library/LaunchAgents"
       write_plist "$name" "$bin"
       launchctl bootout "gui/$(uid)/$TAILNET_LABEL_PREFIX.$name" >/dev/null 2>&1
+      # bootout returns before launchd has torn the job down; a bootstrap in
+      # that window fails "5: Input/output error" and leaves nothing loaded.
+      i=0
+      while launchctl print "gui/$(uid)/$TAILNET_LABEL_PREFIX.$name" >/dev/null 2>&1 && [ $i -lt 50 ]; do
+        sleep 0.1; i=$((i + 1))
+      done
       launchctl bootstrap "gui/$(uid)" "$(plist_path "$name")" || die "launchctl bootstrap failed (see $(plist_path "$name"))"
       launchctl kickstart -k "gui/$(uid)/$TAILNET_LABEL_PREFIX.$name" >/dev/null 2>&1
       printf 'tailnet: %s installed — proxy on 127.0.0.1:%s, agent %s\n' "$name" "$port" "$TAILNET_LABEL_PREFIX.$name"

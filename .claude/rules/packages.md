@@ -20,7 +20,10 @@ list does not re-run installs on a plain Linux box. **When adding or removing a 
 where it's available**, using each distro's native package name (e.g.
 Ubuntu's `bat` package installs the binary as `batcat`; the shell config's
 `command -v` guards tolerate the difference). If a tool exists on one
-platform only, note it in the list file. Homebrew is deliberately not used
+platform only, note it in the list file. Where the shell config reads a
+tool's files it searches both layouts: `fd-find`'s `fdfind` binary, and
+Ubuntu's `fzf` package keeping its zsh bindings under
+`/usr/share/doc/fzf/examples` rather than Homebrew's `opt/fzf/shell`. Homebrew is deliberately not used
 on Linux. The install scripts re-run automatically on `chezmoi apply`
 whenever their list's hash changes; the `ephemeral` machine class never
 runs them.

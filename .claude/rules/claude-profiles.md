@@ -58,9 +58,11 @@ different login than its owner's account maps to gets a per-repo pin,
 account mapping and leaves every sibling repo of that owner alone — the same
 shape and precedence as `wrangler.<owner>/<repo>.profile` and
 `identity.<owner>/<repo>.email`. The value is an account or alias from
-`claude.profile.*`, or a literal directory: whatever `CLAUDE_PROFILE` accepts,
-since a pin is that same choice made once per repo instead of once per
-invocation. It is machine-local git config, so *which* repos are moved stays in
+`claude.profile.*`, or a literal directory (absolute or `~`-prefixed; a bare
+word is only ever a mapped name): whatever `CLAUDE_PROFILE` accepts, since a pin
+is that same choice made once per repo instead of once per invocation. The
+resolver prints one normalised spelling, so a trailing slash or `..` in a
+mapping, pin or `CLAUDE_PROFILE` still compares equal to the default directory. It is machine-local git config, so *which* repos are moved stays in
 the overlays and no repo names appear here. Precedence end to end:
 `CLAUDE_PROFILE` → `claude.<owner>/<repo>.profile` → `claude.profile.<account>`
 → `claude.profile.default` → bare `claude`.

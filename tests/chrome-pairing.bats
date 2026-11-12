@@ -10,10 +10,17 @@
 # with FIXTURE fragments, evaluated under Node the way tests/finicky.bats
 # does. All names are fixtures; nothing here touches a real Chrome.
 
+# Where CI installs Node it sets NODE_TESTS_REQUIRED, so a missing or old Node
+# fails here instead of skipping every test; elsewhere the suite skips.
+need_node() {
+  if [ -n "${NODE_TESTS_REQUIRED:-}" ]; then echo "$1"; return 1; fi
+  skip "$1"
+}
+
 setup() {
-  command -v node >/dev/null || skip "node not installed"
-  NODE="$(node -e 'console.log(process.execPath)' 2>/dev/null)" || skip "node not runnable"
-  "$NODE" --experimental-strip-types -e '' 2>/dev/null || skip "node too old to run .ts (need >= 22.6)"
+  command -v node >/dev/null || need_node "node not installed"
+  NODE="$(node -e 'console.log(process.execPath)' 2>/dev/null)" || need_node "node not runnable"
+  "$NODE" --experimental-strip-types -e '' 2>/dev/null || need_node "node too old to run .ts (need >= 22.6)"
   export HOME="$BATS_TEST_TMPDIR/home"
   mkdir -p "$HOME/.config/finicky" "$BATS_TEST_TMPDIR/bin"
   export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig"
