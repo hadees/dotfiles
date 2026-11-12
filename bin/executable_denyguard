@@ -120,7 +120,7 @@ DEFAULT_RECURSIVE = {
 # A command word that is recursive only with one of these flags present,
 # as a standalone `--long` form or inside a `-xyz` short-flag cluster.
 FLAG_RECURSIVE = {
-    "cp": {"-r", "-R", "--recursive"},
+    "cp": {"-r", "-R", "-a", "--recursive", "--archive"},
     "scp": {"-r", "-R", "--recursive"},
     "rm": {"-r", "-R", "--recursive"},
     "chmod": {"-r", "-R", "--recursive"},
@@ -638,11 +638,6 @@ def scan(text, cwd, rules):
                         return tok, rule, "%s is inside %s" % (tok, rule.raw)
                     if not recursive or cand == rule.prefix \
                             or not rule.prefix.startswith(cand + os.sep):
-                        continue
-                    # A bare $HOME or / candidate is an ancestor of nearly
-                    # everything; only a command that is ALWAYS recursive
-                    # (never just flagged) is trusted to reach that far.
-                    if cand in (HOME, os.sep) and command_word not in DEFAULT_RECURSIVE:
                         continue
                     return tok, rule, (
                         "%s is an ancestor of %s and %s recurses here; "

@@ -790,6 +790,24 @@ EOF")"
   done
 }
 
+# --- a recursive flag over the home directory or root is refused, and cp -a is recursive ---
+@test "home: an explicit recursive flag over the home directory is refused, cp -a included" {
+  for cmd in "grep -r gizmo $HOME" "cp -R $HOME $HOME/elsewhere/copy" \
+             "cp -a $HOME/code $HOME/elsewhere/copy" "cp --archive $HOME/code $HOME/elsewhere/copy"; do
+    run hook "$(evt "$HOME/code" "$cmd")"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"recurses here"* ]] || { echo "$cmd: $output"; false; }
+  done
+}
+
+@test "home controls: a long listing of home and a copy of a harmless tree stay silent" {
+  for cmd in "ls -la $HOME" "cp -a $HOME/code/octo-alpha $HOME/elsewhere/copy"; do
+    run hook "$(evt "$HOME/code" "$cmd")"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ] || { echo "$cmd refused: $output"; false; }
+  done
+}
+
 @test "recursion controls: a star bullet in a data heredoc, and a bare star outside a recursive command, stay silent" {
   run hook "$(evt_ml "$HOME/code" "cat <<EOF > notes.md
 * a bullet

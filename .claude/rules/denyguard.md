@@ -48,7 +48,10 @@ script that actually opens it still refuses. A hit fires only when that
 SAME command also carries a genuine recursion signal — `find`/`rg`/`du`/…
 by nature, or `-r`/`-R`/`--recursive` on `grep`/`cp`/`rm`/`ls`/… — never a
 bare mention of a recursive-sounding word or a flag cluster that merely
-contains the letter (`sort -nr`, `ls -ltr`). First three real firings were
+contains the letter (`sort -nr`, `ls -ltr`). An explicit recursive flag
+(`cp -a` and `--archive` count) over the home directory or `/` is refused
+like any other ancestor: `grep -r x ~` and `cp -R ~ dest` are not exempt.
+First three real firings were
 all false positives of the OLD, whole-command version of this check
 (2026-09-18); this narrowing is that fix.
 
@@ -156,6 +159,8 @@ likewise not examined.
 An option's separate value that names an existing file is taken for a root
 (`rg -t py NOTES`, `tree -o FILE`, `du -X FILE`).
 A pattern glued to its short option (`-ePAT`) is not recognised as one.
+`mv` or `ln -s` of an ancestor directory is not read as recursion, so
+relocating a denied tree that way passes.
 `ag` fed by a pipe is refused though it reads stdin (not verified, so not
 exempted).
 False positives of the same test: an option between the pattern and the root
