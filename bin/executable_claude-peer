@@ -132,7 +132,9 @@
 #                            overlay, after the others) and the overlays state
 #                            file; with none, it removes both
 #   here                     the key claude() sends to choose the workgroup for
-#                            this directory (base)
+#                            this directory (base; overlays in the public
+#                            chezmoi source once install wrote the overlay
+#                            panes)
 #   default <peers|builtin>  peers: disable the claude job trigger in every
 #                            profile and add one variable trigger per
 #                            workgroup (claude() sends the key); builtin: the
@@ -2091,9 +2093,17 @@ enter_file() { printf '%s/claude-peer/enter\n' "${XDG_STATE_HOME:-$HOME/.local/s
 enter_state() { [ -r "$(enter_file)" ] && sed -n 1p "$(enter_file)"; return 0; }
 
 # The key the wrapper sends for this directory: the workgroup to enter.
+# `overlays` only inside the public chezmoi source, only when install has written
+# the state file (so the definitions exist) and only while this machine has an
+# overlay; every other directory, and any failure on the way, is `base`.
 cmd_here() {
   [ $# -eq 0 ] || usage
-  printf 'base\n'
+  he_k=base
+  if [ -s "$(overlays_file)" ] && he_r=$(root_of "$PWD") && he_p=$(public_root) \
+     && [ "$he_r" = "$he_p" ] && [ -n "$(overlay_list 2>/dev/null)" ]; then
+    he_k=overlays
+  fi
+  printf '%s\n' "$he_k"
 }
 
 cmd_workgroup() {

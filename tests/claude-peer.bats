@@ -3038,3 +3038,67 @@ PY
   run --separate-stderr sh "$BIN" status
   [[ "$output" == *"overlays: chezmoi names no source directory in a git repository, so no tab enters them"* ]]
 }
+
+# --- overlays: here ---------------------------------------------------------------
+
+# ov_here: here, from the directory given, with the public source at $REPO
+ov_here() { cd "${1:-$REPO}"; FAKE_CHEZMOI_SOURCE="$REPO" run --separate-stderr sh "$BIN" here; }
+
+# ov_ready: one overlay and the state file install writes
+ov_ready() {
+  overlay_stub
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  mkdir -p "$XDG_STATE_HOME/claude-peer"
+  echo fake1 >"$XDG_STATE_HOME/claude-peer/overlays"
+}
+
+@test "here overlays: the public source with an overlay and the state file enters the overlay workgroup" {
+  ov_ready
+  ov_here
+  [ "$status" -eq 0 ]
+  [ "$output" = overlays ]
+  [ -z "$stderr" ]
+  # a linked worktree of the public source is the public source
+  git -C "$REPO" worktree add -q --detach "$BATS_TEST_TMPDIR/linked"
+  ov_here "$BATS_TEST_TMPDIR/linked"
+  [ "$output" = overlays ]
+  [ -z "$stderr" ]
+  # as is a subdirectory of it
+  mkdir "$REPO/sub"
+  ov_here "$REPO/sub"
+  [ "$output" = overlays ]
+}
+
+@test "here overlays: every other case stays base, silently" {
+  ov_ready
+  # another repository
+  OTHER=$(overlay_repo other)
+  ov_here "$OTHER"
+  [ "$status" -eq 0 ]; [ "$output" = base ]; [ -z "$stderr" ]
+  # no repository
+  mkdir "$BATS_TEST_TMPDIR/plain"
+  ov_here "$BATS_TEST_TMPDIR/plain"
+  [ "$status" -eq 0 ]; [ "$output" = base ]; [ -z "$stderr" ]
+  # chezmoi fails
+  FAKE_CHEZMOI_FAIL=1 ov_here
+  [ "$status" -eq 0 ]; [ "$output" = base ]; [ -z "$stderr" ]
+  # no overlay now
+  rm "$HOME/.config/chezmoi/fake1.toml" "$HOME/.config/chezmoi/fake1.toml.src"
+  ov_here
+  [ "$status" -eq 0 ]; [ "$output" = base ]; [ -z "$stderr" ]
+  # an empty state file
+  overlay_cfg fake1.toml "$(overlay_repo ov1b)"
+  : >"$XDG_STATE_HOME/claude-peer/overlays"
+  ov_here
+  [ "$status" -eq 0 ]; [ "$output" = base ]; [ -z "$stderr" ]
+}
+
+@test "here overlays: without the state file a deployed script still answers base, and never asks chezmoi" {
+  overlay_stub
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  ov_here
+  [ "$status" -eq 0 ]; [ "$output" = base ]; [ -z "$stderr" ]
+  [ ! -e "$BATS_TEST_TMPDIR/chezmoi.log" ]
+  run sh "$BIN" here extra
+  [ "$status" -eq 2 ]
+}
