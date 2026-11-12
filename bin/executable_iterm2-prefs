@@ -36,8 +36,7 @@
 # ignored and counted. Unit names (keys and profile/<guid>/<key>) are printed;
 # values never are, except by `capture --values`.
 #
-# This is the first step of the build: lint and compose --print. The other
-# verbs answer "not built yet".
+# Built so far: lint, compose and status. The other verbs answer "not built yet".
 set -u
 
 warn() { printf 'iterm2-prefs: %s\n' "$*" >&2; }
@@ -60,7 +59,7 @@ proc_running() {
 # /usr/bin/python3 is all a fresh mac has.
 prefs_py() {
   python3 -I - "$@" <<'PYEOF'
-import datetime, os, plistlib, re, sys
+import datetime, os, plistlib, re, subprocess, sys, tempfile
 
 MISSING = type("Missing", (), {"__repr__": lambda self: "MISSING"})()
 
@@ -251,17 +250,188 @@ def merge(fragments):
     return new, owner, order, ignored
 
 
-def lay(new, order):
-    """Merged units over an empty dictionary, profiles in order. ponytail: S2's apply_units replaces this."""
-    prefs, profiles = {}, {}
+class Fail(Exception):
+    pass
+
+
+def three_way(new, rec, cur, reset=False):
+    """(apply, kept): what to write to the store, and the units iTerm2 changed that stay as they are."""
+    apply, kept = {}, []
+    for u in list(new) + [u for u in rec if u not in new]:
+        n, r, c = new.get(u, MISSING), rec.get(u, MISSING), cur.get(u, MISSING)
+        if same(c, n):
+            continue
+        if reset or same(c, r):
+            apply[u] = n
+        else:
+            kept.append(u)
+    # a profile no fragment lists any more stays whole when iTerm2 changed any key of it
+    listed = {u[1] for u in new if u[0] == "profile"}
+    held = {u[1] for u in kept if u[0] == "profile"} - listed
+    for u in [u for u in apply if u[0] == "profile" and u[1] in held and apply[u] is MISSING]:
+        del apply[u]
+    return apply, kept
+
+
+def apply_units(prefs, apply, order):
+    """Mutate prefs by three_way's apply, profiles in order; returns the profiles dropped."""
+    profs = prefs.get("New Bookmarks")
+    if not isinstance(profs, list):
+        profs = []
+    by_guid = {p["Guid"]: p for p in profs if isinstance(p, dict) and isinstance(p.get("Guid"), str)}
+    gone = set()
+    for u, value in apply.items():
+        if u[0] == "top":
+            if value is MISSING:
+                prefs.pop(u[1], None)
+            else:
+                prefs[u[1]] = value
+    for g in order + sorted({u[1] for u in apply if u[0] == "profile"} - set(order)):
+        for u, value in apply.items():
+            if u[0] != "profile" or u[1] != g:
+                continue
+            if value is MISSING:
+                if g in by_guid:
+                    by_guid[g].pop(u[2], None)
+                if g not in order:
+                    gone.add(g)
+            else:
+                if g not in by_guid:
+                    by_guid[g] = {"Guid": g}
+                    profs.append(by_guid[g])
+                by_guid[g][u[2]] = value
+    if profs or "New Bookmarks" in prefs:
+        prefs["New Bookmarks"] = [p for p in profs if not (isinstance(p, dict) and p.get("Guid") in gone)]
+    return len(gone & set(by_guid))
+
+
+def state_home():
+    return os.environ.get("XDG_STATE_HOME") or os.path.join(os.environ["HOME"], ".local", "state")
+
+
+def store_dir():
+    return os.environ.get("ITERM2_PREFS_DIR") or os.path.join(state_home(), "iterm2", "prefs")
+
+
+def live_path():
+    return os.path.join(store_dir(), "com.googlecode.iterm2.plist")
+
+
+def record_path():
+    return os.environ.get("ITERM2_PREFS_RECORD") or os.path.join(state_home(), "iterm2", "prefs-sourced.plist")
+
+
+def defaults(*args):
+    try:
+        p = subprocess.run(("defaults",) + args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+    return p.stdout if p.returncode == 0 else None
+
+
+def current_store():
+    """("domain", None), ("folder", plist path) or ("url", the URL): what iTerm2 loads, as claude-peer's prefs_store reads it."""
+    load = defaults("read", "com.googlecode.iterm2", "LoadPrefsFromCustomFolder")
+    if load is None or load.decode().strip() != "1":
+        return "domain", None
+    folder = defaults("read", "com.googlecode.iterm2", "PrefsCustomFolder")
+    folder = folder.decode().strip() if folder else ""
+    if not folder:
+        return "domain", None
+    if "://" in folder:
+        return "url", folder
+    if folder == "~" or folder.startswith("~/"):
+        folder = os.environ["HOME"] + folder[1:]
+    return "folder", folder.rstrip("/") + "/com.googlecode.iterm2.plist"
+
+
+def is_installed(kind, plist):
+    return kind == "folder" and os.path.realpath(os.path.dirname(plist)) == os.path.realpath(store_dir())
+
+
+def git_top(plist):
+    """The repository top the folder of plist lies in, or None."""
+    d = os.path.dirname(plist)
+    while not os.path.isdir(d) and os.path.dirname(d) != d:
+        d = os.path.dirname(d)
+    try:
+        p = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+    return p.stdout.decode().strip() if p.returncode == 0 and p.stdout.strip() else None
+
+
+def load_or_empty(path):
+    if not os.path.exists(path):
+        return {}
+    try:
+        prefs = load_plist(path)
+    except Exception:
+        raise Fail("cannot read %s" % path)
+    if not isinstance(prefs, dict):
+        raise Fail("cannot read %s" % path)
+    return prefs
+
+
+def domain_prefs():
+    raw = defaults("export", "com.googlecode.iterm2", "-")
+    try:
+        prefs = plistlib.loads(raw or b"")
+    except Exception:
+        raise Fail("cannot read the iTerm2 domain")
+    return {k: v for k, v in prefs.items() if syncable(k)}
+
+
+def truth(kind):
+    """The preferences to compare against: "store" (what iTerm2 loads), "domain", or a plist path."""
+    if kind == "domain":
+        return domain_prefs()
+    if kind != "store":
+        return load_plist(kind)
+    where, plist = current_store()
+    if where == "url":
+        raise Fail("iTerm2 loads its preferences from a URL")
+    return domain_prefs() if where == "domain" else load_or_empty(plist)
+
+
+def write_atomic(path, data):
+    d = os.path.dirname(path)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".iterm2-prefs.")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def load_record():
+    """The sources as of the last compose, as units."""
+    raw = load_or_empty(record_path())
+    rec = {}
+    try:
+        for k, v in raw.get("top", {}).items():
+            rec[("top", k)] = v
+        for g, keys in raw.get("profiles", {}).items():
+            for k, v in keys.items():
+                rec[("profile", g, k)] = v
+    except AttributeError:
+        raise Fail("cannot read %s" % record_path())
+    return rec
+
+
+def dump_record(new):
+    raw = {"top": {}, "profiles": {}}
     for u, value in new.items():
         if u[0] == "top":
-            prefs[u[1]] = value
+            raw["top"][u[1]] = value
         else:
-            profiles.setdefault(u[1], {"Guid": u[1]})[u[2]] = value
-    if profiles:
-        prefs["New Bookmarks"] = [profiles[g] for g in order if g in profiles]
-    return prefs
+            raw["profiles"].setdefault(u[1], {})[u[2]] = value
+    return dump_plist(raw)
 
 
 def frag_dir():
@@ -289,35 +459,142 @@ def cmd_lint(args):
     return 1 if bad else 0
 
 
-def cmd_compose(args):
-    if "--print" not in args or any(a not in ("--print", "--auto", "--reset") for a in args):
-        return usage("compose [--auto] [--reset] [--print]")
+def sourced(strict=True):
+    """(fragments, new, owner, order, ignored) of the fragment directory. A broken fragment fails the
+    run when strict; status passes strict=False, it reports and does not refuse."""
     fragments = read_fragments(frag_dir())
-    for name, _, probs in fragments:
+    for name, _, probs in fragments if strict else ():
         # a broken fragment would make its keys look as if they had left the sources
         broken = [p for p in probs if not p.startswith("reserved key ")]
         if broken:
-            sys.stderr.write("iterm2-prefs: %s: %s; nothing composed\n"
-                             % (os.path.join(frag_dir(), name + ".plist"), broken[0]))
+            raise Fail("%s: %s; nothing composed" % (os.path.join(frag_dir(), name + ".plist"), broken[0]))
+    return (fragments,) + merge(fragments)
+
+
+def running():
+    return os.environ.get("ITERM2_PREFS_RUNNING") == "1"
+
+
+def moment_truth(running):
+    """The domain while iTerm2 runs (its memory is what counts), else the composed file."""
+    return domain_prefs() if running else load_or_empty(live_path())
+
+
+def cmd_compose(args):
+    if any(a not in ("--print", "--auto", "--reset") for a in args):
+        return usage("compose [--auto] [--reset] [--print]")
+    auto, reset, printing = "--auto" in args, "--reset" in args, "--print" in args
+    fragments, new, owner, order, ignored = sourced()
+    rec = load_record()
+    if printing:
+        prefs = load_or_empty(live_path())
+        apply, kept = three_way(new, rec, units_of(prefs), reset)
+        apply_units(prefs, apply, order)
+        sys.stdout.buffer.write(dump_plist(prefs))
+        return 0
+    kind, plist = current_store()
+    if not is_installed(kind, plist):
+        if auto:
+            return 0
+        sys.stderr.write("iterm2-prefs: iTerm2 does not load %s (iterm2-prefs install)\n" % store_dir())
+        return 1
+    if running():
+        waiting = len(three_way(new, rec, units_of(domain_prefs()))[0])
+        if not auto:
+            sys.stderr.write("iterm2-prefs: iTerm2 is running and writes its preferences at quit; "
+                             "quit it first (%d source changes wait)\n" % waiting)
             return 1
-    new, _, order, _ = merge(fragments)
-    sys.stdout.buffer.write(dump_plist(lay(new, order)))
+        if waiting:
+            print("iterm2-prefs: %d source changes wait for iTerm2 to quit (then: iterm2-prefs compose)" % waiting)
+        return 0
+    fresh = not os.path.exists(live_path())
+    prefs = load_or_empty(live_path())
+    apply, kept = three_way(new, rec, units_of(prefs), reset)
+    apply_units(prefs, apply, order)
+    if apply or fresh:
+        write_atomic(live_path(), dump_plist(prefs))
+    write_atomic(record_path(), dump_record(new))
+    if apply or kept or ignored:
+        print("iterm2-prefs: %d units applied from %d fragments; %d kept as changed in iTerm2 "
+              "(iterm2-prefs capture); %d reserved keys ignored" % (len(apply), len(fragments), len(kept), len(ignored)))
     return 0
 
 
-verb, args = sys.argv[1], sys.argv[2:]
-sys.exit({"lint": cmd_lint, "compose": cmd_compose}[verb](args))
+def cmd_status(args):
+    if args not in ([], ["--line"]):
+        return usage("status [--line]")
+    kind, plist = current_store()
+    installed = is_installed(kind, plist)
+    waiting = kept = 0
+    fragments, new, owner, order, ignored = sourced(False)
+    if installed:
+        apply, held = three_way(new, load_record(), units_of(moment_truth(running())))
+        waiting, kept = len(apply), len(held)
+    top = None if installed or kind != "folder" else git_top(plist)
+    if args:
+        if installed:
+            print("composed, in sync" if not (waiting or kept) else "composed, %d waiting, %d kept" % (waiting, kept))
+        elif kind == "domain":
+            print("not composed (domain)")
+        else:
+            print("not composed (folder %s%s)" % (plist, ", inside a git repository" if top else ""))
+        return 0
+    if installed:
+        print("store: composed " + live_path())
+    elif kind == "domain":
+        print("store: domain; not the composed folder (iterm2-prefs install)")
+    else:
+        print("store: folder %s%s; not the composed folder (iterm2-prefs install)"
+              % (plist, ", inside the git repository " + top if top else ""))
+    print("iterm2: " + ("running" if running() else "not running"))
+    print("fragments: %d%s" % (len(fragments), " (%s)" % " ".join(f[0] for f in fragments) if fragments else ""))
+    profile_units = [u for u in new if u[0] == "profile"]
+    print("sourced: %d units (%d top-level, %d keys in %d profiles)"
+          % (len(new), len(new) - len(profile_units), len(profile_units), len({u[1] for u in profile_units})))
+    if installed:
+        print("waiting: %d source changes not in the store" % waiting)
+        print("kept: %d units changed in iTerm2 (iterm2-prefs capture)" % kept)
+    print("ignored: %d reserved keys in fragments%s"
+          % (len(ignored), ": " + " ".join("%s:%s" % i for i in ignored) if ignored else ""))
+    try:
+        skipped = len([n for n in os.listdir(frag_dir()) if not (FRAGMENT_NAME.fullmatch(n) and os.path.isfile(os.path.join(frag_dir(), n)))])
+    except OSError:
+        skipped = 0
+    if skipped:
+        print("skipped: %d files in %s not named NN-<name>.plist" % (skipped, frag_dir()))
+    return 0
+
+
+def main():
+    verb, args = sys.argv[1], sys.argv[2:]
+    try:
+        return {"lint": cmd_lint, "compose": cmd_compose, "status": cmd_status}[verb](args)
+    except Fail as e:
+        sys.stderr.write("iterm2-prefs: %s\n" % e)
+        return 1
+
+
+sys.exit(main())
 PYEOF
+}
+
+# The Python reads whether iTerm2 runs from this, so ps is asked once and in shell.
+go() {
+  if proc_running iTerm2; then ITERM2_PREFS_RUNNING=1; else ITERM2_PREFS_RUNNING=0; fi
+  export ITERM2_PREFS_RUNNING
+  prefs_py "$@"
 }
 
 case ${1:-} in
   lint) shift; prefs_py lint "$@";;
   compose)
     case " $* " in
-      *" --print "*) shift; prefs_py compose "$@";;
-      *) die "compose is not built yet";;
-    esac;;
-  status|capture|install) die "$1 is not built yet";;
+      *" --print "*) ;;
+      *) need_macos compose;;
+    esac
+    shift; go compose "$@";;
+  status) need_macos status; shift; go status "$@";;
+  capture|install) die "$1 is not built yet";;
   -h|--help|help) usage;;
   '') usage >&2; exit 2;;
   *) warn "unknown verb: $1"; usage >&2; exit 2;;
