@@ -91,8 +91,11 @@ jobs:
           test ! -e "$HOME/.extra"
           test ! -d "$HOME/.claude"
           test ! -d "$HOME/.claude-hadees"
-          # --one-shot removes chezmoi, its state, and the source copy
-          ! command -v chezmoi
+          # --one-shot removes chezmoi, its state, and the source copy. This step
+          # runs under `sh -e`, which ignores a failing `!`, hence the explicit if;
+          # the installer's default directory is bin under the cwd it ran from (/tmp).
+          if command -v chezmoi; then echo "chezmoi is still on PATH"; exit 1; fi
+          test ! -e /tmp/bin/chezmoi
           test ! -d "$HOME/.config/chezmoi"
           test ! -d "$HOME/.local/share/chezmoi"
           test ! -d /tmp/dotfiles-src
