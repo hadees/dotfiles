@@ -11,8 +11,9 @@
 #
 # This file so far: the decision (`decide`), its backends, the log and the
 # cache (`log`), a self-test of the real backend (`selftest`), the gate on
-# Write and Edit (`hook pre`) and the settings block to paste (`settings`).
-# `hook bash`, `hook start` and `audit` arrive in later steps.
+# Write and Edit (`hook pre`), the gate on Bash writes into a memory directory
+# (`hook bash`) and the settings block to paste (`settings`).
+# `hook start` and `audit` arrive in later steps.
 #
 # The decider is shaped as a Jev-style function: a request is one JSON
 # object, `{"v": 1, "state": ..., "questions": {<id>: {"type": "choice",
@@ -27,6 +28,7 @@
 #   memoryguard selftest [--mode lean|agent]
 #   memoryguard log [--since DAYS]
 #   memoryguard hook pre          PreToolUse JSON on stdin; always exits 0
+#   memoryguard hook bash         the same, for the Bash tool
 #   memoryguard settings
 # env:
 #   MEMORYGUARD_BACKEND       `claude` or the absolute path of a protocol-v1
@@ -52,8 +54,11 @@ hook)
   payload=$(cat) || exit 0
   case "${2:-}" in
   pre | bash)
+    # A Bash command may `cd` into the directory and name no path with `/memory/` in it.
+    want=/memory/
+    [ "$2" = bash ] && want=/memory
     case $payload in
-    */memory/*) ;;
+    *"$want"*) ;;
     *) grep -qs autoMemoryDirectory "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" || exit 0 ;;
     esac
     ;;
@@ -81,6 +86,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -541,7 +547,7 @@ def ledger_put(row):
 
 def log_row(slug, name, sha, outcome, choice="-", conf="-", ms="-", detail="-"):
     ledger_put([time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), os.path.basename(config_dir().rstrip("/")),
-                slug, name_hash(name), sha, outcome, choice, conf, ms, detail])
+                slug, name_hash(name) if name else "-", sha, outcome, choice, conf, ms, detail])
 
 
 # ---- commands --------------------------------------------------------------
@@ -879,13 +885,80 @@ def hook_pre(p):
     return {"permissionDecision": "deny", "permissionDecisionReason": refusal(choice, conf, reason, home, elsewhere)}
 
 
+# ---- the gate on Bash --------------------------------------------------------
+
+BASH_WRITERS = ("tee", "cp", "mv", "dd", "install", "truncate")
+BASH_PREFIX = ("sudo", "xargs", "exec", "command", "nohup", "time", "env")
+BASH_SEPARATORS = (";", "&&", "||", "|", "&", "(", "{")
+REDIRECT_RE = re.compile(r"(?<![2&>])>(?!&)")
+IN_PLACE_RE = re.compile(r"^(-[a-zA-Z]*i([^a-zA-Z].*)?|--in-place.*)$")
+BASH_REFUSAL = ("memoryguard: write memory notes with the Write or Edit tool, so each is placed before it is saved. "
+                "Reading a note, or deleting one with rm, through Bash is fine.")
+
+
+def bash_writes(command):
+    # Lexical: does the command write a file? A redirect, or a command word that
+    # writes (`sed -i`, `perl -i` included). Reads and rm are not writes.
+    if REDIRECT_RE.search(command):
+        return True
+    try:
+        lex = shlex.shlex(command.replace("\n", " ; "), posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        toks = list(lex)
+    except ValueError:
+        toks = command.split()
+    start, word = True, None
+    for t in toks:
+        if t in BASH_SEPARATORS:
+            start, word = True, None
+        elif start and t in BASH_PREFIX:
+            continue
+        elif start:
+            start, word = False, t
+            if t in BASH_WRITERS:
+                return True
+        elif word in ("sed", "perl") and IN_PLACE_RE.match(t):
+            return True
+    return False
+
+
+def hook_bash(p):
+    # -> None, or a refusal. Never grants anything.
+    ti = p.get("tool_input")
+    cmd = ti.get("command") if isinstance(ti, dict) else None
+    if p.get("tool_name") != "Bash" or not isinstance(cmd, str):
+        return None
+    try:
+        toks = shlex.split(cmd.replace("\n", " "))
+    except ValueError:
+        toks = cmd.split()
+    hit = None
+    for t in toks:
+        t = os.path.expanduser(os.path.expandvars(re.sub(r"^[0-9&]*[<>]+&?", "", t)))
+        # A directory has no .md suffix, so a token is tried as a file and as a directory.
+        for cand in (t, t.rstrip("/") + "/x.md"):
+            kind, memdir = memory_target(cand, config_dir(), HOME) if t else (None, None)
+            if kind in ("note", "index"):
+                hit = memdir
+                break
+        if hit:
+            break
+    if hit and bash_writes(cmd):
+        try:
+            log_row(memory_project(hit) or os.path.basename(hit), None, "-", "bash-block")
+        except OSError:
+            pass
+        return {"permissionDecision": "deny", "permissionDecisionReason": BASH_REFUSAL}
+    return None
+
+
 def cmd_hook(argv):
     # A hook never fails the tool call: any trouble is silence and exit 0.
-    # `hook bash` and `hook start` arrive in later steps and do nothing yet.
-    if argv[:1] != ["pre"]:
+    # `hook start` arrives in a later step and does nothing yet.
+    if argv[:1] not in (["pre"], ["bash"]):
         return 0
     try:
-        out = hook_pre(json.loads(os.fdopen(3, encoding="utf-8", errors="replace").read()))
+        out = (hook_pre if argv[0] == "pre" else hook_bash)(json.loads(os.fdopen(3, encoding="utf-8", errors="replace").read()))
         if out:
             print(json.dumps({"hookSpecificOutput": dict(hookEventName="PreToolUse", **out)}))
     except Exception:
@@ -919,7 +992,7 @@ def usage():
         "usage: memoryguard decide [--project DIR] [--json] FILE\n"
         "       memoryguard selftest [--mode lean|agent]\n"
         "       memoryguard log [--since DAYS]\n"
-        "       memoryguard hook pre\n"
+        "       memoryguard hook pre|bash\n"
         "       memoryguard settings\n")
     return 2
 

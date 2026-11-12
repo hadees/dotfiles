@@ -520,6 +520,69 @@ Until: when the fix lands")"
   [ "$(last_outcome)" = "block" ]
 }
 
+# ---- hook bash: Bash writes into a memory directory go through the Write tool --
+
+# A PreToolUse payload for the Bash tool.
+bash_payload() {
+  "$REAL_PYTHON3" -c '
+import json,sys
+print(json.dumps({"tool_name": "Bash", "tool_input": {"command": sys.argv[1]}, "cwd": sys.argv[2]}))' "$1" "$HOME/work"
+}
+
+hook_bash() { run "$MG" hook bash <<< "$(bash_payload "$1")"; }
+
+@test "hook bash: a write into a memory directory is refused and logged without hashes" {
+  M="$(dirname "$(note_path)")"
+  for cmd in \
+    "echo x >> $M/MEMORY.md" \
+    "sed -i '' s/a/b/ $M/n.md" \
+    "cat <<EOF > $M/n.md" \
+    "cd $M && printf x > n.md" \
+    "cp /tmp/n.md $M/" \
+    "echo x | tee '$M/n.md'" \
+    "echo x > ~/.claude-test/projects/-proj/memory/n.md" \
+    "perl -pi -e 's/a/b/' \$CLAUDE_CONFIG_DIR/projects/-proj/memory/n.md" \
+    "sudo mv /tmp/n.md $M/n.md"; do
+    hook_bash "$cmd"
+    [ "$status" -eq 0 ]
+    [ "$(field "$output" permissionDecision)" = "deny" ] || { echo "not refused: $cmd"; false; }
+    [[ "$(field "$output" permissionDecisionReason)" == "memoryguard: write memory notes with the Write or Edit tool"* ]]
+    [ "$(last_outcome)" = "bash-block" ]
+  done
+  [ "$(tail -1 "$LOG" | cut -f3-5 | tr '\t' ' ')" = "-proj - -" ]
+  [ ! -e "$STUB_DIR/runs" ]
+}
+
+@test "hook bash: reads, rm, and paths that are not a memory directory pass in silence" {
+  M="$(dirname "$(note_path)")"
+  for cmd in \
+    "cat $M/n.md" \
+    "grep -l x $M/*.md" \
+    "rm $M/n.md" \
+    "ls $M" \
+    "echo x > /tmp/memory/n.md" \
+    "ls $M 2>&1" \
+    "cat $M/n.md 2>/dev/null" \
+    "echo x > $HOME/.claude-other/projects/-p/memory/n.md" \
+    "grep -c cp $M/n.md"; do
+    hook_bash "$cmd"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ] || { echo "refused: $cmd"; false; }
+  done
+  [ ! -e "$LOG" ]
+}
+
+@test "hook bash: a command with no /memory/ does not start python; garbage is silence" {
+  printf '#!/bin/sh\necho started >> "%s/py-calls"\nexec "%s" "$@"\n' "$BATS_TEST_TMPDIR" "$REAL_PYTHON3" > "$BIN/python3"
+  hook_bash "echo x > $HOME/work/a.md"
+  [ "$status" -eq 0 ] && [ -z "$output" ]
+  [ ! -e "$BATS_TEST_TMPDIR/py-calls" ]
+  run "$MG" hook bash <<< '{"tool_name": "Bash", "tool_input": /memory/ broken'
+  [ "$status" -eq 0 ] && [ -z "$output" ]
+  run "$MG" hook bash <<< '{"tool_name": "Bash", "tool_input": "/memory/x"}'
+  [ "$status" -eq 0 ] && [ -z "$output" ]
+}
+
 @test "settings prints the three hook commands, each failing open" {
   run "$MG" settings
   [ "$status" -eq 0 ]
