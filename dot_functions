@@ -3085,6 +3085,8 @@ function iterm2-doctor() {
 	done;
 	print -r -- "plugins: ${${(j:, :)plugs}:-none installed (no iTermAI.app / iTermBrowserPlugin.app)}";
 	print -r -- "prefs:   $(iterm2_pref LoadPrefsFromCustomFolder), $(iterm2_pref PrefsCustomFolder)";
+	# Report-only: status --line reads the domain, ps and the fragment files.
+	print -r -- "store:   $( (( $+commands[iterm2-prefs] )) && iterm2-prefs status --line || print -r -- 'iterm2-prefs not deployed' )";
 	print -r -- "api:     $(iterm2_pref EnableAPIServer)";
 	print -r -- "startup: $(iterm2_pref OpenNoWindowsAtStartup), $(iterm2_pref OpenArrangementAtStartup), $(iterm2_pref AlwaysOpenWindowAtStartup)";
 	# Counts, never names: a dynamic profile or an autolaunch script is
