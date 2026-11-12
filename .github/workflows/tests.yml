@@ -8,23 +8,33 @@ on:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    # tests/claude-peer-screen.bats draws the waiting pane in tmux and reads the
+    # screen. SCREEN_TESTS_REQUIRE names what a job has installed for it; a named
+    # tool that is missing fails those tests instead of skipping them. fzf is an
+    # fzf of 0.75 or newer (the picker); fzf-old is an older one (apt's), which
+    # gets the numbered list.
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            screen: tmux fzf-old
+          - os: macos-latest
+            screen: tmux fzf
     steps:
       - uses: actions/checkout@v3
       - name: Install Bats on Ubuntu
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y bats zsh
+          sudo apt-get install -y bats zsh tmux fzf
       # macOS's /bin/bash is 3.2, under which bats silently ignores a failing
       # `[[ ]]` that is not a test's last command; a modern bash must be
       # first on PATH (tests/shell.bats enforces it).
       - name: Install Bats on macOS
         if: matrix.os == 'macos-latest'
         run: |
-          brew install bats-core bash
+          brew install bats-core bash tmux fzf
           echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
       - name: Install chezmoi
         run: |
@@ -36,7 +46,7 @@ jobs:
         with:
           node-version: 22
       - name: Run tests
-        run: bats tests
+        run: SCREEN_TESTS_REQUIRE='${{ matrix.screen }}' bats tests
       - name: Apply .macos on the throwaway runner and verify
         if: matrix.os == 'macos-latest'
         run: MACOS_APPLY_OK=1 bats tests/macos-apply.bats
@@ -92,13 +102,15 @@ jobs:
         # assertion instead of a missing package.
         run: dnf install -y git zsh rsync diffutils
       - uses: actions/checkout@v3
+      - name: Install tmux for the screen tests
+        run: dnf install -y tmux
       - name: Install Bats and chezmoi
         run: |
           git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats-core
           /tmp/bats-core/install.sh /usr/local
           sh -c "$(curl -fsLS get.chezmoi.io)" -- -b /usr/local/bin
       - name: Run tests
-        run: bats tests
+        run: SCREEN_TESTS_REQUIRE=tmux bats tests
 
   test-wsl:
     runs-on: windows-2025
@@ -116,8 +128,8 @@ jobs:
       - uses: Vampire/setup-wsl@v5
         with:
           distribution: Ubuntu-24.04
-          additional-packages: bats zsh rsync curl
+          additional-packages: bats zsh rsync curl tmux fzf
       - name: Install chezmoi
         run: sh -c "$(curl -fsLS get.chezmoi.io)" -- -b /usr/local/bin
       - name: Run tests
-        run: bats tests
+        run: SCREEN_TESTS_REQUIRE='tmux fzf-old' bats tests

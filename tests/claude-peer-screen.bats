@@ -1,0 +1,344 @@
+#!/usr/bin/env bats
+
+# The waiting pane of ~/bin/claude-peer, drawn: the real pane runs in a detached
+# tmux server of its own at a fixed size, its screen is captured with
+# `capture-pane -p` and asserted on as a person would see it. tests/claude-peer.bats
+# reads the script's text; this file reads the screen.
+#
+# SCREEN_TESTS_REQUIRE names what the caller promises is installed (tmux, fzf for an
+# fzf of 0.75 or newer, fzf-old for an older one). A test that needs a missing tool
+# skips, unless the tool is promised: then it fails. CI promises on each job's
+# `bats tests` line.
+#
+# Every glyph the waiting screen draws is one column wide (▸ · … ↵ ⏎ ✻ ▀ ▄ ▬ │);
+# the measuring below rests on it, and the harness test checks that tmux agrees.
+# A red test prints the screen it saw (screen_show).
+# Everything runs in a sandboxed HOME against a fixture repo with invented names.
+
+bats_require_minimum_version 1.5.0
+
+# --- the gate -----------------------------------------------------------------------
+
+# have <tmux|fzf|fzf-old>: the tool is there (fzf: 0.75 or newer; fzf-old: older)
+fzf_new() {
+  fzf --version 2>/dev/null | sed -n 1p | awk '{ split($1, v, "."); exit !(v[1] + 0 > 0 || v[2] + 0 >= 75) }'
+}
+fzf_version() { fzf --version 2>/dev/null | sed -n 1p | awk '{ print $1 }'; }
+have() {
+  case $1 in
+    tmux) command -v tmux >/dev/null 2>&1;;
+    fzf) command -v fzf >/dev/null 2>&1 && fzf_new;;
+    fzf-old) command -v fzf >/dev/null 2>&1 && ! fzf_new;;
+    *) return 1;;
+  esac
+}
+
+# verdict <word> <1|0> "<list>": run, fail (missing and promised) or skip
+verdict() {
+  if [ "$2" = 1 ]; then echo run; return; fi
+  case " $3 " in *" $1 "*) echo fail;; *) echo skip;; esac
+}
+
+reason() {
+  case $1 in
+    tmux) echo 'no tmux on PATH';;
+    *) if ! command -v fzf >/dev/null 2>&1; then echo 'no fzf on PATH'
+       elif [ "$1" = fzf ]; then echo "fzf $(fzf_version) is older than 0.75"
+       else echo "fzf $(fzf_version) is not older than 0.75"; fi;;
+  esac
+}
+
+# need <word>...: the first line of every test that draws
+need() {
+  local w ok
+  for w; do
+    if have "$w"; then ok=1; else ok=0; fi
+    case $(verdict "$w" "$ok" "${SCREEN_TESTS_REQUIRE-}") in
+      run) ;;
+      skip) skip "$(reason "$w")";;
+      fail) echo "SCREEN_TESTS_REQUIRE promises $w: $(reason "$w")"; return 1;;
+    esac
+  done
+}
+
+# --- the sandbox (tests/claude-peer.bats setup, the picker left unset) ---------------
+
+setup() {
+  BIN="$BATS_TEST_DIRNAME/../bin/executable_claude-peer"
+  export HOME="$BATS_TEST_TMPDIR/home"
+  export XDG_STATE_HOME="$HOME/.local/state"
+  mkdir -p "$HOME" "$BATS_TEST_TMPDIR/bin"
+  export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig"
+  export GIT_CONFIG_SYSTEM=/dev/null
+  export GIT_CONFIG_NOSYSTEM=1
+  export GIT_CEILING_DIRECTORIES="$BATS_TEST_TMPDIR"
+  export CLAUDE_PEER_SETTLE=0
+  git config --global user.name octo
+  git config --global user.email octo@example.com
+  git config --global init.defaultBranch main
+  cat >"$BATS_TEST_TMPDIR/bin/fakeshell" <<'STUB'
+#!/bin/sh
+echo "pwd=$PWD"
+echo "peer=${CLAUDE_PEER_WORKTREE-unset}"
+echo "hermeswait=${CLAUDE_PEER_HERMES_WAIT-unset}"
+echo "args=$*"
+[ -z "${FAKE_SHELL_LOG-}" ] || echo "pwd=$PWD args=$*" >>"$FAKE_SHELL_LOG"
+[ -z "${FAKE_SHELL_PID-}" ] || echo $$ >"$FAKE_SHELL_PID"
+[ -z "${FAKE_SHELL_LAST-}" ] || { for last; do :; done; printf '%s' "$last" >"$FAKE_SHELL_LAST"; echo $# >"$FAKE_SHELL_LAST.n"; }
+[ -z "${FAKE_SHELL_SLEEP-}" ] || sleep "$FAKE_SHELL_SLEEP"
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/fakeshell"
+  export SHELL="$BATS_TEST_TMPDIR/bin/fakeshell"
+  export FAKE_SHELL_LOG="$BATS_TEST_TMPDIR/shell.log"
+  mkdir -p "$BATS_TEST_TMPDIR/proj"
+  REPO=$(cd "$BATS_TEST_TMPDIR/proj" && pwd -P)
+  git -C "$REPO" init -q
+  echo one >"$REPO/tracked.txt"
+  git -C "$REPO" add .
+  git -C "$REPO" commit -qm 'initial commit'
+  git -C "$REPO" remote add origin git@example.invalid:octo/proj.git
+  cd "$REPO"
+  export CLAUDE_PEER_CONTEXTS="$BATS_TEST_DIRNAME/../dot_config/claude-peer/contexts"
+  # tripwire: a real claude must never start in a pane
+  cat >"$BATS_TEST_TMPDIR/bin/claude" <<STUB
+#!/bin/sh
+echo "\$*" >>"$BATS_TEST_TMPDIR/claude-ran"
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/claude"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+  SOCK="cps$$-$BATS_TEST_NUMBER"
+  printf '%s\n' 'set -g status off' 'set -g remain-on-exit on' 'set -g default-shell /bin/sh' >"$BATS_TEST_TMPDIR/tmux.conf"
+  : "${SCREEN_FZF_OPTS=--height 40% --layout=reverse --border --color=bg+:#262626,bg:#1a1a1a,header:#747369,pointer:#f2777a,prompt:#f2777a}"
+}
+
+teardown() {
+  tm kill-server >/dev/null 2>&1 || true
+  [ ! -e "$BATS_TEST_TMPDIR/claude-ran" ]
+}
+
+# until_ok '<command>': retry for ten seconds
+until_ok() {
+  local i
+  for i in $(seq 1 100); do
+    eval "$1" && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+# --- the harness ------------------------------------------------------------------------
+
+# Every tmux call: our own socket (-L: a short name under /tmp/tmux-<uid>/), our own
+# config, never the caller's server, and never bats' descriptor 3 (a server would hold it).
+tm() { env -u TMUX -u TMUX_PANE tmux -L "$SOCK" -f "$BATS_TEST_TMPDIR/tmux.conf" "$@" 3>&-; }
+
+# screen_run <cols> <rows> <command> [argument…]: a detached session `s` of that size
+screen_run() {
+  SCREEN_COLS=$1 SCREEN_ROWS=$2; shift 2
+  tm new-session -d -s s -x "$SCREEN_COLS" -y "$SCREEN_ROWS" -c "$REPO" \
+    env SHELL="$SHELL" TERM=xterm-256color COLORTERM=truecolor "$@"
+  PANE_PID=$(tm display-message -p -t s '#{pane_pid}')
+}
+
+# screen_open <cols> <rows> [VAR=value…]: the waiting pane of slot alpha
+screen_open() {
+  local c=$1 r=$2; shift 2
+  screen_run "$c" "$r" env FZF_DEFAULT_OPTS="$SCREEN_FZF_OPTS" "$@" sh "$BIN" run --as alpha --wait
+  until_ok "[ -f '$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)/claude-peer.wait/alpha.$PANE_PID' ]"
+}
+
+screen_close() {
+  tm kill-server >/dev/null 2>&1 || true
+  until_ok "! kill -0 $PANE_PID 2>/dev/null"
+}
+
+screen_keys() { tm send-keys -t s "$@"; }
+screen_type() { tm send-keys -t s -l "$1"; }
+
+screen_grab() {
+  SCREEN=$(tm capture-pane -p -t s)
+  SCREEN_E=$(tm capture-pane -p -e -t s)
+}
+
+# screen_wait '<ERE>' [seconds]: until a line of the screen matches
+screen_wait() {
+  local i n=$(( ${2:-15} * 10 ))
+  for i in $(seq 1 "$n"); do
+    screen_grab
+    printf '%s\n' "$SCREEN" | grep -Eq -- "$1" && return 0
+    sleep 0.1
+  done
+  echo "screen_wait: nothing matched $1"
+  screen_show
+  return 1
+}
+
+# screen_still [count] [gap] [seconds]: until count captures in a row are identical
+screen_still() {
+  local count=${1:-3} gap=${2:-0.2} limit=${3:-15} same=0 prev= now start=$SECONDS
+  while [ $((SECONDS - start)) -lt "$limit" ]; do
+    now=$(tm capture-pane -p -t s)
+    if [ "$now" = "$prev" ]; then same=$((same + 1)); else same=1 prev=$now; fi
+    if [ "$same" -ge "$count" ]; then
+      SCREEN=$now
+      SCREEN_E=$(tm capture-pane -p -e -t s)
+      [ "$(tm capture-pane -p -t s)" = "$SCREEN" ] && return 0
+      same=0
+    fi
+    sleep "$gap"
+  done
+  SCREEN=$prev
+  echo "screen_still: the screen never held still"
+  screen_show
+  return 1
+}
+
+# --- looking ------------------------------------------------------------------------------
+
+screen_show() {
+  echo "--- screen ${SCREEN_COLS}x$SCREEN_ROWS"
+  awk -v c="$SCREEN_COLS" 'BEGIN { for (i = 1; i <= c; i++) printf "%d", i % 10; print "" }'
+  printf '%s\n' "$SCREEN" | sed 's/$/|/'
+}
+
+# one byte per column (UTF-8 continuation bytes dropped): for measuring only
+flat() { LC_ALL=C tr -d '\200-\277'; }
+
+indent_of() {
+  printf '%s\n' "$SCREEN" | flat | LC_ALL=C awk -v re="$1" '$0 ~ re { match($0, /^ */); print RLENGTH; f = 1; exit } END { if (!f) print -1 }'
+}
+widest() { printf '%s\n' "$SCREEN" | flat | LC_ALL=C awk '{ if (length($0) > w) w = length($0) } END { print w + 0 }'; }
+filled() { printf '%s\n' "$SCREEN" | grep -c '[^ ]'; }
+count_lines() { printf '%s\n' "$SCREEN" | grep -Ec -- "$1"; }
+marked() { printf '%s\n' "$SCREEN" | grep -E '^ *▸'; }
+
+no_cut() {
+  if printf '%s\n' "$SCREEN" | grep -qF '··'; then echo 'no_cut: a line holds ··'; screen_show; return 1; fi
+}
+no_border() {
+  if printf '%s\n' "$SCREEN" | grep -qE '[╭╮╰╯┌┐└┘─═]|^ *[│┃║]'; then
+    echo 'no_border: a border is drawn'; screen_show; return 1
+  fi
+}
+
+# line <n>: the n-th line of SCREEN
+line() { printf '%s\n' "$SCREEN" | sed -n "$1p"; }
+
+# --- the gate and CI ------------------------------------------------------------------------
+
+@test "gate: a promised tool that is missing fails, an unpromised one skips, a present one runs" {
+  [ "$(verdict tmux 0 'tmux fzf')" = fail ]
+  [ "$(verdict fzf 0 tmux)" = skip ]
+  [ "$(verdict fzf 0 '')" = skip ]
+  [ "$(verdict tmux 1 '')" = run ]
+  [ "$(verdict fzf-old 0 'tmux fzf-old')" = fail ]
+  [ "$(verdict fzf 0 'tmux fzf-old')" = skip ]
+}
+
+@test "ci: every job that runs the suite says what the screen tests may not skip" {
+  local wf="$BATS_TEST_DIRNAME/../.github/workflows/tests.yml"
+  [ "$(grep -c ' bats tests$' "$wf")" -eq 3 ]
+  [ "$(grep ' bats tests$' "$wf" | grep -c 'SCREEN_TESTS_REQUIRE=')" -eq 3 ]
+  [ "$(grep -c 'screen: tmux fzf-old$' "$wf")" -eq 1 ]
+  [ "$(grep -c 'screen: tmux fzf$' "$wf")" -eq 1 ]
+  [ "$(grep -c 'SCREEN_TESTS_REQUIRE=tmux bats tests$' "$wf")" -eq 1 ]
+  [ "$(grep -c "SCREEN_TESTS_REQUIRE='tmux fzf-old' bats tests$" "$wf")" -eq 1 ]
+}
+
+# --- the harness itself: the probe for every assumption the rest rests on ---------------------
+
+@test "harness: a pane of the asked size, its own shell and colours, captured as drawn" {
+  need tmux
+  local script size cols rows
+  # shellcheck disable=SC2016
+  script='stty size; printf "%s\n" "$SHELL" "$TERM"; printf "\033[1mB\033[0m \033[48;2;217;119;87m \033[0mx ▸·…↵⏎✻▀▄▬"; sleep 30'
+  for size in '80 24' '110 30'; do
+    set -- $size; cols=$1 rows=$2
+    screen_run "$cols" "$rows" sh -c "$script"
+    screen_wait '▬'
+    [ "$(line 1)" = "$rows $cols" ] || { screen_show; false; }
+    # the stub shell's path can be longer than a line (macOS's $TMPDIR): k lines
+    local k=$(( (${#SHELL} + cols - 1) / cols ))
+    [ "$(printf '%s\n' "$SCREEN" | sed -n "2,$((k + 1))p" | tr -d '\n')" = "$SHELL" ] || { screen_show; false; }
+    [ "$(line $((k + 2)))" = xterm-256color ] || { screen_show; false; }
+    [ "$(line $((k + 3)))" = 'B  x ▸·…↵⏎✻▀▄▬' ] || { screen_show; false; }
+    [ "$(tm display-message -p -t s '#{cursor_x}')" = 14 ] || { screen_show; false; }
+    [[ "$SCREEN_E" == *'48;2;217;119;87'* ]]
+    local l4 pre
+    l4=$(printf '%s\n' "$SCREEN_E" | sed -n "$((k + 3))p")
+    pre=${l4%%B*}
+    [[ "$pre" =~ $'\033'\[([0-9]*[;:])*1([;:][0-9]*)*m ]] || { printf '%q\n' "$l4"; false; }
+    screen_still
+    screen_close
+  done
+}
+
+# --- the numbered list ------------------------------------------------------------------------
+
+@test "list: drawn at once, centred from 80 columns, every row whole" {
+  need tmux
+  git config --global claude-peer.picker list
+  local size cols rows left i t
+  for size in '80 24 11' '110 30 26' '60 20 0'; do
+    set -- $size; cols=$1 rows=$2 left=$3
+    screen_open "$cols" "$rows"
+    screen_wait 'q shell$'
+    screen_still
+    [ "$(filled)" -eq 14 ] || { screen_show; false; }
+    [ "$(printf '%s\n' "$SCREEN" | sed -n 1,12p | awk '{ printf "%s ", $2 }')" = \
+      'fresh ask look-at plan prs audit catch-up team continue resume task shell ' ] || { screen_show; false; }
+    while IFS= read -r t; do
+      printf '%s\n' "$SCREEN" | grep -qF -- "$t" || { echo "missing title: $t"; screen_show; false; }
+    done < <(sed -n 's/^title: //p' "$CLAUDE_PEER_CONTEXTS"/*.ctx
+             printf '%s\n' 'A new session, no prompt' 'Pick up the last conversation' \
+               'Choose an earlier conversation' 'Type a task and start it' 'Drop to a shell')
+    [ "$(indent_of '^ *1  fresh')" -eq $((left + 1)) ] || { screen_show; false; }
+    [ "$(indent_of '^ *10  resume')" -eq "$left" ] || { screen_show; false; }
+    [ "$(indent_of 'q shell$')" -eq "$left" ] || { screen_show; false; }
+    [ "$(indent_of 'Alpha ')" -eq "$left" ] || { screen_show; false; }
+    [ "$(line 13)" = "$(printf "%${left}s" '')c continue · r resume · n task · s task, saved · q shell" ] || { screen_show; false; }
+    no_cut
+    no_border
+    [[ "$SCREEN_E" != *'48;'* ]] || { screen_show; false; }
+    screen_close
+  done
+}
+
+@test "list: a number asks its question under the block, and the answer starts the session" {
+  need tmux
+  git config --global claude-peer.picker list
+  screen_open 80 40 FAKE_SHELL_SLEEP=3
+  screen_wait 'q shell$'
+  screen_type 2
+  screen_keys Enter
+  screen_wait '^ {11}Question:$'
+  screen_type why
+  screen_keys Enter
+  screen_wait '^Alpha · ask: why$'
+  until_ok 'grep -qF "claude-peer proj-alpha" "$FAKE_SHELL_LOG"'
+  until_ok 'screen_grab; [ "$(count_lines "q shell$")" -eq 2 ]' || { screen_show; false; }
+  [[ "$SCREEN" != *21337* ]]
+}
+
+@test "list: a start from outside takes a pane that is drawing the list" {
+  need tmux
+  git config --global claude-peer.picker list
+  screen_open 80 24 FAKE_SHELL_SLEEP=3
+  screen_wait 'q shell$'
+  run sh "$BIN" start alpha hello
+  [ "$status" -eq 0 ]
+  screen_wait '^Alpha · started by Lead · hello$'
+}
+
+@test "list: this machine's own older fzf gets the list, and the pane says so" {
+  need tmux fzf-old
+  screen_open 80 24
+  screen_wait 'q shell$'
+  screen_still
+  [ "$(line 1)" = "claude-peer: fzf $(fzf_version) is older than 0.75; using the list" ] || { screen_show; false; }
+  [ "$(filled)" -eq 15 ] || { screen_show; false; }
+  [ "$(indent_of '^ *1  fresh')" -eq 12 ] || { screen_show; false; }
+  [ "$(indent_of '^ *10  resume')" -eq 11 ] || { screen_show; false; }
+  [ "$(indent_of 'q shell$')" -eq 11 ] || { screen_show; false; }
+  [ "$(indent_of 'Alpha ')" -eq 11 ] || { screen_show; false; }
+}

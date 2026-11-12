@@ -3,6 +3,7 @@ paths:
   - "**/bin/executable_claude-peer"
   - "**/dot_config/claude-peer/**"
   - "**/tests/claude-peer.bats"
+  - "**/tests/claude-peer-screen.bats"
 ---
 
 # Claude peers (one tab, several Claudes)
@@ -325,3 +326,18 @@ Code hooks) and is not part of the leader's roll-call.
 
 Tests: `tests/claude-peer.bats` (stub ps/uname/defaults,
 fixture plists; the real store is only touched by the operator's `install`).
+
+**Screen tests.** `tests/claude-peer-screen.bats` draws the real waiting pane in a
+detached tmux server of its own (`tmux -L cps<pid>-<n>`, its own three-line config,
+never the caller's server) at fixed sizes, captures it with `capture-pane -p`
+(`-e` for colours) and asserts on the screen as drawn: the harness probe (size,
+`$SHELL`, glyph widths, 24-bit colour), the gate, the CI promises, and the numbered
+list (centred, every row whole, a question under it, a `start` taking it, an older
+fzf falling back to it). Waits are for text and for a still screen, never a bare
+`sleep`. Run it with
+`PATH="$(brew --prefix)/bin:$PATH" SCREEN_TESTS_REQUIRE='tmux fzf' bats tests/claude-peer-screen.bats`.
+`SCREEN_TESTS_REQUIRE` lists what the caller promises is installed (`tmux`, `fzf`
+for 0.75 or newer, `fzf-old` for older): a missing tool skips its tests, a missing
+promised one fails them; each CI job promises on its `bats tests` line. A red test
+prints the screen it saw (a column ruler, each line ended by `|`). A server left
+behind by a killed bats: `pkill -f 'tmux -L cps'`.
