@@ -181,6 +181,27 @@ payload() { printf '%s' "$1" | "$PB" "${@:2}"; }
   [[ "$output" == *"	hash" ]] || [[ "$output" == *"	hash"$'\n'* ]]
 }
 
+@test "names: a root that is itself a repository is listed and not descended into" {
+  git init -q "$WORK"
+  mkdir -p "$WORK/sub"
+  git init -q "$WORK/sub"
+  run "$PB" names "$WORK"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "~/code/some-project	"* ]]
+  [[ "$output" != *"sub"* ]]
+}
+
+@test "names: node_modules is skipped at both levels" {
+  mkdir -p "$HOME/code/node_modules/pkg" "$HOME/code/outer/node_modules"
+  git init -q "$HOME/code/node_modules/pkg"
+  git init -q "$HOME/code/outer/node_modules"
+  git init -q "$HOME/code/outer/kept"
+  run "$PB" names
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"~/code/outer/kept	"* ]]
+  [[ "$output" != *"node_modules"* ]]
+}
+
 @test "names: two directories sharing a name fail loudly with both named" {
   git init -q "$WORK"
   mkdir -p "$HOME/code/twin"
@@ -363,6 +384,35 @@ STUB
   [ "$status" -eq 0 ]
   # bootout, three prints that still see the job, the one that does not, then bootstrap.
   [ "$(grep -o '^[a-z]*' "$LAUNCHCTL_LOG" | tr '\n' ' ')" = "bootout print print print print bootstrap kickstart " ]
+}
+
+@test "stop: boots the job out so KeepAlive cannot undo it, and never sends a kill" {
+  run "$PB" stop
+  [ "$status" -eq 0 ]
+  grep -q "^bootout gui/[0-9]*/local.postbox" "$LAUNCHCTL_LOG" || { echo "no bootout in: $(cat "$LAUNCHCTL_LOG")"; false; }
+  ! grep -q '^kill' "$LAUNCHCTL_LOG" || { echo "stop sent a kill: $(cat "$LAUNCHCTL_LOG")"; false; }
+  [[ "$output" == *"postbox start"* ]]
+}
+
+@test "start: bootstraps an installed plist that is not loaded, kickstarts one that is" {
+  mkdir -p "$HOME/Library/LaunchAgents"
+  : > "$HOME/Library/LaunchAgents/local.postbox.plist"
+  run "$PB" start
+  [ "$status" -eq 0 ]
+  grep -q '^bootstrap ' "$LAUNCHCTL_LOG" || { echo "no bootstrap in: $(cat "$LAUNCHCTL_LOG")"; false; }
+  ! grep -q '^kickstart' "$LAUNCHCTL_LOG" || { echo "kickstart on an unloaded job: $(cat "$LAUNCHCTL_LOG")"; false; }
+  : > "$LAUNCHCTL_LOG"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "$LAUNCHCTL_LOG"\nexit 0\n' > "$BIN/launchctl"
+  run "$PB" start
+  [ "$status" -eq 0 ]
+  grep -q '^kickstart ' "$LAUNCHCTL_LOG" || { echo "no kickstart in: $(cat "$LAUNCHCTL_LOG")"; false; }
+  ! grep -q '^bootstrap' "$LAUNCHCTL_LOG" || { echo "bootstrap on a loaded job: $(cat "$LAUNCHCTL_LOG")"; false; }
+}
+
+@test "start: neither loaded nor installed is an error" {
+  run "$PB" start
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"not installed"* ]]
 }
 
 @test "status: open files against the installed plist's limit, and a stale plist is named" {

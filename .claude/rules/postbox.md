@@ -29,7 +29,9 @@ Loopback with no token is deliberate: any process of this user can read the
 store on disk, so a token would protect nothing and would have to sit in
 plaintext server-side. What that does leave open — a web page driving the
 endpoint — is closed by `APP_ENVIRONMENT=production` with CORS off (the
-development default reflects any `Origin`).
+development default reflects any `Origin`). All of it assumes a single-user
+machine: on a shared Linux box any local user can reach the port, and the
+answer there is the server's token auth, which this script does not turn on.
 
 **Identity is per directory.** Two tabs in the same directory are one agent
 with one inbox; a worktree in another directory is another agent; a session
@@ -135,9 +137,12 @@ sqlite handles on its store (234 of 258 after five days, first seen
 256 until `postbox install` rewrites it. `status` therefore prints a `files:`
 line — open handles against the *installed* plist's limit, naming a stale
 plist and warning past 80%. `install` waits for `bootout` to finish before
-`bootstrap`: launchd tears the job down after bootout returns, and a
-bootstrap in that window fails "5: Input/output error" and leaves nothing
-loaded.
+`bootstrap` (`launchd_wait_gone`): launchd tears the job down after bootout
+returns, and a bootstrap in that window fails "5: Input/output error" and
+leaves nothing loaded. On macOS `stop` is a `bootout` too (a `kill` is undone
+at once by the plist's KeepAlive), so a stopped job is not loaded: `start`
+`bootstrap`s the plist when `launchctl print` finds nothing and `kickstart`s
+when it does.
 
 Commands: `name [--source] [dir]`, `names [root...]`, `install`, `uninstall
 [--purge]`, `start|stop|restart|status|logs`, `connect|disconnect`, `hook
