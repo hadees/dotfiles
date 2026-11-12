@@ -1003,6 +1003,36 @@ reason = "; ".join(lines) + " Take this as news from your tabs: tell the operato
 print(json.dumps({"decision": "block", "reason": reason}))'
 }
 
+# This session's custom title: the payload's session_title, else the name in
+# its own registry record when the operator or the wrapper set it (nameSource
+# user). Prints nothing when there is none.
+own_title() {
+  ot=$(json_field session_title)
+  if [ -z "$ot" ]; then
+    case ${CLAUDE_PID-} in ''|*[!0-9]*) return 0 ;; esac
+    ot=$(python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        r = json.load(fh)
+    if r.get("nameSource") == "user" and isinstance(r.get("name"), str):
+        print(r["name"])
+except Exception:
+    pass' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$CLAUDE_PID.json" 2>/dev/null)
+  fi
+  printf '%s' "$ot"
+}
+
+# Lead of <dir>: not a peer, and its title is the name `claude-peer name lead`
+# gives <dir>. Sets LEAD_TITLE. A title not ending in -lead starts nothing.
+is_lead() { # dir
+  LEAD_TITLE=$(own_title)
+  is_peer "$1" && return 1
+  case $LEAD_TITLE in *-lead) ;; *) return 1 ;; esac
+  [ -x "$PEERCMD" ] || return 1
+  [ "$("$PEERCMD" name lead "$1" 2>/dev/null)" = "$LEAD_TITLE" ]
+}
+
 cmd_hook() {
   [ $# -ge 1 ] || exit 0
   need_python
@@ -1041,6 +1071,17 @@ cmd_hook() {
       fi
       [ "$tell" = 1 ] && printf ' Tell the operator before starting work.'
       printf '\n'
+      # Who is Lead: the session whose name is the leader's (claude-peer name
+      # lead). The meaning of the line is the shared memory's Lead section.
+      if ! is_peer "$sdir"; then
+        PEERCMD=${POSTBOX_CLAUDE_PEER:-$HOME/bin/claude-peer}
+        if is_lead "$sdir"; then
+          printf 'postbox: you are Lead of %s (session %s). The Lead section of your memory applies to this session and to no other.\n' "$sdir" "$LEAD_TITLE"
+          sl_v="yes ($LEAD_TITLE)"
+        else sl_v="no (${LEAD_TITLE:--})"; fi
+        mkdir -p "$STATE/logs" 2>/dev/null
+        printf '%s lead: %s: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$sdir" "$sl_v" >> "$STATE/logs/courier.log" 2>/dev/null
+      fi
       if s=$(inbox_summary "$name"); then
         count=$(printf '%s\n' "$s" | sed -n 1p); newest=$(printf '%s\n' "$s" | sed -n 2p)
         if [ "${count:-0}" -gt 0 ] 2>/dev/null; then

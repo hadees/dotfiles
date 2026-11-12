@@ -22,7 +22,7 @@ setup() {
   export GIT_CONFIG_NOSYSTEM=1
   git config --file "$GIT_CONFIG_GLOBAL" init.defaultBranch main
   # CI runners export XDG_CONFIG_HOME, which would move the systemd unit.
-  unset CLAUDE_CONFIG_DIR XDG_STATE_HOME XDG_CONFIG_HOME CLAUDE_PROJECT_DIR
+  unset CLAUDE_CONFIG_DIR XDG_STATE_HOME XDG_CONFIG_HOME CLAUDE_PROJECT_DIR CLAUDE_PID
 
   PB="$BATS_TEST_DIRNAME/../bin/executable_postbox"
   export POSTBOX_STATE="$BATS_TEST_TMPDIR/state"
@@ -619,6 +619,7 @@ case $1 in
     else c=${FAKE_LIVE-${FAKE_CLAIMS:-}}; fi
     [ -z "$c" ] || printf '%s\n' "$c" ;;
   log) [ ! -f "${FAKE_LOG:-/nonexistent}" ] || cat "$FAKE_LOG" ;;
+  name) [ "$2" = lead ] && echo proj-lead ;;
 esac
 STUB
   chmod +x "$BIN/claude-peer"
@@ -1573,4 +1574,63 @@ quiet_rec() {
   "$PB" "${HC[@]}"
   grep -q "handoff-check: $wt: no registry record" "$POSTBOX_STATE/logs/courier.log"
   ! grep -q 'has been' "$PEER_LOG" || { echo "reported without a record"; false; }
+}
+
+# --- the start hook says who is Lead ---------------------------------------------
+
+lead_start() { # title (may be empty)
+  peer_stub
+  local t=''
+  [ -z "$1" ] || t=',"session_title":"'"$1"'"'
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"'"$t"'}' hook start
+}
+leadline() { printf 'postbox: you are Lead of %s (session proj-lead). The Lead section of your memory applies to this session and to no other.' "$WORK"; }
+leadlog() { grep "lead: $WORK: " "$POSTBOX_STATE/logs/courier.log" | tail -n 1 | sed 's/.*: //'; }
+
+@test "hook start: the session titled with the leader's name is told it is Lead, and the log says yes" {
+  lead_start proj-lead
+  [ "$(printf '%s\n' "$output" | grep -cxF "$(leadline)")" -eq 1 ]
+  [ "$(leadlog)" = "yes (proj-lead)" ]
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1","session_title":"proj-lead"}' hook prompt
+  [[ "$output" != *"you are Lead"* ]]
+}
+
+@test "hook start: another title, none, or a foreign -lead is not Lead; only a -lead title asks claude-peer" {
+  lead_start proj-alpha
+  [[ "$output" != *"you are Lead"* ]]
+  ! grep -q '^name' "$PEER_LOG" 2>/dev/null || { echo "a non-lead title asked claude-peer"; false; }
+  [ "$(leadlog)" = "no (proj-alpha)" ]
+  lead_start ''
+  [[ "$output" != *"you are Lead"* ]]
+  [ "$(leadlog)" = "no (-)" ]
+  lead_start octo-lead
+  [[ "$output" != *"you are Lead"* ]]
+  [ "$(leadlog)" = "no (octo-lead)" ]
+}
+
+@test "hook start: a peer titled proj-lead is not Lead and logs nothing" {
+  export CLAUDE_PEER_WORKTREE="$WORK"
+  lead_start proj-lead
+  [[ "$output" != *"you are Lead"* ]]
+  ! grep -q 'lead:' "$POSTBOX_STATE/logs/courier.log" 2>/dev/null || { echo "a peer logged a lead line"; false; }
+}
+
+@test "hook start: with no title, the registry name counts only when the operator set it" {
+  export CLAUDE_PID=4242
+  mkdir -p "$HOME/.claude/sessions"
+  printf '{"pid":4242,"name":"proj-lead","nameSource":"user"}\n' > "$HOME/.claude/sessions/4242.json"
+  lead_start ''
+  [ "$(printf '%s\n' "$output" | grep -cxF "$(leadline)")" -eq 1 ]
+  printf '{"pid":4242,"name":"proj-lead","nameSource":"derived"}\n' > "$HOME/.claude/sessions/4242.json"
+  lead_start ''
+  [[ "$output" != *"you are Lead"* ]]
+}
+
+@test "hook start: without claude-peer the output is what it was before" {
+  export POSTBOX_CLAUDE_PEER=/nonexistent
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1","session_title":"proj-lead"}' hook start
+  a=$output
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook start
+  [ "$a" = "$output" ]
+  [[ "$a" != *"you are Lead"* ]]
 }
