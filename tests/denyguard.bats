@@ -1003,3 +1003,30 @@ PY
     [ -z "$output" ] || { echo "$value refused: $output"; false; }
   done
 }
+
+# --- a rule written ./path is anchored at the session cwd, like /path ---
+@test "dot-slash rule: ./path covers what it says, from the cwd it names" {
+  fixture_rules '["Read(./octo-secret/**)","Read(./.hushfile)"]'
+  echo secret > "$HOME/code/.hushfile"
+  local cmd
+  for cmd in "cat octo-secret/x" "cat ./octo-secret/x" "cat .hushfile"; do
+    run hook "$(evt "$HOME/code" "$cmd")"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'"permissionDecision": "deny"'* ]] || { echo "$cmd silent: $output"; false; }
+  done
+}
+
+@test "dot-slash rule: anchored at the session cwd, so another cwd is not covered" {
+  fixture_rules '["Read(./octo-secret/**)","Read(./.hushfile)"]'
+  mkdir -p "$HOME/elsewhere"
+  run hook "$(evt "$HOME/elsewhere" "cat $HOME/code/octo-secret/x")"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ] || { echo "refused: $output"; false; }
+}
+
+@test "dot-slash rule: check cannot evaluate it, exit 2, as for a /path rule" {
+  fixture_rules '["Read(./octo-secret/**)"]'
+  run "$DG" check --profile "$HOME/.claude-fixture" "$HOME/code/octo-alpha"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"cannot be evaluated"* ]]
+}

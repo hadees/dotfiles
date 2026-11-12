@@ -21,8 +21,10 @@ list names returns a count regardless.
 PreToolUse hook on Bash that reads the *same* `permissions.deny` list at
 hook time — no second list anywhere — maps every `Read(...)`/`Edit(...)`
 entry to an absolute prefix (`~/x` → `$HOME/x`; `//x` → `/x` from the
-filesystem root; `/x` → project-relative, resolved against the session's
-cwd; bare `x` → gitignore any-depth), and refuses any Bash command whose
+filesystem root; `/x` and `./x` → project-relative, resolved against the
+session's cwd (`./x` is the documented `Read(./.env)` form; read as a bare
+pattern it begins `./`, matches no path and guards nothing); bare `x` →
+gitignore any-depth), and refuses any Bash command whose
 literal path tokens, glob prefixes, or cwd land inside one. It widens
 coverage to every command that names a denied path in its literal text
 (grep, rg, ls, find, wc, awk, diff, `git -C`, a Python file argument, an

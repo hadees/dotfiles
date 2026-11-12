@@ -323,6 +323,8 @@ def parse_rule(tool, path_str, cwd):
         anchor, core = "root", path_str[1:]
     elif path_str.startswith("/"):
         anchor, core = "project-relative", path_str[1:]
+    elif path_str.startswith("./"):
+        anchor, core = "project-relative", path_str[2:]
     else:
         anchor, core = "any-depth", path_str
 
