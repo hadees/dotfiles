@@ -30,6 +30,10 @@ setup() {
   # override), removed in teardown.
   export TAILNET_STATE="$(mktemp -d /tmp/tailnet-test.XXXXXX)"
   STATE="$TAILNET_STATE"
+  # The wrappers and `tailnet up` mktemp their output copy in TMPDIR, and
+  # teardown globs those copies away; a per-test TMPDIR keeps a concurrent
+  # run's teardown from deleting this run's live copy under its watcher.
+  export TMPDIR="$BATS_TEST_TMPDIR"
 
   # Fixture pins: personal repos map to tailnet "personal", work repos to
   # "work", one personal side project is pinned to the work tailnet.
@@ -851,6 +855,8 @@ CLAUDE_CODE_OPTS="no_bare_glob_qual no_case_glob glob_star_short no_extended_glo
   [ "$status" -eq 0 ]
   [[ "$output" == *"RAN ssh: -o ProxyCommand=$TAILNET_BIN nc work %h %p workbox hostname"* ]]
   [[ "$output" == *"additional check"* ]]
+  # The watcher is disowned and polls once a second: wait for it.
+  for _ in $(seq 50); do [ -s "$OPEN_LOG" ] && break; sleep 0.2; done
   [ "$(cat "$OPEN_LOG")" = "https://login.tailscale.com/a/def456#wk94fjq2x" ]
 }
 
@@ -867,6 +873,8 @@ CLAUDE_CODE_OPTS="no_bare_glob_qual no_case_glob glob_star_short no_extended_glo
   [ "$status" -eq 0 ]
   [ "${lines[0]}" = "UP: --socket=$STATE/work/tailscaled.sock up --hostname=testbox-work --accept-routes" ]
   [[ "$output" == *"To authenticate, visit:"* ]]
+  # The watcher is disowned and polls once a second: wait for it.
+  for _ in $(seq 50); do [ -s "$OPEN_LOG" ] && break; sleep 0.2; done
   [ "$(cat "$OPEN_LOG")" = "https://login.tailscale.com/a/ghi789#wk94fjq2x" ]
 }
 
