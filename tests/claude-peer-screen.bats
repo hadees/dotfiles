@@ -5,10 +5,10 @@
 # `capture-pane -p` and asserted on as a person would see it. tests/claude-peer.bats
 # reads the script's text; this file reads the screen.
 #
-# SCREEN_TESTS_REQUIRE names what the caller promises is installed (tmux, fzf for an
-# fzf of 0.75 or newer, fzf-old for an older one). A test that needs a missing tool
-# skips, unless the tool is promised: then it fails. CI promises on each job's
-# `bats tests` line.
+# SCREEN_TESTS_REQUIRE names what the caller promises is installed (tmux; fzf for an
+# fzf of 0.75 or newer). A test that needs a missing tool skips, unless the tool is
+# promised: then it fails. CI promises both on each job's `bats tests` line, and
+# installs the fzf it promises itself (.github/install-fzf.sh).
 #
 # Every glyph the waiting screen draws is one column wide (▸ · … ↵ ⏎ ✻ ▀ ▄ ▬ │);
 # the measuring below rests on it, and the harness test checks that tmux agrees.
@@ -19,7 +19,7 @@ bats_require_minimum_version 1.5.0
 
 # --- the gate -----------------------------------------------------------------------
 
-# have <tmux|fzf|fzf-old>: the tool is there (fzf: 0.75 or newer; fzf-old: older)
+# have <tmux|fzf>: the tool is there (fzf: 0.75 or newer)
 fzf_new() {
   fzf --version 2>/dev/null | sed -n 1p | awk '{ split($1, v, "."); exit !(v[1] + 0 > 0 || v[2] + 0 >= 75) }'
 }
@@ -28,7 +28,6 @@ have() {
   case $1 in
     tmux) command -v tmux >/dev/null 2>&1;;
     fzf) command -v fzf >/dev/null 2>&1 && fzf_new;;
-    fzf-old) command -v fzf >/dev/null 2>&1 && ! fzf_new;;
     *) return 1;;
   esac
 }
@@ -43,8 +42,7 @@ reason() {
   case $1 in
     tmux) echo 'no tmux on PATH';;
     *) if ! command -v fzf >/dev/null 2>&1; then echo 'no fzf on PATH'
-       elif [ "$1" = fzf ]; then echo "fzf $(fzf_version) is older than 0.75"
-       else echo "fzf $(fzf_version) is not older than 0.75"; fi;;
+       else echo "fzf $(fzf_version) is older than 0.75"; fi;;
   esac
 }
 
@@ -265,18 +263,21 @@ line() { printf '%s\n' "$SCREEN" | sed -n "$1p"; }
   [ "$(verdict fzf 0 tmux)" = skip ]
   [ "$(verdict fzf 0 '')" = skip ]
   [ "$(verdict tmux 1 '')" = run ]
-  [ "$(verdict fzf-old 0 'tmux fzf-old')" = fail ]
-  [ "$(verdict fzf 0 'tmux fzf-old')" = skip ]
+  [ "$(verdict fzf 0 'tmux fzf')" = fail ]
+  [ "$(verdict fzf 0 'tmux fzfx xfzf')" = skip ]
 }
 
 @test "ci: every job that runs the suite says what the screen tests may not skip" {
-  local wf="$BATS_TEST_DIRNAME/../.github/workflows/tests.yml"
+  local wf="$BATS_TEST_DIRNAME/../.github/workflows/tests.yml" pin="$BATS_TEST_DIRNAME/../.github/fzf-version"
   [ "$(grep -c ' bats tests$' "$wf")" -eq 3 ]
-  [ "$(grep ' bats tests$' "$wf" | grep -c 'SCREEN_TESTS_REQUIRE=')" -eq 3 ]
-  [ "$(grep -c 'screen: tmux fzf-old$' "$wf")" -eq 1 ]
-  [ "$(grep -c 'screen: tmux fzf$' "$wf")" -eq 1 ]
-  [ "$(grep -c 'SCREEN_TESTS_REQUIRE=tmux bats tests$' "$wf")" -eq 1 ]
-  [ "$(grep -c "SCREEN_TESTS_REQUIRE='tmux fzf-old' bats tests$" "$wf")" -eq 1 ]
+  [ "$(grep -c "SCREEN_TESTS_REQUIRE='tmux fzf' bats tests$" "$wf")" -eq 3 ]
+  # each of the three installs the pinned fzf, then checks that it is the first on PATH
+  [ "$(grep -c 'sh \.github/install-fzf\.sh [^-]' "$wf")" -eq 3 ]
+  [ "$(grep -c '^ *run: sh \.github/install-fzf\.sh --check$' "$wf")" -eq 3 ]
+  # and none takes an fzf from its image's packages
+  [ "$(grep -cE '(apt-get install|brew install|dnf install|additional-packages).*fzf' "$wf")" -eq 0 ]
+  # the pin is a release the picker accepts (fzf_new's rule, which is the pane's fzf_ok)
+  [ "$(awk 'NR == 1 { split($1, v, "."); print (v[1] + 0 > 0 || v[2] + 0 >= 75) }' "$pin")" = 1 ]
 }
 
 # --- the harness itself: the probe for every assumption the rest rests on ---------------------
@@ -378,17 +379,27 @@ line() { printf '%s\n' "$SCREEN" | sed -n "$1p"; }
   screen_wait '^Alpha · started by Lead · hello$'
 }
 
-@test "list: this machine's own older fzf gets the list, and the pane says so" {
-  need tmux fzf-old
+@test "list: an fzf older than 0.75 gets the list, and the pane says so" {
+  need tmux
+  # an old fzf, first on PATH: it answers --version as apt's 0.44.1 does, and the pane
+  # must never ask it for anything else
+  cat >"$BATS_TEST_TMPDIR/bin/fzf" <<STUB
+#!/bin/sh
+[ "\${1-}" = --version ] && { echo '0.44.1 (debian)'; exit 0; }
+echo "\$*" >>"$BATS_TEST_TMPDIR/fzf-ran"
+exit 2
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/fzf"
   screen_open 80 24
   screen_wait 'q shell$'
   screen_still
-  [ "$(line 1)" = "claude-peer: fzf $(fzf_version) is older than 0.75; using the list" ] || { screen_show; false; }
+  [ "$(line 1)" = 'claude-peer: fzf 0.44.1 is older than 0.75; using the list' ] || { screen_show; false; }
   [ "$(filled)" -eq 15 ] || { screen_show; false; }
   [ "$(indent_of '^ *1  fresh')" -eq 12 ] || { screen_show; false; }
   [ "$(indent_of '^ *10  resume')" -eq 11 ] || { screen_show; false; }
   [ "$(indent_of 'q shell$')" -eq 11 ] || { screen_show; false; }
   [ "$(indent_of 'Alpha ')" -eq 11 ] || { screen_show; false; }
+  [ ! -e "$BATS_TEST_TMPDIR/fzf-ran" ] || { cat "$BATS_TEST_TMPDIR/fzf-ran"; false; }
 }
 
 # --- the fzf picker -----------------------------------------------------------------------------

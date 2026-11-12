@@ -384,8 +384,13 @@ detached session by the terminal of the client that made it; 3.3 to 3.6a must no
 get it, since their server dies at `new-session` under it (`tmux_old` in the test
 file). Run it with
 `PATH="$(brew --prefix)/bin:$PATH" SCREEN_TESTS_REQUIRE='tmux fzf' bats tests/claude-peer-screen.bats`.
-`SCREEN_TESTS_REQUIRE` lists what the caller promises is installed (`tmux`, `fzf`
-for 0.75 or newer, `fzf-old` for older): a missing tool skips its tests, a missing
-promised one fails them; each CI job promises on its `bats tests` line. A red test
+`SCREEN_TESTS_REQUIRE` lists what the caller promises is installed (`tmux`; `fzf`
+for 0.75 or newer): a missing tool skips its tests, a missing promised one fails
+them; each CI job promises `tmux fzf` on its `bats tests` line. No CI job takes fzf
+from its image's packages: each installs the release named in `.github/fzf-version`
+with `.github/install-fzf.sh`, which checks it against the release's own checksum
+file, and a second step fails unless that fzf is the first on PATH. The pin moves by
+editing that one line; the package lists are for machines and do not move with it.
+The older-fzf test plants a stub that answers `--version` as apt's 0.44.1 does. A red test
 prints the screen it saw (a column ruler, each line ended by `|`). A server left
 behind by a killed bats: `pkill -f 'tmux -L cps'`.
