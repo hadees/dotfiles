@@ -62,7 +62,7 @@ tracked in `${XDG_STATE_HOME:-~/.local/state}/tabstatus/<session_id>.seats`
 — written on SubagentStart, pruned on SubagentStop, deleted on
 SessionStart/SessionEnd, ignored past a day — so a Stop over a still-running
 background seat repaints its colour, not orange. The detail carries
-only the status: the row name carries the repo (next paragraph).
+only the status: the row name carries the repo (next paragraph). A session that dies without a SessionEnd leaves its `.named`, `.tasks` and `.seats` files, so every SessionStart removes those three suffixes older than seven days (`STALE_DAYS`) from the directory and touches nothing else; a state directory whose file count keeps growing means the sweep is not acting (`ls` it).
 
 **The row's name is the session's name, and the shim sets it.** The Session
 Status tool labels a row with `session.name` (iTerm2's `ToolStatus.swift`),
@@ -84,7 +84,7 @@ is read as role plain). `[<group>] ` (`WORKTABS_GROUP`, when set) leads the name
 only when `tabstatus.group-prefix` is `true` (default off), on a session's
 first UserPromptSubmit (marked by an empty `<session_id>.named` beside the seats
 file, written whether or not a rename happened, deleted on
-SessionStart/SessionEnd) and on every Stop and StopFailure, so
+SessionStart/SessionEnd, swept after seven days) and on every Stop and StopFailure, so
 a later rename by iTerm2 heals at the end of the turn. It also runs at
 SessionStart, for every role (a leader is `plain` by `tabname`'s definition until a
 peer claims it), so the row is named before anything is typed; SessionStart still
