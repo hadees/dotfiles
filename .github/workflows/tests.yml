@@ -69,10 +69,11 @@ jobs:
         # (bats polls its semaphore once a second). Results print per finished
         # file, --timing keeps the per-test times. The Linux jobs build bats from
         # a tag: a distribution's bats is as old as the distribution, and --jobs
-        # hung on WSL with the packaged one. The timeout is what turns a hang
-        # into a red job.
+        # hung on WSL with the packaged one. TESTS_WAIT_SCALE=3 triples the
+        # polling waits in tests/claude-peer.bats, which a loaded runner outran.
+        # The timeout is what turns a hang into a red job.
         timeout-minutes: 30
-        run: NODE_TESTS_REQUIRED=1 SCREEN_TESTS_REQUIRE='tmux fzf' bats --timing --jobs "$(getconf _NPROCESSORS_ONLN)" --no-parallelize-within-files tests
+        run: TESTS_WAIT_SCALE=3 NODE_TESTS_REQUIRED=1 SCREEN_TESTS_REQUIRE='tmux fzf' bats --timing --jobs "$(getconf _NPROCESSORS_ONLN)" --no-parallelize-within-files tests
 
   # .macos applied for real and read back (tests/macos-apply.bats). Its own job
   # so its ~5 minutes run beside the suite instead of after it on the macOS job.
@@ -171,7 +172,7 @@ jobs:
         env:
           LANG: C.UTF-8
         timeout-minutes: 30
-        run: SCREEN_TESTS_REQUIRE='tmux fzf' bats --timing --jobs "$(getconf _NPROCESSORS_ONLN)" --no-parallelize-within-files tests
+        run: TESTS_WAIT_SCALE=3 SCREEN_TESTS_REQUIRE='tmux fzf' bats --timing --jobs "$(getconf _NPROCESSORS_ONLN)" --no-parallelize-within-files tests
 
   test-wsl:
     runs-on: windows-2025
