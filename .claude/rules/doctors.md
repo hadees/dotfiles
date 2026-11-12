@@ -10,7 +10,9 @@ paths:
 profile existence, binding, what wrangler will use) without running
 wrangler; `gh-doctor` and `claude-doctor` do the same for their wrappers
 (`gh-doctor` also verifies the stored token really authenticates as the
-pinned account, since gh's keyring has handed back the wrong one before),
+pinned account, since gh's keyring has handed back the wrong one before;
+its `pins:` line flags a pin recorded with a capital, which no lookup finds,
+because every consumer lowercases the owner),
 and `git-doctor` covers git itself: the commit identity the include chain
 selected and which file supplied it, signing config and whether its
 key/signer exist, the origin's SSH alias resolution, https credential

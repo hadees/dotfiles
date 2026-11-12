@@ -218,3 +218,13 @@ EOF
   [[ "$output" == *"account: <no credential pin matched"* ]]
   [[ "$output" != *"token:"* ]]
 }
+
+@test "gh-doctor: a pin whose owner has a capital is flagged, since lookups lowercase" {
+  git config --file "$GIT_CONFIG_GLOBAL" credential.https://github.com/Octo-Mixed.username mixed-acct
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; gh-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Octo-Mixed -> mixed-acct MIXED CASE: Octo-Mixed never matches (lookups lowercase the owner); record it lowercase"* ]]
+  [[ "$output" == *"octo-work-org -> work-acct, octo-personal -> personal-acct, Octo-Mixed"* ]] || { echo "lowercase pins gained a suffix: $output"; false; }
+  [[ "$output" != *"octo-work-org -> work-acct MIXED"* ]] || { echo "lowercase pin flagged: $output"; false; }
+}
