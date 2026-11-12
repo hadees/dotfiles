@@ -239,6 +239,14 @@ JSON
   } > "$HOME/.local/state/memoryguard/decisions.tsv"
   doctor
   [[ "$output" == *"memguard: hook: wired in $HOME/.claude-personal/settings.json; ~/bin/memoryguard: present; seat: deployed; decisions logged: 4 (1 refused, 1 errors, 1 refusals later kept)"* ]]
+
+  # A memoryguard that fails (no python3 makes it print nothing and exit 2)
+  # must not read as an empty, healthy log.
+  rm "$HOME/bin/memoryguard"
+  printf '#!/bin/sh\nexit 2\n' > "$HOME/bin/memoryguard"
+  chmod +x "$HOME/bin/memoryguard"
+  doctor
+  [[ "$output" == *"decisions logged: ? (memoryguard log failed)"* ]]
 }
 
 @test "claude-doctor: tabstatus counts events on the shim, on iTerm2's own hook, on neither" {

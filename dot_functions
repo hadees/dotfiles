@@ -955,12 +955,19 @@ function claude-doctor() {
 	[[ -x $HOME/bin/memoryguard ]] && mg_bin=present;
 	[[ -e $dir/agents/decide-haiku.md ]] && mg_seat=deployed;
 	if (( $+commands[memoryguard] )); then
-		mg_counts="$(command memoryguard log 2>/dev/null | command awk -F'\t' '
-			$1 == "blocks later kept" { k = $2; next }
-			{ n += $2 }
-			$1 == "block" || $1 == "block-cached" { b += $2 }
-			$1 == "allow-error" || $1 == "allow-nobackend" { e += $2 }
-			END { printf "%d (%d refused, %d errors, %d refusals later kept)", n, b, e, k }')";
+		# The exit status is kept: without python3 the script prints nothing
+		# and exits 2, which the awk alone would turn into a healthy "0".
+		local mg_log;
+		if mg_log="$(command memoryguard log 2>/dev/null)"; then
+			mg_counts="$(print -r -- "$mg_log" | command awk -F'\t' '
+				$1 == "blocks later kept" { k = $2; next }
+				{ n += $2 }
+				$1 == "block" || $1 == "block-cached" { b += $2 }
+				$1 == "allow-error" || $1 == "allow-nobackend" { e += $2 }
+				END { printf "%d (%d refused, %d errors, %d refusals later kept)", n, b, e, k }')";
+		else
+			mg_counts='? (memoryguard log failed)';
+		fi;
 	fi;
 	print -r -- "memguard: hook: $mg_wired in $settings; ~/bin/memoryguard: $mg_bin; seat: $mg_seat; decisions logged: $mg_counts";
 	# Session Status wiring, read by tabstatus_wiring: how many of the eleven

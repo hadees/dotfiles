@@ -5,11 +5,11 @@
 # Edit tools, and an instruction not to put process rules or restated
 # repository facts there has existed since 2026-09 without holding.
 # memoryguard asks two typed questions of the note's text — which of seven
-# homes does it belong in, and does it name anything private — and the hook
-# (a later step) refuses a write whose answer is not `memory`, naming the
+# homes does it belong in, and does it name anything private — and `hook pre`
+# refuses a write whose answer is not `memory`, naming the
 # destination. It writes nothing itself except its own log.
 #
-# This file so far: the decision (`decide`), its backends, the log and the
+# Subcommands: the decision (`decide`), its backends, the log and the
 # cache (`log`), a self-test of the real backend (`selftest`), the gate on
 # Write and Edit (`hook pre`), the gate on Bash writes into a memory directory
 # (`hook bash`), the SessionStart check (`hook start`), the audit of a
