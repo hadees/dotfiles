@@ -657,6 +657,7 @@ hold() {
   until_ok '[ "$(grep -c "Return tries again" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 1 ]'
   [ "$(sh "$BIN" slots | grep -c waiting)" -eq 1 ]
   [ "$(shell_runs)" -eq 0 ]
+  ! grep -q "	end	" "$REPO/$LOG" 2>/dev/null
 }
 
 @test "the pool: a configured pool falls back to a free one of the first three" {
@@ -851,7 +852,23 @@ LOG=.git/claude-peer.log
   [ "$(cut -f2,3,4 "$REPO/$LOG")" = "Lead"$'\t'"start"$'\t'"Alpha by Lead" ]
   printf '{"pid": %s, "status": "idle"}\n' "$sp" >"$cfg/sessions/$sp.json"
   sh "$BIN" stop alpha >/dev/null
-  [ "$(cut -f2,3,4 "$REPO/$LOG" | sed -n 2p)" = "Lead"$'\t'"stop"$'\t'"Alpha by Lead" ]
+  # the pane's `end` races `stop`'s line; both are there, in either order
+  until_ok '[ "$(grep -c . "$REPO/$LOG")" -eq 3 ]'
+  grep -qx "Lead"$'\t'"stop"$'\t'"Alpha by Lead" <(cut -f2,3,4 "$REPO/$LOG")
+  grep -Eqx "Alpha"$'\t'"end"$'\t'"Alpha ended after [0-9]+s \(some words\)" <(cut -f2,3,4 "$REPO/$LOG")
+}
+
+@test "end: a session that ends logs one end line, which closes its label's claims" {
+  FAKE_SHELL_SLEEP=1 pane alpha
+  sh "$BIN" log --as Alpha claim fixing -- some/file >/dev/null
+  sh "$BIN" start alpha the task >/dev/null
+  until_ok 'grep -q "	end	" "$REPO/$LOG"'
+  [ "$(grep -c "	end	" "$REPO/$LOG")" -eq 1 ]
+  [[ "$(grep "	end	" "$REPO/$LOG" | cut -f2,3,4)" =~ ^Alpha$'\t'end$'\t'Alpha\ ended\ after\ [0-9]+s\ \(the\ task\)$ ]]
+  run sh "$BIN" log --as Beta claim other -- some
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  ! sh "$BIN" log show | grep -q "	Alpha	claim	"
 }
 
 # --- workgroup / install / status ----------------------------------------------

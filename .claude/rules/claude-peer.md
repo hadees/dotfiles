@@ -208,7 +208,7 @@ merges or supervises a peer. The one shared thing is the coordination log,
 same file and it outlives any session. It is append-only, one line per entry,
 tab-separated: `<UTC time><TAB><who><TAB><kind><TAB><text>[<TAB><path>…]`, with
 tabs and newlines in text and paths written as spaces. `kind` is `claim`, `note`,
-`done`, `start` or `stop`. `who` is the label of the slot whose worktree the
+`done`, `start`, `stop` or `end`. `who` is the label of the slot whose worktree the
 caller stands in (a live claim), else `Lead` when a live claim names the caller's
 directory as its leader, else the directory's name; `log --as <name> …` overrides
 it. `log claim <task> [-- <path>…]` appends a claim and then prints, for every
@@ -217,10 +217,14 @@ of the other, paths taken relative to the repository top; `.` is all of it),
 `overlap<TAB><who><TAB><their path><TAB><their task>`; it exits 0 whether or not
 anything overlaps, because a claim is advisory and a non-zero exit reads as
 "blocked". `log note <text>` and `log done [<text>]` append those kinds. A claim
-is open until the same `who` logs `done`, or a `stop` line for that label
-follows it, so a stopped peer never leaves a claim open. `log
+is open until the same `who` logs `done`, or a `stop` or `end` line for that
+label follows it, so a stopped or ended peer never leaves a claim open. `log
 show` prints the open claims and the last 24 hours of notes, `--all` the file.
-`start` and `stop` each append `<label> by <who>`. The log is per repository: an
+`start` and `stop` each append `<label> by <who>`. When a session in a pane
+returns, the pane appends `end` as the slot's label, text `<Label> ended after
+<dur>` (`dur_of`: `45s`, `12m`, `3h`, `2d`) plus ` (<task>)` when it had one; a
+refused start writes none, and a pane killed outright writes none (its claim is
+simply dead). The log is per repository: an
 action that reaches the whole machine is not visible from another repository's
 log. `..` in a path is not resolved.
 
