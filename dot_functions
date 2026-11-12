@@ -690,19 +690,22 @@ function claude_browser_alias() {
 
 # The profile-directory decision claude() acts on, extracted so claude-doctor
 # reports the same answer claude() uses — the two can never drift. Prints the
-# tilde-expanded directory; prints nothing and returns 1 when claude() would
-# fall through to a bare `claude`.
+# directory as one spelling (tilde expanded, absolute, no trailing slash);
+# prints nothing and returns 1 when claude() would fall through to a bare
+# `claude`.
 function claude_profile_dir() {
 	local acct dir slug pin;
 	if [[ -n $CLAUDE_PROFILE ]]; then
 		dir="$(command git config --get "claude.profile.$CLAUDE_PROFILE" 2>/dev/null)";
 		if [[ -z $dir ]]; then
-			# A literal directory is fine; a typo'd account name is not —
-			# without this check it would become a relative CLAUDE_CONFIG_DIR.
-			if [[ $CLAUDE_PROFILE == (\~|/)* || -d $CLAUDE_PROFILE ]]; then
+			# A literal directory is absolute or starts with a tilde; a bare
+			# word is only ever a mapped name, even when a directory of that
+			# name sits in the cwd — it would become a relative
+			# CLAUDE_CONFIG_DIR.
+			if [[ $CLAUDE_PROFILE == (\~|/)* ]]; then
 				dir=$CLAUDE_PROFILE;
 			else
-				print -ru2 -- "claude: CLAUDE_PROFILE='$CLAUDE_PROFILE' is neither a mapped account nor a directory; falling back to the default profile";
+				print -ru2 -- "claude: CLAUDE_PROFILE='$CLAUDE_PROFILE' is neither a mapped account nor an absolute or ~ directory; falling back to the default profile";
 				return 1;
 			fi;
 		fi;
@@ -717,21 +720,21 @@ function claude_profile_dir() {
 		# overlay-supplied, so no repo names appear here.
 		#
 		# The value is an account or alias mapped in `claude.profile.*`, or a
-		# literal directory — whatever CLAUDE_PROFILE accepts, since a pin is
+		# absolute or ~-prefixed directory — whatever CLAUDE_PROFILE accepts, since a pin is
 		# the same choice made once per repo instead of once per invocation.
 		slug="$(git_origin_slug)" || slug='';
 		[[ -n $slug ]] && pin="$(command git config --get "claude.$slug.profile" 2>/dev/null)";
 		if [[ -n $pin ]]; then
 			dir="$(command git config --get "claude.profile.$pin" 2>/dev/null)";
 			if [[ -z $dir ]]; then
-				if [[ $pin == (\~|/)* || -d $pin ]]; then
+				if [[ $pin == (\~|/)* ]]; then
 					dir=$pin;
 				else
 					# Warn every invocation rather than resolve quietly: a
 					# typo'd pin must not land the session in another
 					# account's history, and sessions are partitioned per
 					# config dir, so the wrong one resumes nothing.
-					print -ru2 -- "claude: claude.$slug.profile='$pin' is neither a mapped account nor a directory; falling back to the owner's account";
+					print -ru2 -- "claude: claude.$slug.profile='$pin' is neither a mapped account nor an absolute or ~ directory; falling back to the owner's account";
 				fi;
 			fi;
 		fi;
@@ -745,13 +748,16 @@ function claude_profile_dir() {
 		fi;
 	fi;
 	[[ -n $dir ]] || return 1;
-	print -r -- "${dir/#\~/$HOME}";
+	# :a is lexical (no symlink resolution): it drops a trailing slash, doubled
+	# slashes and dot-dot segments, so claude() can compare against the
+	# default directory as a string.
+	print -r -- "${${dir/#\~/$HOME}:a}";
 }
 
 # Launch Claude Code pinned to an explicit profile, ignoring the cwd:
 # `claude-as <profile> [args...]`. The profile is an account or alias mapped in
 # `claude.profile.*` (machine-local git config, set by the private overlay) or
-# a literal directory; anything else is an error — an explicit request must
+# an absolute or ~-prefixed directory; anything else is an error — an explicit request must
 # never silently fall back to another account. Remaining args and stdin pass
 # through untouched, so piping a prompt in works. Resolution and the
 # default-profile unset-variable special case stay in claude(); this only
@@ -770,7 +776,7 @@ function claude-as() {
 	shift;
 	# Vet the name with the same resolver claude() uses (its warning is
 	# suppressed — ours names the command). Mapped accounts, absolute or
-	# tilde-prefixed paths, and existing directories resolve; typos do not.
+	# tilde-prefixed paths resolve; typos and bare directory names do not.
 	if ! CLAUDE_PROFILE=$profile claude_profile_dir >/dev/null 2>&1; then
 		print -ru2 -- "claude-as: unknown profile '$profile'";
 		print -ru2 -- "available profiles:";

@@ -431,8 +431,53 @@ PY
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; CLAUDE_PROFILE=presonal-account claude 2>'$BATS_TEST_TMPDIR/stderr'"
   [ "$status" -eq 0 ]
   [ "$output" = "CLAUDE_CONFIG_DIR=UNSET" ]
-  grep -q "CLAUDE_PROFILE='presonal-account' is neither a mapped account nor a directory" \
+  grep -q "CLAUDE_PROFILE='presonal-account' is neither a mapped account nor an absolute or ~ directory" \
     "$BATS_TEST_TMPDIR/stderr"
+}
+
+@test "claude: a trailing slash on a mapping of the default directory still unsets CLAUDE_CONFIG_DIR" {
+  # "$HOME/.claude/" is not equal to "$HOME/.claude" as a string, and a set
+  # CLAUDE_CONFIG_DIR, even to the default directory, reads as logged out.
+  repo=$(make_repo 'git@github.com:octo-work-org/some-repo.git')
+  git config --file "$GIT_CONFIG_GLOBAL" claude.profile.work-account "$HOME/.claude/"
+  claude_in "$repo"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=UNSET" ]
+}
+
+@test "claude: CLAUDE_PROFILE spelled with a trailing slash is normalised" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; CLAUDE_PROFILE='$HOME/.claude/' claude"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=UNSET" ]
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; CLAUDE_PROFILE='$BATS_TEST_TMPDIR//custom-profile/../custom-profile/' claude"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/custom-profile" ]
+}
+
+@test "claude: a bare word is only ever a mapped name, even when a directory of that name exists" {
+  # A relative CLAUDE_CONFIG_DIR would follow the cwd.
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  mkdir "$repo/docs"
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; CLAUDE_PROFILE=docs claude 2>'$BATS_TEST_TMPDIR/stderr'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=UNSET" ]
+  grep -q "CLAUDE_PROFILE='docs' is neither a mapped account nor an absolute or ~ directory" \
+    "$BATS_TEST_TMPDIR/stderr"
+}
+
+@test "pin: a bare existing directory name warns and falls back to the owner's account" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  mkdir "$repo/docs"
+  git config --file "$GIT_CONFIG_GLOBAL" 'claude.octo-personal/some-repo.profile' docs
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude 2>'$BATS_TEST_TMPDIR/stderr'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=$HOME/.claude-personal" ]
+  grep -q "claude.octo-personal/some-repo.profile='docs' is neither a mapped account nor an absolute or ~ directory" \
+    "$BATS_TEST_TMPDIR/stderr"
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-as docs 2>&1"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unknown profile 'docs'"* ]]
 }
 
 @test "typo alias: cladue routes through the same profile selection as claude" {
