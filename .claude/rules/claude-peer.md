@@ -129,7 +129,10 @@ prints `worktree<TAB>pid<TAB>leader<TAB>label` for each live claim in the
 repository, on every OS. Residual: breaking a stale lock is not atomic, so two
 waiters racing at the instant a holder was killed can still collide; the
 claim's re-read is the backstop. `git worktree add` runs immune to hangup so a
-pane torn down mid-checkout leaves no half-made tree. `status` adds `peers: <r>
+pane torn down mid-checkout leaves no half-made tree. A slot's checkout runs with
+`-q`, so its first start prints nothing of git's above the pane's header, and a
+checkout that fails still prints git's `fatal:` line and then `<slot>: git
+worktree add failed`. `status` adds `peers: <r>
 running, <w> waiting in <repo>` with the running labels when run inside a
 repository, and
 `leftover: <k> peer-N worktrees from the retired scratch layout (...)` when
@@ -296,7 +299,10 @@ alone is row 1, a number its row, a name its context (or a built-in row by its s
 `c r n s` as the hint says, `q` and Ctrl-C a shell; a reader that ends with no line (no
 terminal) goes quiet. A line typed at the quiet prompt that is exactly a context name starts
 it. Every question (`<ask>: `, `Task: `, `Save as …`) is read by `pane_ask`, which is
-`pane_block`, so a `start` request interrupts any of them, and an empty answer or Ctrl-C
+`pane_block`, so a `start` request interrupts any of them (`pane_ask` then ends the
+question's line, so the header of the session that follows starts a line of its own; an
+open fzf and the quiet line already leave the cursor at the start of a line and get
+nothing), and an empty answer or Ctrl-C
 goes back to the picker (`Save as`: Return skips the save, the task still starts). fzf runs
 as a background child the pane `wait`s on, with its signals reset in the subshell (the pane
 ignores `TTIN` and `TTOU`); a request while it is open sends it TERM, runs `stty sane` on the
@@ -322,7 +328,10 @@ are a bold `Z`, a `z` in 256-colour 250 and a dim `z`; fzf would grey the bold o
 theme's `header` colour, which `--color=header:-1` prevents. The cap is coloured per slot
 (`art_cap`: `git config claude-peer.<slot>.cap '#rrggbb'`, else the slot's place in the pool:
 green, the approved blue, purple, cyan, yellow, red, from Base16 Eighties; the band is 0.7 of
-it). `git config claude-peer.art false` hides it; `claude-peer.art-file <path>` replaces it,
+it). While the figure shows, the selector matches the hat (`art_hat`, the operator's
+call): fzf's `pointer` and `prompt` and the list's `<Label> ▸` take the cap's colour,
+`#rrggbb` in truecolor, else the 256-colour index the art draws it in; without the figure
+fzf keeps its own colours. `git config claude-peer.art false` hides it; `claude-peer.art-file <path>` replaces it,
 and a file that does not parse prints `claude-peer: <path>: <reason>` and the built-in is
 drawn. `pane_geom` sets `pn_lay`: `beside` at 80 columns and 16 rows or more (`✻ <Label> ·
 <repo>` and a dim second line on the figure's rows 4 and 5), `under` from 30 to 79 columns
@@ -337,6 +346,24 @@ line) or the picker opens from it (Return), `pane_unquiet` moves up over the blo
 line and the typed line and erases down (`ESC[11A`, `ESC[J` beside; 13 under), so one sleeper is
 ever on screen; a session started from quiet (`c`, a context name, Return with the picker off)
 leaves it above the session. A pane resized between going quiet and the next key miscounts once.
+**It moves inside fzf, and wakes.** No animator process: before each fzf launch (sleeper
+showing, `git config claude-peer.art-seconds` over 0; default 20, read when the pane starts)
+the pane writes one complete header per pose, `$pn_me.frame.0`…`.3` (z's near, near-mid, all
+with the pom-pom swayed, none swayed) and `.still` (A1's header), exports
+`CLAUDE_PEER_FRAMES` and `CLAUDE_PEER_ART_SECONDS`, and adds `--with-shell='sh -c'`,
+`--bind='change,focus:rebind(every(1))'` and, last, `--bind='every(1):bg-transform:<tick>'`
+(`PANE_TICK`): each second one `sh` and one `cat` pick the pose from `FZF_IDLE_TIME_MS`, and
+once art-seconds pass without a key the header becomes `.still` and the timer unbinds, so an
+idle picker forks nothing; a key or a cursor move binds it again. The once-a-second poll this
+file rejects for the wait is bounded here by that limit. `pane_cleanup` and `pane_reap` take
+the frame files with the wait file. Waking: `PG_WAKE` is set by `pane_fzf` around a pick that
+starts a session and by the request path when the request closed an open fzf; `pane_go`
+reads and clears it and, with the sleeper showing, calls `art_wake` once the slot is taken
+(a refused slot draws nothing): `wake-1` (cap lifted, no z's) where fzf erased itself, 0.25 s,
+up over it (`ESC[9A`, 11 under) and `wake-2` (eyes open) on top, 0.25 s, then the header line
+as before. The list and the quiet state never move and never wake. A context that asks a
+question wakes under its answer. The screen tests hold the figure still from `setup`
+(`art-seconds 0`) and set 3 where they test the movement.
 `claude-peer art [--slot] [--frame] [--z all|near|near-mid|none] [--truecolor|--256]` prints a
 frame; `art --screen [--slot]` prints the quiet screen as a pane would pad it, for the terminal
 or `CLAUDE_PEER_SIZE`: the operator's preview and the screen tests' reference. The figure is
