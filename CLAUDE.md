@@ -251,6 +251,7 @@ rule first.
 | `loginguard` | the org pin per profile, the prompt hook, the removal after a wrong login, why it fails closed |
 | `worktabs` | the iTerm2 tab launcher, `workspace.*` config, the Alfred workflow |
 | `claude-peer` | Workgroup peers, named slot worktrees, claims, the Hermes peer, overlay peers |
+| `claude-peer-handoff` | Lead and its name, `start --handoff`, `log idle`, the stop mark |
 | `claude-tab` | `claude-tab` list, focus, save, restore; `tabname` |
 | `branchname` | the branch label a prompt or status line shows, the detached-slot base record |
 | `postbox` | cross-profile session mail, its hooks, the courier, the roll-call |

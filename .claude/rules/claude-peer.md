@@ -15,7 +15,9 @@ leader's cwd and is pinned there, so the script moves, not the shell:
 `<repo>/.claude/worktrees/<slot>`, `cd`s there and runs `claude -n <repo>-<slot>`
 through an interactive shell, so it is the `.functions` wrapper and, being a
 directory no other session is in, raises no second-session question. A slot is a
-name (`alpha`, `beta`, …; lowercase letters, digits, `-` and `_`), and its
+name (`alpha`, `beta`, …; lowercase letters, digits, `-` and `_`; not `next`,
+`lead`, `claude` or `hermes`, and a branch whose slug is `lead` is refused),
+and its
 worktree is the slot's: new, it is detached at `origin/HEAD` (the branch is
 Claude's to create once it knows what it is working on), and the base is
 recorded in `claude-peer.base` beside the claim, once (from `origin/HEAD`;
@@ -196,8 +198,8 @@ pane's Alpha is in use by the peers of <leader>)` when that differs. With every
 name taken it prints `all <n> slots are in use in <repo>` and `Return tries
 again`, and waits. `next` is not a slot name.
 
-**`start` and `stop` are the operator's.** A session runs them only when
-asked; `slots` and `log` only read or append, and the shared memory tells every
+**`start` and `stop` are the operator's and Lead's.** A session that is not
+Lead runs them only when asked; `slots` and `log` only read or append, and the shared memory tells every
 session to use them (announce a task when `slots` shows another slot running,
 read `log show` before a machine-wide action). `claude-peer start <slot|next> [--continue] [--leader <dir>] [--]
 [prompt words…]` writes a request file (`<slot>.<pid>.start`: line 1 `fresh` or
@@ -219,15 +221,20 @@ leader<TAB>session name` for the repository. Exit codes: 0 done; 1 failed; 2
 usage; 3 already in the requested state (running, not running, no slot free);
 4 nothing to act on (no pane waiting); 5 refused because busy.
 
+**Lead**, the one session that may start, stop and re-task its peers unasked, is in `claude-peer-handoff.md`.
+
 **A peer is a separate project, not a helper of the leader.** It has its own
 context, branch and pull requests, and plans and delegates inside itself like any
-session; `start` passes its prompt through untouched and nothing here briefs,
-merges or supervises a peer. The one shared thing is the coordination log,
+session; `start` passes its prompt through untouched, except that `--handoff` appends the
+fixed hand-off note, and nothing in this
+script briefs, merges or supervises a peer; Lead, a session, does (the shared
+memory's `Lead` section). A tab's log lines are relayed to Lead (postbox's
+`lead-news` and Stop hook), and a tab is still not briefed, merged or supervised. The one shared thing is the coordination log,
 `<git common dir>/claude-peer.log`, so every worktree of the repository reads the
 same file and it outlives any session. It is append-only, one line per entry,
 tab-separated: `<UTC time><TAB><who><TAB><kind><TAB><text>[<TAB><path>…]`, with
 tabs and newlines in text and paths written as spaces. `kind` is `claim`, `note`,
-`done`, `start`, `stop` or `end`. `who` is the label of the slot whose worktree the
+`done`, `start`, `stop`, `end`, `idle` or `gone`. `who` is the label of the slot whose worktree the
 caller stands in (a live claim), else `Lead` when a live claim names the caller's
 directory as its leader, else the directory's name; `log --as <name> …` overrides
 it. `log claim <task> [-- <path>…]` appends a claim and then prints, for every
@@ -239,7 +246,11 @@ anything overlaps, because a claim is advisory and a non-zero exit reads as
 is open until the same `who` logs `done`, or a `stop` or `end` line for that
 label follows it, so a stopped or ended peer never leaves a claim open. `log
 show` prints the open claims and the last 24 hours of notes, `--all` the file.
-`start` and `stop` each append `<label> by <who>`. When a session in a pane
+`start` and `stop` each append `<label> by <who>`. A `claim`, `note` or `done`
+by anyone but `Lead` then runs `postbox lead-news <leader> <pid> <session id>`
+(`CLAUDE_PEER_POSTBOX`, default `~/bin/postbox`), detached and silent, for the
+leader of the caller's live claim (pid and session id its lines 9 and 10, `-`
+when missing), else the main checkout; `log`'s output and status do not change. When a session in a pane
 returns, the pane appends `end` as the slot's label, text `<Label> ended after
 <dur>` (`dur_of`: `45s`, `12m`, `3h`, `2d`) plus ` (<task>)` when it had one; a
 refused start writes none, and a pane killed outright writes none (its claim is
@@ -270,9 +281,10 @@ its own mode), a context with `ask` and no value is 2. The request file is the
 plain one (mode from the context, the value as the rest); a sidecar
 `<slot>.<pid>.meta` (`by=…`, `context=…`) is written first, and the pane looks
 the context up itself (a file deleted in between: the pane prints why and waits
-on). A pane writes `2` as line 2 of its wait file; `start --context` to a pane
-without it is exit 4 (`predates contexts; reopen its tab`), a plain `start` to
-it works. `pane_go` is the one place that builds the `claude` arguments, in this
+on). A pane writes `3` as line 2 of its wait file (the protocol); `start
+--context` to a pane below 2 is exit 4 (`predates contexts; reopen its tab`),
+`start --handoff` to one below 3 is exit 4 (`predates hand-offs`), a plain
+`start` to it works. `pane_go` is the one place that builds the `claude` arguments, in this
 order: `-n <repo>-<slot> [--continue] [definition args] [--agent A] [--model M]
 [--effort E] [--append-system-prompt S] [prompt]`; it reads `PG_CTX`,
 `PG_CTXNAME`, `PG_BY` and `PG_TASK` and clears them. The claim gains lines 4-7:
@@ -282,11 +294,13 @@ and the start time in epoch seconds; lines 1-3, `peers` and the session name are
 unchanged. The pane's header line is the slot's label, then ` · started by <by>`
 (not for Return) and ` · <task>`.
 
+**Names, hand-offs, how a session ended** are in `claude-peer-handoff.md`.
+
 The public source ships seven top-level contexts, `dot_config/claude-peer/contexts/NN-<name>.ctx`
 (`ask`, `look-at`, `plan`, `prs`, `audit`, `catch-up`, `team`), which deploy on every class but
 `ephemeral`. They name no account, organisation, person or private repository or skill; an
-overlay's file of the same name at the owner or repository level replaces one (the personal
-overlay does this for `audit`). A context is a launcher: it points at a skill or a document
+overlay's file of the same name at the owner or repository level replaces one (an overlay
+may do this). A context is a launcher: it points at a skill or a document
 and restates no procedure. `{owner}` and `{repo}` in `40-prs.ctx` are gh's own placeholders,
 typed literally, and only `{input}` is substituted. The lookup rule is the one above: top,
 `<owner>/`, `<owner>/<repo>/`, a deeper file wins by name.

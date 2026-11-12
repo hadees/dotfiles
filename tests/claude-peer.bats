@@ -16,8 +16,8 @@ setup() {
     mkdir -p "$BATS_TEST_TMPDIR/pybin" && ln -s "$py" "$BATS_TEST_TMPDIR/pybin/python3"
     export PATH="$BATS_TEST_TMPDIR/pybin:$PATH"
   fi
-  # a suite run from inside a peer slot would otherwise inherit that slot
-  unset CLAUDE_PEER_WORKTREE CLAUDE_PEER_SELF
+  # Run inside a peer slot or a Claude session, the suite must not inherit either.
+  unset CLAUDE_PEER_WORKTREE CLAUDE_PEER_SELF CLAUDE_PID CLAUDE_CODE_SESSION_ID
   export HOME="$BATS_TEST_TMPDIR/home"
   # a runner or a shell that exports XDG_CONFIG_HOME would put the script's
   # config root outside the sandbox
@@ -42,6 +42,7 @@ echo "args=$*"
 [ -z "${FAKE_SHELL_LOG-}" ] || echo "pwd=$PWD args=$*" >>"$FAKE_SHELL_LOG"
 [ -z "${FAKE_SHELL_PID-}" ] || echo $$ >"$FAKE_SHELL_PID"
 [ -z "${FAKE_SHELL_LAST-}" ] || { for last; do :; done; printf '%s' "$last" >"$FAKE_SHELL_LAST"; echo $# >"$FAKE_SHELL_LAST.n"; }
+[ -z "${FAKE_SHELL_NOTERM-}" ] || trap '' TERM
 [ -z "${FAKE_SHELL_SLEEP-}" ] || sleep "$FAKE_SHELL_SLEEP"
 STUB
   chmod +x "$BATS_TEST_TMPDIR/bin/fakeshell"
@@ -914,6 +915,57 @@ LOG=.git/claude-peer.log
   [ "$status" -eq 1 ]
 }
 
+# A postbox stub that records each call; the call is detached, so wait for it.
+pb_stub() {
+  export CLAUDE_PEER_POSTBOX="$BATS_TEST_TMPDIR/bin/postbox" PB_CALLS="$BATS_TEST_TMPDIR/pb.calls"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"$PB_CALLS"\n' >"$CLAUDE_PEER_POSTBOX"
+  chmod +x "$CLAUDE_PEER_POSTBOX"
+}
+pb_wait() { # count
+  local i
+  for i in $(seq 1 40); do [ "$(grep -c . "$PB_CALLS" 2>/dev/null || echo 0)" -ge "$1" ] && return 0; sleep 0.05; done
+  return 1
+}
+
+@test "log: a tab's claim, note and done each call postbox lead-news for its claim's leader" {
+  pb_stub; slot_wt alpha Alpha
+  cd "$REPO/.claude/worktrees/alpha"
+  sh "$BIN" log claim fix thing -- lib; pb_wait 1
+  sh "$BIN" log note halfway; pb_wait 2
+  sh "$BIN" log done; pb_wait 3
+  [ "$(cat "$PB_CALLS")" = "lead-news $REPO - -"$'\n'"lead-news $REPO - -"$'\n'"lead-news $REPO - -" ]
+}
+
+@test "log: Lead's lines, the leader directory's while a tab runs, and log show call nothing" {
+  pb_stub; slot_wt alpha Alpha
+  cd "$REPO"
+  sh "$BIN" log --as Lead note mine
+  sh "$BIN" log note from the leader
+  sh "$BIN" log show >/dev/null
+  cd "$REPO/.claude/worktrees/alpha"
+  sh "$BIN" log --as Lead note also mine
+  sleep 0.5
+  [ ! -e "$PB_CALLS" ]
+}
+
+@test "log: Hermes from a directory with no claim passes the main checkout" {
+  pb_stub
+  mkdir "$BATS_TEST_TMPDIR/elsewhere"; git -C "$REPO" worktree add -q --detach "$BATS_TEST_TMPDIR/elsewhere/h" HEAD
+  cd "$BATS_TEST_TMPDIR/elsewhere/h"
+  sh "$BIN" log --as Hermes note x; pb_wait 1
+  [ "$(cat "$PB_CALLS")" = "lead-news $REPO - -" ]
+}
+
+@test "log: without an executable postbox, claim exits 0 and prints exactly its overlap lines" {
+  export CLAUDE_PEER_POSTBOX="$BATS_TEST_TMPDIR/nope"
+  slot_wt alpha Alpha; slot_wt beta Beta
+  cd "$REPO/.claude/worktrees/alpha"; sh "$BIN" log claim a -- lib
+  cd "$REPO/.claude/worktrees/beta"
+  run sh "$BIN" log claim b -- lib
+  [ "$status" -eq 0 ]
+  [ "$output" = "overlap"$'\t'"Alpha"$'\t'"lib"$'\t'"a" ]
+}
+
 @test "log: every worktree reads the one file in the common git directory; a bad verb is usage" {
   slot_wt alpha Alpha
   cd "$REPO/.claude/worktrees/alpha"
@@ -941,7 +993,7 @@ LOG=.git/claude-peer.log
   # the pane's `end` races `stop`'s line; both are there, in either order
   until_ok '[ "$(grep -c . "$REPO/$LOG")" -eq 3 ]'
   grep -qx "Lead"$'\t'"stop"$'\t'"Alpha by Lead" <(cut -f2,3,4 "$REPO/$LOG")
-  grep -Eqx "Alpha"$'\t'"end"$'\t'"Alpha ended after [0-9]+s \(some words\)" <(cut -f2,3,4 "$REPO/$LOG")
+  grep -Eqx "Alpha"$'\t'"end"$'\t'"Alpha ended after [0-9]+s \(some words\) \(stopped by Lead\)" <(cut -f2,3,4 "$REPO/$LOG")
 }
 
 @test "end: a session that ends logs one end line, which closes its label's claims" {
@@ -1590,14 +1642,14 @@ hellofix() {
   printf 'title: Say\n\nSay: {input}!\n' >"$CLAUDE_PEER_CONTEXTS/40-say.ctx"
 }
 
-@test "start --context: the flags go in the fixed order before the prompt, the claim has seven lines, the pane says who and what" {
+@test "start --context: the flags go in the fixed order before the prompt, the claim has ten lines, the pane says who and what" {
   hellofix
   FAKE_SHELL_SLEEP=2 pane alpha
   run sh "$BIN" start alpha --context hello World
   [ "$status" -eq 0 ]
   until_ok 'grep -q "claude-peer proj-alpha --agent plan-fable --model sonnet --effort low --append-system-prompt be brief Hello World\.\$" "$FAKE_SHELL_LOG"'
   cl=$(claim_of "$REPO/.claude/worktrees/alpha")
-  [ "$(wc -l <"$cl" | tr -d ' ')" -eq 7 ]
+  [ "$(wc -l <"$cl" | tr -d ' ')" -eq 10 ]
   [ "$(sed -n 4p "$cl")" = Lead ]
   [ "$(sed -n 5p "$cl")" = hello ]
   [ "$(sed -n 6p "$cl")" = "hello: World" ]
@@ -2473,6 +2525,243 @@ quiet_erases() {
   ! grep -qE "${ESC}\[[0-9]+A" "$out"
 }
 
+# --- hand-offs: start --handoff, claim lines 8-10, the claim verb, log idle -------
+
+NOTE_END='A report left only in this pane reaches nobody.'
+
+@test "start --handoff: the prompt gains the note, the claim ends handoff, the pid and the session id" {
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  CLAUDE_PID=4242 CLAUDE_CODE_SESSION_ID=aaaa-bbbb run sh "$BIN" start alpha --handoff fix thing
+  [ "$status" -eq 0 ]
+  [ "$output" = "alpha"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"started"$'\t'"proj-alpha" ]
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  last=$(cat "$BATS_TEST_TMPDIR/last")
+  [[ "$last" == "fix thing"$'\n\n'"Hand-off from Lead. "*"$NOTE_END" ]]
+  [[ "$last" == *'${TMPDIR:-/tmp}/claude-reports/'* ]]
+  cl=$(claim_of "$REPO/.claude/worktrees/alpha")
+  [ "$(wc -l <"$cl" | tr -d ' ')" -eq 10 ]
+  [ "$(sed -n '8,10p' "$cl" | tr '\n' ' ')" = "handoff 4242 aaaa-bbbb " ]
+}
+
+@test "start without --handoff: the prompt is untouched, the claim ends - pid sid, and stderr says nobody is told" {
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  CLAUDE_PID=4242 CLAUDE_CODE_SESSION_ID=aaaa-bbbb run sh "$BIN" start alpha fix thing
+  [ "$status" -eq 0 ]
+  [ "${lines[1]}" = "claude-peer: not a hand-off: nobody is told when Alpha finishes (--handoff)" ]
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  [ "$(cat "$BATS_TEST_TMPDIR/last")" = "fix thing" ]
+  cl=$(claim_of "$REPO/.claude/worktrees/alpha")
+  [ "$(sed -n '8,10p' "$cl" | tr '\n' ' ')" = "- 4242 aaaa-bbbb " ]
+}
+
+@test "start: a Return start in the pane writes - - - and no hand-off line" {
+  FAKE_SHELL_SLEEP=2 pane alpha
+  press alpha ''
+  wait_claim "$REPO/.claude/worktrees/alpha"
+  cl=$(claim_of "$REPO/.claude/worktrees/alpha")
+  until_ok '[ "$(wc -l <"'"$cl"'" | tr -d " ")" -eq 10 ]'
+  [ "$(sed -n '8,10p' "$cl" | tr '\n' ' ')" = "- - - " ]
+  ! grep -q 'not a hand-off' "$BATS_TEST_TMPDIR/pane-alpha.out" || { echo "a Return start warned"; false; }
+}
+
+@test "start --handoff: no words, from a peer, or without CLAUDE_PID is 2, and none wakes the pane" {
+  pane alpha
+  CLAUDE_PID=4242 run sh "$BIN" start alpha --handoff
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"--handoff needs something to hand over"* ]]
+  CLAUDE_PID=4242 CLAUDE_PEER_WORKTREE=/x run sh "$BIN" start alpha --handoff fix
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"--handoff is Lead's; a peer tells Lead with claude-peer log"* ]]
+  run sh "$BIN" start alpha --handoff fix
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"--handoff needs a Claude session to tell; run it from one"* ]]
+  CLAUDE_PID=x run sh "$BIN" start alpha --handoff fix
+  [ "$status" -eq 2 ]
+  [ "$(shell_runs)" -eq 0 ]
+  [ "$(sh "$BIN" slots | cut -f2)" = waiting ]
+  [ ! -e "$REPO/.git/claude-peer.wait/alpha.$LAST_PANE.start" ]
+}
+
+@test "start --handoff: a pane of protocol 2 is 4, and still starts for --context" {
+  hellofix
+  FAKE_SHELL_SLEEP=2 pane alpha
+  printf '%s\n2\n' "$REPO" >"$REPO/.git/claude-peer.wait/alpha.$LAST_PANE"
+  CLAUDE_PID=4242 run sh "$BIN" start alpha --handoff fix it
+  [ "$status" -eq 4 ]
+  [[ "$output" == *"the waiting pane (pid $LAST_PANE) predates hand-offs; reopen its tab"* ]]
+  [ "$(shell_runs)" -eq 0 ]
+  run sh "$BIN" start alpha --context say World
+  [ "$status" -eq 0 ]
+}
+
+@test "start --context --handoff: the note follows the substituted body" {
+  hellofix
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  CLAUDE_PID=4242 run sh "$BIN" start alpha --context say --handoff World
+  [ "$status" -eq 0 ]
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  [[ "$(cat "$BATS_TEST_TMPDIR/last")" == "Say: World!"$'\n\n'"Hand-off from Lead. "*"$NOTE_END" ]]
+}
+
+@test "claim: ten rows for a hand-off, - for a seven-line claim, exit 1 for a waiting slot; peers keeps four columns" {
+  slot_wt alpha Alpha
+  cl=$(claim_of "$REPO/.claude/worktrees/alpha")
+  printf 'Lead\n-\nfix\n1700000000\nhandoff\n4242\naaaa-bbbb\n' >>"$cl"
+  run sh "$BIN" claim "$REPO/.claude/worktrees/alpha"
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 10 ]
+  [ "${lines[1]}" = "leader"$'\t'"$REPO" ]
+  [ "${lines[7]}" = "handoff"$'\t'"handoff" ]
+  [ "${lines[9]}" = "lead-sid"$'\t'"aaaa-bbbb" ]
+  printf '%s\n%s\nAlpha\nLead\n-\nfix\n1700000000\n' "$$" "$REPO" >"$cl"
+  run sh "$BIN" claim "$REPO/.claude/worktrees/alpha"
+  [ "$(printf '%s\n' "$output" | sed -n '8,10p' | cut -f2 | tr '\n' ' ')" = "- - - " ]
+  run sh "$BIN" peers
+  [ "$(printf '%s' "$output" | awk -F'\t' '{ print NF }')" -eq 4 ]
+  pane beta
+  run sh "$BIN" claim "$REPO/.claude/worktrees/beta"
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+@test "log idle: once per turn without a done, with the leader, pid and session id passed to postbox" {
+  pb_stub; slot_wt alpha Alpha; slot_wt beta Beta
+  printf 'Lead\n-\nfix\n%s\nhandoff\n4242\naaaa-bbbb\n' "$(($(date +%s) - 125))" >>"$(claim_of "$REPO/.claude/worktrees/alpha")"
+  cd "$REPO/.claude/worktrees/alpha"
+  sh "$BIN" log idle said-this; pb_wait 1
+  [ "$(grep -c . "$REPO/$LOG")" -eq 1 ]
+  [ "$(cut -f2,3,4 "$REPO/$LOG")" = "Alpha"$'\t'"idle"$'\t'"Alpha stopped after 2m without logging done: said-this" ]
+  [ "$(cat "$PB_CALLS")" = "lead-news $REPO 4242 aaaa-bbbb" ]
+  sleep 1
+  sh "$BIN" log done x; pb_wait 2
+  sh "$BIN" log idle; sleep 0.5
+  [ "$(grep -c . "$REPO/$LOG")" -eq 2 ]
+  [ "$(grep -c . "$PB_CALLS")" -eq 2 ]
+  sleep 1
+  sh "$BIN" log idle; pb_wait 3
+  [ "$(cut -f3 "$REPO/$LOG" | tail -n 1)" = idle ]
+  cd "$REPO/.claude/worktrees/beta"
+  sh "$BIN" log idle
+  [ "$(grep -c . "$REPO/$LOG")" -eq 3 ]
+  cd "$REPO"
+  sh "$BIN" log --as Alpha idle text
+  [ "$(tail -n 1 "$REPO/$LOG" | cut -f2,3,4)" = "Alpha"$'\t'"idle"$'\t'"text" ]
+  run sh "$BIN" log --as Alpha idle
+  [ "$status" -eq 2 ]
+}
+
+@test "log idle: the turn mark goes when the session ends" {
+  FAKE_SHELL_SLEEP=2 pane alpha
+  CLAUDE_PID=4242 sh "$BIN" start alpha --handoff fix >/dev/null
+  ( cd "$REPO/.claude/worktrees/alpha" && sh "$BIN" log idle )
+  tf="$(git -C "$REPO/.claude/worktrees/alpha" rev-parse --absolute-git-dir)/claude-peer.turn"
+  [ -s "$tf" ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  [ ! -e "$tf" ]
+}
+
+# --- how a handed-over session ended: gone, or end (stopped by …) -----------------
+
+stopmark() { echo "$(git -C "$REPO/.claude/worktrees/alpha" rev-parse --absolute-git-dir)/claude-peer.stop"; }
+
+@test "gone: a hand-off that ends by itself logs gone, closes its claims and tells Lead with both ids" {
+  pb_stub
+  FAKE_SHELL_SLEEP=1 pane alpha
+  sh "$BIN" log --as Alpha claim fixing -- some/file >/dev/null
+  CLAUDE_PID=4242 CLAUDE_CODE_SESSION_ID=aaaa-bbbb sh "$BIN" start alpha --handoff the task >/dev/null
+  until_ok 'grep -q "	gone	" "$REPO/$LOG"'
+  [[ "$(grep "	gone	" "$REPO/$LOG" | cut -f2,3,4)" =~ ^Alpha$'\t'gone$'\t'Alpha\ ended\ after\ [0-9]+s\ \(the\ task\)$ ]]
+  ! grep -q "	end	" "$REPO/$LOG" || { echo "a hand-off logged end"; false; }
+  pb_wait 2   # the fixture's own claim is one call
+  [ "$(grep -cx "lead-news $REPO 4242 aaaa-bbbb" "$PB_CALLS")" -eq 1 ]
+  ! sh "$BIN" log show | grep -q "	Alpha	claim	" || { echo "gone left Alpha's claim open"; false; }
+}
+
+@test "gone: stop on a hand-off logs end (stopped by Lead), tells nobody, and leaves no mark" {
+  pb_stub
+  cfg=$BATS_TEST_TMPDIR/cfg; mkdir -p "$cfg/sessions"; export CLAUDE_CONFIG_DIR=$cfg
+  FAKE_SHELL_SLEEP=30 FAKE_SHELL_PID="$BATS_TEST_TMPDIR/shpid" pane alpha
+  CLAUDE_PID=4242 sh "$BIN" start alpha --handoff the task >/dev/null
+  until_ok '[ -s "$BATS_TEST_TMPDIR/shpid" ]'
+  sp=$(cat "$BATS_TEST_TMPDIR/shpid")
+  printf '{"pid": %s, "status": "idle"}\n' "$sp" >"$cfg/sessions/$sp.json"
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "	end	" "$REPO/$LOG"'
+  [[ "$(grep "	end	" "$REPO/$LOG" | cut -f4)" == *"(the task) (stopped by Lead)" ]]
+  ! grep -q "	gone	" "$REPO/$LOG" || { echo "a stopped hand-off logged gone"; false; }
+  sleep 0.5
+  ! grep -q lead-news "$PB_CALLS" 2>/dev/null || { echo "a requested stop told Lead"; false; }
+  [ ! -e "$(stopmark)" ]
+}
+
+@test "gone: a plain session ends with the plain end line and no call, whatever stale mark was left" {
+  pb_stub
+  FAKE_SHELL_SLEEP=1 pane alpha
+  git -C "$REPO" worktree add -q --detach "$REPO/.claude/worktrees/alpha" HEAD
+  echo Ghost >"$(stopmark)"
+  sh "$BIN" start alpha the task >/dev/null
+  until_ok 'grep -q "	end	" "$REPO/$LOG"'
+  [[ "$(grep "	end	" "$REPO/$LOG" | cut -f4)" =~ ^Alpha\ ended\ after\ [0-9]+s\ \(the\ task\)$ ]]
+  sleep 0.5
+  [ ! -e "$PB_CALLS" ]
+}
+
+@test "gone: a stop that times out leaves no mark" {
+  export CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/empty CLAUDE_PEER_STOP_WAIT=1
+  FAKE_SHELL_NOTERM=1 FAKE_SHELL_SLEEP=6 FAKE_SHELL_PID="$BATS_TEST_TMPDIR/shpid" pane alpha
+  sh "$BIN" start alpha >/dev/null
+  until_ok '[ -s "$BATS_TEST_TMPDIR/shpid" ]'
+  run sh "$BIN" stop alpha --force
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"did not exit within 1s"* ]]
+  [ ! -e "$(stopmark)" ]
+}
+
+@test "start --handoff starts the stall clock with the leader, worktree, pane pid and both ids; not when off or plain" {
+  pb_stub
+  FAKE_SHELL_SLEEP=3 pane alpha
+  CLAUDE_PID=4242 CLAUDE_CODE_SESSION_ID=aaaa-bbbb sh "$BIN" start alpha --handoff fix >/dev/null
+  pb_wait 1
+  [ "$(grep handoff-check "$PB_CALLS")" = "handoff-check $REPO $REPO/.claude/worktrees/alpha $LAST_PANE 4242 aaaa-bbbb" ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  : >"$PB_CALLS"
+  git config claude-peer.stall-minutes 0
+  CLAUDE_PID=4242 sh "$BIN" start alpha --handoff fix >/dev/null
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  git config --unset claude-peer.stall-minutes
+  CLAUDE_PID=4242 sh "$BIN" start alpha fix >/dev/null 2>&1
+  sleep 0.5
+  ! grep -q handoff-check "$PB_CALLS" || { echo "a clock started when off or plain"; false; }
+}
+
+@test "name: a slot is <repo>-<slot>; lead is <repo>-lead, <repo>-<worktree>-lead in a linked worktree; outside a repository 1" {
+  run sh "$BIN" name alpha
+  [ "$output" = proj-alpha ]
+  run sh "$BIN" name lead
+  [ "$output" = proj-lead ]
+  git worktree add -q --detach "$REPO/.claude/worktrees/feat-a" HEAD
+  run sh "$BIN" name lead "$REPO/.claude/worktrees/feat-a"
+  [ "$output" = proj-feat-a-lead ]
+  mkdir "$BATS_TEST_TMPDIR/norepo"
+  run sh "$BIN" name lead "$BATS_TEST_TMPDIR/norepo"
+  [ "$status" -eq 1 ]
+}
+
+@test "name: lead, claude and hermes are not slots, for run, start or a branch called lead" {
+  for w in lead claude hermes; do
+    run sh "$BIN" run --as "$w"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"'$w' is not a slot name"* ]]
+    run sh "$BIN" start "$w" x
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"'$w' is not a slot name"* ]]
+  done
+  run sh "$BIN" run lead
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"lead is Lead's name"* ]]
+}
+
 # --- overlays ----------------------------------------------------------------------
 # An overlay is a ~/.config/chezmoi/<name>.toml (other than chezmoi.toml) whose
 # `chezmoi --config <cfg> source-path` is a git repository. A chezmoi stub answers
@@ -2826,7 +3115,8 @@ STUB
   printf 'fake_a\n' >"$XDG_STATE_HOME/claude-peer/overlays"
   # row 1 of `overlays` is fake-b; the pane install wrote as 1 is fake_a
   opane 1 "$OV1"
-  grep -q "^Fake_a: Return" "$BATS_TEST_TMPDIR/pane-1.out"
+  # the pane writes its wait file before its first line
+  until_ok 'grep -q "^Fake_a: Return" "$BATS_TEST_TMPDIR/pane-1.out"'
   [ ! -e "$OV2/.git/claude-peer.wait" ]
 }
 
@@ -3030,7 +3320,7 @@ PY
   [ "$(pyget "$g" 'g[3]["sessions"][-1]["command"]')" = "claude-peer overlay 2" ]
   overlay_cfg fake0.toml "$(overlay_repo ov0)"
   opane 2 "$OV2"
-  grep -q "^Fake2: Return" "$BATS_TEST_TMPDIR/pane-2.out"
+  until_ok 'grep -q "^Fake2: Return" "$BATS_TEST_TMPDIR/pane-2.out"'
   ov_status
   [[ "$output" == *"overlays: installed, out of date (Overlay 1 = Fake1, Overlay 2 = Fake2); this machine has 3 (Overlay 1 = Fake0, Overlay 2 = Fake1, Overlay 3 = Fake2) — claude-peer install (with iTerm2 quit)"* ]]
 }
