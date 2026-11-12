@@ -202,7 +202,8 @@ usage; 3 already in the requested state (running, not running, no slot free);
 
 **A peer is a separate project, not a helper of the leader.** It has its own
 context, branch and pull requests, and plans and delegates inside itself like any
-session; `start` passes its prompt through untouched and nothing here briefs,
+session; `start` passes its prompt through untouched, except that `--handoff` appends the
+fixed hand-off note, and nothing here briefs,
 merges or supervises a peer. A tab's log lines are relayed to Lead (postbox's
 `lead-news` and Stop hook), and a tab is still not briefed, merged or supervised. The one shared thing is the coordination log,
 `<git common dir>/claude-peer.log`, so every worktree of the repository reads the
@@ -256,9 +257,10 @@ its own mode), a context with `ask` and no value is 2. The request file is the
 plain one (mode from the context, the value as the rest); a sidecar
 `<slot>.<pid>.meta` (`by=…`, `context=…`) is written first, and the pane looks
 the context up itself (a file deleted in between: the pane prints why and waits
-on). A pane writes `2` as line 2 of its wait file; `start --context` to a pane
-without it is exit 4 (`predates contexts; reopen its tab`), a plain `start` to
-it works. `pane_go` is the one place that builds the `claude` arguments, in this
+on). A pane writes `3` as line 2 of its wait file (the protocol); `start
+--context` to a pane below 2 is exit 4 (`predates contexts; reopen its tab`),
+`start --handoff` to one below 3 is exit 4 (`predates hand-offs`), a plain
+`start` to it works. `pane_go` is the one place that builds the `claude` arguments, in this
 order: `-n <repo>-<slot> [--continue] [definition args] [--agent A] [--model M]
 [--effort E] [--append-system-prompt S] [prompt]`; it reads `PG_CTX`,
 `PG_CTXNAME`, `PG_BY` and `PG_TASK` and clears them. The claim gains lines 4-7:
@@ -267,6 +269,33 @@ unknown), the context name or `-`, the task line (at most 80 characters) or `-`,
 and the start time in epoch seconds; lines 1-3, `peers` and the session name are
 unchanged. The pane's header line is the slot's label, then ` · started by <by>`
 (not for Return) and ` · <task>`.
+
+**Hand-offs.** `start --handoff` is Lead's way to hand a step to a peer. It is
+refused with exit 2 and one line, waking nothing, with neither a prompt nor a
+context, from inside a peer (`CLAUDE_PEER_WORKTREE` set), or without a numeric
+`CLAUDE_PID` (it must run from a Claude session, whose Bash inherits it). The
+`.meta` gains `lead_pid=` and `lead_sid=` (`CLAUDE_CODE_SESSION_ID`, `-` when
+unset or odd) whenever `CLAUDE_PID` is a number outside a peer, and `handoff=1`
+with the flag; `pane_go` reads `PG_HANDOFF`, `PG_LEADPID`, `PG_LEADSID` and the
+claim gains lines 8-10, `handoff` or `-`, the pid or `-`, the session id or `-`
+(a start from the pane writes `-` three times). With `PG_HANDOFF` and a
+prompt, `pane_go` appends an empty line and `handoff_note`, a fixed paragraph
+telling the peer to write its report under
+`${TMPDIR:-/tmp}/claude-reports/<repo>/` and end with `claude-peer log done
+"<STATUS>: …"`; a context's body gets it after substitution. A plain start
+with a prompt or context from a Claude session warns on stderr `not a
+hand-off: nobody is told when <Label> finishes (--handoff)`; stdout and the
+exit status do not change. `claude-peer claim [<dir>]` prints the live claim
+as ten `key<TAB>value` rows (`pid leader label by context task started
+handoff lead-pid lead-sid`, `-` for a missing line), exit 1 without one.
+`log idle [<text>]` is for a handed-over peer's Stop hook: outside a live
+hand-off claim it writes nothing; otherwise it writes `<Label> stopped after
+<dur> without logging done[: <text>]` (text cut to 200) unless this label
+logged `done` or `note` strictly after the turn mark, `claude-peer.turn` beside
+the claim (missing: the claim's line 7), and sets the mark to now either way.
+`log --as <name> idle <text>` writes the line as given. `idle` closes no
+claim; every written line calls `lead-news` with the claim's lines 9 and 10.
+`run_session` removes the mark with the claim, `write_claim` a stale one.
 
 The public source ships seven top-level contexts, `dot_config/claude-peer/contexts/NN-<name>.ctx`
 (`ask`, `look-at`, `plan`, `prs`, `audit`, `catch-up`, `team`), which deploy on every class but

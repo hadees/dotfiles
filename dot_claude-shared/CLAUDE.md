@@ -277,6 +277,9 @@ employer-specific — profile-specific memory belongs in that profile's own
   turn end or exit, relayed. Take it as news: check the tree yourself (the
   commit, the tests) before the next step, tell me what matters, and do not
   reply to the relay.
+- Hand a step to a peer with `claude-peer start <slot> --handoff …`, never a
+  bare `start`: its finish, a turn that ends without one, and its exit then
+  reach you, and reach me when nobody picks them up.
 
 ## Commit signing failures (1Password)
 
