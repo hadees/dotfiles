@@ -9,7 +9,8 @@
 #
 # NOTE: this script exits 0 when it decides to skip, and chezmoi records that
 # as a completed run keyed on the hashes above. Gaining sudo afterwards does
-# NOT make a later `chezmoi apply` retry it — see CLAUDE.md, "Package lists".
+# NOT make a later `chezmoi apply` retry it — see .claude/rules/packages.md,
+# "A skipped run is recorded as a successful one".
 set -e
 
 # The lists to install, in order. The wsl class gets its own on top of the
@@ -39,6 +40,7 @@ $SUDO apt-get update -qq;
 for list in "$@"; do
 	# Per-package so one missing name (distro drift) doesn't abort the rest.
 	grep -vE '^[[:space:]]*(#|$)' "$list" | while read -r pkg; do
-		$SUDO apt-get install -y -qq "$pkg" || echo "skipped (unavailable): $pkg";
+		# </dev/null: apt-get must not read the rest of the list from the loop's stdin.
+		$SUDO apt-get install -y -qq "$pkg" </dev/null || echo "skipped (unavailable): $pkg";
 	done
 done

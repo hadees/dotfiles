@@ -3,6 +3,11 @@
 setopt null_glob
 
 # ~/.macos — https://mths.be/macos
+#
+# Optional environment knobs: COMPUTER_NAME (set the machine name),
+# SUDO_TIMESTAMP_TIMEOUT (minutes one sudo authorisation lasts),
+# MACOS_REINDEX=1 (rebuild the Spotlight index even when its settings did not
+# change), MACOS_KEEP_APPS=1 (do not close apps at the end).
 
 # Resolve the directory this script lives in (the repo checkout). Theme files
 # are referenced relative to it because chezmoi never deploys them to $HOME.
@@ -541,6 +546,7 @@ defaults write com.apple.mail SpellCheckingBehavior -string "NoSpellCheckingEnab
 # 	MENU_SPOTLIGHT_SUGGESTIONS (send search queries to Apple)
 # 	MENU_WEBSEARCH             (send search queries to Apple)
 # 	MENU_OTHER
+spotlight_before="$(defaults read com.apple.spotlight orderedItems 2>/dev/null)"
 defaults write com.apple.spotlight orderedItems -array \
 	'{"enabled" = 1;"name" = "APPLICATIONS";}' \
 	'{"enabled" = 1;"name" = "SYSTEM_PREFS";}' \
@@ -568,8 +574,12 @@ defaults write com.apple.spotlight orderedItems -array \
 killall mds > /dev/null 2>&1
 # Make sure indexing is enabled for the main volume
 sudo mdutil -i on / > /dev/null
-# Rebuild the index from scratch
-sudo mdutil -E / > /dev/null
+# Rebuild the index from scratch, but only when the settings changed (or
+# MACOS_REINDEX=1): it is slow, and a re-run with nothing new should not pay it.
+spotlight_after="$(defaults read com.apple.spotlight orderedItems 2>/dev/null)"
+if [[ "$spotlight_before" != "$spotlight_after" || "${MACOS_REINDEX:-}" == "1" ]]; then
+	sudo mdutil -E / > /dev/null
+fi
 
 ###############################################################################
 # Terminal & iTerm 2                                                          #
@@ -792,21 +802,27 @@ defaults write com.apple.dt.Xcode "ShowBuildOperationDuration" -bool true
 # Kill affected applications                                                  #
 ###############################################################################
 
-for app in "Activity Monitor" \
-	"Calendar" \
-	"cfprefsd" \
-	"Contacts" \
-	"Dock" \
-	"Finder" \
-	"Google Chrome Canary" \
-	"Google Chrome" \
-	"Mail" \
-	"Opera" \
-	"Photos" \
-	"Safari" \
-	"SystemUIServer" \
-	"Terminal" \
-	"Transmission"; do
-	killall "${app}" &> /dev/null
-done
+# Export MACOS_KEEP_APPS=1 to leave them open.
+if [[ "${MACOS_KEEP_APPS:-}" == "1" ]]; then
+	echo "Leaving apps open (MACOS_KEEP_APPS=1); log out or restart for every change to show."
+else
+	echo "Closing Finder, Dock, Safari, Chrome, Mail, Terminal and other affected apps (set MACOS_KEEP_APPS=1 to skip)."
+	for app in "Activity Monitor" \
+		"Calendar" \
+		"cfprefsd" \
+		"Contacts" \
+		"Dock" \
+		"Finder" \
+		"Google Chrome Canary" \
+		"Google Chrome" \
+		"Mail" \
+		"Opera" \
+		"Photos" \
+		"Safari" \
+		"SystemUIServer" \
+		"Terminal" \
+		"Transmission"; do
+		killall "${app}" &> /dev/null
+	done
+fi
 echo "Done. Note that some of these changes require a logout/restart to take effect."

@@ -475,6 +475,15 @@ repo() { # dir — a fixture repo with one commit on main
   [ ! -s "$OSA_LOG" ]
 }
 
+@test "new branches: two branches that slug to one worktree directory are refused, nothing created" {
+  repo "$PROJ/one"; entry a dir "$PROJ/one"
+  ws new a a/b a-b
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"'a/b' and 'a-b' would share the worktree directory a-b"* ]]
+  [ ! -e "$PROJ/one/.claude/worktrees" ]
+  [ ! -s "$OSA_LOG" ]
+}
+
 @test "new branches: a directory that is not a repository top is refused" {
   entry a dir "$PROJ/two"
   ws new a feat/x
@@ -512,6 +521,15 @@ repo() { # dir — a fixture repo with one commit on main
   [[ "$output" == *'"arg":"alpha"'* ]]
   # zeta is configured first and must stay first
   [[ "${output%%alpha*}" == *zeta* ]]
+}
+
+@test "alfred-install: warns when no Alfred app is installed, and not when one is" {
+  mkdir -p "$BATS_TEST_TMPDIR/Applications"
+  WORKTABS_APPLICATIONS="$BATS_TEST_TMPDIR/Applications" ws alfred-install "$BATS_TEST_DIRNAME/../alfred/worktabs"
+  [[ "$output" == *"Alfred does not appear to be installed"* ]]
+  mkdir -p "$BATS_TEST_TMPDIR/Applications/Alfred.app"
+  WORKTABS_APPLICATIONS="$BATS_TEST_TMPDIR/Applications" ws alfred-install "$BATS_TEST_DIRNAME/../alfred/worktabs"
+  [[ "$output" != *"Alfred does not appear to be installed"* ]]
 }
 
 @test "alfred: output is valid JSON" {
