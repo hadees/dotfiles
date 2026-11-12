@@ -635,7 +635,7 @@ slot_repo() {
   doctor() { run zsh -c "source '$BATS_TEST_DIRNAME/../dot_functions'; cd '$1'; git-doctor"; }
   doctor "$SLOT"
   [[ "$output" == *"branch-gate: on — WOULD REFUSE: detached at main with no branch"* ]]
-  ! grep -qE '^(name|key|bg[a-z]*)=' <<<"$output"
+  ! grep -qE '^(name|key|bg[a-z]*)=' <<<"$output" || { echo "doctor printed a raw config line: $output"; false; }
   doctor "$repo"
   [[ "$output" == *$'\n'"branch-gate: on"$'\n'* ]]
   git -C "$SLOT" config hook.pre-commit.branch off
