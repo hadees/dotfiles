@@ -306,7 +306,16 @@ push_repo() {
     [ "$status" -ne 0 ] || { echo "$prefix commit was pushed"; false; }
     [[ "$output" == *"still carries unfinished commits"* ]]
     [[ "$output" == *"$prefix add the thing"* ]]
+    [[ "$output" == *"git config hook.pre-push.wip false"* ]]
   done
+}
+
+@test "pre-push: a capitalised Fixup! is not an autosquash commit (git would not fold it)" {
+  repo=$(push_repo)
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "Fixup! the thing"
+  run git -C "$repo" push -q origin main
+  [ "$status" -eq 0 ]
 }
 
 @test "pre-push: a subject that only mentions fixup! is not an autosquash commit" {

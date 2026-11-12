@@ -90,7 +90,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 		unfinished=$(
 			for sha in $commits; do
 				subject=$(git log -1 --format=%s "$sha" 2>/dev/null)
-				printf '%s' "$subject" | grep -qiE '(^|[^[:alnum:]])wip([^[:alnum:]]|$)|^(fixup|squash|amend)! ' \
+				# wip in any case; the autosquash prefixes exactly as git writes them.
+				{ printf '%s' "$subject" | grep -qiE '(^|[^[:alnum:]])wip([^[:alnum:]]|$)' \
+					|| printf '%s' "$subject" | grep -qE '^(fixup|squash|amend)! '; } \
 					&& printf '  %s %s\n' "$(git rev-parse --short "$sha")" "$subject"
 			done
 		)
@@ -98,6 +100,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 			echo "pre-push: refusing to push ${local_ref#refs/*/} — it still carries unfinished commits:" >&2
 			printf '%s\n' "$unfinished" >&2
 			echo "  Reword or squash them away, or bypass once with GIT_PUSH_CHECK=0." >&2
+			echo "  To allow them on this repo for good: git config hook.pre-push.wip false" >&2
 			exit 1
 		fi
 	fi
