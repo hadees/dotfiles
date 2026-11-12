@@ -33,7 +33,8 @@ branch is not up to date with the base branch"), and exits non-zero. Never
 
 `update-branch` merges main into the head; `--auto` waits for the checks and
 merges by itself. Each merge makes every other open pull request stale, so
-several green pull requests land one CI run (about 15 minutes) apart.
+several green pull requests land one CI run (about 20 minutes, set by the WSL
+job, which still runs serially) apart.
 
 ## Changing it
 

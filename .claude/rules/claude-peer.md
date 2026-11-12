@@ -500,7 +500,7 @@ file). Run it with
 `PATH="$(brew --prefix)/bin:$PATH" SCREEN_TESTS_REQUIRE='tmux fzf' bats tests/claude-peer-screen.bats`.
 `SCREEN_TESTS_REQUIRE` lists what the caller promises is installed (`tmux`; `fzf`
 for 0.75 or newer): a missing tool skips its tests, a missing promised one fails
-them; each CI job promises `tmux fzf` on its `bats tests` line. No CI job takes fzf
+them; each CI job promises `tmux fzf` on the line that runs the suite. No CI job takes fzf
 from its image's packages: each installs the release named in `.github/fzf-version`
 with `.github/install-fzf.sh`, which checks it against the release's own checksum
 file, and a second step fails unless that fzf is the first on PATH. The pin moves by

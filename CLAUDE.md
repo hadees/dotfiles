@@ -80,6 +80,13 @@ the `/run-dotfiles` skill (`.claude/skills/run-dotfiles/driver.sh`); each
 overlay carries a matching `run-<overlay>` skill that stacks itself on it.
 Skill directories are dot-prefixed, so chezmoi never deploys them.
 
+CI runs the suite with `bats --jobs`: files side by side through GNU parallel
+(the workflow installs it; WSL still runs serially), tests within a file in
+order, bats v1.14.0 built from its tag on the Linux jobs. A local `bats tests`
+stays serial; on a Mac from this Brewfile `parallel` is moreutils', so `--jobs`
+there needs rush and `--parallel-binary-name rush` (untested). A new test keeps
+its state under `BATS_TEST_TMPDIR` and polls its waits, since files run side by side.
+
 CI (`.github/workflows/tests.yml`) runs the suite on `ubuntu-latest`,
 `macos-latest`, Rocky Linux 9 (container), and WSL Ubuntu (windows runner), plus a container
 job that runs the one-shot install end to end.
