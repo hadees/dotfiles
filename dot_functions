@@ -2421,8 +2421,16 @@ function gh() {
 	# a candidate, so `<org>`, `<org>/<repo>`, `orgs/<org>`, `<host>:<org>/<repo>`
 	# and full URLs all match. First hit wins. Local paths are skipped so a
 	# file argument that happens to contain a pinned owner's name (e.g.
-	# `gh gist create ./notes/<org>.md`) cannot hijack the account.
+	# `gh gist create ./notes/<org>.md`) cannot hijack the account. So is free
+	# text: an argument containing whitespace (a target never does; a title or
+	# body does) and the value of --title, --body, --label and --search, as
+	# `--opt value` or `--opt=value`. Short options are not skipped: one letter
+	# means different things under different subcommands (-R carries a target).
+	local skip=0;
 	for arg in "$@"; do
+		(( skip )) && { skip=0; continue; };
+		[[ $arg == (--title|--body|--label|--search) ]] && { skip=1; continue; };
+		[[ $arg == (--title|--body|--label|--search)=* || $arg == *[[:space:]]* ]] && continue;
 		# Skip filesystem-path arguments only: ./ or ../ relative forms and
 		# anything that actually exists. A bare leading / must NOT be
 		# skipped — `gh api /repos/<owner>/<repo>` is a documented endpoint

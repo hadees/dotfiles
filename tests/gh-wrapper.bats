@@ -125,6 +125,41 @@ gh_in() {
   [ "$output" = "GH_TOKEN=tok-work-acct args: api /repos/octo-work-org/some-repo" ]
 }
 
+@test "gh: a title and body naming a pinned owner cannot hijack the account" {
+  # Free text is not a target: an argument with whitespace is skipped, so a
+  # PR title or body that mentions another org keeps the cwd's account.
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  gh_in "$repo" pr create --title "octo-work-org: fix it" --body "see https://github.com/octo-work-org/x"
+  [ "$status" -eq 0 ]
+  [ "$output" = "GH_TOKEN=tok-personal-acct args: pr create --title octo-work-org: fix it --body see https://github.com/octo-work-org/x" ]
+}
+
+@test "gh: the value of --label, --title, --body and --search is not a target" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  gh_in "$repo" issue list --label octo-work-org
+  [ "$status" -eq 0 ]
+  [ "$output" = "GH_TOKEN=tok-personal-acct args: issue list --label octo-work-org" ]
+  gh_in "$repo" issue list --label=octo-work-org --search=octo-work-org/x
+  [ "$status" -eq 0 ]
+  [ "$output" = "GH_TOKEN=tok-personal-acct args: issue list --label=octo-work-org --search=octo-work-org/x" ]
+  gh_in "$repo" issue create --title octo-work-org/x --body=octo-work-org
+  [ "$status" -eq 0 ]
+  [ "$output" = "GH_TOKEN=tok-personal-acct args: issue create --title octo-work-org/x --body=octo-work-org" ]
+}
+
+@test "gh: a target next to a skipped option still picks the named owner" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  gh_in "$repo" repo view octo-work-org/x
+  [ "$status" -eq 0 ]
+  [ "$output" = "GH_TOKEN=tok-work-acct args: repo view octo-work-org/x" ]
+  gh_in "$repo" api /repos/octo-work-org/x
+  [ "$status" -eq 0 ]
+  [ "$output" = "GH_TOKEN=tok-work-acct args: api /repos/octo-work-org/x" ]
+  gh_in "$repo" issue list --label bug -R octo-work-org/x
+  [ "$status" -eq 0 ]
+  [ "$output" = "GH_TOKEN=tok-work-acct args: issue list --label bug -R octo-work-org/x" ]
+}
+
 # --- gh-doctor -------------------------------------------------------------
 #
 # The stub answers `gh api user --jq .login` with $GH_STUB_API_LOGIN when set,
