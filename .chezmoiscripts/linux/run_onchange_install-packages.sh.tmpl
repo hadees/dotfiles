@@ -9,7 +9,8 @@
 #
 # NOTE: this script exits 0 when it decides to skip, and chezmoi records that
 # as a completed run keyed on the hashes above. Gaining sudo afterwards does
-# NOT make a later `chezmoi apply` retry it — see CLAUDE.md, "Package lists".
+# NOT make a later `chezmoi apply` retry it — see .claude/rules/packages.md,
+# "A skipped run is recorded as a successful one".
 set -e
 
 # The lists to install, in order. The wsl class gets its own on top of the
