@@ -177,13 +177,22 @@ shared_templates() {
   done
 }
 
-@test "every seat ends with the report contract" {
+@test "every seat ends with the report contract, and a decision seat with the decision contract" {
   for t in $(templates); do
     b="$(body "$t")"
+    grep -q 'You do not dispatch subagents' <<< "$b" || { echo "$t: no nested-dispatch rule"; false; }
+    # A seat whose whole reply is one JSON object read by a program has no
+    # human-facing report. The exemption is these four checks, not a heading.
+    if has_heading "$b" "Decision contract"; then
+      grep -q 'one JSON object' <<< "$b" || { echo "$t: no JSON-only rule"; false; }
+      grep -q '"confidence"' <<< "$b" || { echo "$t: no confidence field"; false; }
+      ! has_heading "$b" "Report" || { echo "$t: a decision seat has no Report section"; false; }
+      ! grep -qEw 'Edit|Write|NotebookEdit|Bash' <<< "$(fmval "$t" tools)" || { echo "$t: a decision seat can change things"; false; }
+      continue
+    fi
     has_heading "$b" "Report" || { echo "$t: no Report section"; false; }
     grep -q 'DONE_WITH_CONCERNS' <<< "$b" || { echo "$t: no status line"; false; }
     grep -q 'under 15 lines' <<< "$b" || { echo "$t: no reply cap"; false; }
-    grep -q 'You do not dispatch subagents' <<< "$b" || { echo "$t: no nested-dispatch rule"; false; }
   done
 }
 
