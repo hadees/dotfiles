@@ -297,6 +297,46 @@ push_repo() {
   [ "$status" -eq 0 ]
 }
 
+@test "pre-push: a fixup! or squash! commit is refused, and named" {
+  for prefix in "fixup!" "squash!" "amend!"; do
+    repo=$(push_repo)
+    echo y >> "$repo/f"; git -C "$repo" add f
+    git -C "$repo" commit -q -m "$prefix add the thing"
+    run git -C "$repo" push -q origin main
+    [ "$status" -ne 0 ] || { echo "$prefix commit was pushed"; false; }
+    [[ "$output" == *"still carries unfinished commits"* ]]
+    [[ "$output" == *"$prefix add the thing"* ]]
+    [[ "$output" == *"git config hook.pre-push.wip false"* ]]
+  done
+}
+
+@test "pre-push: a capitalised Fixup! is not an autosquash commit (git would not fold it)" {
+  repo=$(push_repo)
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "Fixup! the thing"
+  run git -C "$repo" push -q origin main
+  [ "$status" -eq 0 ]
+}
+
+@test "pre-push: a subject that only mentions fixup! is not an autosquash commit" {
+  repo=$(push_repo)
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "docs: explain fixup! commits"
+  run git -C "$repo" push -q origin main
+  [ "$status" -eq 0 ]
+}
+
+@test "pre-push: hook.pre-push.wip=false lets fixup! and squash! commits through" {
+  repo=$(push_repo)
+  git -C "$repo" config hook.pre-push.wip false
+  echo y >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "fixup! add the thing"
+  echo z >> "$repo/f"; git -C "$repo" add f
+  git -C "$repo" commit -q -m "squash! add the thing"
+  run git -C "$repo" push -q origin main
+  [ "$status" -eq 0 ]
+}
+
 @test "pre-push: only the commits being pushed are examined" {
   repo=$(push_repo)
   # A WIP commit that is already on the remote is somebody else's problem;

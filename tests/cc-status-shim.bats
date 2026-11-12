@@ -1362,3 +1362,36 @@ sub_stop() { payload SubagentStop "$1" '"session_id":"s1","agent_id":"ag1"'"${2:
   [[ $output == *"writes=count"$'\n'* || $output == *"writes=count" ]]
   [ ! -e "$BATS_TEST_TMPDIR/calls" ]
 }
+
+# stale_fixture: old per-session files (eight days), a fresh one, and a file other tools keep there.
+stale_fixture() {
+  local d="$XDG_STATE_HOME/tabstatus" f
+  mkdir -p "$d"
+  for f in old.named old.tasks old.seats keep.txt; do
+    : > "$d/$f"
+    python3 -c 'import os,sys,time; t=time.time()-8*86400; os.utime(sys.argv[1],(t,t))' "$d/$f"
+  done
+  : > "$d/fresh.named"
+}
+
+@test "sweep: SessionStart removes per-session state files older than seven days and nothing else" {
+  stale_fixture
+  run_shim <<< "$(payload SessionStart '[]' '"cwd":"/work/proj","session_id":"s1"')"
+  [ "$status" -eq 0 ]
+  local d="$XDG_STATE_HOME/tabstatus" f
+  for f in old.named old.tasks old.seats; do
+    [ ! -e "$d/$f" ]
+  done
+  [ -e "$d/fresh.named" ]
+  [ -e "$d/keep.txt" ]
+}
+
+@test "sweep: explain mode and other events remove nothing" {
+  stale_fixture
+  run sh "$SHIM" explain <<< "$(payload SessionStart '[]' '"cwd":"/work/proj","session_id":"s1"')"
+  run_shim <<< "$(payload Stop '[]' '"cwd":"/work/proj","session_id":"s1"')"
+  local d="$XDG_STATE_HOME/tabstatus" f
+  for f in old.named old.tasks old.seats keep.txt fresh.named; do
+    [ -e "$d/$f" ]
+  done
+}

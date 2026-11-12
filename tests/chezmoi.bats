@@ -169,6 +169,24 @@ teardown() {
       *) sh -n "$rendered" ;;
     esac
   done
+  # The linux class installs the shared list only, and apt-get must not share
+  # the loop's stdin (it would swallow the remaining package names).
+  rendered="$TMPHOME/.chezmoiscripts-linux-run_onchange_install-packages.sh"
+  ! grep -q 'packages-apt-wsl.txt' "$rendered" || { echo "linux class mentions the WSL list"; false; }
+  grep -E 'apt-get install' "$rendered" | grep -q '"\$pkg" </dev/null' \
+    || { echo "apt-get install does not read from /dev/null"; false; }
+}
+
+@test "the wsl class renders the install script with both lists" {
+  cd "$BATS_TEST_DIRNAME/.."
+  chez init --source "$PWD" --promptString machineClass=wsl
+  local rendered="$TMPHOME/wsl-install-packages.sh"
+  chez execute-template --source "$PWD" < .chezmoiscripts/linux/run_onchange_install-packages.sh.tmpl > "$rendered"
+  sh -n "$rendered"
+  grep -q '^set -- .*packages-apt\.txt' "$rendered"
+  grep -q '^set -- "\$@" .*packages-apt-wsl\.txt' "$rendered"
+  grep -q '^# packages-apt\.txt hash: ' "$rendered"
+  grep -q '^# packages-apt-wsl\.txt hash: ' "$rendered"
 }
 
 @test "linux class deploys no identity and no secrets" {
