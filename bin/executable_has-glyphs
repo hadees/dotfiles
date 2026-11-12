@@ -42,7 +42,16 @@ fi
 
 if [[ $(uname) == Darwin ]]; then
 	python3 - "$@" <<'PYEOF'
-import ctypes, ctypes.util, os, plistlib, sys
+import ctypes, ctypes.util, os, plistlib, sys, traceback
+
+# 0 = every glyph renders, 1 = some do not, 2 = the check itself crashed
+# (an exit of 1 from an uncaught exception would read as a verdict)
+def crashed(*exc):
+    traceback.print_exception(*exc)
+    sys.stderr.flush()
+    os._exit(2)
+
+sys.excepthook = crashed
 
 ct = ctypes.CDLL(ctypes.util.find_library("CoreText"))
 cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
@@ -154,5 +163,10 @@ else
 	rc=1
 fi
 
-echo "$rc" >"$cache_file"
+# 0 and 1 are verdicts. Anything else (python3 would not start, or crashed)
+# is not, and caching it would remember "no glyphs" until a font changed.
+case $rc in
+	0 | 1) echo "$rc" >"$cache_file" ;;
+	*) exit 1 ;;
+esac
 exit "$rc"
