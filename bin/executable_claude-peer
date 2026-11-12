@@ -98,6 +98,10 @@
 #                            shell that runs hermes_peer (hermes where a profile
 #                            routes here, else a one-line notice); no
 #                            repository or worktree needed
+#   overlays                 name<TAB>root<TAB>state<TAB>leader<TAB>pid per
+#                            private overlay of this machine (a chezmoi config
+#                            whose source is a git repository); state is idle,
+#                            waiting or running in a tab of another repository
 #   peers [--leader <dir>] [<dir>]
 #                            worktree<TAB>pid<TAB>leader<TAB>label per live
 #                            claim in the repository of <dir> (default $PWD), sorted;
@@ -1615,6 +1619,110 @@ cmd_plan() {
   worktree_plan "$repo" "$@"
 }
 
+# --- overlays -----------------------------------------------------------------
+# An overlay is a private chezmoi source of this machine: a ~/.config/chezmoi
+# config other than chezmoi.toml whose `chezmoi --config <cfg> source-path` is in
+# a git repository (the rule dotfiles() applies). This section only finds them and
+# says whether a session runs in one; it reads git metadata and this script's own
+# files, nothing from an overlay's tree. Every compare is on `pwd -P` output.
+
+overlays_file() { printf '%s/claude-peer/overlays\n' "${XDG_STATE_HOME:-$HOME/.local/state}"; }
+
+# dir -> the physical main checkout of the non-bare repository holding dir
+root_of() {
+  ro_c=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  case $ro_c in
+    */.git) ( cd "${ro_c%/.git}" 2>/dev/null && pwd -P );;
+    *) return 1;;
+  esac
+}
+
+# The main checkout of the repository holding `chezmoi source-path`.
+public_root() {
+  command -v chezmoi >/dev/null 2>&1 || return 1
+  pr_s=$(chezmoi source-path 2>/dev/null) || return 1
+  [ -d "$pr_s" ] || return 1
+  root_of "$pr_s"
+}
+
+# config path -> the label source: its base name, lowercase, [a-z0-9_-], starting with a letter
+overlay_name() {
+  on_n=${1##*/}
+  on_n=$(printf '%s' "${on_n%.toml}" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C tr -c 'a-z0-9_-' '-')
+  case $on_n in [a-z]*) ;; *) on_n=o-$on_n;; esac
+  printf '%s\n' "$on_n"
+}
+
+# rows column value -> the config base name of the first row with that value in that column
+overlay_seen() {
+  printf '%s' "$1" | OS_V=$3 awk -F'\t' -v c="$2" '$c == ENVIRON["OS_V"] { n = split($3, p, "/"); print p[n]; exit }'
+}
+
+# name<TAB>root<TAB>config per overlay, sorted by name; a candidate that cannot be
+# one is named on stderr and left out
+overlay_list() {
+  ol_cand=
+  for ol_c in "$HOME"/.config/chezmoi/*.toml; do
+    [ -f "$ol_c" ] || continue
+    [ "${ol_c##*/}" != chezmoi.toml ] || continue
+    ol_cand="$ol_cand$(overlay_name "$ol_c")	$ol_c
+"
+  done
+  [ -n "$ol_cand" ] || return 0
+  command -v chezmoi >/dev/null 2>&1 || { warn "chezmoi is not on PATH; overlays cannot be resolved"; return 0; }
+  ol_pub=$(public_root) || ol_pub=
+  ol_cand=$(printf '%s' "$ol_cand" | LC_ALL=C sort)
+  ol_rows=
+  while IFS='	' read -r ol_n ol_c; do
+    ol_why=
+    ol_s=$(chezmoi --config "$ol_c" source-path 2>/dev/null </dev/null) || ol_s=
+    if [ ! -d "$ol_s" ]; then ol_why='chezmoi names no source directory'
+    elif ! ol_r=$(root_of "$ol_s"); then ol_why="$ol_s is not inside a non-bare git repository"
+    elif [ "$ol_r" = "$ol_pub" ]; then ol_why='its source is the public source'
+    elif ol_o=$(overlay_seen "$ol_rows" 2 "$ol_r") && [ -n "$ol_o" ]; then ol_why="same repository as $ol_o"
+    elif ol_o=$(overlay_seen "$ol_rows" 1 "$ol_n") && [ -n "$ol_o" ]; then ol_why="the name '$ol_n' is already taken by $ol_o"
+    fi
+    if [ -n "$ol_why" ]; then warn "overlay config ${ol_c##*/}: $ol_why; skipped"; continue; fi
+    ol_rows="$ol_rows$ol_n	$ol_r	$ol_c
+"
+    printf '%s\t%s\t%s\n' "$ol_n" "$ol_r" "$ol_c"
+  done <<EOF
+$ol_cand
+EOF
+}
+
+overlay_names() { overlay_list | awk -F'\t' '{ s = s (NR > 1 ? " " : "") $1 } END { print s }'; }
+
+# name|N -> the root of that overlay, or of the N-th row; status 1 when none
+overlay_root() {
+  or_r=$(overlay_list 2>/dev/null | OR_A=$1 awk -F'\t' '
+    BEGIN { a = ENVIRON["OR_A"]; num = (a ~ /^[0-9]+$/) }
+    (num ? NR == a + 0 : $1 == a) { print $2; exit }')
+  [ -n "$or_r" ] && printf '%s\n' "$or_r"
+}
+
+# stdin: rows with a pid in column 2 and a leader in column 3 -> leader<TAB>pid of
+# the first led from outside root (a pane of another repository's tab)
+overlay_foreign() {
+  OF_R=$1 awk -F'\t' 'BEGIN { r = ENVIRON["OF_R"] } $3 != r && index($3, r "/") != 1 { print $3 "\t" $2; exit }'
+}
+
+# root -> state<TAB>leader<TAB>pid
+overlay_state() {
+  os_x=$(cmd_peers "$1" | overlay_foreign "$1")
+  [ -z "$os_x" ] || { printf 'running\t%s\n' "$os_x"; return 0; }
+  os_x=$(waiters "$1" | overlay_foreign "$1")
+  [ -z "$os_x" ] || { printf 'waiting\t%s\n' "$os_x"; return 0; }
+  printf 'idle\t-\t-\n'
+}
+
+cmd_overlays() {
+  [ $# -eq 0 ] || usage
+  overlay_list | while IFS='	' read -r co_n co_r _; do
+    printf '%s\t%s\t%s\n' "$co_n" "$co_r" "$(overlay_state "$co_r")"
+  done
+}
+
 # --- the Workgroup ------------------------------------------------------------
 
 os() { uname -s 2>/dev/null; }
@@ -2192,6 +2300,7 @@ cmd=$1; shift
 case $cmd in
   run) cmd_run "$@";;
   hermes) cmd_hermes "$@";;
+  overlays) cmd_overlays "$@";;
   peers) cmd_peers "$@";;
   start) cmd_start "$@";;
   stop) cmd_stop "$@";;

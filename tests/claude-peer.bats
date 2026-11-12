@@ -2472,3 +2472,194 @@ quiet_erases() {
   quiet_erases '40 120' ''
   ! grep -qE "${ESC}\[[0-9]+A" "$out"
 }
+
+# --- overlays ----------------------------------------------------------------------
+# An overlay is a ~/.config/chezmoi/<name>.toml (other than chezmoi.toml) whose
+# `chezmoi --config <cfg> source-path` is a git repository. A chezmoi stub answers
+# from <cfg>.src, so nothing reads the real configs; fixtures are invented.
+
+# overlay_stub: a chezmoi stub first on PATH. `--config <cfg> source-path` prints
+# the content of <cfg>.src, a bare `source-path` prints $FAKE_CHEZMOI_SOURCE,
+# $FAKE_CHEZMOI_FAIL makes every call fail; each call is logged.
+overlay_stub() {
+  cat >"$BATS_TEST_TMPDIR/bin/chezmoi" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >>"$BATS_TEST_TMPDIR/chezmoi.log"
+[ -z "${FAKE_CHEZMOI_FAIL-}" ] || exit 1
+case " $* " in
+  *" source-path "*)
+    cfg=
+    while [ $# -gt 0 ]; do
+      [ "$1" = --config ] && cfg=$2
+      shift
+    done
+    if [ -n "$cfg" ]; then cat "$cfg.src" 2>/dev/null
+    elif [ -n "${FAKE_CHEZMOI_SOURCE-}" ]; then printf '%s\n' "$FAKE_CHEZMOI_SOURCE"
+    fi
+    exit 0;;
+esac
+exit 0
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/chezmoi"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+}
+
+# overlay_cfg <file> <dir>: ~/.config/chezmoi/<file>, whose source is <dir>
+overlay_cfg() {
+  mkdir -p "$HOME/.config/chezmoi"
+  : >"$HOME/.config/chezmoi/$1"
+  printf '%s\n' "$2" >"$HOME/.config/chezmoi/$1.src"
+}
+
+# overlay_repo <name>: a repository with one commit under the test directory; prints its physical path
+overlay_repo() {
+  mkdir -p "$BATS_TEST_TMPDIR/$1"
+  git -C "$BATS_TEST_TMPDIR/$1" init -q
+  git -C "$BATS_TEST_TMPDIR/$1" commit -q --allow-empty -m initial
+  ( cd "$BATS_TEST_TMPDIR/$1" && pwd -P )
+}
+
+# ov_busy <repo> <leader>: a live claim in a linked worktree of <repo> and a live wait file, both led from <leader>
+ov_busy() {
+  git -C "$1" worktree add -q --detach "$1/.claude/worktrees/alpha"
+  sleep 60 & OV_CLAIM=$!
+  sleep 60 & OV_WAIT=$!
+  PANES="$PANES $OV_CLAIM $OV_WAIT"
+  if [ "${3-}" != wait-only ]; then
+    printf '%s\n%s\nAlpha\n' "$OV_CLAIM" "$2" >"$(git -C "$1/.claude/worktrees/alpha" rev-parse --absolute-git-dir)/claude-peer.claim"
+  fi
+  mkdir -p "$1/.git/claude-peer.wait"
+  printf '%s\n' "$2" >"$1/.git/claude-peer.wait/beta.$OV_WAIT"
+}
+
+@test "overlays: none configured prints nothing and never runs chezmoi" {
+  overlay_stub
+  run --separate-stderr sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ -z "$stderr" ]
+  # chezmoi.toml alone is no overlay either
+  OV1=$(overlay_repo ov1)
+  overlay_cfg chezmoi.toml "$OV1"
+  run --separate-stderr sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ -z "$stderr" ]
+  [ ! -e "$BATS_TEST_TMPDIR/chezmoi.log" ]
+}
+
+@test "overlays: one overlay is a row, idle; chezmoi.toml is never a row" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  overlay_cfg chezmoi.toml "$OV1"
+  overlay_cfg fake1.toml "$OV1"
+  run --separate-stderr sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ "$output" = "fake1"$'\t'"$OV1"$'\t'"idle"$'\t'"-"$'\t'"-" ]
+  [ -z "$stderr" ]
+  ! grep -qF "chezmoi.toml" "$BATS_TEST_TMPDIR/chezmoi.log" || { echo "chezmoi.toml was asked"; false; }
+}
+
+@test "overlays: two overlays list in name order, by C order not the locale's" {
+  overlay_stub
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg fake_a.toml "$OV1"
+  overlay_cfg fake-b.toml "$OV2"
+  LC_ALL=en_US.UTF-8 run --separate-stderr sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | cut -f1 | paste -sd' ' -)" = "fake-b fake_a" ]
+  [ "$(printf '%s\n' "$output" | cut -f2 | paste -sd' ' -)" = "$OV2 $OV1" ]
+  [ -z "$stderr" ]
+}
+
+@test "overlays: a config name becomes a label name" {
+  overlay_stub
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg Fake.Two.toml "$OV1"
+  overlay_cfg 9x.toml "$OV2"
+  run --separate-stderr sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | cut -f1 | paste -sd' ' -)" = "fake-two o-9x" ]
+}
+
+@test "overlays: a linked worktree as the source resolves to its main checkout" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  git -C "$OV1" worktree add -q --detach "$BATS_TEST_TMPDIR/ov1-linked"
+  overlay_cfg fake1.toml "$BATS_TEST_TMPDIR/ov1-linked/"
+  run --separate-stderr sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | cut -f2)" = "$OV1" ]
+}
+
+@test "overlays: a candidate that cannot be one is named on stderr and left out" {
+  overlay_stub
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2); OV3=$(overlay_repo ov3); OV4=$(overlay_repo ov4)
+  mkdir -p "$BATS_TEST_TMPDIR/plain"
+  overlay_cfg fake1.toml "$OV1"
+  overlay_cfg fake1b.toml "$OV1"
+  overlay_cfg fake2.toml "$BATS_TEST_TMPDIR/missing"
+  overlay_cfg fake3.toml "$BATS_TEST_TMPDIR/plain"
+  overlay_cfg fake4.toml "$OV2"
+  overlay_cfg Fake.Five.toml "$OV3"
+  overlay_cfg fake-five.toml "$OV4"
+  : >"$HOME/.config/chezmoi/fake6.toml"
+  FAKE_CHEZMOI_SOURCE="$OV2" run --separate-stderr sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | cut -f1,2 | paste -sd' ' -)" = "$(printf 'fake-five\t%s fake1\t%s' "$OV3" "$OV1")" ]
+  [ "$(printf '%s\n' "$stderr" | wc -l | tr -d ' ')" -eq 6 ]
+  [[ "$stderr" == *"claude-peer: overlay config fake1b.toml: same repository as fake1.toml; skipped"* ]]
+  [[ "$stderr" == *"claude-peer: overlay config fake2.toml: chezmoi names no source directory; skipped"* ]]
+  [[ "$stderr" == *"claude-peer: overlay config fake3.toml: $BATS_TEST_TMPDIR/plain is not inside a non-bare git repository; skipped"* ]]
+  [[ "$stderr" == *"claude-peer: overlay config fake4.toml: its source is the public source; skipped"* ]]
+  [[ "$stderr" == *"claude-peer: overlay config fake-five.toml: the name 'fake-five' is already taken by Fake.Five.toml; skipped"* ]]
+  [[ "$stderr" == *"claude-peer: overlay config fake6.toml: chezmoi names no source directory; skipped"* ]]
+}
+
+@test "overlays: candidates without chezmoi on PATH are one line and no rows" {
+  local d="$BATS_TEST_TMPDIR/minimal" t
+  mkdir -p "$d"
+  for t in git sort tr awk sed cut uname; do ln -s "$(command -v $t)" "$d/$t"; done
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  run --separate-stderr env PATH="$d" /bin/sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$stderr" = "claude-peer: chezmoi is not on PATH; overlays cannot be resolved" ]
+}
+
+@test "overlays: a pane of another repository's tab makes the state waiting or running" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  ov_busy "$OV1" "$REPO" wait-only
+  run sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ "$output" = "fake1"$'\t'"$OV1"$'\t'"waiting"$'\t'"$REPO"$'\t'"$OV_WAIT" ]
+  # a live claim beats a wait file
+  printf '%s\n%s\nAlpha\n' "$OV_CLAIM" "$REPO" >"$(git -C "$OV1/.claude/worktrees/alpha" rev-parse --absolute-git-dir)/claude-peer.claim"
+  run sh "$BIN" overlays
+  [ "$output" = "fake1"$'\t'"$OV1"$'\t'"running"$'\t'"$REPO"$'\t'"$OV_CLAIM" ]
+}
+
+@test "overlays: a pane led from inside the overlay itself leaves it idle" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  mkdir -p "$OV1/sub"
+  ov_busy "$OV1" "$OV1/sub"
+  run sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ "$output" = "fake1"$'\t'"$OV1"$'\t'"idle"$'\t'"-"$'\t'"-" ]
+  printf '%s\n' "$OV1" >"$OV1/.git/claude-peer.wait/beta.$OV_WAIT"
+  run sh "$BIN" overlays
+  [ "$output" = "fake1"$'\t'"$OV1"$'\t'"idle"$'\t'"-"$'\t'"-" ]
+}
+
+@test "overlays: arguments are usage, exit 2" {
+  # an unknown verb is exit 2 as well, so the verb must also be known
+  run sh "$BIN" overlays extra
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"unknown command"* ]]
+  [[ "$output" == *"Usage: claude-peer"* ]]
+}
