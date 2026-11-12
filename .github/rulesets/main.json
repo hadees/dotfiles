@@ -13,6 +13,7 @@
           { "context": "test (ubuntu-latest)" },
           { "context": "test (macos-latest)" },
           { "context": "test-bootstrap" },
+          { "context": "test-macos-apply" },
           { "context": "test-rocky" },
           { "context": "test-wsl" }
         ]
