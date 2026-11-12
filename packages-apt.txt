@@ -103,3 +103,23 @@ apktool
 # jadx (Android decompiler) is not in Ubuntu's repos — unzip the jadx-<ver>.zip from github.com/skylot/jadx releases (needs a JRE)
 # antigravity-cli (agy) is not in Ubuntu's repos — install with Google's script, which puts agy in ~/.local/bin:
 #   curl -fsSL https://antigravity.google/cli/install.sh | bash
+
+# --- Brewfile formulae this list deliberately does not install ---
+# Every Brewfile formula is either a package above or named here; tests/packages.bats
+# checks it. Comments only: a name added as a package line installs on every box.
+# libraries Homebrew wants named and apt pulls in as dependencies:
+#   freetype gmp jpeg lame libdnet libevent libidn libmpc libpng libtiff libtool
+#   libxml2 mpfr openssl pcre readline webp x264 xvid xz
+# GNU or newer builds of tools macOS ships old; a Linux box already has them:
+#   bash-completion@2 binutils coreutils findutils gcc gnu-getopt gnu-sed grep
+#   openssh ssh-copy-id
+# macOS only:
+#   lsusb mackup mas pinentry-mac terminal-notifier webkit2png
+# installed above under the distro's name (Ubuntu: bats, sqlite3):
+#   bats-core sqlite
+# kept to the Mac; add a line above for any a Linux box should carry:
+#   aircrack-ng ansible bfg chezmoi cifer dns2tcp docker fcrackzip foremost
+#   git-flow heroku john knock llama.cpp llm lua mkcert mysql netpbm ngrep nmap
+#   node nodenv ollama overmind pngcheck postgresql qemu redis ruby-build scrcpy
+#   speedtest-cli sqlmap ssdeep tcpflow tcpreplay testssl tor ucspi-tcp vbindiff
+#   zopfli
