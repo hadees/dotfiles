@@ -53,7 +53,10 @@ case $1 in
           PrefsCustomFolder) printf '%s\n' "$FAKE_FOLDER";;
         esac;;
   export) cat "$FAKE_DOMAIN";;
-  write) printf '%s\n' "$*" >>"${FAKE_DEFAULTS_LOG:-/dev/null}";;
+  write) printf '%s\n' "$*" >>"${FAKE_DEFAULTS_LOG:-/dev/null}"
+         # were the store and the record already on disk when iTerm2 was repointed?
+         if [ -f "${ITERM2_PREFS_DIR-}/com.googlecode.iterm2.plist" ] && [ -f "${ITERM2_PREFS_RECORD-}" ]; then
+           echo files >>"${FAKE_DEFAULTS_LOG:-/dev/null}.order"; else echo nofiles >>"${FAKE_DEFAULTS_LOG:-/dev/null}.order"; fi;;
 esac
 STUB
   chmod +x "$b"/uname "$b"/ps "$b"/defaults
@@ -229,12 +232,6 @@ has() { grep -Fxq -- "$1" <<<"$output"; }
   run sh "$BIN" compose --print
   [ "$status" -eq 0 ]
   [[ "$output" == '<?xml'* ]]
-}
-
-@test "install is not built yet" {
-  run sh "$BIN" install
-  [ "$status" -eq 1 ]
-  [ "$output" = "iterm2-prefs: install is not built yet" ]
 }
 
 @test "no verb or an unknown one is usage, exit 2" {
@@ -740,4 +737,147 @@ STUB
   run sh "$BIN" capture --from "$TRUTH" --file "$LIVEF" Alpha
   [ "$status" -eq 1 ]
   [[ ! -e "$LIVEF" ]]
+}
+
+# old_folder: iTerm2 loads a folder store of its own, holding Keep=1, a local key and a data value
+old_folder() {
+  OLD="$BATS_TEST_TMPDIR/old"
+  mkdir -p "$OLD"
+  mkplist "$OLD/com.googlecode.iterm2.plist" '{"Keep": 1, "Local": "x", "Workgroups": b"w"}'
+  export FAKE_LOAD=1 FAKE_FOLDER="$OLD"
+}
+
+# phys: the physical path of the composed folder, as install hands it to defaults
+phys() { (cd -P "$ITERM2_PREFS_DIR" && pwd); }
+
+@test "install: refuses while iTerm2 runs" {
+  old_folder
+  frag 10-one '{"Keep": 2}'
+  export FAKE_PROCS=iTerm2
+  run sh "$BIN" install
+  [ "$status" -eq 1 ]
+  [ "$output" = "iterm2-prefs: quit iTerm2 first: it rewrites its preferences at quit" ]
+  [[ ! -e "$LIVEF" ]]
+  [[ ! -e "$FAKE_DEFAULTS_LOG" ]]
+  FAKE_OS=Linux run sh "$BIN" install
+  [ "$status" -eq 2 ]
+}
+
+@test "install: refuses a composed folder inside a git repository, and when git cannot be asked" {
+  repo="$BATS_TEST_TMPDIR/repo"
+  mkdir -p "$repo"
+  git init -q "$repo"
+  top=$(cd -P "$repo" && pwd)
+  export ITERM2_PREFS_DIR="$repo/sub/store"
+  frag 10-one '{"Keep": 2}'
+  run sh "$BIN" install
+  [ "$status" -eq 1 ]
+  [ "$output" = "iterm2-prefs: $ITERM2_PREFS_DIR is inside the git repository $top; the composed store must be outside every repository" ]
+  [[ ! -e "$repo/sub" ]]
+  [[ ! -e "$FAKE_DEFAULTS_LOG" ]]
+  # no git on PATH: the check fails closed
+  export ITERM2_PREFS_DIR="$BATS_TEST_TMPDIR/store"
+  mkdir -p "$BATS_TEST_TMPDIR/nogit"
+  for t in awk python3 uname ps defaults; do ln -s "$(command -v "$t")" "$BATS_TEST_TMPDIR/nogit/$t"; done
+  PATH="$BATS_TEST_TMPDIR/nogit" run /bin/sh "$BIN" install
+  [ "$status" -eq 1 ]
+  [ "$output" = "iterm2-prefs: cannot tell whether $ITERM2_PREFS_DIR is inside a git repository (git is not available)" ]
+  [[ ! -e "$ITERM2_PREFS_DIR/com.googlecode.iterm2.plist" ]]
+}
+
+@test "install: refuses when there is no fragment" {
+  run sh "$BIN" install
+  [ "$status" -eq 1 ]
+  [ "$output" = "iterm2-prefs: no fragments in $FRAGS; run dotfiles first" ]
+  [[ ! -e "$FAKE_DEFAULTS_LOG" ]]
+}
+
+@test "install: from a folder store, keeps its local keys, gives sourced keys the source value, repoints iTerm2 last and prints the way back" {
+  old_folder
+  frag 10-one '{"Keep": 2, "Fresh": 3}'
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "iterm2-prefs: iTerm2 now loads $LIVEF (was: folder $OLD/com.googlecode.iterm2.plist); 2 units from 1 fragments, 1 took the source value over the old store's; start iTerm2" ]
+  [ "${lines[1]}" = "iterm2-prefs: to go back: defaults write com.googlecode.iterm2 PrefsCustomFolder -string '$OLD'" ]
+  [ "${#lines[@]}" -eq 2 ]
+  [ "$(pget "$LIVEF" 'd["Keep"], d["Fresh"], d["Local"], d["Workgroups"]')" = "(2, 3, 'x', b'w')" ]
+  [ "$(pget "$ITERM2_PREFS_RECORD" 'd["top"]')" = "{'Fresh': 3, 'Keep': 2}" ]
+  [ "$(cat "$FAKE_DEFAULTS_LOG")" = "write com.googlecode.iterm2 PrefsCustomFolder -string $(phys)
+write com.googlecode.iterm2 LoadPrefsFromCustomFolder -bool true" ]
+  [ "$(cat "$FAKE_DEFAULTS_LOG.order")" = "files
+files" ]
+  # the old store is not touched
+  [ "$(pget "$OLD/com.googlecode.iterm2.plist" 'd["Keep"]')" = 1 ]
+}
+
+@test "install: from the domain, seeds only the keys iTerm2 syncs" {
+  mkplist "$FAKE_DOMAIN" '{"Keep": 1, "Local": "x", "NoSyncFixture": 1, "NSFixture": 2, "PrefsCustomFolder": "z"}'
+  frag 10-one '{"Keep": 2}'
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "iterm2-prefs: iTerm2 now loads $LIVEF (was: domain); 1 units from 1 fragments, 1 took the source value over the old store's; start iTerm2" ]
+  [ "${lines[1]}" = "iterm2-prefs: to go back: defaults write com.googlecode.iterm2 LoadPrefsFromCustomFolder -bool false" ]
+  [ "$(pget "$LIVEF" 'sorted(d)')" = "['Keep', 'Local']" ]
+  [ "$(pget "$LIVEF" 'd["Keep"]')" = 2 ]
+}
+
+@test "install --no-seed: the store holds the sources alone" {
+  old_folder
+  frag 10-one '{"Keep": 2}'
+  run sh "$BIN" install --no-seed
+  [ "$status" -eq 0 ]
+  [[ "${lines[0]}" == *"1 units from 1 fragments, 0 took the source value over the old store's"* ]]
+  [ "$(pget "$LIVEF" 'd')" = "{'Keep': 2}" ]
+}
+
+@test "install --dry-run: prints would: lines and one differs row per differing key, writes nothing, and works while iTerm2 runs" {
+  old_folder
+  export FAKE_PROCS=iTerm2
+  frag 10-one '{"Keep": 2, "Fresh": 3}'
+  run sh "$BIN" install --dry-run
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "would: iterm2-prefs: iTerm2 now loads $LIVEF (was: folder $OLD/com.googlecode.iterm2.plist); 2 units from 1 fragments, 1 took the source value over the old store's; start iTerm2" ]
+  [ "${lines[1]}" = "would: iterm2-prefs: to go back: defaults write com.googlecode.iterm2 PrefsCustomFolder -string '$OLD'" ]
+  [ "${lines[2]}" = "$(printf 'differs\tKeep\t10-one')" ]
+  [ "${#lines[@]}" -eq 3 ]
+  [[ ! -e "$LIVEF" ]]
+  [[ ! -e "$ITERM2_PREFS_RECORD" ]]
+  [[ ! -e "$FAKE_DEFAULTS_LOG" ]]
+  [[ ! -e "$ITERM2_PREFS_DIR" ]]
+}
+
+@test "install: where the composed folder is already loaded it composes and repoints nothing" {
+  installed_fixture
+  frag 10-one '{"Keep": 1}'
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [ "$output" = "iterm2-prefs: 1 units applied from 1 fragments; 0 kept as changed in iTerm2 (iterm2-prefs capture); 0 reserved keys ignored" ]
+  [[ ! -e "$FAKE_DEFAULTS_LOG" ]]
+  frag 10-one '{"Keep": 2}'
+  before=$(sums)
+  run sh "$BIN" install --dry-run
+  [ "$status" -eq 0 ]
+  [ "$output" = "would: iterm2-prefs: 1 units applied from 1 fragments; 0 kept as changed in iTerm2 (iterm2-prefs capture); 0 reserved keys ignored" ]
+  [ "$(sums)" = "$before" ]
+}
+
+@test "install: an existing composed store is the seed, not the old folder" {
+  old_folder
+  mkplist "$OLD/com.googlecode.iterm2.plist" '{"Keep": 1, "OnlyOld": 1}'
+  mkdir -p "$ITERM2_PREFS_DIR"
+  mkplist "$LIVEF" '{"Keep": 1, "Local": "saved since"}'
+  frag 10-one '{"Keep": 2}'
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [ "$(pget "$LIVEF" 'd')" = "{'Keep': 2, 'Local': 'saved since'}" ]
+}
+
+@test "install: a store loaded from a URL is refused" {
+  export FAKE_LOAD=1 FAKE_FOLDER="https://example.invalid/prefs"
+  frag 10-one '{"Keep": 2}'
+  run sh "$BIN" install
+  [ "$status" -eq 1 ]
+  [ "$output" = "iterm2-prefs: iTerm2 loads its preferences from a URL (https://example.invalid/prefs); install repoints only a folder" ]
+  [[ ! -e "$LIVEF" ]]
+  [[ ! -e "$FAKE_DEFAULTS_LOG" ]]
 }

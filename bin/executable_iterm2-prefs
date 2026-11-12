@@ -43,7 +43,11 @@
 # operator's shortcut and resolves the chezmoi source of the deployed fragment. An
 # overlay's fragment is captured by that overlay's own session.
 #
-# Built so far: lint, compose, status and capture. install answers "not built yet".
+# install repoints iTerm2 at the composed folder, once, with iTerm2 quit: it seeds the
+# store from the old one, lets the sources win every key they set (a fresh domain
+# holds iTerm2's own defaults for many keys, which a three-way would all keep), writes
+# the store and the record, and only then changes the two defaults. It prints the
+# command that goes back.
 set -u
 
 warn() { printf 'iterm2-prefs: %s\n' "$*" >&2; }
@@ -573,6 +577,71 @@ def cmd_status(args):
     return 0
 
 
+def inside_git(path):
+    """The repository top that physical path lies in, or None. Fails closed: no git is a refusal."""
+    d = os.path.realpath(path)
+    while not os.path.isdir(d) and os.path.dirname(d) != d:
+        d = os.path.dirname(d)
+    try:
+        p = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except OSError:
+        raise Fail("cannot tell whether %s is inside a git repository (git is not available)" % path)
+    return p.stdout.decode().strip() if p.returncode == 0 else None
+
+
+def cmd_install(args):
+    if any(a not in ("--dry-run", "--no-seed") for a in args):
+        return usage("install [--dry-run] [--no-seed]")
+    dry, no_seed = "--dry-run" in args, "--no-seed" in args
+    pre = "would: " if dry else ""
+    if running() and not dry:
+        raise Fail("quit iTerm2 first: it rewrites its preferences at quit")
+    fragments, new, owner, order, ignored = sourced()
+    if not fragments:
+        raise Fail("no fragments in %s; run dotfiles first" % frag_dir())
+    top = inside_git(store_dir())
+    if top:
+        raise Fail("%s is inside the git repository %s; the composed store must be outside every repository"
+                   % (store_dir(), top))
+    kind, plist = current_store()
+    if kind == "url":
+        raise Fail("iTerm2 loads its preferences from a URL (%s); install repoints only a folder" % plist)
+    if is_installed(kind, plist):
+        if not dry:
+            return cmd_compose([])
+        apply, held = three_way(new, load_record(), units_of(moment_truth(running())))
+        print("would: iterm2-prefs: %d units applied from %d fragments; %d kept as changed in iTerm2 "
+              "(iterm2-prefs capture); %d reserved keys ignored" % (len(apply), len(fragments), len(held), len(ignored)))
+        return 0
+    if os.path.exists(live_path()):
+        seed = load_or_empty(live_path())
+    else:
+        seed = {} if no_seed else truth("store")
+    cur = units_of(seed)
+    apply, _ = three_way(new, {}, cur, reset=True)
+    differing = [u for u in apply if u in cur]
+    apply_units(seed, apply, order)
+    was = "domain" if kind == "domain" else "folder " + plist
+    back = ("defaults write com.googlecode.iterm2 LoadPrefsFromCustomFolder -bool false" if kind == "domain" else
+            "defaults write com.googlecode.iterm2 PrefsCustomFolder -string '%s'" % os.path.dirname(plist))
+    print(pre + "iterm2-prefs: iTerm2 now loads %s (was: %s); %d units from %d fragments, %d took the source "
+          "value over the old store's; start iTerm2" % (live_path(), was, len(new), len(fragments), len(differing)))
+    print(pre + "iterm2-prefs: to go back: " + back)
+    if dry:
+        for u in differing:
+            print("differs\t%s\t%s" % (unit_text(u), owner[u]))
+        return 0
+    write_atomic(live_path(), dump_plist(seed))
+    write_atomic(record_path(), dump_record(new))
+    # repoint only now: iTerm2 pointed at an empty folder loads nothing and never saves
+    for key, flag in (("PrefsCustomFolder", ["-string", os.path.realpath(store_dir())]),
+                      ("LoadPrefsFromCustomFolder", ["-bool", "true"])):
+        if defaults("write", "com.googlecode.iterm2", key, *flag) is None:
+            raise Fail("defaults write %s failed; the store is written, iTerm2 still loads the old one" % key)
+    return 0
+
+
 class Raw:
     def __init__(self, text):
         self.text = text
@@ -686,7 +755,7 @@ def cmd_capture(args):
 def main():
     verb, args = sys.argv[1], sys.argv[2:]
     try:
-        return {"lint": cmd_lint, "compose": cmd_compose, "status": cmd_status, "capture": cmd_capture}[verb](args)
+        return {"lint": cmd_lint, "compose": cmd_compose, "status": cmd_status, "capture": cmd_capture, "install": cmd_install}[verb](args)
     except Fail as e:
         sys.stderr.write("iterm2-prefs: %s\n" % e)
         return 1
@@ -747,7 +816,7 @@ case ${1:-} in
     done
     case $from in ''|domain|store) need_macos capture;; esac
     go capture "$@";;
-  install) die "$1 is not built yet";;
+  install) need_macos install; shift; go install "$@";;
   -h|--help|help) usage;;
   '') usage >&2; exit 2;;
   *) warn "unknown verb: $1"; usage >&2; exit 2;;
