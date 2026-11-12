@@ -2435,7 +2435,7 @@ stopmark() { echo "$(git -C "$REPO/.claude/worktrees/alpha" rev-parse --absolute
   [[ "$(grep "	end	" "$REPO/$LOG" | cut -f4)" == *"(the task) (stopped by Lead)" ]]
   ! grep -q "	gone	" "$REPO/$LOG" || { echo "a stopped hand-off logged gone"; false; }
   sleep 0.5
-  [ ! -e "$PB_CALLS" ]
+  ! grep -q lead-news "$PB_CALLS" 2>/dev/null || { echo "a requested stop told Lead"; false; }
   [ ! -e "$(stopmark)" ]
 }
 
@@ -2460,4 +2460,21 @@ stopmark() { echo "$(git -C "$REPO/.claude/worktrees/alpha" rev-parse --absolute
   [ "$status" -eq 1 ]
   [[ "$output" == *"did not exit within 1s"* ]]
   [ ! -e "$(stopmark)" ]
+}
+
+@test "start --handoff starts the stall clock with the leader, worktree, pane pid and both ids; not when off or plain" {
+  pb_stub
+  FAKE_SHELL_SLEEP=3 pane alpha
+  CLAUDE_PID=4242 CLAUDE_CODE_SESSION_ID=aaaa-bbbb sh "$BIN" start alpha --handoff fix >/dev/null
+  pb_wait 1
+  [ "$(grep handoff-check "$PB_CALLS")" = "handoff-check $REPO $REPO/.claude/worktrees/alpha $LAST_PANE 4242 aaaa-bbbb" ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  : >"$PB_CALLS"
+  git config claude-peer.stall-minutes 0
+  CLAUDE_PID=4242 sh "$BIN" start alpha --handoff fix >/dev/null
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  git config --unset claude-peer.stall-minutes
+  CLAUDE_PID=4242 sh "$BIN" start alpha fix >/dev/null 2>&1
+  sleep 0.5
+  ! grep -q handoff-check "$PB_CALLS" || { echo "a clock started when off or plain"; false; }
 }

@@ -306,7 +306,10 @@ is called with lines 9 and 10, so Lead's own `stop; start` never wakes it.
 Anything else is T2's `end`. `gone` closes that label's claims as `end` does.
 A file is used because `stop` logs only after the claim is gone, so the log's
 order cannot tell a requested stop from an ending; `write_claim` removes a
-stale mark.
+stale mark. Once the claim is seen, `start --handoff` also leaves postbox's
+stall clock running, detached (`handoff-check <leader> <worktree> <pane pid>
+<lead pid> <lead sid>`), unless `claude-peer.stall-minutes` is 0 or postbox is
+absent; `start`'s output and status do not change.
 
 The public source ships seven top-level contexts, `dot_config/claude-peer/contexts/NN-<name>.ctx`
 (`ask`, `look-at`, `plan`, `prs`, `audit`, `catch-up`, `team`), which deploy on every class but

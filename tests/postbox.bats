@@ -1433,3 +1433,105 @@ peer_stop() {
   run payload '{"cwd":"'"$WORK"'","session_id":"s2"}' hook start
   [[ "$output" != *"Alpha done"* ]]
 }
+
+# --- the stall clock: postbox handoff-check --once ----------------------------------
+
+# news_leader plus a stub terminal-notifier; the clock's own arguments in HC.
+clock() {
+  news_leader
+  NOTIFY_LOG="$BATS_TEST_TMPDIR/notify.log"; export NOTIFY_LOG
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "$NOTIFY_LOG"\n' > "$BIN/terminal-notifier"
+  chmod +x "$BIN/terminal-notifier"
+  HC=(handoff-check --once "$WORK" "$wt" 4242 - -)
+}
+sfile() { echo "$POSTBOX_STATE/handoff/$(rkey).alpha"; }
+leadnews() { cat "$POSTBOX_STATE/logs/courier.log" 2>/dev/null | grep -c 'lead-news:'; }
+
+@test "handoff-check: a live claim with nothing pending does nothing" {
+  clock
+  run "$PB" "${HC[@]}"
+  [ "$status" -eq 0 ]
+  ! grep -q 'idle' "$PEER_LOG" || { echo "a live claim was reported gone"; false; }
+  [ ! -e "$NOTIFY_LOG" ]
+}
+
+@test "handoff-check: a dead claim with no line is reported gone once; with an end line it is not" {
+  clock
+  export FAKE_LIVE=''
+  "$PB" "${HC[@]}"
+  grep -qx 'log --as Alpha idle Alpha is gone: its session and its pane ended without a line' "$PEER_LOG"
+  : > "$PEER_LOG"
+  logl 1800000010 Alpha end "Alpha ended after 3m"
+  "$PB" "${HC[@]}"
+  ! grep -q 'idle' "$PEER_LOG" || { echo "an ended session was reported gone"; false; }
+}
+
+@test "handoff-check: a done that waits a whole interval wakes Lead again and tells the operator, once" {
+  clock
+  logl 1799999500 Alpha done "DONE: abc"
+  "$PB" "${HC[@]}"
+  [ "$(sed -n 's/^seen=//p' "$(sfile)")" = 1 ]
+  [ "$(leadnews)" -eq 0 ]
+  [ ! -e "$NOTIFY_LOG" ]
+  "$PB" "${HC[@]}"
+  [ "$(leadnews)" -eq 1 ]
+  [ "$(grep -c . "$NOTIFY_LOG")" -eq 1 ]
+  grep -qF -- '-title some-project · Alpha -message Alpha done: DONE: abc (not picked up by Lead)' "$NOTIFY_LOG"
+  "$PB" "${HC[@]}"
+  [ "$(leadnews)" -eq 1 ]
+  [ "$(grep -c . "$NOTIFY_LOG")" -eq 1 ]
+}
+
+@test "handoff-check: a line Lead's prompt delivered between passes clears seen and tells nobody" {
+  clock
+  logl 1799999500 Alpha done "DONE: abc"
+  "$PB" "${HC[@]}"
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  "$PB" "${HC[@]}"
+  [ "$(leadnews)" -eq 0 ]
+  [ ! -e "$NOTIFY_LOG" ]
+  ! grep -q '^seen=' "$(sfile)" 2>/dev/null || { echo "seen survived delivery"; false; }
+}
+
+@test "handoff-check: a dead claim with nothing pending stops and removes its state" {
+  clock
+  export FAKE_LIVE=''
+  mkdir -p "${POSTBOX_STATE}/handoff"; echo 'seen=3' > "$(sfile)"
+  "$PB" "${HC[@]}"
+  [ ! -e "$(sfile)" ]
+}
+
+@test "handoff-check: postbox.notify false logs and notifies nobody; no notifier is logged as such" {
+  clock
+  git config --file "$GIT_CONFIG_GLOBAL" postbox.notify false
+  logl 1799999500 Alpha done "DONE: abc"
+  "$PB" "${HC[@]}"; "$PB" "${HC[@]}"
+  [ ! -e "$NOTIFY_LOG" ]
+  grep -q 'operator: some-project · Alpha: Alpha done: DONE: abc (not picked up by Lead) (postbox.notify false)' "$POSTBOX_STATE/logs/courier.log"
+  git config --file "$GIT_CONFIG_GLOBAL" --unset postbox.notify
+  rm -f "$(sfile)" "$BIN/terminal-notifier"
+  # a PATH that holds only what postbox needs, so no real notifier is found
+  local b="$BATS_TEST_TMPDIR/minbin" c
+  mkdir -p "$b"
+  for c in sh git python3 sed awk tr cut grep date cat mkdir mv rm wc sort; do ln -s "$(command -v "$c")" "$b/$c"; done
+  PATH="$b" "$PB" "${HC[@]}"; PATH="$b" "$PB" "${HC[@]}"
+  grep -q 'operator: no notifier (some-project · Alpha)' "$POSTBOX_STATE/logs/courier.log"
+}
+
+@test "handoff-check: stall-minutes 0 or not a number runs no pass" {
+  clock
+  export FAKE_LIVE=''
+  git config --file "$GIT_CONFIG_GLOBAL" claude-peer.stall-minutes 0
+  "$PB" "${HC[@]}"
+  git config --file "$GIT_CONFIG_GLOBAL" claude-peer.stall-minutes soon
+  "$PB" "${HC[@]}"
+  ! grep -q 'idle' "$PEER_LOG" || { echo "a clock that is off ran"; false; }
+}
+
+@test "handoff-check: without --once it loops and leaves once the claim is dead and nothing is pending" {
+  clock
+  export FAKE_LIVE='' POSTBOX_CHECK_SLEEP=0
+  run "$PB" handoff-check "$WORK" "$wt" 4242 - -
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'is gone' "$PEER_LOG")" -eq 1 ]
+}

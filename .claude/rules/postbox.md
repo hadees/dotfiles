@@ -164,6 +164,29 @@ news block. `start)`, for a non-peer whose directory has a delivered count
 so a Lead restarted mid-chain reads in its first turn what its tabs logged
 while it was gone; without the count file no `claude-peer` runs.
 
+**The stall clock reaches the operator.** `claude-peer start --handoff`
+leaves one detached `postbox handoff-check <leader-dir> <worktree>
+<claim-pid> <lead-pid> <lead-sid>` per hand-off (ignores HUP; ends when its
+claim is dead and nothing is pending, or after 12 hours). Every
+`claude-peer.stall-minutes` (read in the leader directory; default 10, `0`
+or not a number: no clock; `POSTBOX_CHECK_SLEEP` seconds in tests; `--once`
+runs one pass) it runs a pass: a claim no longer in `peers <worktree>` with
+no `end`, `gone` or `stop` line for the label since the clock started is a
+pane that died with its session, written once as `log --as <Label> idle
+"<Label> is gone: …"`. Then `peer_news … "done idle gone" peek`: the state
+file `handoff/<key>.<slot>` keeps `seen` (the log's line count when a
+pending line was first seen) and `notified`; a pending line still
+undelivered a pass later (delivered count below `seen`) gets `lead-news
+--again` and `tell_operator "<repo> · <Label>" "<line> (not picked up by
+Lead)"`, once per `seen`. Nothing pending clears `seen`. `tell_operator` uses
+`terminal-notifier` (`-group postbox.<title>`, `-activate` iTerm2), else
+`notify-send`, else nothing, and logs `operator: <title>: <message>` or
+`operator: no notifier (<title>)`; `git config postbox.notify false`
+silences the notice only. `<repo>` is `~/bin/tabname` of the leader
+directory, else its base name. Cost: one sleeping `sh` per hand-off; a pass
+is two `claude-peer` reads and one `peer_news`; `pgrep -f 'postbox
+handoff-check'` counts them.
+
 Cost, over a session start that is otherwise unchanged (one `sh`, a few
 `python3` starts, one `curl` capped at two seconds, one `am check-inbox`,
 about 95 words): a non-peer start adds one socket test and one `python3` for

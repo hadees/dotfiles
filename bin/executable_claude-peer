@@ -1325,6 +1325,14 @@ cmd_start() {
       st_who=$(log_who)
       log_add "$st_who" start "$(label_of "${st_got##*/}") by $st_who" 2>/dev/null
       printf '%s\t%s\tstarted\t%s\n' "${st_got##*/}" "$st_got" "$rname-${st_got##*/}"
+      # the stall clock: one detached postbox per hand-off, see postbox handoff-check
+      st_pb=${CLAUDE_PEER_POSTBOX:-$HOME/bin/postbox}
+      st_ld=$(printf '%s' "$st_pick" | cut -f3)
+      st_sm=$(git -C "$st_ld" config --get claude-peer.stall-minutes 2>/dev/null) || st_sm=10
+      case $st_sm in ''|*[!0-9]*) st_sm=0;; esac
+      if [ "$st_ho" = 1 ] && [ "$st_sm" -gt 0 ] && [ -x "$st_pb" ]; then
+        ( "$st_pb" handoff-check "$st_ld" "$st_got" "$st_pid" "$st_cpid" "$st_csid" </dev/null >/dev/null 2>&1 & )
+      fi
       if [ "$st_ho" = 0 ] && [ -n "$st_prompt$st_cx" ] && [ -n "$st_cpid" ] && [ -z "${CLAUDE_PEER_WORKTREE-}" ]; then
         warn "not a hand-off: nobody is told when $(label_of "${st_got##*/}") finishes (--handoff)"
       fi

@@ -68,6 +68,13 @@
 #                             wakes each recipient's idle session
 #   postbox lead [dir]        the Lead session(s) of dir's Claude Peers tab (or
 #                             of dir): name, profile, status; exit 1 for none
+#   postbox handoff-check [--once] <leader-dir> <worktree> <claim-pid> <lead-pid> <lead-sid>
+#                             the stall clock `claude-peer start --handoff`
+#                             leaves running: every claude-peer.stall-minutes
+#                             (default 10, 0 off) it reports a pane that died
+#                             with its session and, when a done/idle/gone line
+#                             waited a whole interval undelivered, wakes Lead
+#                             again and tells the operator
 #   postbox lead-news [--again] <leader-dir> [<pid> <session-id>]
 #                             wake the leader's idle Lead with what its tabs
 #                             logged (claude-peer log calls it); every wake and
@@ -1331,6 +1338,102 @@ EOF
   exit 0
 }
 
+# The operator's desktop notice: terminal-notifier, else notify-send, else
+# nothing; one courier.log line either way. `git config postbox.notify false`
+# silences the notice and nothing else.
+tell_operator() { # title message
+  to_t=$(printf '%s' "$1" | tr -d '"\\\000-\037\177' | cut -c1-200)
+  to_m=$(printf '%s' "$2" | tr -d '"\\\000-\037\177' | cut -c1-200)
+  mkdir -p "$STATE/logs" 2>/dev/null
+  to_log="$STATE/logs/courier.log"
+  if [ "$(git config --get postbox.notify 2>/dev/null)" = false ]; then
+    printf '%s operator: %s: %s (postbox.notify false)\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$to_t" "$to_m" >> "$to_log" 2>/dev/null
+  elif command -v terminal-notifier >/dev/null 2>&1; then
+    terminal-notifier -title "$to_t" -message "$to_m" -group "postbox.$(printf '%s' "$to_t" | tr -c 'A-Za-z0-9._-' '_')" \
+      -activate com.googlecode.iterm2 </dev/null >/dev/null 2>&1
+    printf '%s operator: %s: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$to_t" "$to_m" >> "$to_log" 2>/dev/null
+  elif command -v notify-send >/dev/null 2>&1; then
+    notify-send "$to_t" "$to_m" </dev/null >/dev/null 2>&1
+    printf '%s operator: %s: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$to_t" "$to_m" >> "$to_log" 2>/dev/null
+  else
+    printf '%s operator: no notifier (%s)\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$to_t" >> "$to_log" 2>/dev/null
+  fi
+  return 0
+}
+
+# claude-peer.stall-minutes in the leader directory: a whole number, 0 when off.
+stall_minutes() {
+  sm=$(git -C "$1" config --get claude-peer.stall-minutes 2>/dev/null) || sm=10
+  case $sm in ''|*[!0-9]*) sm=0 ;; esac
+  printf '%s\n' "$sm"
+}
+
+# One pass of the stall clock. Returns 1 when the clock should stop.
+hc_pass() {
+  hc_live=0
+  "$PEERCMD" peers "$hc_wt" 2>/dev/null | awk -F'\t' -v w="$hc_wt" -v p="$hc_cpid" '$1 == w && $2 == p { f = 1 } END { exit !f }' && hc_live=1
+  hc_get() { sed -n "s/^$1=//p" "$hc_sf" 2>/dev/null | sed -n 1p; }
+  hc_set() { # key value (empty: remove)
+    mkdir -p "${hc_sf%/*}" 2>/dev/null
+    { grep -v "^$1=" "$hc_sf" 2>/dev/null; [ -z "$2" ] || printf '%s=%s\n' "$1" "$2"; } > "$hc_sf.tmp" && mv "$hc_sf.tmp" "$hc_sf"
+  }
+  hc_log=$(cd "$hc_dir" && "$PEERCMD" log show --all 2>/dev/null)
+  if [ "$hc_live" = 0 ] && [ -z "$(hc_get wrote)" ] && ! printf '%s\n' "$hc_log" | awk -F'\t' -v l="$hc_label" -v t="$hc_t0" '
+      ($3 == "end" || $3 == "gone" || $3 == "stop") && $1 >= t { w = $4; sub(/ .*/, "", w); if ($2 == l || w == l) f = 1 } END { exit !f }'; then
+    ( cd "$hc_dir" && "$PEERCMD" log --as "$hc_label" idle "$hc_label is gone: its session and its pane ended without a line" ) </dev/null >/dev/null 2>&1
+    hc_set wrote 1
+    hc_log=$(cd "$hc_dir" && "$PEERCMD" log show --all 2>/dev/null)
+  fi
+  hc_news=$(peer_news "$hc_dir" "done idle gone" peek)
+  hc_n=$(printf '%s\n' "$hc_log" | grep -c .)
+  hc_del=$(cat "$STATE/rollcall/log/$hc_key" 2>/dev/null); case $hc_del in ''|*[!0-9]*) hc_del=0 ;; esac
+  hc_seen=$(hc_get seen)
+  if [ -n "$hc_news" ]; then
+    if [ -n "$hc_seen" ] && [ "$hc_del" -lt "$hc_seen" ]; then
+      if [ "$(hc_get notified)" != "$hc_seen" ]; then
+        "$0" lead-news --again "$hc_dir" "$hc_lpid" "$hc_lsid" </dev/null >/dev/null 2>&1
+        tell_operator "$hc_repo · $hc_label" "$(printf '%s\n' "$hc_news" | sed -n '1s/^postbox: Claude Peers: //p') (not picked up by Lead)"
+        hc_set notified "$hc_seen"
+      fi
+    else
+      hc_set seen "$hc_n"
+    fi
+  else
+    hc_set seen ''
+  fi
+  if [ "$hc_live" = 0 ] && [ -z "$hc_news" ]; then rm -f "$hc_sf"; return 1; fi
+  return 0
+}
+
+cmd_handoff_check() {
+  hc_once=''
+  [ "${1-}" = --once ] && { hc_once=1; shift; }
+  [ $# -eq 5 ] || usage
+  hc_dir=$1 hc_wt=$2 hc_cpid=$3 hc_lpid=$4 hc_lsid=$5
+  need_python
+  PEERCMD=${POSTBOX_CLAUDE_PEER:-$HOME/bin/claude-peer}
+  [ -x "$PEERCMD" ] || exit 0
+  hc_min=$(stall_minutes "$hc_dir")
+  [ "$hc_min" -gt 0 ] || exit 0
+  hc_phys=$(cd "$hc_dir" 2>/dev/null && pwd -P) || exit 0
+  hc_key=$(printf '%s' "$hc_phys" | tr -c 'A-Za-z0-9._-' '_')
+  hc_slot=${hc_wt##*/}
+  hc_label=$(printf '%s' "$hc_slot" | cut -c1 | tr a-z A-Z)$(printf '%s' "$hc_slot" | cut -c2-)
+  hc_sf=$STATE/handoff/$hc_key.$hc_slot
+  hc_repo=$("$HOME/bin/tabname" "$hc_dir" 2>/dev/null) || hc_repo=${hc_phys##*/}
+  [ -n "$hc_repo" ] || hc_repo=${hc_phys##*/}
+  hc_s=${POSTBOX_NOW:-$(date +%s)}
+  hc_t0=$(date -u -d "@$hc_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$hc_s" +%Y-%m-%dT%H:%M:%SZ)
+  if [ -n "$hc_once" ]; then hc_pass; exit 0; fi
+  trap '' HUP
+  hc_end=$(( $(date +%s) + 43200 ))
+  while [ "$(date +%s)" -lt "$hc_end" ]; do
+    sleep "${POSTBOX_CHECK_SLEEP:-$((hc_min * 60))}"
+    hc_pass || break
+  done
+  exit 0
+}
+
 # --- status -------------------------------------------------------------------
 
 cmd_status() {
@@ -1444,6 +1547,7 @@ case $cmd in
   courier)     cmd_courier ;;
   lead)        cmd_lead "$@" ;;
   lead-news)   cmd_lead_news "$@" ;;
+  handoff-check) cmd_handoff_check "$@" ;;
   settings)    cmd_settings ;;
   dir)         printf '%s\n' "$STATE" ;;
   -h|--help|help) usage ;;
