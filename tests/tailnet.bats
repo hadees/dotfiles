@@ -117,9 +117,20 @@ STUB
   cat > "$BIN/launchctl" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$*" >> "$LAUNCHCTL_LOG"
+# After a bootout the job reads as loaded for as many prints as
+# $BATS_TEST_TMPDIR/still-loaded holds (none by default), as launchd does.
+gone="$BATS_TEST_TMPDIR/booted-out"
 case "$1 $2" in
+  "bootout "*) : > "$gone";;
+  "bootstrap "*) rm -f "$gone";;
   "print gui/"*/homebrew.mxcl.tailscale) [ -n "$FAKE_BREW_SERVICE" ] || exit 1;;
-  "print gui/"*/local.tailnet.*) echo "	pid = 4242"; echo "	state = running";;
+  "print gui/"*/local.tailnet.*)
+    if [ -f "$gone" ]; then
+      n=$(cat "$BATS_TEST_TMPDIR/still-loaded" 2>/dev/null || echo 0)
+      [ "$n" -gt 0 ] || exit 1
+      echo $((n - 1)) > "$BATS_TEST_TMPDIR/still-loaded"
+    fi
+    echo "	pid = 4242"; echo "	state = running";;
 esac
 exit 0
 STUB
@@ -404,6 +415,19 @@ CLAUDE_CODE_OPTS="no_bare_glob_qual no_case_glob glob_star_short no_extended_glo
   [ "$status" -eq 0 ]
   [ "$(cat "$STATE/extra/port")" = 1060 ]
   grep -q "^bootout gui/$uid/local.tailnet.extra\$" "$LAUNCHCTL_LOG"
+}
+
+@test "tailnet install (macOS): waits for bootout to finish before bootstrapping again" {
+  # launchd keeps the old job for a moment after bootout returns; a
+  # bootstrap in that window fails with error 5 and leaves nothing loaded.
+  tailnet install waity 1060
+  : > "$LAUNCHCTL_LOG"
+  echo 3 > "$BATS_TEST_TMPDIR/still-loaded"
+  tailnet install waity
+  # The script also prints a Homebrew label; count only the tailnet's own calls:
+  # bootout, three prints that still see the job, the one that does not, then bootstrap.
+  calls=$(grep -F local.tailnet.waity "$LAUNCHCTL_LOG" | awk '{print $1}' | tr '\n' ' ')
+  [ "$calls" = "bootout print print print print bootstrap kickstart " ] || { echo "$calls"; false; }
 }
 
 @test "tailnet install: picks the first free port from 1055 and warns about the crash-looping brew service" {
