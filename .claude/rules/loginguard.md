@@ -60,8 +60,35 @@ the stored `orgId`). `explain` prints one sentence for `claude-doctor`.
 `--attended` it also says when the profile is logged out, or the login
 expires within three days or has expired. `hook prompt` exits 2 to block a
 prompt. `settings` prints the `UserPromptSubmit` entry for an overlay to
-paste into a profile's `settings.json`, with its `exit 2` branch intact:
-that branch is what blocks prompts when `~/bin/loginguard` is missing.
+paste into a profile's `settings.json` (the `UserPromptSubmit` entry with
+its `exit 2` branch intact, which is what blocks prompts when
+`~/bin/loginguard` is missing, and the `Notification` entry, matcher
+`auth_success`).
+
+## The removal
+
+`after-login` takes the verdict. Only a positive `mismatch` acts: it runs
+`<claude> auth logout` under the same environment rule as the status call,
+asks again, and when the profile is now `logged-out` logs `removed-login`
+and prints `claude: REMOVED the login just made:` lines (exit 3); when it is
+not, logs `remove-failed` and says the wrong login is still stored and
+`claude auth logout` must be run by hand (exit 3). `unverifiable` removes
+nothing (exit 4): a status the CLI could not produce must never log a
+profile out. `ok`, `logged-out` and `unpinned` are silent exit 0.
+`CLAUDE_LOGIN_CHECK=0` removes nothing (logged as `bypassed`).
+
+`hook auth` is the same action with all output discarded and exit 0: a
+`Notification` hook's stderr and exit status are ignored by Claude Code.
+The session that saw "Login successful" learns why it is logged out from
+`hook prompt`: when the verdict is `logged-out` and the events log holds a
+`removed-login` for this directory under 600 seconds old, it exits 2 with a
+sentence saying the login was to another organization and was removed.
+
+Logging out resets Claude Code's first-launch setup for that directory
+(documented). The mismatch can include a matching `orgId` under another
+`authMethod` (for example an `oauth_token` environment credential); there
+`auth logout` cannot remove what is not stored, so the result is
+`remove-failed`.
 
 ## Why it fails closed
 
@@ -84,7 +111,7 @@ does not block.
 (logged as `bypassed`). `LOGINGUARD_LOG` overrides the events log, default
 `${XDG_STATE_HOME:-~/.local/state}/loginguard/events.log`. One line per
 event, six TAB fields: UTC time, event (`refused-launch`, `blocked-prompt`,
-`bypassed`), directory in tilde form, pin, stored `orgId` or `-`, reason or
+`bypassed`, `removed-login`, `remove-failed`), directory in tilde form, pin, stored `orgId` or `-`, reason or
 `-`. Organization names and email addresses are never written. A failed
 write never changes a verdict or an exit status.
 

@@ -49,13 +49,26 @@ stub_exe() { # path, body
   chmod +x "$1"
 }
 
-# Records "<arguments>|<CLAUDE_CONFIG_DIR or UNSET>" and answers `auth status`
-# with $STATUS_FIXTURE.
+# Records "<arguments>|<CLAUDE_CONFIG_DIR or UNSET>", answers `auth status`
+# with $STATUS_FIXTURE, and on `auth logout` rewrites the fixture to logged
+# out unless $LOGOUT_BROKEN is set.
 stub_claude() { # path, call log
   stub_exe "$1" "echo \"\$*|\${CLAUDE_CONFIG_DIR-UNSET}\" >> \"$2\"
-[ \"\$1 \$2\" = 'auth status' ] || exit 0
-cat \"\$STATUS_FIXTURE\"
-exit \"\$STATUS_RC\""
+case \"\$1 \$2\" in
+  'auth logout')
+    [ -n \"\${LOGOUT_BROKEN-}\" ] || echo '{\"loggedIn\":false}' > \"\$STATUS_FIXTURE\"
+    exit 0 ;;
+  'auth status')
+    cat \"\$STATUS_FIXTURE\"
+    exit \"\$STATUS_RC\" ;;
+esac
+exit 0"
+}
+
+# How many times the stub was asked to log out.
+logouts() {
+  [ -f "$CALLS" ] || { echo 0; return; }
+  grep -c '^auth logout' "$CALLS" || true
 }
 
 pin() { # dir spelling, value [label]
@@ -350,13 +363,15 @@ field() { # n of the TAB-separated $output
   [[ $output == "UNVERIFIABLE (status-not-json):"* ]]
 }
 
-@test "settings is valid JSON naming the hook and its blocking exit" {
+@test "settings is valid JSON naming both hooks and the blocking exit" {
   run "$LG" settings
   [ "$status" -eq 0 ]
   printf '%s\n' "$output" | python3 -m json.tool > /dev/null
   [[ $output == *"loginguard hook prompt"* ]]
   [[ $output == *"exit 2"* ]]
   [[ $output == *'"onFailure": "block"'* ]]
+  [[ $output == *"loginguard hook auth"* ]]
+  [ "$(printf '%s\n' "$output" | python3 -c 'import json,sys; print(json.load(sys.stdin)["Notification"]["matcher"])')" = auth_success ]
 }
 
 @test "an unknown subcommand or flag prints usage and exits 2" {
@@ -379,4 +394,117 @@ field() { # n of the TAB-separated $output
   [ "$status" -eq 0 ]
   [ -s "$BATS_TEST_TMPDIR/calls2.log" ]
   [ ! -e "$CALLS" ]
+}
+
+@test "after-login over a mismatch logs out once, says REMOVED with both UUIDs, logs it" {
+  pin '~/.claude-alpha' "$PINNED"
+  set_status "$OTHER"
+  run "$LG" after-login --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 3 ]
+  [[ $output == *"claude: REMOVED the login just made:"* ]]
+  [[ $output == *"$PINNED"* ]]
+  [[ $output == *"$OTHER"* ]]
+  [[ $output == *"claude auth login"* ]]
+  [ "$(logouts)" -eq 1 ]
+  [ "$(wc -l < "$LOGINGUARD_LOG")" -eq 1 ]
+  [ "$(awk -F'\t' '{print $2}' "$LOGINGUARD_LOG")" = removed-login ]
+  [ "$(awk -F'\t' '{print NF}' "$LOGINGUARD_LOG")" -eq 6 ]
+}
+
+@test "after-login over ok, logged-out or unpinned removes nothing and is silent" {
+  run "$LG" after-login --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  pin '~/.claude-alpha' "$PINNED"
+  set_status "$PINNED"
+  run "$LG" after-login --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  echo '{"loggedIn":false}' > "$STATUS_FIXTURE"
+  run "$LG" after-login --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$(logouts)" -eq 0 ]
+}
+
+@test "after-login over an unverifiable status removes nothing and exits 4" {
+  pin '~/.claude-alpha' "$PINNED"
+  echo 'not json' > "$STATUS_FIXTURE"
+  run "$LG" after-login --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 4 ]
+  [[ $output == *"status-not-json"* ]]
+  echo '{"loggedIn":true,"authMethod":"api_key"}' > "$STATUS_FIXTURE"
+  run "$LG" after-login --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 4 ]
+  [ "$(logouts)" -eq 0 ]
+}
+
+@test "after-login --profile for the default directory logs out with the variable unset" {
+  pin '~/.claude' "$PINNED"
+  set_status "$OTHER"
+  CLAUDE_CONFIG_DIR="$HOME/.claude-beta" run "$LG" after-login --profile "$HOME/.claude"
+  [ "$status" -eq 3 ]
+  [ "$(grep '^auth logout' "$CALLS")" = "auth logout|UNSET" ]
+}
+
+@test "hook auth over a mismatch logs out, exits 0 and prints nothing" {
+  pin '~/.claude-alpha' "$PINNED"
+  set_status "$OTHER"
+  CLAUDE_CONFIG_DIR="$HOME/.claude-alpha" run "$LG" hook auth < /dev/null
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$(logouts)" -eq 1 ]
+  [ "$(awk -F'\t' '{print $2}' "$LOGINGUARD_LOG")" = removed-login ]
+}
+
+@test "hook prompt explains a removed login for ten minutes, not an hour" {
+  pin '~/.claude-alpha' "$PINNED"
+  set_status "$OTHER"
+  export CLAUDE_CONFIG_DIR="$HOME/.claude-alpha"
+  run "$LG" hook auth < /dev/null
+  [ "$status" -eq 0 ]
+  run "$LG" hook prompt < /dev/null
+  [ "$status" -eq 2 ]
+  [[ $output == "loginguard:"*"removed"* ]]
+  [[ $output == *"/login"* ]]
+  awk -F'\t' -v OFS='\t' '$1 = "2000-01-01T00:00:00Z"' "$LOGINGUARD_LOG" > "$BATS_TEST_TMPDIR/old.log"
+  mv "$BATS_TEST_TMPDIR/old.log" "$LOGINGUARD_LOG"
+  run "$LG" hook prompt < /dev/null
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "CLAUDE_LOGIN_CHECK=0 removes nothing from after-login or hook auth" {
+  pin '~/.claude-alpha' "$PINNED"
+  set_status "$OTHER"
+  CLAUDE_LOGIN_CHECK=0 run "$LG" after-login --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 0 ]
+  CLAUDE_LOGIN_CHECK=0 CLAUDE_CONFIG_DIR="$HOME/.claude-alpha" run "$LG" hook auth < /dev/null
+  [ "$status" -eq 0 ]
+  [ "$(logouts)" -eq 0 ]
+  [ "$(grep -c "$(printf '\tbypassed\t')" "$LOGINGUARD_LOG")" -eq 2 ]
+}
+
+@test "a logout that does not take is logged remove-failed and says the login is still stored" {
+  pin '~/.claude-alpha' "$PINNED"
+  set_status "$OTHER"
+  LOGOUT_BROKEN=1 run "$LG" after-login --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 3 ]
+  [[ $output == *"still stored"* ]]
+  [[ $output == *"claude auth logout"* ]]
+  [ "$(logouts)" -eq 1 ]
+  [ "$(awk -F'\t' '{print $2}' "$LOGINGUARD_LOG")" = remove-failed ]
+}
+
+@test "without python3: hook auth is silent, after-login removes nothing and exits 4" {
+  pin '~/.claude-alpha' "$PINNED"
+  nopy="$BATS_TEST_TMPDIR/nopy"
+  mkdir -p "$nopy"
+  cp "$BIN/git" "$nopy/"
+  CLAUDE_CONFIG_DIR="$HOME/.claude-alpha" run env PATH="$nopy" "$LG" hook auth < /dev/null
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run env PATH="$nopy" "$LG" after-login --profile "$HOME/.claude-alpha"
+  [ "$status" -eq 4 ]
+  [[ $output == *"no-python3"* ]]
 }
