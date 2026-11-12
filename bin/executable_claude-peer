@@ -56,6 +56,12 @@
 # where. It is advisory: `log claim` warns of overlap and never fails on it.
 # When a pane's session ends, the pane logs `end`: `<Label> ended after <dur>`
 # and its task, which closes that label's claims as `stop` does.
+# Overlay peers: a machine with private overlays (chezmoi configs other than
+# chezmoi.toml whose source is a git repository) gets two more Workgroups, the two
+# above plus one pane per overlay, entered only by a tab of the public chezmoi
+# source and only once `install` has written the overlays state file. The pane
+# runs `overlay <name>`: it cd's into the overlay's main checkout and is a waiting
+# pane of that repository, slot `overlay`, led from where it started.
 # `install` edits the preferences while iTerm2 is quit because iTerm2 writes
 # its preferences back at quit (and, with a custom prefs folder, replaces the
 # domain from the folder at launch); an edit made while it runs is lost.

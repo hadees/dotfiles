@@ -250,7 +250,7 @@ rule first.
 | `denyguard` | the Bash deny hook, what it cannot see, why it fails closed |
 | `loginguard` | the org pin per profile, the prompt hook, the removal after a wrong login, why it fails closed |
 | `worktabs` | the iTerm2 tab launcher, `workspace.*` config, the Alfred workflow |
-| `claude-peer` | Workgroup peers, named slot worktrees, claims, the Hermes peer |
+| `claude-peer` | Workgroup peers, named slot worktrees, claims, the Hermes peer, overlay peers |
 | `claude-tab` | `claude-tab` list, focus, save, restore; `tabname` |
 | `branchname` | the branch label a prompt or status line shows, the detached-slot base record |
 | `postbox` | cross-profile session mail, its hooks, the courier, the roll-call |
