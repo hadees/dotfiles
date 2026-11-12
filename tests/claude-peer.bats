@@ -2565,7 +2565,11 @@ ov_busy() {
   OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
   overlay_cfg fake_a.toml "$OV1"
   overlay_cfg fake-b.toml "$OV2"
-  LC_ALL=en_US.UTF-8 run --separate-stderr sh "$BIN" overlays
+  # A locale that sorts '-' after '_', so C order is what decides; skip where
+  # none is installed (Rocky's minimal container has none).
+  loc=$(locale -a 2>/dev/null | grep -ixE 'en_US\.utf-?8' | head -n 1)
+  [ -n "$loc" ] || skip "no en_US UTF-8 locale installed"
+  LC_ALL=$loc run --separate-stderr sh "$BIN" overlays
   [ "$status" -eq 0 ]
   [ "$(printf '%s\n' "$output" | cut -f1 | paste -sd' ' -)" = "fake-b fake_a" ]
   [ "$(printf '%s\n' "$output" | cut -f2 | paste -sd' ' -)" = "$OV2 $OV1" ]
