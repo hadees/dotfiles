@@ -540,7 +540,7 @@ make_overlay_cfg() {
   [ "$output" = "apply
 --config $HOME/.config/chezmoi/fake1.toml apply
 --config $HOME/.config/chezmoi/fake2.toml apply" ]
-  ! grep -q 'chezmoi\.toml' "$CHEZMOI_LOG"
+  ! grep -q 'chezmoi\.toml' "$CHEZMOI_LOG" || { echo "chezmoi.toml was applied"; false; }
 }
 
 @test "dotfiles: skips an overlay whose source clone is missing" {
@@ -550,7 +550,7 @@ make_overlay_cfg() {
   make_overlay_cfg fake2.toml "$BATS_TEST_TMPDIR/src2"
   run zsh -c "source '$DOTFUNCTIONS'; dotfiles"
   [ "$status" -eq 0 ]
-  ! grep -q 'fake1\.toml apply' "$CHEZMOI_LOG"
+  ! grep -q 'fake1\.toml apply' "$CHEZMOI_LOG" || { echo "fake1.toml was applied"; false; }
   run grep 'apply$' "$CHEZMOI_LOG"
   [ "$output" = "apply
 --config $HOME/.config/chezmoi/fake2.toml apply" ]

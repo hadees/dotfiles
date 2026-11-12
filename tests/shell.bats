@@ -62,6 +62,30 @@ setup() {
   [ "${BASH_VERSINFO[0]}" -ge 4 ]
 }
 
+@test "a negated command in a test always carries a failure branch" {
+  # bash never trips errexit on a command negated with `!`, so a bare
+  # `! grep -q x f` mid-test can never fail the test. Spell it
+  #   ! cmd || { echo "<what went wrong>"; false; }
+  # (`run !` is no substitute: it overwrites $status and $output.)
+  # Backslash continuations are joined first, so the idiom may span two lines.
+  local f hits bad=""
+  for f in "$BATS_TEST_DIRNAME"/*.bats; do
+    case "${f##*/}" in
+      claude-peer*.bats) continue ;; # converted on feat/peer-contexts; delete this line when that branch lands
+    esac
+    hits="$(awk -v f="${f##*/}" '
+      !cont { start = FNR; buf = "" }
+      { l = $0; cont = (l ~ /\\$/); sub(/\\$/, "", l); buf = buf l }
+      !cont {
+        t = buf; sub(/^[ \t]+/, "", t)
+        if (t ~ /^!([ \t]|$)/ && t !~ /\|\|/) print f ":" start ": " t
+      }
+    ' "$f")"
+    [ -z "$hits" ] || bad+="$hits"$'\n'
+  done
+  [ -z "$bad" ] || { echo "negated command with no failure branch:"; echo "$bad"; false; }
+}
+
 @test "exports put Homebrew's bin and sbin ahead of the system dirs" {
   # Simulate a brew that lives in a prefix of our choosing; the exports must
   # prepend both <prefix>/bin and <prefix>/sbin, bin first, so Homebrew's

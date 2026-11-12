@@ -17,11 +17,23 @@ TEMPLATES="$BATS_TEST_DIRNAME/../.chezmoitemplates/claude-agents"
 # profile directory added to this repo is picked up with no edit to this line.
 # `.claude/agents` is deliberately excluded: those are this repo's own seats,
 # loaded from the clone and deployed nowhere, so they have no stubs to check.
+# The exclusions are relative to the repository root: a checkout that itself
+# lives under a `.claude/worktrees` directory must not exclude everything.
+ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
 STUB_DIRS=()
-while IFS= read -r d; do STUB_DIRS+=("$d"); done < <(
-  find "$BATS_TEST_DIRNAME/.." -maxdepth 2 -type d -name agents \
-    -not -path '*/.git/*' -not -path '*/.claude/*' | sort
+# find runs from $ROOT so its -path patterns never contain the clone's own
+# path, whose `[`, `*` or `?` would be read as wildcards.
+while IFS= read -r d; do STUB_DIRS+=("$ROOT/${d#./}"); done < <(
+  cd "$ROOT" && find . -maxdepth 2 -type d -name agents \
+    -not -path './.git/*' -not -path './.claude/*' | sort
 )
+
+@test "the stub directories are discovered: at least the three this source deploys" {
+  # dot_claude/agents, dot_claude-shared/agents and private_dot_claude-*/agents.
+  # Finding none would make every per-directory check below pass vacuously.
+  [ "${#STUB_DIRS[@]}" -ge 3 ] || { echo "found ${#STUB_DIRS[@]}: ${STUB_DIRS[*]}"; false; }
+}
+
 # Seats that belong to this repo alone, loaded from the clone rather than
 # deployed to every profile. Same frontmatter and body rules; no stubs, since
 # nothing deploys them anywhere.

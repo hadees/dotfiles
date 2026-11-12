@@ -234,7 +234,7 @@ payload() { printf '%s' "$1" | "$PB" "${@:2}"; }
 @test "install: never a bearer token in the plist, and CORS off" {
   run "$PB" install
   plist="$HOME/Library/LaunchAgents/local.postbox.plist"
-  ! grep -q 'HTTP_BEARER_TOKEN' "$plist"
+  ! grep -q 'HTTP_BEARER_TOKEN' "$plist" || { echo "the plist carries HTTP_BEARER_TOKEN"; false; }
   grep -A1 '<key>HTTP_CORS_ENABLED</key>' "$plist" | grep -q '<string>false</string>'
 }
 
@@ -862,7 +862,7 @@ SEND='{"tool_name":"mcp__postbox__send_message","tool_input":{"to":["GreenCastle
   grep -q 'SendMessage tool (not any MCP tool) exactly once: to="other-project-x9"' "$CLAUDE_LOG.stdin"
   grep -q "new mail for GreenCastle from RedStone — 'please review the plan'" "$CLAUDE_LOG.stdin"
   grep -q "fetch_inbox as GreenCastle in project $HOME/code" "$CLAUDE_LOG.stdin"
-  ! grep -q 'asked subject' "$CLAUDE_LOG.stdin"
+  ! grep -q 'asked subject' "$CLAUDE_LOG.stdin" || { echo "the relay prompt carries the subject"; false; }
   grep -q 'courier: RedStone -> GreenCastle (other-project-x9) via' "$POSTBOX_STATE/logs/courier.log"
 }
 
@@ -907,7 +907,7 @@ SEND='{"tool_name":"mcp__postbox__send_message","tool_input":{"to":["GreenCastle
   [ "$(grep -c . "$CLAUDE_LOG")" -eq 2 ]
   grep -q 'to="other-a"' "$CLAUDE_LOG.stdin"
   grep -q 'to="third-b"' "$CLAUDE_LOG.stdin"
-  ! grep -q 'to="me"' "$CLAUDE_LOG.stdin"
+  ! grep -q 'to="me"' "$CLAUDE_LOG.stdin" || { echo "the relay prompt addresses to=\"me\""; false; }
   grep -q "new mail for BlueLake from RedStone — 'all hands'" "$CLAUDE_LOG.stdin"
 }
 

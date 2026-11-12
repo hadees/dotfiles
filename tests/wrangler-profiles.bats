@@ -178,7 +178,7 @@ wrangler_in() {
   [[ "$output" == *"does not exist"* ]]
   [[ "$output" == *"wrangler auth create never-created"* ]]
   [[ "$output" != *"RAN:"* ]]
-  ! grep -q '^deploy' "$WRANGLER_LOG"
+  ! grep -q '^deploy' "$WRANGLER_LOG" || { echo "deploy was run"; false; }
 }
 
 @test "wrangler: repo mapped to default manages no binding and runs plainly" {
@@ -197,7 +197,7 @@ wrangler_in() {
   wrangler_in "$BATS_TEST_TMPDIR" whoami
   [ "$status" -eq 0 ]
   [ "$output" = "RAN: whoami" ]
-  ! grep -q '^auth activate' "$WRANGLER_LOG"
+  ! grep -q '^auth activate' "$WRANGLER_LOG" || { echo "auth activate was run"; false; }
 }
 
 # --- which wrangler runs -----------------------------------------------------
@@ -240,7 +240,7 @@ STUB
   # stub (asdf shim stand-in) was never touched.
   [ "$(sed -n 1p "$WRANGLER_LOG")" = "LOCAL auth activate personal-profile $repo" ]
   [ "$(sed -n 2p "$WRANGLER_LOG")" = "LOCAL deploy" ]
-  ! grep -qv '^LOCAL ' "$WRANGLER_LOG"
+  ! grep -qv '^LOCAL ' "$WRANGLER_LOG" || { echo "a non-LOCAL wrangler call was logged"; false; }
 }
 
 @test "wrangler: the vendored wrangler is found from a subdirectory and hoisted monorepo roots" {
@@ -288,7 +288,7 @@ STUB
   [ -z "$output" ]
   grep -q "No version is set for command wrangler" "$BATS_TEST_TMPDIR/stderr"
   grep -qF "cannot bind $repo to profile 'personal-profile' (see above; \`wrangler-doctor\` shows which wrangler ran)" "$BATS_TEST_TMPDIR/stderr"
-  ! grep -q "auth create" "$BATS_TEST_TMPDIR/stderr"
+  ! grep -q "auth create" "$BATS_TEST_TMPDIR/stderr" || { echo "auth create was run"; false; }
 }
 
 @test "wrangler: auth, login, and logout pass straight through, even in a pinned repo" {
@@ -315,7 +315,7 @@ STUB
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; WRANGLER_PROFILE=octo-alias wrangler deploy --env prod"
   [ "$status" -eq 0 ]
   [ "$output" = "RAN: --profile=personal-profile deploy --env prod" ]
-  ! grep -q '^auth activate' "$WRANGLER_LOG"
+  ! grep -q '^auth activate' "$WRANGLER_LOG" || { echo "auth activate was run"; false; }
 }
 
 @test "wrangler: WRANGLER_PROFILE accepts an existing literal profile and default" {

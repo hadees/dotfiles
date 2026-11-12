@@ -30,7 +30,7 @@ teardown() { rm -rf "$TMP"; }
   run sh "$BIN"
   [ "$status" -eq 0 ]
   grep -q 'alice@example.com' "$GIT_ALLOWED_SIGNERS_FILE"
-  ! grep -q 'bob@example.com' "$GIT_ALLOWED_SIGNERS_FILE"
+  ! grep -q 'bob@example.com' "$GIT_ALLOWED_SIGNERS_FILE" || { echo "bob@example.com is in the allowed_signers file"; false; }
 }
 
 @test "no fragments at all still writes a readable file, not a missing one" {
@@ -65,7 +65,7 @@ teardown() { rm -rf "$TMP"; }
   sh "$BIN"
   rm "$GIT_ALLOWED_SIGNERS_DIR/20-two"
   sh "$BIN"
-  ! grep -q 'bob@example.com' "$GIT_ALLOWED_SIGNERS_FILE"
+  ! grep -q 'bob@example.com' "$GIT_ALLOWED_SIGNERS_FILE" || { echo "bob@example.com is in the allowed_signers file"; false; }
 }
 
 @test "--print writes to stdout and touches nothing" {

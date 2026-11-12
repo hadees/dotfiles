@@ -572,7 +572,7 @@ fill gamma" ]
   grep -qF 'is "/dev/ttys007"' "$OSA_ALL"
   [ "$(grep -c 'create tab with default profile' "$OSA_ALL")" -eq 2 ]
   [ "$(grep -c 'whose id is 7' "$OSA_ALL")" -eq 4 ]
-  ! grep -q 'create window' "$OSA_ALL"
+  ! grep -q 'create window' "$OSA_ALL" || { echo "a window was created"; false; }
   [ "$(grep -cx 2 "$SLEEP_LOG")" -eq 3 ]
 }
 
@@ -599,6 +599,6 @@ fill gamma" ]
   # Inside `tell application "iTerm2"`, `tab` is iTerm2's tab class: the
   # listing came back with the literal word, and restore found no window.
   # The stubbed osascript in these tests cannot see that, so pin the source.
-  ! grep -n '& tab &' "$BATS_TEST_DIRNAME/../bin/executable_claude-tab" "$BATS_TEST_DIRNAME/../bin/executable_worktabs"
+  ! grep -n '& tab &' "$BATS_TEST_DIRNAME/../bin/executable_claude-tab" "$BATS_TEST_DIRNAME/../bin/executable_worktabs" || { echo "the source contains a '& tab &' concatenation"; false; }
   grep -q 'set sep to (character id 9)' "$BATS_TEST_DIRNAME/../bin/executable_claude-tab"
 }
