@@ -36,3 +36,13 @@
   run grep -q 'install -m 0440 -o root -g wheel "$sudoers_tmp" /etc/sudoers.d/timestamp' "$BATS_TEST_DIRNAME/../.macos"
   [ "$status" -eq 0 ]
 }
+
+@test "macos re-run: Spotlight erase and the app-closing loop are opt-out, not unconditional" {
+  run grep -q 'MACOS_REINDEX' "$BATS_TEST_DIRNAME/../.macos"
+  [ "$status" -eq 0 ]
+  run grep -q 'MACOS_KEEP_APPS' "$BATS_TEST_DIRNAME/../.macos"
+  [ "$status" -eq 0 ]
+  # The index erase sits inside a conditional, so it is indented.
+  run grep -E '^[[:space:]]+sudo mdutil -E /' "$BATS_TEST_DIRNAME/../.macos"
+  [ "$status" -eq 0 ]
+}
