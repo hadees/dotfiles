@@ -132,6 +132,12 @@ these run in every repo on the machine:
   non-fast-forward push of a protected branch (`main` and `master` unless
   configured). `GIT_PUSH_CHECK=0` bypasses both for one push; the
   `hook.pre-push.run` chain still runs.
+- **Merge** is gated on GitHub: the `main` ruleset
+  (`.github/rulesets/main.json`) requires the five CI checks on a branch that
+  contains main's tip, so `gh pr merge` refuses a stale or red pull request
+  and `--auto` waits for it. The review a merge here needs is
+  `public-clone-advocate` on the final diff; merging main into the branch
+  does not void it, a new commit of the branch's own does.
 - **Signing** is SSH-format through 1Password and machine-local: the
   tracked `.gitconfig` never enables it. A signature that fails is nearly
   always the app locked or an approval unanswered. Unlock, approve, retry
@@ -225,6 +231,7 @@ rule first.
 | --- | --- |
 | `git-hooks` | the identity, branch and push gates, the `hook.<name>.run` chain |
 | `git-identity` | signing setup, `bin/git-ssh-pinned`, credential routing |
+| `merge-gate` | the `main` ruleset, how it is applied and changed |
 | `onepassword` | the three 1Password channels, `onepassword-doctor`, the skill's `VERSIONS` |
 | `packages` | Brewfile and apt lists, the install scripts, `update()` |
 | `composed-identity-files` | ssh config fragments, `allowed_signers`, first-wins against last-wins |
