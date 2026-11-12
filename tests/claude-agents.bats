@@ -21,9 +21,11 @@ TEMPLATES="$BATS_TEST_DIRNAME/../.chezmoitemplates/claude-agents"
 # lives under a `.claude/worktrees` directory must not exclude everything.
 ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
 STUB_DIRS=()
-while IFS= read -r d; do STUB_DIRS+=("$d"); done < <(
-  find "$ROOT" -maxdepth 2 -type d -name agents \
-    -not -path "$ROOT/.git/*" -not -path "$ROOT/.claude/*" | sort
+# find runs from $ROOT so its -path patterns never contain the clone's own
+# path, whose `[`, `*` or `?` would be read as wildcards.
+while IFS= read -r d; do STUB_DIRS+=("$ROOT/${d#./}"); done < <(
+  cd "$ROOT" && find . -maxdepth 2 -type d -name agents \
+    -not -path './.git/*' -not -path './.claude/*' | sort
 )
 
 @test "the stub directories are discovered: at least the three this source deploys" {
