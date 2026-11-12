@@ -94,11 +94,12 @@ command -v python3 >/dev/null 2>&1 || {
 
 # `python3 -` reads its own program from stdin, which the heredoc below
 # already occupies — so `hook`'s PreToolUse payload (also arriving on
-# stdin) is saved to fd 3 first and read from there once inside. Same trick
-# as iterm2-prefs-clean's git filter; postbox's heredocs sidestep it by
-# passing a filename in argv instead, which a hook has none of.
+# stdin) is saved to fd 3 first and read from there once inside. postbox's
+# heredocs sidestep it by passing a filename in argv instead, which a hook
+# has none of.
 exec 3<&0
-exec python3 - "$@" <<'PY'
+rc=0
+python3 - "$@" <<'PY' || rc=$?
 import fnmatch
 import json
 import os
@@ -176,8 +177,26 @@ def load_deny(dir_):
             "readable JSON\n" % (path, exc)
         )
         sys.exit(2)
-    perms = data.get("permissions") or {}
-    return perms.get("deny") or []
+    bad = None
+    if not isinstance(data, dict):
+        bad = "the top level is not an object"
+    else:
+        perms = data.get("permissions")
+        if perms is not None and not isinstance(perms, dict):
+            bad = "permissions is not an object"
+        else:
+            deny_list = (perms or {}).get("deny")
+            if deny_list is not None and not isinstance(deny_list, list):
+                bad = "permissions.deny is not a list"
+            elif deny_list and not all(isinstance(r, str) for r in deny_list):
+                bad = "permissions.deny holds an entry that is not a string"
+    if bad:
+        sys.stderr.write(
+            "denyguard: cannot read %s: %s; refusing Bash until that file is "
+            "readable JSON\n" % (path, bad)
+        )
+        sys.exit(2)
+    return (data.get("permissions") or {}).get("deny") or []
 
 
 class Rule:
@@ -535,6 +554,8 @@ def cmd_hook():
     try:
         payload = os.fdopen(3, "r").read()
         event = json.loads(payload)
+        if not isinstance(event, dict):
+            raise ValueError("not a JSON object")
     except Exception as exc:
         sys.stderr.write("denyguard: unreadable PreToolUse payload: %s\n" % exc)
         sys.exit(2)
@@ -549,7 +570,8 @@ def cmd_hook():
         return
 
     tool_input = event.get("tool_input") or {}
-    texts = [tool_input.get("command") or ""] if event.get("tool_name") == "Bash" \
+    texts = [tool_input.get("command") or ""] \
+        if event.get("tool_name") == "Bash" and isinstance(tool_input, dict) \
         else list(strings_of(tool_input))
 
     for text in texts:
@@ -648,5 +670,21 @@ def main():
         sys.exit(2)
 
 
-main()
+try:
+    main()
+except SystemExit:
+    raise
+except BaseException as exc:
+    sys.stderr.write("denyguard: internal error: %s: %s\n" % (type(exc).__name__, exc))
+    sys.exit(2)
 PY
+# `hook` exits only 0 (allow, or JSON deny on stdout) or 2 (block). Anything
+# else — python3 present but unable to start, a crash the wrapper above did
+# not catch — would be read by Claude Code as a non-blocking error and the
+# command would run unchecked, so it is turned into 2. Other subcommands keep
+# their own status: `check` uses 1 for "denied" and callers depend on it.
+if [ "${1-}" = hook ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+  printf 'denyguard: the hook could not run (python3 exited %s); refusing Bash rather than passing the command unchecked\n' "$rc" >&2
+  exit 2
+fi
+exit "$rc"

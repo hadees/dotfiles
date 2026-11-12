@@ -94,8 +94,12 @@ would.
 tailnet wrappers fail open because routing there is an optimisation and
 the command is the point; here the *refusal* is the point, and a guard
 that silently becomes a no-op would leave the operator believing the hole
-is closed, which is worse than the hole itself. Missing python3, or an
-unreadable/unparsable `settings.json`: exit 2, which blocks the tool call
+is closed, which is worse than the hole itself. Missing python3, a python3
+that exists but cannot start (the wrapper turns any `hook` status other
+than 0 or 2 into 2; `check` keeps its own 1), an unreadable/unparsable
+`settings.json`, one of the wrong shape (top level, `permissions` or
+`deny` of the wrong type, a non-string rule), a payload that is not a JSON
+object, and any internal error: exit 2, which blocks the tool call
 outright (hooks reference §3 — exit 2 blocks unconditionally, with or
 without JSON on stdout). An ABSENT `permissions.deny` reads as zero rules
 and allows — that is the correct reading of an empty list, not a failure.

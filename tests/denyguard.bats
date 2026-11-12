@@ -187,6 +187,56 @@ evt_ml() { # cwd command
   [[ "$output" == *"denyguard: cannot read"* ]]
 }
 
+@test "a python3 that exists but cannot start blocks the hook, not just check" {
+  printf '#!/bin/sh\nexit 126\n' > "$BIN/python3"
+  run hook "$(evt "$HOME/code" "true")"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"the hook could not run (python3 exited 126)"* ]]
+}
+
+@test "a non-hook subcommand keeps python3's own exit status" {
+  printf '#!/bin/sh\nexit 126\n' > "$BIN/python3"
+  run "$DG" dir
+  [ "$status" -eq 126 ]
+}
+
+@test "a permissions.deny that is not a list blocks Bash" {
+  printf '%s\n' '{"permissions":{"deny":"Read(~/code/octo-secret/**)"}}' > "$HOME/.claude-fixture/settings.json"
+  run hook "$(evt "$HOME/code" "cat $HOME/code/octo-secret/x")"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"denyguard: cannot read"* ]]
+}
+
+@test "a settings.json of the wrong shape blocks Bash" {
+  local shape
+  for shape in '{"permissions":[]}' '{"permissions":[1]}' '{"permissions":{"deny":[5]}}' '[]'; do
+    printf '%s\n' "$shape" > "$HOME/.claude-fixture/settings.json"
+    run hook "$(evt "$HOME/code" "true")"
+    [ "$status" -eq 2 ] || { echo "shape $shape exited $status: $output"; false; }
+  done
+}
+
+@test "null permissions and null deny still read as zero rules" {
+  local shape
+  for shape in '{"permissions":null}' '{"permissions":{"deny":null}}' '{}'; do
+    printf '%s\n' "$shape" > "$HOME/.claude-fixture/settings.json"
+    run hook "$(evt "$HOME/code" "true")"
+    [ "$status" -eq 0 ] || { echo "shape $shape exited $status: $output"; false; }
+  done
+}
+
+@test "a PreToolUse payload that is not an object blocks Bash" {
+  run hook '[]'
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"unreadable PreToolUse payload"* ]]
+}
+
+@test "a Bash tool_input that is a string is scanned, not crashed on" {
+  run hook "$(printf '{"session_id":"s1","cwd":"%s","tool_name":"Bash","tool_input":"cat %s/code/octo-secret/x"}' "$HOME/code" "$HOME")"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"permissionDecision": "deny"'* ]]
+}
+
 @test "no python3 on PATH blocks Bash with a message" {
   EMPTYBIN="$BATS_TEST_TMPDIR/emptybin"
   mkdir -p "$EMPTYBIN"
