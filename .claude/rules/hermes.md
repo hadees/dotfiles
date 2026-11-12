@@ -55,12 +55,17 @@ explicit `-w`/`--worktree` is never doubled. `hermes-doctor` has a
 
 Hermes never starts a model server — it only speaks HTTP to the profile's
 `model.base_url` (auto-starting the server was `ollama launch`'s only real
-job). So the wrapper reads the effective profile's `config.yaml` and, only
-when `model.provider` is ollama-ish AND `base_url` is loopback, probes the
+job). So for a launch that talks to the model (a bare `hermes`, `chat`, or
+one that starts with an option) the wrapper reads the effective profile's
+`config.yaml` and, only when `model.provider` is ollama-ish AND `base_url` is loopback, probes the
 port and starts `ollama serve` disowned with a bounded readiness wait when
 nothing answers; a cloud profile (Anthropic/OpenAI/OpenRouter) or a
 LAN/WireGuard ollama never waits on or spawns anything, and every failure
-warns and falls open — hermes prints the real connection error.
+warns and falls open — hermes prints the real connection error. A first
+argument shaped like a subcommand other than `chat` (`profile list`, `mcp …`:
+the shape, as `claude()` tests it, because a list would go stale) or a
+`--version`, `--help` or `-h` anywhere skips all of it, so asking hermes its
+version never starts a server or waits for one.
 `hermes-doctor` traces all of it for the cwd (pin, account, mapping, the
 effective profile and its source, and its config, via the same
 `hermes_profile`/`hermes_cfg_path` helpers the wrapper and `routes` call — the three cannot drift —

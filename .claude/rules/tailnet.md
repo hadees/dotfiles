@@ -44,7 +44,8 @@ command-line `-o ProxyCommand` would silently override a configured
 ProxyJump), and curl with `-x`/`--noproxy`/proxy variables set. The
 destination comes from `ssh -G` (ssh's own parsing) — scp/sftp extract the
 `[user@]host:` operand first — and for curl the first URL / bare host
-argument. `TAILNET` forces its tailnet with the node check skipped (subnet
+argument, skipping the value of an option that takes one (a header or a form
+field can hold a URL). `TAILNET` forces its tailnet with the node check skipped (subnet
 routes the daemons can't vouch for); `tailnet-as <name> <cmd…>` does that and
 exports `ALL_PROXY`/`HTTP(S)_PROXY`/`NO_PROXY` so any proxy-aware tool
 follows. `tailnet-doctor [host]` traces all of it. Without the script or an

@@ -49,8 +49,8 @@ function targz() {
 	echo "${tmpFile}.gz ($((zippedSize / 1000)) kB) created successfully.";
 }
 
-# Determine size of a file or total size of a directory
-function fs() {
+# Print the size of a file or the total size of a directory (the alias `fs` is overmind's)
+function fsize() {
 	if du -b /dev/null > /dev/null 2>&1; then
 		local arg=-sbh;
 	else
@@ -63,9 +63,9 @@ function fs() {
 	fi;
 }
 
-# Use Git’s colored diff when available
+# Git’s colored word diff of two files, when git is available
 	if (( $+commands[git] )); then
-		function diff() {
+		function worddiff() {
 			git diff --no-index --color-words "$@";
 		}
 fi;
@@ -106,13 +106,15 @@ function gz() {
 	printf "gzip: %d bytes (%2.2f%%)\n" "$gzipsize" "$ratio";
 }
 
-# Syntax-highlight JSON strings or files
+# Pretty-print JSON strings or files: jq when installed (it colours on a terminal), else python3
 # Usage: `json '{"foo":42}'` or `echo '{"foo":42}' | json`
 function json() {
+	local -a pretty
+	if (( $+commands[jq] )); then pretty=(jq .); else pretty=(python3 -m json.tool); fi
 	if [ -t 0 ]; then # argument
-		python -mjson.tool <<< "$*" | pygmentize -l javascript;
+		"${pretty[@]}" <<< "$*";
 	else # pipe
-		python -mjson.tool | pygmentize -l javascript;
+		"${pretty[@]}";
 	fi;
 }
 
@@ -239,6 +241,7 @@ function dotfiles() {
 # like claude() half-defined in those shells. tests/claude-profiles.bats
 # enforces this.
 function gh_account_for_cwd() {
+	emulate -L zsh;
 	local slug owner acct;
 	slug="$(git_origin_slug)" || return 1;
 	# The OWNER is parsed positionally instead of trying every segment, so a
@@ -349,6 +352,7 @@ function bin_trace() {
 # or a literal directory. With no mapping at all, this is plain `claude` on the
 # default ~/.claude config dir.
 function claude() {
+	emulate -L zsh;
 	local dir alias opener here line attended key REPLY;
 	local -a sess;
 	dir="$(claude_profile_dir)" || dir='';
@@ -641,6 +645,7 @@ function claude_profile_dirs() {
 # fallback (which a set BROWSER suppresses) is what you want. Shared by
 # claude() and claude-doctor so the two cannot disagree.
 function claude_browser_can_open() {
+	emulate -L zsh;
 	[[ -z $SSH_CONNECTION ]] || return 1;
 	[[ $OSTYPE == darwin* ]] && return 0;
 	[[ -n $DISPLAY || -n $WAYLAND_DISPLAY ]] && whence -p xdg-open >/dev/null;
@@ -663,6 +668,7 @@ function claude_browser_can_open() {
 # CLAUDE_PROFILE: which login is at the keyboard changes, which window the
 # project's pages live in does not.
 function claude_browser_alias() {
+	emulate -L zsh;
 	local dir=$1 alias slug;
 	slug="$(git_origin_slug)" || slug='';
 	[[ -n $slug ]] && alias="$(command git config --get "claude.$slug.browser" 2>/dev/null)";
@@ -690,19 +696,23 @@ function claude_browser_alias() {
 
 # The profile-directory decision claude() acts on, extracted so claude-doctor
 # reports the same answer claude() uses — the two can never drift. Prints the
-# tilde-expanded directory; prints nothing and returns 1 when claude() would
-# fall through to a bare `claude`.
+# directory as one spelling (tilde expanded, absolute, no trailing slash);
+# prints nothing and returns 1 when claude() would fall through to a bare
+# `claude`.
 function claude_profile_dir() {
+	emulate -L zsh;
 	local acct dir slug pin;
 	if [[ -n $CLAUDE_PROFILE ]]; then
 		dir="$(command git config --get "claude.profile.$CLAUDE_PROFILE" 2>/dev/null)";
 		if [[ -z $dir ]]; then
-			# A literal directory is fine; a typo'd account name is not —
-			# without this check it would become a relative CLAUDE_CONFIG_DIR.
-			if [[ $CLAUDE_PROFILE == (\~|/)* || -d $CLAUDE_PROFILE ]]; then
+			# A literal directory is absolute or starts with a tilde; a bare
+			# word is only ever a mapped name, even when a directory of that
+			# name sits in the cwd — it would become a relative
+			# CLAUDE_CONFIG_DIR.
+			if [[ $CLAUDE_PROFILE == (\~|/)* ]]; then
 				dir=$CLAUDE_PROFILE;
 			else
-				print -ru2 -- "claude: CLAUDE_PROFILE='$CLAUDE_PROFILE' is neither a mapped account nor a directory; falling back to the default profile";
+				print -ru2 -- "claude: CLAUDE_PROFILE='$CLAUDE_PROFILE' is neither a mapped account nor an absolute or ~ directory; falling back to the default profile";
 				return 1;
 			fi;
 		fi;
@@ -717,21 +727,21 @@ function claude_profile_dir() {
 		# overlay-supplied, so no repo names appear here.
 		#
 		# The value is an account or alias mapped in `claude.profile.*`, or a
-		# literal directory — whatever CLAUDE_PROFILE accepts, since a pin is
+		# absolute or ~-prefixed directory — whatever CLAUDE_PROFILE accepts, since a pin is
 		# the same choice made once per repo instead of once per invocation.
 		slug="$(git_origin_slug)" || slug='';
 		[[ -n $slug ]] && pin="$(command git config --get "claude.$slug.profile" 2>/dev/null)";
 		if [[ -n $pin ]]; then
 			dir="$(command git config --get "claude.profile.$pin" 2>/dev/null)";
 			if [[ -z $dir ]]; then
-				if [[ $pin == (\~|/)* || -d $pin ]]; then
+				if [[ $pin == (\~|/)* ]]; then
 					dir=$pin;
 				else
 					# Warn every invocation rather than resolve quietly: a
 					# typo'd pin must not land the session in another
 					# account's history, and sessions are partitioned per
 					# config dir, so the wrong one resumes nothing.
-					print -ru2 -- "claude: claude.$slug.profile='$pin' is neither a mapped account nor a directory; falling back to the owner's account";
+					print -ru2 -- "claude: claude.$slug.profile='$pin' is neither a mapped account nor an absolute or ~ directory; falling back to the owner's account";
 				fi;
 			fi;
 		fi;
@@ -745,18 +755,22 @@ function claude_profile_dir() {
 		fi;
 	fi;
 	[[ -n $dir ]] || return 1;
-	print -r -- "${dir/#\~/$HOME}";
+	# :a is lexical (no symlink resolution): it drops a trailing slash, doubled
+	# slashes and dot-dot segments, so claude() can compare against the
+	# default directory as a string.
+	print -r -- "${${dir/#\~/$HOME}:a}";
 }
 
 # Launch Claude Code pinned to an explicit profile, ignoring the cwd:
 # `claude-as <profile> [args...]`. The profile is an account or alias mapped in
 # `claude.profile.*` (machine-local git config, set by the private overlay) or
-# a literal directory; anything else is an error — an explicit request must
+# an absolute or ~-prefixed directory; anything else is an error — an explicit request must
 # never silently fall back to another account. Remaining args and stdin pass
 # through untouched, so piping a prompt in works. Resolution and the
 # default-profile unset-variable special case stay in claude(); this only
 # vets the name and sets CLAUDE_PROFILE for one invocation.
 function claude-as() {
+	emulate -L zsh;
 	local profile names;
 	names="$(command git config --get-regexp '^claude\.profile\.' 2>/dev/null | command sed 's/^claude\.profile\.//; s/ .*//')";
 	[[ -n $names ]] || names="<none mapped in claude.profile.*>";
@@ -770,7 +784,7 @@ function claude-as() {
 	shift;
 	# Vet the name with the same resolver claude() uses (its warning is
 	# suppressed — ours names the command). Mapped accounts, absolute or
-	# tilde-prefixed paths, and existing directories resolve; typos do not.
+	# tilde-prefixed paths resolve; typos and bare directory names do not.
 	if ! CLAUDE_PROFILE=$profile claude_profile_dir >/dev/null 2>&1; then
 		print -ru2 -- "claude-as: unknown profile '$profile'";
 		print -ru2 -- "available profiles:";
@@ -1453,7 +1467,13 @@ function hermes() {
 	[[ -n $uprofile ]] && eff=$uprofile;
 	[[ -z $eff ]] && eff=$pin;
 	[[ -z $eff ]] && eff=$mapped;
-	hermes_ensure_ollama "$(hermes_cfg_path "$eff")";
+	# Only a launch that talks to the model needs its server. A first argument
+	# shaped like a subcommand (`profile list`, `mcp …` — the shape, as
+	# claude() does, because a list of them would go stale) or an info flag
+	# anywhere does not; a bare hermes, `chat` and an option-led launch do.
+	if [[ $1 == chat || ! $1 =~ '^[a-z][a-z-]*$' ]] && (( ! ${argv[(I)(--version|--help|-h)]} )); then
+		hermes_ensure_ollama "$(hermes_cfg_path "$eff")";
+	fi;
 	command hermes "${inject[@]}" "$@";
 }
 
@@ -1607,6 +1627,7 @@ function hermes-doctor() {
 # wrangler's per-user config dir either way, so every install sees the same
 # logins.
 function wrangler() {
+	emulate -L zsh;
 	local profile bin;
 	bin="$(wrangler_bin)" || {
 		print -ru2 -- "wrangler: not found — no node_modules/.bin/wrangler at or above $PWD and none on PATH";
@@ -2075,14 +2096,16 @@ function tailnet_scp_host() {
 
 # The host curl will talk to: the first URL argument, else the first bare
 # `host[:port][/path]` argument whose host could be a tailnet node (curl takes
-# URLs anywhere among options, so an option's value can be mistaken for one —
-# the only cost is a lookup, and at worst a public URL is fetched through a
-# daemon's ordinary outbound path). Prints nothing when the user is already
-# proxying (-x/--proxy/--socks*/--noproxy, or proxy variables in the
-# environment) — the user's choice wins.
+# URLs anywhere among options). The value of an option that takes one
+# (-H, -d, -o, -X, … — a header or a form field can hold a URL) is skipped,
+# but an option left off that list has its value read as the destination, and
+# a wrong host sends the whole request through that host's tailnet proxy.
+# `--url` needs no entry: its value is the next argument. Prints nothing when
+# the user is already proxying (-x/--proxy/--socks*/--noproxy, or proxy
+# variables in the environment) — the user's choice wins.
 function tailnet_curl_host() {
 	emulate -L zsh;
-	local a host bare;
+	local a host bare skip=0;
 	[[ -z $ALL_PROXY$all_proxy$HTTPS_PROXY$https_proxy$HTTP_PROXY$http_proxy ]] || return 1;
 	for a in "$@"; do
 		case $a in
@@ -2090,7 +2113,9 @@ function tailnet_curl_host() {
 		esac;
 	done;
 	for a in "$@"; do
+		(( skip )) && { skip=0; continue; };
 		case $a in
+			(-H|--header|-d|--data|--data-raw|--data-binary|--data-urlencode|--json|-e|--referer|-A|--user-agent|-F|--form|--form-string|-u|--user|-o|--output|-w|--write-out|-b|--cookie|-X|--request) skip=1; continue;;
 			(-*) continue;;
 			(*://*)
 				host=${a#*://};
@@ -2395,6 +2420,7 @@ function tailnet-doctor() {
 # the personal account — not an org member, so it silently sees only public
 # repos.
 function gh() {
+	emulate -L zsh;
 	[[ $1 == auth ]] && { command gh "$@"; return; };
 	local -A gh_owners;
 	local key val owner acct arg seg;
@@ -2413,8 +2439,16 @@ function gh() {
 	# a candidate, so `<org>`, `<org>/<repo>`, `orgs/<org>`, `<host>:<org>/<repo>`
 	# and full URLs all match. First hit wins. Local paths are skipped so a
 	# file argument that happens to contain a pinned owner's name (e.g.
-	# `gh gist create ./notes/<org>.md`) cannot hijack the account.
+	# `gh gist create ./notes/<org>.md`) cannot hijack the account. So is free
+	# text: an argument containing whitespace (a target never does; a title or
+	# body does) and the value of --title, --body, --label and --search, as
+	# `--opt value` or `--opt=value`. Short options are not skipped: one letter
+	# means different things under different subcommands (-R carries a target).
+	local skip=0;
 	for arg in "$@"; do
+		(( skip )) && { skip=0; continue; };
+		[[ $arg == (--title|--body|--label|--search) ]] && { skip=1; continue; };
+		[[ $arg == (--title|--body|--label|--search)=* || $arg == *[[:space:]]* ]] && continue;
 		# Skip filesystem-path arguments only: ./ or ../ relative forms and
 		# anything that actually exists. A bare leading / must NOT be
 		# skipped — `gh api /repos/<owner>/<repo>` is a documented endpoint
@@ -2461,7 +2495,7 @@ function gh-doctor() {
 	print -r -- "account: ${acct:-<no credential pin matched — gh runs as its active account>}";
 	# Never echo the token itself — only whether it is set.
 	print -r -- "env:     GH_TOKEN=$([[ -n $GH_TOKEN ]] && print -r -- '<set — gh ignores stored logins>' || print -r -- '<unset>')";
-	print -r -- "pins:    $(command git config --get-regexp '^credential\.https://github\.com/.*\.username' 2>/dev/null | command sed 's|credential.https://github.com/||; s|\.username | -> |' | command paste -sd, - | command sed 's/,/, /g')";
+	print -r -- "pins:    $(command git config --get-regexp '^credential\.https://github\.com/.*\.username' 2>/dev/null | command sed 's|credential.https://github.com/||; s|\.username | -> |; s|^\([^ ]*[[:upper:]][^ ]*\) -> .*|& MIXED CASE: the wrappers look up the lowercase owner so add a pin for that spelling too (keep this one if a remote spells it this way; the git match is case-sensitive)|' | command paste -sd, - | command sed 's/,/, /g')";
 	[[ -n $acct ]] || return 0;
 	tok="$(command gh auth token --user "$acct" 2>/dev/null)";
 	if [[ -z $tok ]]; then

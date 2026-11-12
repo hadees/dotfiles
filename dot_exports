@@ -1,8 +1,16 @@
 #!/usr/bin/env zsh
 
-# Preferred editors.
-export EDITOR='code --wait'
-export GEM_EDITOR='code'
+# Preferred editors: VS Code when installed, else vim, else vi.
+if command -v code >/dev/null 2>&1; then
+	export EDITOR='code --wait'
+	export GEM_EDITOR='code'
+elif command -v vim >/dev/null 2>&1; then
+	export EDITOR='vim'
+	export GEM_EDITOR='vim'
+else
+	export EDITOR='vi'
+	export GEM_EDITOR='vi'
+fi
 
 # Enable persistent REPL history for `node`.
 export NODE_REPL_HISTORY="$HOME/.node_history"
@@ -11,9 +19,15 @@ export NODE_REPL_HISTORY_SIZE='32768'
 # Make Python use UTF-8 encoding for input/output streams.
 export PYTHONIOENCODING='UTF-8'
 
-# Prefer US English and use UTF-8.
-export LANG='en_US.UTF-8'
-export LC_ALL='en_US.UTF-8'
+# Prefer US English and use UTF-8, but only fill in a missing LANG: a forwarded
+# or terminal-set one is left alone, and LC_ALL is never exported (it would
+# override every LC_* the user or a tool set deliberately). macOS always has the
+# locale; elsewhere it must be installed, or setlocale warns on every command.
+if [[ -z ${LANG:-} ]]; then
+	if [[ $OSTYPE == darwin* ]] || locale -a 2>/dev/null | grep -qiE '^en_US\.utf-?8$'; then
+		export LANG='en_US.UTF-8'
+	fi
+fi
 
 # Use bat for man pages when available, otherwise fall back to less.
 if (( $+commands[bat] )); then
@@ -24,11 +38,20 @@ else
 	export MANPAGER='less -X'
 fi
 
-# fzf: use fd for file finding, bat for previews.
+# fzf: use fd for file finding (Debian and Ubuntu call it fdfind), bat for
+# previews. With neither, fzf keeps its own default command.
 if (( $+commands[fzf] )); then
-	export FZF_DEFAULT_COMMAND='fd --type f --hidden --follow --exclude .git'
-	export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
-	export FZF_ALT_C_COMMAND='fd --type d --hidden --follow --exclude .git'
+	if (( $+commands[fd] )); then
+		_fzf_fd=fd
+	elif (( $+commands[fdfind] )); then
+		_fzf_fd=fdfind
+	fi
+	if [[ -n ${_fzf_fd:-} ]]; then
+		export FZF_DEFAULT_COMMAND="$_fzf_fd --type f --hidden --follow --exclude .git"
+		export FZF_CTRL_T_COMMAND="$FZF_DEFAULT_COMMAND"
+		export FZF_ALT_C_COMMAND="$_fzf_fd --type d --hidden --follow --exclude .git"
+	fi
+	unset _fzf_fd
 	# Base16 Eighties palette (darkened bg #1a1a1a/#262626).
 	export FZF_DEFAULT_OPTS='--height 40% --layout=reverse --border --color=bg+:#262626,bg:#1a1a1a,spinner:#f2777a,hl:#747369,fg:#d3d0c8,header:#747369,info:#66cccc,pointer:#f2777a,marker:#f2777a,fg+:#d3d0c8,prompt:#f2777a,hl+:#f2777a'
 	if (( $+commands[bat] )); then
@@ -49,8 +72,11 @@ fi
 # ignored, so the whole suite ran with inert assertions (tests/shell.bats
 # now refuses bash < 4).
 typeset -gU path PATH
+# HOMEBREW_PREFIX is what `brew shellenv` exports; .zshrc reuses it rather than
+# asking brew again, since every `brew --prefix` is a ruby start-up.
 if (( $+commands[brew] )); then
-	path=("$(brew --prefix)/bin" "$(brew --prefix)/sbin" $path)
+	export HOMEBREW_PREFIX="$(brew --prefix)"
+	path=("$HOMEBREW_PREFIX/bin" "$HOMEBREW_PREFIX/sbin" $path)
 fi
 export PATH
 export HOMEBREW_CASK_OPTS='--appdir=/Applications'
