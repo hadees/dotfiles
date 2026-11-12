@@ -72,8 +72,11 @@ fi
 # ignored, so the whole suite ran with inert assertions (tests/shell.bats
 # now refuses bash < 4).
 typeset -gU path PATH
+# HOMEBREW_PREFIX is what `brew shellenv` exports; .zshrc reuses it rather than
+# asking brew again, since every `brew --prefix` is a ruby start-up.
 if (( $+commands[brew] )); then
-	path=("$(brew --prefix)/bin" "$(brew --prefix)/sbin" $path)
+	export HOMEBREW_PREFIX="$(brew --prefix)"
+	path=("$HOMEBREW_PREFIX/bin" "$HOMEBREW_PREFIX/sbin" $path)
 fi
 export PATH
 export HOMEBREW_CASK_OPTS='--appdir=/Applications'

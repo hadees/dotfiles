@@ -96,10 +96,8 @@ setup() {
   mkdir -p "$fake/bin" "$fake/sbin" "$BATS_TEST_TMPDIR/stub"
   printf '#!/bin/sh\necho "%s"\n' "$fake" > "$BATS_TEST_TMPDIR/stub/brew"
   chmod +x "$BATS_TEST_TMPDIR/stub/brew"
-  # stderr is dropped: dot_exports sets LC_ALL=en_US.UTF-8, and on a box
-  # without that locale (the Rocky container) the brew subshell then warns
-  # about it, which `run` would fold into $output ahead of the PATH line.
-  run zsh -c "export PATH='$BATS_TEST_TMPDIR/stub:/usr/bin:/bin'; source dot_exports 2>/dev/null; print -r -- \$PATH"
+  run env -u HOMEBREW_PREFIX PATH="$BATS_TEST_TMPDIR/stub:/usr/bin:/bin" \
+    zsh -c "source dot_exports; print -r -- \$PATH"
   [ "$status" -eq 0 ]
   [[ "$output" == "$fake/bin:$fake/sbin:"* ]]
   [[ "$output" == *":/usr/bin:/bin"* ]]
@@ -117,18 +115,15 @@ setup() {
   brewp="$BATS_TEST_TMPDIR/brewprefix"
   mkdir -p "$sys/zsh-autosuggestions" "$sys/zsh-syntax-highlighting" \
            "$brewp/share/zsh-autosuggestions" "$brewp/share/zsh-syntax-highlighting" \
-           "$BATS_TEST_TMPDIR/stub" "$BATS_TEST_TMPDIR/empty"
+           "$BATS_TEST_TMPDIR/empty"
   echo 'AS=sys' > "$sys/zsh-autosuggestions/zsh-autosuggestions.zsh"
   echo 'SH=sys' > "$sys/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
   echo 'AS=brew' > "$brewp/share/zsh-autosuggestions/zsh-autosuggestions.zsh"
   echo 'SH=brew' > "$brewp/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
   sed "s|/usr/share|$sys|" "$BATS_TEST_TMPDIR/block.zsh" > "$BATS_TEST_TMPDIR/run.zsh"
 
-  printf '#!/bin/sh\necho %s\n' "$brewp" > "$BATS_TEST_TMPDIR/stub/brew"
-  chmod +x "$BATS_TEST_TMPDIR/stub/brew"
-
   # Homebrew present and carrying the plugins: its copies win.
-  run env PATH="$BATS_TEST_TMPDIR/stub:$PATH" \
+  run env HOMEBREW_PREFIX="$brewp" \
     zsh -c "source '$BATS_TEST_TMPDIR/run.zsh'; echo \$AS \$SH"
   [ "$status" -eq 0 ]
   [ "$output" = "brew brew" ]
@@ -138,7 +133,7 @@ setup() {
   # silently never source them. zsh is invoked by absolute path because env
   # resolves the command against the PATH it is setting, which is empty here.
   zsh_bin="$(command -v zsh)"
-  run env PATH="$BATS_TEST_TMPDIR/empty" \
+  run env -u HOMEBREW_PREFIX PATH="$BATS_TEST_TMPDIR/empty" \
     "$zsh_bin" -c "source '$BATS_TEST_TMPDIR/run.zsh'; echo \$AS \$SH"
   [ "$status" -eq 0 ]
   [ "$output" = "sys sys" ]
@@ -202,6 +197,47 @@ setup() {
   [ "$(loc "$BATS_TEST_TMPDIR/upper" linux-gnu)" = "en_US.UTF-8|unset" ]
   [ "$(loc "$BATS_TEST_TMPDIR/bare" linux-gnu LANG=de_DE.UTF-8)" = "de_DE.UTF-8|unset" ]
   [ "$(loc "$BATS_TEST_TMPDIR/bare" darwin23.0)" = "en_US.UTF-8|unset" ]
+}
+
+@test "zshrc asks brew for its prefix once" {
+  # Every `$(brew --prefix ...)` is a ruby process; startup used to spawn six
+  # to eight of them. dot_exports exports HOMEBREW_PREFIX and the rest reuses it.
+  cd "$BATS_TEST_DIRNAME/.."
+  home="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$home" "$BATS_TEST_TMPDIR/stub"
+  cp dot_exports "$home/.exports"
+  printf '#!/bin/sh\necho call >> "%s"\necho "%s"\n' "$BATS_TEST_TMPDIR/brew.log" "$BATS_TEST_TMPDIR/prefix" \
+    > "$BATS_TEST_TMPDIR/stub/brew"
+  chmod +x "$BATS_TEST_TMPDIR/stub/brew"
+  run env -i HOME="$home" PATH="$BATS_TEST_TMPDIR/stub:/usr/bin:/bin" "$(command -v zsh)" -c 'source ./dot_zshrc'
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/brew.log")" -eq 1 ] || { echo "brew calls: $(cat "$BATS_TEST_TMPDIR/brew.log")"; false; }
+}
+
+@test "zshrc sources fzf bindings from Homebrew's prefix, else the Ubuntu examples directory" {
+  cd "$BATS_TEST_DIRNAME/.."
+  awk '/^# fzf key bindings/,/^unset _fzf_shell_dir _fzf_shell_dirs$/' dot_zshrc \
+    > "$BATS_TEST_TMPDIR/block.zsh"
+  [ -s "$BATS_TEST_TMPDIR/block.zsh" ]
+
+  sys="$BATS_TEST_TMPDIR/examples"
+  brewp="$BATS_TEST_TMPDIR/brewprefix"
+  mkdir -p "$sys" "$brewp/opt/fzf/shell" "$BATS_TEST_TMPDIR/bare/opt/fzf"
+  echo 'KB=sys' > "$sys/key-bindings.zsh"
+  echo 'CP=sys' > "$sys/completion.zsh"
+  echo 'KB=brew' > "$brewp/opt/fzf/shell/key-bindings.zsh"
+  echo 'CP=brew' > "$brewp/opt/fzf/shell/completion.zsh"
+  sed "s|/usr/share/doc/fzf/examples|$sys|" "$BATS_TEST_TMPDIR/block.zsh" > "$BATS_TEST_TMPDIR/run.zsh"
+  zsh_bin="$(command -v zsh)"
+
+  # Off Homebrew: the Ubuntu directory is found.
+  run env -u HOMEBREW_PREFIX "$zsh_bin" -c "source '$BATS_TEST_TMPDIR/run.zsh'; echo \$KB \$CP"
+  [ "$output" = "sys sys" ] || { echo "no Homebrew: $output"; false; }
+  # Homebrew carrying them: it wins.
+  run env HOMEBREW_PREFIX="$brewp" "$zsh_bin" -c "source '$BATS_TEST_TMPDIR/run.zsh'; echo \$KB \$CP"
+  [ "$output" = "brew brew" ] || { echo "Homebrew: $output"; false; }
+  # Homebrew without fzf's shell directory: fall through.
+  run env HOMEBREW_PREFIX="$BATS_TEST_TMPDIR/bare" "$zsh_bin" -c "source '$BATS_TEST_TMPDIR/run.zsh'; echo \$KB \$CP"
+  [ "$output" = "sys sys" ] || { echo "Homebrew without fzf: $output"; false; }
 }
 
 @test "exports point fzf at fd, else fdfind, else leave its default command alone" {

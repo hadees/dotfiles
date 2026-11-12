@@ -27,23 +27,25 @@ setopt HIST_IGNORE_SPACE
 setopt HIST_VERIFY
 
 # Shell quality-of-life options. EXTENDED_GLOB stays off: it turns an unquoted
-# `HEAD^` (as in `git show HEAD^`) a pattern that fails with "no matches found".
+# `HEAD^` (as in `git show HEAD^`) into a pattern that fails with "no matches found".
 setopt AUTO_CD
 setopt GLOBSTARSHORT
 setopt NO_CASE_GLOB
 setopt PROMPT_SUBST
 
-# Completion system setup, including Homebrew-provided definitions.
+# Completion system setup, including Homebrew-provided definitions. A shell
+# that did not source .exports has no HOMEBREW_PREFIX yet; ask brew once.
 typeset -gU fpath
-if (( $+commands[brew] )); then
-	brew_prefix="$(brew --prefix 2>/dev/null)"
-	if [[ -d "${brew_prefix}/share/zsh/site-functions" ]]; then
-		fpath=("${brew_prefix}/share/zsh/site-functions" $fpath)
+if (( $+commands[brew] )) && [[ -z ${HOMEBREW_PREFIX:-} ]]; then
+	export HOMEBREW_PREFIX="$(brew --prefix 2>/dev/null)"
+fi
+if [[ -n ${HOMEBREW_PREFIX:-} ]]; then
+	if [[ -d "$HOMEBREW_PREFIX/share/zsh/site-functions" ]]; then
+		fpath=("$HOMEBREW_PREFIX/share/zsh/site-functions" $fpath)
 	fi
-	if [[ -d "${brew_prefix}/share/zsh-completions" ]]; then
-		fpath=("${brew_prefix}/share/zsh-completions" $fpath)
+	if [[ -d "$HOMEBREW_PREFIX/share/zsh-completions" ]]; then
+		fpath=("$HOMEBREW_PREFIX/share/zsh-completions" $fpath)
 	fi
-	unset brew_prefix
 fi
 
 autoload -Uz compinit
@@ -93,13 +95,19 @@ if (( $+commands[pyenv] )); then
 	eval "$(pyenv init -)"
 fi
 
-# fzf key bindings and completion.
-if (( $+commands[brew] )) && [[ -f "$(brew --prefix fzf 2>/dev/null)/shell/key-bindings.zsh" ]]; then
-	source "$(brew --prefix fzf)/shell/key-bindings.zsh"
-fi
-if (( $+commands[brew] )) && [[ -f "$(brew --prefix fzf 2>/dev/null)/shell/completion.zsh" ]]; then
-	source "$(brew --prefix fzf)/shell/completion.zsh"
-fi
+# fzf key bindings and completion, after compinit (the completion file needs
+# it). The first directory carrying both wins: Homebrew's, then where Ubuntu's
+# package puts them.
+_fzf_shell_dirs=()
+[[ -n ${HOMEBREW_PREFIX:-} ]] && _fzf_shell_dirs+="$HOMEBREW_PREFIX/opt/fzf/shell"
+_fzf_shell_dirs+=/usr/share/doc/fzf/examples
+for _fzf_shell_dir in $_fzf_shell_dirs; do
+	[[ -f "${_fzf_shell_dir}/key-bindings.zsh" && -f "${_fzf_shell_dir}/completion.zsh" ]] || continue
+	source "${_fzf_shell_dir}/key-bindings.zsh"
+	source "${_fzf_shell_dir}/completion.zsh"
+	break
+done
+unset _fzf_shell_dir _fzf_shell_dirs
 
 # direnv: load/unload .envrc files per directory.
 if (( $+commands[direnv] )); then
@@ -116,7 +124,7 @@ fi
 # covers both and a Linux box gets them from apt. First hit wins.
 # zsh-syntax-highlighting must be sourced last.
 _zsh_plugin_dirs=()
-(( $+commands[brew] )) && _zsh_plugin_dirs+="$(brew --prefix 2>/dev/null)/share"
+[[ -n ${HOMEBREW_PREFIX:-} ]] && _zsh_plugin_dirs+="$HOMEBREW_PREFIX/share"
 _zsh_plugin_dirs+=/usr/share
 for _zsh_plugin_dir in $_zsh_plugin_dirs; do
 	[[ -f "${_zsh_plugin_dir}/zsh-autosuggestions/zsh-autosuggestions.zsh" ]] || continue
