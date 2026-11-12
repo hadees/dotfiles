@@ -273,8 +273,9 @@ line() { printf '%s\n' "$SCREEN" | sed -n "$1p"; }
 
 @test "ci: every job that runs the suite says what the screen tests may not skip" {
   local wf="$BATS_TEST_DIRNAME/../.github/workflows/tests.yml" pin="$BATS_TEST_DIRNAME/../.github/fzf-version"
-  [ "$(grep -c ' bats tests$' "$wf")" -eq 3 ]
-  [ "$(grep -c "SCREEN_TESTS_REQUIRE='tmux fzf' bats tests$" "$wf")" -eq 3 ]
+  local suite=' bats ((--[a-z-]+|"[^"]*") )*tests$'
+  [ "$(grep -cE "$suite" "$wf")" -eq 3 ]
+  [ "$(grep -cE "SCREEN_TESTS_REQUIRE='tmux fzf'$suite" "$wf")" -eq 3 ]
   # each of the three installs the pinned fzf, then checks that it is the first on PATH
   [ "$(grep -c 'sh \.github/install-fzf\.sh [^-]' "$wf")" -eq 3 ]
   [ "$(grep -c '^ *run: sh \.github/install-fzf\.sh --check$' "$wf")" -eq 3 ]
