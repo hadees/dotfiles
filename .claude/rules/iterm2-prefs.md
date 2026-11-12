@@ -128,8 +128,13 @@ Tests match these.
   the operator's shortcut.
 - `install [--dry-run] [--no-seed]`: with iTerm2 quit, seeds the store from the
   old one, lets the sources win every key they set, writes store and record, and
-  only then repoints `PrefsCustomFolder` and `LoadPrefsFromCustomFolder`. Prints
-  two lines: what iTerm2 now loads, and the `defaults write` that goes back.
+  only then repoints `PrefsCustomFolder` and `LoadPrefsFromCustomFolder`. Before
+  anything else it saves the whole domain (`defaults export`, unfiltered, 0600)
+  as `prefs-before-install.<UTC time>.plist` beside the record, and stops if it
+  cannot. Prints three lines: what iTerm2 now loads, where the saved domain is,
+  and the way back, `defaults import` of that file followed by the
+  `defaults write` that repoints. The saved file is machine-local and holds every
+  key of the domain; it is not a fragment and nothing reads it but that command.
   `--dry-run` prefixes them `would: ` and prints a `differs` row per unit where
   the source value replaces the old store's. It refuses a folder inside a git
   repository, a URL store, and a running iTerm2.

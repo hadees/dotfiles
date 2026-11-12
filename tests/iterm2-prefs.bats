@@ -32,6 +32,7 @@ setup() {
   mkplist "$BATS_TEST_TMPDIR/domain.plist" '{}'
   export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist" FAKE_LOAD=0
   export FAKE_DEFAULTS_LOG="$BATS_TEST_TMPDIR/defaults.log"
+  export ITERM2_PREFS_BEFORE="$BATS_TEST_TMPDIR/before.plist"
   LIVEF="$ITERM2_PREFS_DIR/com.googlecode.iterm2.plist"
 }
 
@@ -54,8 +55,8 @@ case $1 in
         esac;;
   export) cat "$FAKE_DOMAIN";;
   write) printf '%s\n' "$*" >>"${FAKE_DEFAULTS_LOG:-/dev/null}"
-         # were the store and the record already on disk when iTerm2 was repointed?
-         if [ -f "${ITERM2_PREFS_DIR-}/com.googlecode.iterm2.plist" ] && [ -f "${ITERM2_PREFS_RECORD-}" ]; then
+         # were the store, the record and the saved domain already on disk when iTerm2 was repointed?
+         if [ -f "${ITERM2_PREFS_DIR-}/com.googlecode.iterm2.plist" ] && [ -f "${ITERM2_PREFS_RECORD-}" ] && [ -f "${ITERM2_PREFS_BEFORE-}" ]; then
            echo files >>"${FAKE_DEFAULTS_LOG:-/dev/null}.order"; else echo nofiles >>"${FAKE_DEFAULTS_LOG:-/dev/null}.order"; fi;;
 esac
 STUB
@@ -760,6 +761,7 @@ phys() { (cd -P "$ITERM2_PREFS_DIR" && pwd); }
   [ "$output" = "iterm2-prefs: quit iTerm2 first: it rewrites its preferences at quit" ]
   [[ ! -e "$LIVEF" ]]
   [[ ! -e "$FAKE_DEFAULTS_LOG" ]]
+  [[ ! -e "$ITERM2_PREFS_BEFORE" ]]
   FAKE_OS=Linux run sh "$BIN" install
   [ "$status" -eq 2 ]
 }
@@ -776,6 +778,7 @@ phys() { (cd -P "$ITERM2_PREFS_DIR" && pwd); }
   [ "$output" = "iterm2-prefs: $ITERM2_PREFS_DIR is inside the git repository $top; the composed store must be outside every repository" ]
   [[ ! -e "$repo/sub" ]]
   [[ ! -e "$FAKE_DEFAULTS_LOG" ]]
+  [[ ! -e "$ITERM2_PREFS_BEFORE" ]]
   # no git on PATH: the check fails closed
   export ITERM2_PREFS_DIR="$BATS_TEST_TMPDIR/store"
   mkdir -p "$BATS_TEST_TMPDIR/nogit"
@@ -784,6 +787,7 @@ phys() { (cd -P "$ITERM2_PREFS_DIR" && pwd); }
   [ "$status" -eq 1 ]
   [ "$output" = "iterm2-prefs: cannot tell whether $ITERM2_PREFS_DIR is inside a git repository (git is not available)" ]
   [[ ! -e "$ITERM2_PREFS_DIR/com.googlecode.iterm2.plist" ]]
+  [[ ! -e "$ITERM2_PREFS_BEFORE" ]]
 }
 
 @test "install: refuses when there is no fragment" {
@@ -791,6 +795,7 @@ phys() { (cd -P "$ITERM2_PREFS_DIR" && pwd); }
   [ "$status" -eq 1 ]
   [ "$output" = "iterm2-prefs: no fragments in $FRAGS; run dotfiles first" ]
   [[ ! -e "$FAKE_DEFAULTS_LOG" ]]
+  [[ ! -e "$ITERM2_PREFS_BEFORE" ]]
 }
 
 @test "install: from a folder store, keeps its local keys, gives sourced keys the source value, repoints iTerm2 last and prints the way back" {
@@ -799,8 +804,11 @@ phys() { (cd -P "$ITERM2_PREFS_DIR" && pwd); }
   run sh "$BIN" install
   [ "$status" -eq 0 ]
   [ "${lines[0]}" = "iterm2-prefs: iTerm2 now loads $LIVEF (was: folder $OLD/com.googlecode.iterm2.plist); 2 units from 1 fragments, 1 took the source value over the old store's; start iTerm2" ]
-  [ "${lines[1]}" = "iterm2-prefs: to go back: defaults write com.googlecode.iterm2 PrefsCustomFolder -string '$OLD'" ]
-  [ "${#lines[@]}" -eq 2 ]
+  [ "${lines[1]}" = "iterm2-prefs: the preferences domain as it was is saved in $ITERM2_PREFS_BEFORE" ]
+  [ "${lines[2]}" = "iterm2-prefs: to go back, with iTerm2 quit: defaults import com.googlecode.iterm2 '$ITERM2_PREFS_BEFORE' && defaults write com.googlecode.iterm2 PrefsCustomFolder -string '$OLD'" ]
+  [ "${#lines[@]}" -eq 3 ]
+  cmp "$FAKE_DOMAIN" "$ITERM2_PREFS_BEFORE"
+  [ "$(stat -c '%a' "$ITERM2_PREFS_BEFORE" 2>/dev/null || stat -f '%Lp' "$ITERM2_PREFS_BEFORE")" = 600 ]
   [ "$(pget "$LIVEF" 'd["Keep"], d["Fresh"], d["Local"], d["Workgroups"]')" = "(2, 3, 'x', b'w')" ]
   [ "$(pget "$ITERM2_PREFS_RECORD" 'd["top"]')" = "{'Fresh': 3, 'Keep': 2}" ]
   [ "$(cat "$FAKE_DEFAULTS_LOG")" = "write com.googlecode.iterm2 PrefsCustomFolder -string $(phys)
@@ -817,7 +825,9 @@ files" ]
   run sh "$BIN" install
   [ "$status" -eq 0 ]
   [ "${lines[0]}" = "iterm2-prefs: iTerm2 now loads $LIVEF (was: domain); 1 units from 1 fragments, 1 took the source value over the old store's; start iTerm2" ]
-  [ "${lines[1]}" = "iterm2-prefs: to go back: defaults write com.googlecode.iterm2 LoadPrefsFromCustomFolder -bool false" ]
+  [ "${lines[1]}" = "iterm2-prefs: the preferences domain as it was is saved in $ITERM2_PREFS_BEFORE" ]
+  [ "${lines[2]}" = "iterm2-prefs: to go back, with iTerm2 quit: defaults import com.googlecode.iterm2 '$ITERM2_PREFS_BEFORE' && defaults write com.googlecode.iterm2 LoadPrefsFromCustomFolder -bool false" ]
+  [ "$(pget "$ITERM2_PREFS_BEFORE" 'sorted(d)')" = "['Keep', 'Local', 'NSFixture', 'NoSyncFixture', 'PrefsCustomFolder']" ]
   [ "$(pget "$LIVEF" 'sorted(d)')" = "['Keep', 'Local']" ]
   [ "$(pget "$LIVEF" 'd["Keep"]')" = 2 ]
 }
@@ -838,13 +848,15 @@ files" ]
   run sh "$BIN" install --dry-run
   [ "$status" -eq 0 ]
   [ "${lines[0]}" = "would: iterm2-prefs: iTerm2 now loads $LIVEF (was: folder $OLD/com.googlecode.iterm2.plist); 2 units from 1 fragments, 1 took the source value over the old store's; start iTerm2" ]
-  [ "${lines[1]}" = "would: iterm2-prefs: to go back: defaults write com.googlecode.iterm2 PrefsCustomFolder -string '$OLD'" ]
-  [ "${lines[2]}" = "$(printf 'differs\tKeep\t10-one')" ]
-  [ "${#lines[@]}" -eq 3 ]
+  [ "${lines[1]}" = "would: iterm2-prefs: the preferences domain as it was is saved in $ITERM2_PREFS_BEFORE" ]
+  [ "${lines[2]}" = "would: iterm2-prefs: to go back, with iTerm2 quit: defaults import com.googlecode.iterm2 '$ITERM2_PREFS_BEFORE' && defaults write com.googlecode.iterm2 PrefsCustomFolder -string '$OLD'" ]
+  [ "${lines[3]}" = "$(printf 'differs\tKeep\t10-one')" ]
+  [ "${#lines[@]}" -eq 4 ]
   [[ ! -e "$LIVEF" ]]
   [[ ! -e "$ITERM2_PREFS_RECORD" ]]
   [[ ! -e "$FAKE_DEFAULTS_LOG" ]]
   [[ ! -e "$ITERM2_PREFS_DIR" ]]
+  [[ ! -e "$ITERM2_PREFS_BEFORE" ]]
 }
 
 @test "install: where the composed folder is already loaded it composes and repoints nothing" {
@@ -854,6 +866,7 @@ files" ]
   [ "$status" -eq 0 ]
   [ "$output" = "iterm2-prefs: 1 units applied from 1 fragments; 0 kept as changed in iTerm2 (iterm2-prefs capture); 0 reserved keys ignored" ]
   [[ ! -e "$FAKE_DEFAULTS_LOG" ]]
+  [[ ! -e "$ITERM2_PREFS_BEFORE" ]]
   frag 10-one '{"Keep": 2}'
   before=$(sums)
   run sh "$BIN" install --dry-run
@@ -881,6 +894,39 @@ files" ]
   [ "$output" = "iterm2-prefs: iTerm2 loads its preferences from a URL (https://example.invalid/prefs); install repoints only a folder" ]
   [[ ! -e "$LIVEF" ]]
   [[ ! -e "$FAKE_DEFAULTS_LOG" ]]
+  [[ ! -e "$ITERM2_PREFS_BEFORE" ]]
+}
+
+@test "install: a domain that cannot be exported stops it before anything is written" {
+  old_folder
+  frag 10-one '{"Keep": 2}'
+  export FAKE_DOMAIN="$BATS_TEST_TMPDIR/no-such-domain.plist"
+  run sh "$BIN" install
+  [ "$status" -eq 1 ]
+  [ "$output" = "iterm2-prefs: cannot export the iTerm2 domain, so there would be no way back; nothing changed" ]
+  [[ ! -e "$LIVEF" ]]
+  [[ ! -e "$ITERM2_PREFS_RECORD" ]]
+  [[ ! -e "$ITERM2_PREFS_BEFORE" ]]
+  [[ ! -e "$FAKE_DEFAULTS_LOG" ]]
+}
+
+@test "install: without an override the saved domain is prefs-before-install.<UTC time>.plist in the state directory" {
+  unset ITERM2_PREFS_BEFORE
+  frag 10-one '{"Keep": 2}'
+  run sh "$BIN" install --dry-run
+  [ "$status" -eq 0 ]
+  [[ "${lines[1]}" == "would: iterm2-prefs: the preferences domain as it was is saved in $XDG_STATE_HOME/iterm2/prefs-before-install.<time>.plist" ]]
+  [[ ! -e "$XDG_STATE_HOME/iterm2" ]]
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  n=0
+  for f in "$XDG_STATE_HOME"/iterm2/*; do
+    if [[ "${f##*/}" =~ ^prefs-before-install\.[0-9]{8}T[0-9]{6}Z\.plist$ ]]; then
+      n=$((n + 1)); saved="$f"
+    fi
+  done
+  [ "$n" -eq 1 ]
+  [ "${lines[1]}" = "iterm2-prefs: the preferences domain as it was is saved in $saved" ]
 }
 
 # The public base fragment (dot_config/iterm2/prefs.d/10-base.plist)

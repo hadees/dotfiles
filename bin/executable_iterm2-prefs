@@ -46,8 +46,9 @@
 # install repoints iTerm2 at the composed folder, once, with iTerm2 quit: it seeds the
 # store from the old one, lets the sources win every key they set (a fresh domain
 # holds iTerm2's own defaults for many keys, which a three-way would all keep), writes
-# the store and the record, and only then changes the two defaults. It prints the
-# command that goes back.
+# the store and the record, and only then changes the two defaults. Before it changes
+# anything it saves the whole preferences domain (`defaults export`) in a 0600 file
+# beside the record, and it prints the `defaults import` that goes back.
 set -u
 
 warn() { printf 'iterm2-prefs: %s\n' "$*" >&2; }
@@ -70,7 +71,7 @@ proc_running() {
 # /usr/bin/python3 is all a fresh mac has.
 prefs_py() {
   python3 -I - "$@" <<'PYEOF'
-import datetime, os, plistlib, re, subprocess, sys, tempfile
+import datetime, os, plistlib, re, subprocess, sys, tempfile, time
 
 MISSING = type("Missing", (), {"__repr__": lambda self: "MISSING"})()
 
@@ -330,6 +331,12 @@ def live_path():
 
 def record_path():
     return os.environ.get("ITERM2_PREFS_RECORD") or os.path.join(state_home(), "iterm2", "prefs-sourced.plist")
+
+
+def before_path(dry):
+    """Where install saves the domain as it was: ITERM2_PREFS_BEFORE, else a name stamped with the UTC time (<time> under --dry-run)."""
+    return os.environ.get("ITERM2_PREFS_BEFORE") or os.path.join(
+        state_home(), "iterm2", "prefs-before-install.%s.plist" % ("<time>" if dry else time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())))
 
 
 def defaults(*args):
@@ -622,12 +629,23 @@ def cmd_install(args):
     apply, _ = three_way(new, {}, cur, reset=True)
     differing = [u for u in apply if u in cur]
     apply_units(seed, apply, order)
+    before = before_path(dry)
+    if not dry:
+        raw = defaults("export", "com.googlecode.iterm2", "-")
+        try:
+            ok = bool(raw) and isinstance(plistlib.loads(raw), dict)
+        except Exception:
+            ok = False
+        if not ok:
+            raise Fail("cannot export the iTerm2 domain, so there would be no way back; nothing changed")
+        write_atomic(before, raw)
     was = "domain" if kind == "domain" else "folder " + plist
     back = ("defaults write com.googlecode.iterm2 LoadPrefsFromCustomFolder -bool false" if kind == "domain" else
             "defaults write com.googlecode.iterm2 PrefsCustomFolder -string '%s'" % os.path.dirname(plist))
     print(pre + "iterm2-prefs: iTerm2 now loads %s (was: %s); %d units from %d fragments, %d took the source "
           "value over the old store's; start iTerm2" % (live_path(), was, len(new), len(fragments), len(differing)))
-    print(pre + "iterm2-prefs: to go back: " + back)
+    print(pre + "iterm2-prefs: the preferences domain as it was is saved in " + before)
+    print(pre + "iterm2-prefs: to go back, with iTerm2 quit: defaults import com.googlecode.iterm2 '%s' && %s" % (before, back))
     if dry:
         for u in differing:
             print("differs\t%s\t%s" % (unit_text(u), owner[u]))
