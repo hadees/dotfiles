@@ -40,6 +40,7 @@ $SUDO apt-get update -qq;
 for list in "$@"; do
 	# Per-package so one missing name (distro drift) doesn't abort the rest.
 	grep -vE '^[[:space:]]*(#|$)' "$list" | while read -r pkg; do
-		$SUDO apt-get install -y -qq "$pkg" || echo "skipped (unavailable): $pkg";
+		# </dev/null: apt-get must not read the rest of the list from the loop's stdin.
+		$SUDO apt-get install -y -qq "$pkg" </dev/null || echo "skipped (unavailable): $pkg";
 	done
 done
