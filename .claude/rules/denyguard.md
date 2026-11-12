@@ -237,8 +237,9 @@ A call that cannot finish its scan is refused too: one `SIGALRM` budget
 (`BUDGET_S = 4.0` seconds, armed after the payload is parsed and disarmed
 before a decision is written) covers the whole hook call, `check`, `rules`,
 `settings` and `dir` excepted. When it runs out the answer is a JSON deny
-("could not finish checking this command within 4 s … split the command, or
-shorten it") with `(time limit)` in the log's rule column.
+("could not finish checking this command within 4 s … use absolute paths
+instead of a relative cd, or split it into smaller Bash calls": relative `cd`s
+are what multiply the work) with `(time limit)` in the log's rule column.
 `DENYGUARD_BUDGET` (seconds, for tests) may only lower it; a value that does
 not parse, is not positive or exceeds `BUDGET_S` is ignored, so the variable
 cannot lift the bound. The bound is a backstop: a data heredoc body is

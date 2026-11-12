@@ -871,8 +871,8 @@ def cmd_hook():
             if isinstance(event.get("tool_input"), dict) else ""
         verdict = ("(time limit)", " ".join(str(command).split())[:80], (
             "denyguard could not finish checking this command within %g s, so "
-            "it is refused rather than run unchecked; split the command, or "
-            "shorten it" % limit))
+            "it is refused rather than run unchecked; use absolute paths "
+            "instead of a relative cd, or split it into smaller Bash calls" % limit))
     finally:
         # Disarmed before anything is written: a second alarm mid-write
         # would garble the JSON.
