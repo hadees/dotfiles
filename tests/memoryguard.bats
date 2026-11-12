@@ -32,6 +32,7 @@ setup() {
 
   MG="$BATS_TEST_DIRNAME/../bin/executable_memoryguard"
   LOG="$XDG_STATE_HOME/memoryguard/decisions.tsv"
+  MEMDIR="$CLAUDE_CONFIG_DIR/projects/-proj/memory"
 
   # The stub backend: counts its runs, keeps the request, answers STUB_ANSWER.
   STUB="$BATS_TEST_TMPDIR/stub-backend"
@@ -592,4 +593,195 @@ hook_bash() { run "$MG" hook bash <<< "$(bash_payload "$1")"; }
   [[ "$output" == *"memoryguard hook start || true"* ]]
   run "$MG" hook start <<< '{}'
   [ "$status" -eq 0 ] && [ -z "$output" ]
+}
+
+# ---- hook start and audit: stopgaps come due, unplaced notes are counted ------
+
+# Notes written straight to disk, as a program that bypasses the hook would.
+disk_note() { # file body [frontmatter-extra]
+  mkdir -p "$MEMDIR"
+  note_body "$2" "${3:-}" > "$MEMDIR/$1"
+}
+# Audit finds a project by its directory, so these tests keep the notes under $HOME/work's slug.
+audit_project() { MEMDIR="$CLAUDE_CONFIG_DIR/projects/$(printf '%s' "$HOME/work" | tr -c 'A-Za-z0-9' '-')/memory"; }
+start_payload() { # [transcript_path] [cwd]
+  "$REAL_PYTHON3" -c '
+import json,sys
+print(json.dumps({"hook_event_name": "SessionStart", "transcript_path": sys.argv[1], "cwd": sys.argv[2]}))' \
+    "${1-$CLAUDE_CONFIG_DIR/projects/-proj/s.jsonl}" "${2-$HOME/work}"
+}
+hook_start() { run "$MG" hook start <<< "$(start_payload "$@")"; }
+
+@test "hook start: a stopgap is due by date, by grep, or by age, and only then" {
+  printf 'the fix landed in v2\n' > "$HOME/target.txt"
+  check() { # until-value expected(due|ok) [touch -t stamp]
+    rm -rf "$MEMDIR"
+    disk_note s.md "a stopgap $1" "  until: $1
+"
+    [ -z "${3:-}" ] || touch -t "$3" "$MEMDIR/s.md"
+    hook_start
+    [ "$status" -eq 0 ]
+    if [ "$2" = due ]; then
+      [[ "$output" == "memoryguard: 1 stopgap note(s) here are due (s.md)."* ]] || { echo "not due: $1"; false; }
+    else
+      [ -z "$output" ] || { echo "due: $1"; false; }
+    fi
+  }
+  check 2020-01-01 due
+  check 2999-01-01 ok
+  check "grep:fix landed@$HOME/target.txt" due
+  check "grep:nowhere to be found@$HOME/target.txt" ok
+  check "grep:fix landed@$HOME/missing.txt" ok
+  check "when the fix lands" due 202001010000
+  check "when the fix lands" ok
+}
+
+@test "hook start: a clean directory prints and logs nothing; so does a session with no memory directory" {
+  disk_note a.md "one" "  keep: the operator asked for it here
+"
+  printf -- '- [A](a.md) - short\n' > "$MEMDIR/MEMORY.md"
+  hook_start
+  [ "$status" -eq 0 ] && [ -z "$output" ]
+  hook_start "" "$HOME/nowhere"
+  [ "$status" -eq 0 ] && [ -z "$output" ]
+  [ ! -e "$LOG" ]
+}
+
+@test "hook start: due stopgaps are named and logged" {
+  for n in 1 2 3 4 5 6 7; do disk_note "s$n.md" "stopgap $n" "  until: 2020-01-01
+"; done
+  hook_start
+  [[ "$output" == "memoryguard: 7 stopgap note(s) here are due (s1.md, s2.md, s3.md, s4.md, s5.md). Do what each was waiting for"* ]]
+  [ "$(wc -l <<< "$output" | tr -d ' ')" -eq 1 ]
+  [ "$(last_outcome)" = "start-flag" ]
+  [ "$(tail -1 "$LOG" | cut -f10)" = "due=7,index=0,unplaced=0" ]
+}
+
+@test "hook start: an index over budget, or with a long entry, is flagged" {
+  disk_note a.md "x" "  keep: the operator asked for it here
+"
+  "$REAL_PYTHON3" -c 'print("- [A](a.md) " + "x" * 300)' > "$MEMDIR/MEMORY.md"
+  hook_start
+  [[ "$output" == "memoryguard: MEMORY.md is 313 characters in 1 entries (1 over 200); the budget is 8000. Keep one short line per entry." ]]
+  [ "$(tail -1 "$LOG" | cut -f10)" = "due=0,index=1,unplaced=0" ]
+  "$REAL_PYTHON3" -c 'print("".join("- [A](a.md) short\n" * 600))' > "$MEMDIR/MEMORY.md"
+  hook_start
+  [[ "$output" == "memoryguard: MEMORY.md is 10801 characters in 600 entries (0 over 200)"* ]]
+}
+
+@test "hook start: notes never placed are counted from three; a note decided through hook pre is not one, whatever its frontmatter" {
+  export STUB_ANSWER; STUB_ANSWER="$(answer memory 0.9)"
+  disk_note a.md "straight to disk a"
+  disk_note b.md "straight to disk b"
+  hook_pre "$(write_note "decided through the hook" "" c.md)"
+  [ "$(last_outcome)" = "allow-memory" ]
+  # what Claude Code leaves on disk: the same body, a rewritten frontmatter
+  printf -- '---\nname: c\nmodified: 2026-11-12\nmetadata:\n  node_type: memory\n---\ndecided through the hook\n' > "$MEMDIR/c.md"
+  hook_start
+  [ -z "$output" ]
+  disk_note d.md "straight to disk d"
+  hook_start
+  [[ "$output" == "memoryguard: 3 note(s) here were never placed"*"Run \`memoryguard audit --propose\`." ]]
+  [ "$(tail -1 "$LOG" | cut -f10)" = "due=0,index=0,unplaced=3" ]
+}
+
+@test "hook start: the memory directory is found from the transcript, and from a worktree through the common directory" {
+  disk_note a.md "one"; disk_note b.md "two"; disk_note c.md "three"
+  hook_start
+  [[ "$output" == *"3 note(s) here were never placed"* ]]
+  hook_start "$BATS_TEST_TMPDIR/elsewhere/s.jsonl" "$HOME/work"
+  [ -z "$output" ]
+  # a session in a worktree: the transcript lives under the worktree's own slug
+  mkdir -p "$HOME/main"
+  git -C "$HOME/main" init -q
+  git -C "$HOME/main" -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false commit -q --allow-empty -m x
+  git -C "$HOME/main" worktree add -q "$HOME/main-wt"
+  slug="$(printf '%s' "$HOME/main" | tr -c 'A-Za-z0-9' '-')"
+  mkdir -p "$CLAUDE_CONFIG_DIR/projects/$slug/memory"
+  for n in 1 2 3; do printf 'a note %s\n' "$n" > "$CLAUDE_CONFIG_DIR/projects/$slug/memory/n$n.md"; done
+  hook_start "$CLAUDE_CONFIG_DIR/projects/-wt/s.jsonl" "$HOME/main-wt/.."
+  [ -z "$output" ]
+  hook_start "$CLAUDE_CONFIG_DIR/projects/-wt/s.jsonl" "$HOME/main-wt"
+  [[ "$output" == *"3 note(s) here were never placed"* ]]
+}
+
+@test "hook start: inside the decider's own session nothing happens" {
+  for n in 1 2 3; do disk_note "n$n.md" "note $n"; done
+  MEMORYGUARD_DEPTH=1 hook_start
+  [ -z "$output" ]
+  [ ! -e "$LOG" ]
+}
+
+@test "audit: counts the project's notes, and --all lists this profile's projects only" {
+  audit_project
+  disk_note a.md "plain"
+  disk_note k.md "kept" "  keep: the operator asked for it here
+"
+  disk_note s.md "stop" "  until: 2020-01-01
+"
+  printf -- '- [A](a.md) short\n- [K](k.md) short\n' > "$MEMDIR/MEMORY.md"
+  mkdir -p "$CLAUDE_CONFIG_DIR/projects/-two/memory" "$HOME/.claude-other/projects/-three/memory"
+  printf 'x\n' > "$CLAUDE_CONFIG_DIR/projects/-two/memory/x.md"
+  printf 'x\n' > "$HOME/.claude-other/projects/-three/memory/x.md"
+  run "$MG" audit "$HOME/work"
+  [ "$status" -eq 0 ]
+  [ "$output" = "notes 3  placed 2  unplaced 1  stopgaps 1 (due 1)  kept 1  index 36 chars, 2 entries, 0 long" ]
+  run "$MG" audit --all
+  [ "$status" -eq 0 ]
+  [ "$(wc -l <<< "$output" | tr -d ' ')" -eq 2 ]
+  [[ "$output" == *"$(basename "$(dirname "$MEMDIR")")  notes 3"* ]]
+  [[ "$output" == *"-two  notes 1  placed 0  unplaced 1"* ]]
+  [[ "$output" != *three* ]]
+}
+
+@test "audit --propose: the procedure, a row per note, one backend run per unmarked note, no file changed" {
+  audit_project
+  disk_note a.md "plain a"
+  disk_note b.md "plain | b"
+  disk_note k.md "kept" "  keep: the operator asked for it here
+"
+  printf -- '- [A](a.md) short\n' > "$MEMDIR/MEMORY.md"
+  before="$(find "$MEMDIR" -type f -exec cksum {} + | sort)"
+  export STUB_ANSWER; STUB_ANSWER="$(answer rule 0.8)"
+  run "$MG" audit --propose "$HOME/work"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^[1-5]\. ' <<< "$output")" -eq 5 ]
+  [[ "$output" == *"# memoryguard audit: proposals only. Nothing below has been changed."* ]]
+  [[ "$output" == *"| note | chars | home | confidence | place | reason | marker |"* ]]
+  [[ "$output" == *"| a.md | "*" | rule | 0.80 | - | because | - |"* ]]
+  [[ "$output" == *"| k.md | "*" | - | - | - | marked, not asked | keep: the operator asked for it here |"* ]]
+  [ "$(grep -c '^| [a-z]*\.md |' <<< "$output")" -eq 3 ]
+  [ "$(runs)" -eq 2 ]
+  [ "$(cut -f6 "$LOG" | sort | uniq -c | tr -s ' ')" = " 2 audit-move" ]
+  [ "$(find "$MEMDIR" -type f -exec cksum {} + | sort)" = "$before" ]
+  # a failing backend is a row, not a crash
+  STUB_EXIT=1 run "$MG" audit --propose "$HOME/work"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"| a.md | "*" | error | - | - | exit | - |"* ]]
+}
+
+@test "audit --mark-kept makes the note placed, and the same text passes the gate later" {
+  audit_project
+  disk_note a.md "plain a"
+  run "$MG" audit "$HOME/work"
+  [[ "$output" == "notes 1  placed 0  unplaced 1"* ]]
+  run "$MG" audit --mark-kept "$MEMDIR/a.md"
+  [ "$status" -eq 0 ]
+  [ "$(last_outcome)" = "kept-by-audit" ]
+  run "$MG" audit "$HOME/work"
+  [[ "$output" == "notes 1  placed 1  unplaced 0  stopgaps 0 (due 0)  kept 1"* ]]
+  hook_pre "$(payload Write "$MEMDIR/a.md" "$(note_body "plain a")" "" "$HOME/work")"
+  [ -z "$output" ]
+  [ ! -e "$STUB_DIR/runs" ]
+  run "$MG" audit --mark-kept "$MEMDIR/missing.md"
+  [ "$status" -eq 2 ]
+}
+
+@test "audit: bad flag combinations exit 2" {
+  run "$MG" audit --bogus
+  [ "$status" -eq 2 ]
+  run "$MG" audit --all --propose
+  [ "$status" -eq 2 ]
+  run "$MG" audit --mark-kept
+  [ "$status" -eq 2 ]
 }

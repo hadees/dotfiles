@@ -12,8 +12,8 @@
 # This file so far: the decision (`decide`), its backends, the log and the
 # cache (`log`), a self-test of the real backend (`selftest`), the gate on
 # Write and Edit (`hook pre`), the gate on Bash writes into a memory directory
-# (`hook bash`) and the settings block to paste (`settings`).
-# `hook start` and `audit` arrive in later steps.
+# (`hook bash`), the SessionStart check (`hook start`), the audit of a
+# memory directory (`audit`) and the settings block to paste (`settings`).
 #
 # The decider is shaped as a Jev-style function: a request is one JSON
 # object, `{"v": 1, "state": ..., "questions": {<id>: {"type": "choice",
@@ -29,6 +29,8 @@
 #   memoryguard log [--since DAYS]
 #   memoryguard hook pre          PreToolUse JSON on stdin; always exits 0
 #   memoryguard hook bash         the same, for the Bash tool
+#   memoryguard hook start        SessionStart JSON on stdin; prints at most 3 lines
+#   memoryguard audit [--propose] [--all] [--mark-kept FILE...] [DIR]
 #   memoryguard settings
 # env:
 #   MEMORYGUARD_BACKEND       `claude` or the absolute path of a protocol-v1
@@ -82,6 +84,7 @@ command -v python3 >/dev/null 2>&1 || {
 # (denyguard does the same).
 exec python3 - "$@" <<'PY'
 import calendar
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -100,6 +103,8 @@ NOTE_MAX = 12000
 INDEX_MAX = 8000
 LINE_MAX = 200
 KEEP_MIN = 20
+STOPGAP_MAX_DAYS = 14
+UNPLACED_MIN = 3
 CLAUDE_MODE_DEFAULT = "lean"
 SEAT = "decide-haiku"
 OUTLINE_MAX = 200
@@ -792,9 +797,14 @@ def refusal(choice, conf, reason, home, elsewhere):
     return "\n".join(lines + [UNTIL_HINT, KEEP_HINT])
 
 
-def index_warning(text, memdir):
+def index_entries(text):
+    # (entry lines, how many are over LINE_MAX)
     entries = [l for l in text.split("\n") if l.lstrip().startswith("- ")]
-    long = sum(1 for l in entries if len(l) > LINE_MAX)
+    return entries, sum(1 for l in entries if len(l) > LINE_MAX)
+
+
+def index_warning(text, memdir):
+    entries, long = index_entries(text)
     missing = []
     for l in entries:
         for t in re.findall(r"\]\(([^)\s]+)\)", l):
@@ -954,16 +964,213 @@ def hook_bash(p):
 
 def cmd_hook(argv):
     # A hook never fails the tool call: any trouble is silence and exit 0.
-    # `hook start` arrives in a later step and does nothing yet.
-    if argv[:1] not in (["pre"], ["bash"]):
+    if argv[:1] not in (["pre"], ["bash"], ["start"]):
         return 0
     try:
-        out = (hook_pre if argv[0] == "pre" else hook_bash)(json.loads(os.fdopen(3, encoding="utf-8", errors="replace").read()))
+        p = json.loads(os.fdopen(3, encoding="utf-8", errors="replace").read())
+        if argv[0] == "start":
+            out = hook_start(p)
+            if out:
+                print(out)
+            return 0
+        out = (hook_pre if argv[0] == "pre" else hook_bash)(p)
         if out:
             print(json.dumps({"hookSpecificOutput": dict(hookEventName="PreToolUse", **out)}))
     except Exception:
         pass
     return 0
+
+
+# ---- SessionStart and the audit ----------------------------------------------
+
+# A note is placed when it carries a marker or a log line for its text says so.
+PLACED = ("allow-memory", "audit-memory", "kept-by-audit", "allow-keep", "allow-stopgap")
+KEPT = ("allow-keep", "kept-by-audit")
+PROCEDURE = """# memoryguard audit: proposals only. Nothing below has been changed.
+1. For every row whose home is not `memory`, read the note and the proposed home, and correct the row if it is wrong.
+2. Write the corrected table to ${TMPDIR:-/tmp}/claude-reports/<repository directory name>/memory-audit-<date>.md and give the operator its path.
+3. Change nothing until the operator has said yes, to a row or to the whole table.
+4. For each approved move: put the text in its home by a normal edit on that repository's usual branch and pull request, then delete the note and its MEMORY.md line. For each approved delete: delete the note and its line. For each note the operator keeps: `memoryguard audit --mark-kept <file>`.
+5. Shorten MEMORY.md to one line of at most 200 characters per remaining note."""
+
+
+def due(until, mtime, now):
+    # -> (is it due, why). A date is due on or after that day; `grep:<text>@<path>`
+    # when the file holds the text; anything else is words, due for a look
+    # when the note is older than STOPGAP_MAX_DAYS.
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", until):
+        return time.strftime("%Y-%m-%d", time.localtime(now)) >= until, "date"
+    if until.startswith("grep:") and "@" in until:
+        needle, path = until[5:].rsplit("@", 1)
+        body = read_text(os.path.expanduser(path.strip()))
+        return body is not None and needle in body, "grep"
+    return now - mtime > STOPGAP_MAX_DAYS * 86400, "age"
+
+
+def project_memory_dir(hook_input, config_dir):
+    # The memory directory of the session's project, or None.
+    tp = hook_input.get("transcript_path")
+    if isinstance(tp, str) and tp:
+        d = os.path.join(os.path.dirname(tp), "memory")
+        if os.path.isdir(d):
+            return d
+    cwd = hook_input.get("cwd")
+    if isinstance(cwd, str) and cwd:
+        main = main_checkout(repo_root(cwd) or os.path.abspath(cwd))
+        for m in (main, os.path.realpath(main)):
+            d = os.path.join(config_dir, "projects", re.sub(r"[^A-Za-z0-9]", "-", m), "memory")
+            if os.path.isdir(d):
+                return d
+    try:
+        with open(os.path.join(config_dir, "settings.json"), encoding="utf-8") as f:
+            auto = json.load(f).get("autoMemoryDirectory")
+    except (OSError, ValueError, AttributeError):
+        auto = None
+    if isinstance(auto, str) and auto and os.path.isdir(os.path.expanduser(auto)):
+        return os.path.expanduser(auto)
+    return None
+
+
+def scan(memdir, now):
+    # One dict per note of the directory (MEMORY.md aside).
+    rows = ledger_rows()
+    placed = {r[4] for r in rows if r[5] in PLACED}
+    kept = {r[4] for r in rows if r[5] in KEPT}
+    out = []
+    for fn in sorted(os.listdir(memdir)):
+        path = os.path.join(memdir, fn)
+        text = read_text(path) if fn.endswith(".md") and fn != "MEMORY.md" else None
+        if text is None:
+            continue
+        mk, sha = markers(text), body_hash(text)
+        out.append({"name": fn, "text": text, "sha": sha, "mk": mk,
+                    "due": bool(mk["until"]) and due(mk["until"], os.path.getmtime(path), now)[0],
+                    "placed": bool(mk["until"] or mk["keep"]) or sha in placed,
+                    "kept": bool(mk["keep"]) or sha in kept})
+    return out
+
+
+def index_stats(memdir):
+    # (characters, entries, entries over LINE_MAX) of the directory's MEMORY.md
+    text = read_text(os.path.join(memdir, "MEMORY.md")) or ""
+    entries, long = index_entries(text)
+    return len(text), len(entries), long
+
+
+def slug_of(memdir):
+    return memory_project(memdir) or os.path.basename(memdir)
+
+
+def hook_start(p):
+    # -> the lines to print, or None. No model call.
+    memdir = project_memory_dir(p, config_dir())
+    if not memdir:
+        return None
+    notes, (chars, entries, long) = scan(memdir, time.time()), index_stats(memdir)
+    stopgaps = [n["name"] for n in notes if n["due"]]
+    unplaced = sum(1 for n in notes if not n["placed"])
+    over = chars > INDEX_MAX or long > 0
+    lines = []
+    if stopgaps:
+        lines.append("memoryguard: %d stopgap note(s) here are due (%s). Do what each was waiting for, then delete the note and its MEMORY.md line."
+                     % (len(stopgaps), ", ".join(stopgaps[:5])))
+    if over:
+        lines.append("memoryguard: MEMORY.md is %d characters in %d entries (%d over %d); the budget is %d. Keep one short line per entry."
+                     % (chars, entries, long, LINE_MAX, INDEX_MAX))
+    if unplaced >= UNPLACED_MIN:
+        lines.append("memoryguard: %d note(s) here were never placed (written before this hook, or outside the Write tool). "
+                     "Run `memoryguard audit --propose`." % unplaced)
+    if not lines:
+        return None
+    try:
+        log_row(slug_of(memdir), None, "-", "start-flag",
+                detail="due=%d,index=%d,unplaced=%d" % (len(stopgaps), int(over), unplaced))
+    except OSError:
+        pass
+    return "\n".join(lines)
+
+
+def audit_line(memdir):
+    notes = scan(memdir, time.time())
+    stop = [n for n in notes if n["mk"]["until"]]
+    return "notes %d  placed %d  unplaced %d  stopgaps %d (due %d)  kept %d  index %d chars, %d entries, %d long" % (
+        len(notes), sum(1 for n in notes if n["placed"]), sum(1 for n in notes if not n["placed"]),
+        len(stop), sum(1 for n in stop if n["due"]), sum(1 for n in notes if n["kept"]), *index_stats(memdir))
+
+
+def cell(s):
+    return " ".join(str(s).replace("|", "/").split())
+
+
+def audit_propose(memdir, root, start):
+    notes = scan(memdir, time.time())
+    todo = [n for n in notes if not (n["mk"]["until"] or n["mk"]["keep"])]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lambda n: place_note(n["name"], n["text"], root, start), todo))
+    got = {n["name"]: r for n, r in zip(todo, results)}
+    print(PROCEDURE)
+    print("\n| note | chars | home | confidence | place | reason | marker |\n| --- | --- | --- | --- | --- | --- | --- |")
+    for n in notes:
+        mk = n["mk"]
+        marker = "until: " + mk["until"] if mk["until"] else "keep: " + mk["keep"] if mk["keep"] else "-"
+        if n["name"] not in got:
+            home, conf, place, reason = "-", "-", "-", "marked, not asked"
+        else:
+            answers, detail, ms = got[n["name"]]
+            if answers is None:
+                log_row(slug_of(memdir), n["name"], n["sha"], "audit-error", ms=ms, detail=detail)
+                home, conf, place, reason = "error", "-", "-", detail
+            else:
+                outcome, home, c, pl, reason = verdict(answers)
+                log_row(slug_of(memdir), n["name"], n["sha"], "audit-memory" if home == "memory" else "audit-move", home, c, ms)
+                conf, place = "%.2f" % c, pl or "-"
+        print("| %s |" % " | ".join(cell(x) for x in (n["name"], len(n["text"]), home, conf, place, reason, marker)))
+    return 0
+
+
+def cmd_audit(argv):
+    propose = every = False
+    kept, dirs, i = None, [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--propose":
+            propose = True
+        elif a == "--all":
+            every = True
+        elif a == "--mark-kept":
+            kept = argv[i + 1:]
+            break
+        elif a.startswith("-"):
+            return usage()
+        else:
+            dirs.append(a)
+        i += 1
+    if len(dirs) > 1 or (every and (propose or kept is not None)) or (kept is not None and (propose or dirs or not kept)):
+        return usage()
+    if kept is not None:
+        code = 0
+        for f in kept:
+            text = read_text(f)
+            if text is None:
+                sys.stderr.write("memoryguard: cannot read %s\n" % f)
+                code = 2
+                continue
+            log_row(slug_of(os.path.dirname(os.path.abspath(f))), os.path.basename(f), body_hash(text), "kept-by-audit")
+            print("kept-by-audit %s" % f)
+        return code
+    if every:
+        base = os.path.join(config_dir(), "projects")
+        for slug in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+            if os.path.isdir(os.path.join(base, slug, "memory")):
+                print("%s  %s" % (slug, audit_line(os.path.join(base, slug, "memory"))))
+        return 0
+    start = os.path.abspath(dirs[0] if dirs else os.getcwd())
+    memdir = project_memory_dir({"cwd": start}, config_dir())
+    if not memdir:
+        sys.stderr.write("memoryguard: no memory directory found for %s\n" % start)
+        return 0
+    print(audit_line(memdir))
+    return audit_propose(memdir, repo_root(start), start) if propose else 0
 
 
 SETTINGS = """memoryguard does not edit settings.json: each profile's file is owned by its
@@ -992,13 +1199,14 @@ def usage():
         "usage: memoryguard decide [--project DIR] [--json] FILE\n"
         "       memoryguard selftest [--mode lean|agent]\n"
         "       memoryguard log [--since DAYS]\n"
-        "       memoryguard hook pre|bash\n"
+        "       memoryguard hook pre|bash|start\n"
+        "       memoryguard audit [--propose] [--all] [--mark-kept FILE...] [DIR]\n"
         "       memoryguard settings\n")
     return 2
 
 
 def main():
-    cmds = {"decide": cmd_decide, "selftest": cmd_selftest, "log": cmd_log, "hook": cmd_hook, "settings": cmd_settings}
+    cmds = {"decide": cmd_decide, "selftest": cmd_selftest, "log": cmd_log, "hook": cmd_hook, "audit": cmd_audit, "settings": cmd_settings}
     argv = sys.argv[1:]
     if not argv or argv[0] not in cmds:
         return usage()
