@@ -1467,7 +1467,13 @@ function hermes() {
 	[[ -n $uprofile ]] && eff=$uprofile;
 	[[ -z $eff ]] && eff=$pin;
 	[[ -z $eff ]] && eff=$mapped;
-	hermes_ensure_ollama "$(hermes_cfg_path "$eff")";
+	# Only a launch that talks to the model needs its server. A first argument
+	# shaped like a subcommand (`profile list`, `mcp …` — the shape, as
+	# claude() does, because a list of them would go stale) or an info flag
+	# anywhere does not; a bare hermes, `chat` and an option-led launch do.
+	if [[ $1 == chat || ! $1 =~ '^[a-z][a-z-]*$' ]] && (( ! ${argv[(I)(--version|--help|-h)]} )); then
+		hermes_ensure_ollama "$(hermes_cfg_path "$eff")";
+	fi;
 	command hermes "${inject[@]}" "$@";
 }
 

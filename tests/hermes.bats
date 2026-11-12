@@ -235,6 +235,27 @@ hermes_peer_wait_in() {
   grep -q 'serve' "$BATS_TEST_TMPDIR/ollama.log"
 }
 
+@test "a subcommand or an info flag never starts the local server; a chat or an option-led launch does" {
+  repo=$(make_repo hardened)
+  make_profile hardened ollama-launch 'http://127.0.0.1:11434/v1'
+  hermes_in "$repo" profile list
+  [ "$status" -eq 0 ]
+  [ ! -e "$BATS_TEST_TMPDIR/ollama.log" ] || { echo "profile list started ollama"; false; }
+  hermes_in "$repo" --version
+  [ "$status" -eq 0 ]
+  [ ! -e "$BATS_TEST_TMPDIR/ollama.log" ] || { echo "--version started ollama"; false; }
+  hermes_in "$repo" chat --help
+  [ ! -e "$BATS_TEST_TMPDIR/ollama.log" ] || { echo "chat --help started ollama"; false; }
+  hermes_in "$repo" chat
+  [ -e "$BATS_TEST_TMPDIR/ollama.log" ] || { echo "chat did not start ollama"; false; }
+  rm -f "$BATS_TEST_TMPDIR/ollama.log" "$BATS_TEST_TMPDIR/ollama-up"
+  hermes_in "$repo" -t web
+  [ -e "$BATS_TEST_TMPDIR/ollama.log" ] || { echo "an option-led launch did not start ollama"; false; }
+  rm -f "$BATS_TEST_TMPDIR/ollama.log" "$BATS_TEST_TMPDIR/ollama-up"
+  hermes_in "$repo"
+  [ -e "$BATS_TEST_TMPDIR/ollama.log" ] || { echo "a bare hermes did not start ollama"; false; }
+}
+
 @test "an explicit -p in an unpinned directory ensures that profile's server" {
   make_profile side ollama-launch 'http://127.0.0.1:11500/v1'
   hermes_in "$BATS_TEST_TMPDIR" -p side chat
