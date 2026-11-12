@@ -266,8 +266,8 @@ unchanged. The pane's header line is the slot's label, then ` · started by <by>
 The public source ships seven top-level contexts, `dot_config/claude-peer/contexts/NN-<name>.ctx`
 (`ask`, `look-at`, `plan`, `prs`, `audit`, `catch-up`, `team`), which deploy on every class but
 `ephemeral`. They name no account, organisation, person or private repository or skill; an
-overlay's file of the same name at the owner or repository level replaces one (the personal
-overlay does this for `audit`). A context is a launcher: it points at a skill or a document
+overlay's file of the same name at the owner or repository level replaces one (an overlay
+may do this). A context is a launcher: it points at a skill or a document
 and restates no procedure. `{owner}` and `{repo}` in `40-prs.ctx` are gh's own placeholders,
 typed literally, and only `{input}` is substituted. The lookup rule is the one above: top,
 `<owner>/`, `<owner>/<repo>/`, a deeper file wins by name.

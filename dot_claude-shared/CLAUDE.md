@@ -263,7 +263,7 @@ employer-specific — profile-specific memory belongs in that profile's own
   writing the prompt out. To add or fix one for this repo, write
   `90-<name>.ctx` in the directory `claude-peer context dir --repo` prints (it
   works at once) and tell me, so it gets moved into the overlay that owns the
-  repo. When you rename a skill, agent or script, grep that directory for the
+  repo, where there is one. When you rename a skill, agent or script, grep that directory for the
   old name.
 
 ## Commit signing failures (1Password)
