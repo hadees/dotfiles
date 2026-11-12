@@ -204,8 +204,9 @@ screen_show() {
 # one byte per column (UTF-8 continuation bytes dropped): for measuring only
 flat() { LC_ALL=C tr -d '\200-\277'; }
 
+# indent_of '<ERE>': leading spaces of the first matching line (spaces are ASCII: no flat)
 indent_of() {
-  printf '%s\n' "$SCREEN" | flat | LC_ALL=C awk -v re="$1" '$0 ~ re { match($0, /^ */); print RLENGTH; f = 1; exit } END { if (!f) print -1 }'
+  printf '%s\n' "$SCREEN" | LC_ALL=C awk -v re="$1" '$0 ~ re { match($0, /^ */); print RLENGTH; f = 1; exit } END { if (!f) print -1 }'
 }
 widest() { printf '%s\n' "$SCREEN" | flat | LC_ALL=C awk '{ if (length($0) > w) w = length($0) } END { print w + 0 }'; }
 filled() { printf '%s\n' "$SCREEN" | grep -c '[^ ]'; }
@@ -341,4 +342,155 @@ line() { printf '%s\n' "$SCREEN" | sed -n "$1p"; }
   [ "$(indent_of '^ *10  resume')" -eq 11 ] || { screen_show; false; }
   [ "$(indent_of 'q shell$')" -eq 11 ] || { screen_show; false; }
   [ "$(indent_of 'Alpha ')" -eq 11 ] || { screen_show; false; }
+}
+
+# --- the fzf picker -----------------------------------------------------------------------------
+
+HINT='↵ start · ^T type a task · ^S …and save it · esc hide'
+SHORT='↵ start · ^T type a task · esc hide'
+QUIET='Alpha: Return picks a context, c continues the last session, q leaves a shell'
+
+# lineno_of '<ERE>': the number of the first line of SCREEN that matches, or 0
+lineno_of() { printf '%s\n' "$SCREEN" | grep -nE -- "$1" | sed -n '1s/:.*//p' | grep . || echo 0; }
+
+@test "fzf: the shipped catalogue at 80x24, 110x30 and 60x20, as a person sees it" {
+  need tmux fzf
+  local size cols rows left t n i mk
+  for size in '80 24 11' '110 30 26' '60 20 0'; do
+    set -- $size; cols=$1 rows=$2 left=$3
+    screen_open "$cols" "$rows"
+    screen_wait 'esc hide'
+    screen_still
+    [ "$(filled)" -eq 14 ] || { screen_show; false; }
+    [ "$(line 1)" = "$(printf "%$((left + 2))s" '')$HINT" ] || { screen_show; false; }
+    [ "$(line 2)" = "$(printf "%${left}s" '')Alpha ▸" ] || { screen_show; false; }
+    [ "$(printf '%s\n' "$SCREEN" | sed -n 3,14p | sed 's/^ *▸//' | awk '{ printf "%s ", $1 }')" = \
+      'fresh ask look-at plan prs audit catch-up team continue resume task shell ' ] || { screen_show; false; }
+    while IFS= read -r t; do
+      printf '%s\n' "$SCREEN" | grep -qF -- "$t" || { echo "missing title: $t"; screen_show; false; }
+    done < <(sed -n 's/^title: //p' "$CLAUDE_PEER_CONTEXTS"/*.ctx
+             printf '%s\n' 'A new session, no prompt' 'Pick up the last conversation' \
+               'Choose an earlier conversation' 'Type a task and start it' 'Drop to a shell')
+    mk=$(marked)
+    [ "$(printf '%s\n' "$mk" | grep -c .)" -eq 1 ] || { screen_show; false; }
+    [[ "$mk" =~ ^\ *▸\ fresh\  ]] || { screen_show; false; }
+    [ "$(indent_of '^ *▸ fresh ')" -eq "$left" ] || { screen_show; false; }
+    for i in $(seq 4 14); do
+      [ "$(printf '%s\n' "$SCREEN" | sed -n "${i}p" | flat | LC_ALL=C awk '{ match($0, /^ */); print RLENGTH }')" -eq $((left + 2)) ] \
+        || { echo "row on line $i"; screen_show; false; }
+    done
+    no_cut
+    no_border
+    ! printf '%s\n' "$SCREEN" | grep -qE 'file:|flag:|\(asks:' || { screen_show; false; }
+    if [ "$cols" -ge 80 ]; then
+      [ "$(widest)" -le $((left + 58)) ] || { screen_show; false; }
+    fi
+    n=$(lineno_of '^ *▸ fresh ')
+    [ "$(printf '%s\n' "$SCREEN_E" | grep -c '48;2;38;38;38')" -eq 1 ] || { printf '%q\n' "$SCREEN_E"; false; }
+    [[ "$(printf '%s\n' "$SCREEN_E" | sed -n "${n}p")" == *'48;2;38;38;38'* ]] || { printf '%q\n' "$SCREEN_E"; false; }
+    [[ "$(printf '%s\n' "$SCREEN_E" | sed -n 1p)" == *$'\033[2m'* ]] || { printf '%q\n' "$SCREEN_E"; false; }
+    screen_close
+  done
+}
+
+@test "fzf: the widest row the rules allow is whole, and the block grows to hold it" {
+  need tmux fzf
+  local d="$BATS_TEST_TMPDIR/wide"
+  mkdir -p "$d"
+  printf 'title: A title that is exactly forty chars long\n\nWide.\n' >"$d/50-sixteen-chars-nm.ctx"
+  screen_open 80 24 CLAUDE_PEER_CONTEXTS="$d"
+  screen_wait 'esc hide'
+  screen_still
+  [ "$(indent_of 'Alpha ▸$')" -eq 9 ] || { screen_show; false; }
+  printf '%s\n' "$SCREEN" | grep -q 'sixteen-chars-nm  A title that is exactly forty chars long$' || { screen_show; false; }
+  [ "$(widest)" -eq 69 ] || { screen_show; false; }
+  no_cut
+  screen_close
+  screen_open 64 20 CLAUDE_PEER_CONTEXTS="$d"
+  screen_wait 'esc hide'
+  screen_still
+  [ "$(indent_of 'Alpha ▸$')" -eq 0 ] || { screen_show; false; }
+  printf '%s\n' "$SCREEN" | grep -q 'sixteen-chars-nm  A title that is exactly forty chars long$' || { screen_show; false; }
+  no_cut
+}
+
+@test "fzf: the hint is whole at 56 columns and at 55" {
+  need tmux fzf
+  screen_open 56 20
+  screen_wait 'esc hide'
+  screen_still
+  [ "$(printf '%s\n' "$SCREEN" | grep -cxF -- "  $HINT")" -eq 1 ] || { screen_show; false; }
+  no_cut
+  screen_close
+  screen_open 55 20
+  screen_wait 'esc hide'
+  screen_still
+  [ "$(printf '%s\n' "$SCREEN" | grep -cxF -- "  $SHORT")" -eq 1 ] || { screen_show; false; }
+  no_cut
+}
+
+@test "fzf: Down moves the mark, typing shows, Esc leaves one quiet line and no colour, Return draws the picker again" {
+  need tmux fzf
+  screen_open 80 24
+  screen_wait 'esc hide'
+  screen_keys Down
+  screen_wait '^ {11}▸ ask '
+  [ "$(marked | grep -c .)" -eq 1 ] || { screen_show; false; }
+  screen_type pr
+  screen_wait '^ {11}Alpha ▸ pr$'
+  screen_keys Escape
+  screen_wait '^Alpha: Return picks'
+  screen_still
+  [ "$(filled)" -eq 1 ] || { screen_show; false; }
+  [ "$(line 1)" = "$QUIET" ] || { screen_show; false; }
+  [[ "$SCREEN" != *▸* && "$SCREEN" != *'esc hide'* ]] || { screen_show; false; }
+  [[ "$SCREEN_E" != *'48;'* ]] || { printf '%q\n' "$SCREEN_E"; false; }
+  screen_keys Enter
+  screen_wait 'esc hide'
+  screen_still
+  [ "$(line 1)" = "$QUIET" ] || { screen_show; false; }
+  [ "$(count_lines 'esc hide')" -eq 1 ] || { screen_show; false; }
+  [[ "$(marked)" =~ ^\ *▸\ fresh\  ]] || { screen_show; false; }
+  [ "$(filled)" -eq 15 ] || { screen_show; false; }
+  no_cut
+}
+
+@test "fzf: a start from outside clears the picker, the session runs, and the next picker is clean" {
+  need tmux fzf
+  # the slot's worktree already made (the usual case): a first checkout prints git's
+  # own `Preparing worktree` line above the header, which is not the picker's to clear
+  git -C "$REPO" worktree add -q --detach "$REPO/.claude/worktrees/alpha"
+  screen_open 80 24 FAKE_SHELL_SLEEP=3
+  screen_wait 'esc hide'
+  run sh "$BIN" start alpha hello
+  [ "$status" -eq 0 ]
+  screen_wait '^Alpha · started by Lead · hello$'
+  [ "$(line 1)" = 'Alpha · started by Lead · hello' ] || { screen_show; false; }
+  [ "$(count_lines 'esc hide')" -eq 0 ] || { screen_show; false; }
+  [ -z "$(marked)" ] || { screen_show; false; }
+  [[ "$SCREEN" != *21337* ]] || { screen_show; false; }
+  screen_wait 'esc hide'
+  screen_still
+  [ "$(count_lines 'esc hide')" -eq 1 ] || { screen_show; false; }
+  [[ "$(marked)" =~ ^\ *▸\ fresh\  ]] || { screen_show; false; }
+  no_cut
+  screen_keys Down
+  screen_wait '▸ ask '
+}
+
+@test "fzf: a pane narrowed under 80 columns is left-aligned the next time the picker opens" {
+  need tmux fzf
+  screen_open 110 30
+  screen_wait 'esc hide'
+  screen_still
+  [ "$(indent_of 'Alpha ▸$')" -eq 26 ] || { screen_show; false; }
+  screen_keys Escape
+  screen_wait '^Alpha: Return picks'
+  tm resize-window -t s -x 60 -y 20
+  SCREEN_COLS=60 SCREEN_ROWS=20
+  screen_keys Enter
+  screen_wait 'esc hide'
+  screen_still
+  [ "$(printf '%s\n' "$SCREEN" | grep 'Alpha ▸$' | tail -n 1 | flat | LC_ALL=C awk '{ match($0, /^ */); print RLENGTH }')" -eq 0 ] || { screen_show; false; }
+  no_cut
 }

@@ -1857,7 +1857,7 @@ fzfsize() {
   kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
 }
 
-@test "picker fzf: centred from 80 columns, at most the pane's height, the short hint under 55" {
+@test "picker fzf: centred from 80 columns, at most the pane's height, the short hint under 56" {
   hellofix
   fzfstub
   git config --global claude-peer.picker fzf
@@ -1871,6 +1871,19 @@ fzfsize() {
   fzfsize '40 50'
   grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -qF 'esc hide'
   ! grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -qF '^S'
+}
+
+@test "picker fzf: the short hint under 56 columns, and a block wide enough for the widest row" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  fzfsize '40 55'
+  [ "$(grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -cF '^S')" -eq 0 ]
+  fzfsize '40 56'
+  grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -qF '^S …and save it'
+  printf 'title: A title that is exactly forty chars long\n\nWide.\n' >"$CLAUDE_PEER_CONTEXTS/50-sixteen-chars-nm.ctx"
+  fzfsize '40 120'
+  grep -qxF -- --margin=0,30,0,29 "$FAKE_FZF_LOG"
 }
 
 @test "picker fzf: only the colour words of FZF_DEFAULT_OPTS reach fzf, and the variable does not" {

@@ -278,9 +278,11 @@ display being the name padded to one column (8 to 16 wide), two spaces and the t
 `@fresh`, each context of the repository, `@continue`, `@resume` (`claude … --resume` alone,
 so Claude's own list chooses), `@task`, `@shell`. `pane_size` reads `CLAUDE_PEER_SIZE`
 (`rows cols`, the tests' handle) or `stty size`; `pane_geom` makes the block at least 58
-wide, centred when the pane has 80 columns or more, and at most 12 rows tall. fzf is called
+wide (fzf keeps three columns of it, so it is 3 plus the longest display: nothing is cut
+while `3 + name column + 2 + title` fits the pane), centred when the pane has 80 columns or
+more, and at most 12 rows tall. fzf is called
 small and flat: `--height` the block's, `--margin` the centring, no preview, no border, the
-hint dim in its header (`pane_head`; a shorter one under 55 columns), `--no-mouse` so the
+hint dim in its header (`pane_head`; a shorter one under 56 columns, and under 38 columns the hint itself is cut), `--no-mouse` so the
 wheel still scrolls back through what the last session left, `FZF_DEFAULT_OPTS` unset and
 only its `--color` words passed on (`fzf_colors`). `pane_art` (empty for now) prints above
 the list and above the quiet line. Esc (130), and an fzf that ends with nothing chosen, put

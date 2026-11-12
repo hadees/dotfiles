@@ -528,7 +528,7 @@ pane_size() {
 pane_geom() {
   pn_n=$(wc -l <"$pn_me.rows" | tr -d ' ')
   pn_head=1
-  pn_w=$(awk -F'\t' '{ if (length($2) + 2 > w) w = length($2) + 2 } END { print (w > 58 ? w : 58) }' "$pn_me.rows")
+  pn_w=$(awk -F'\t' '{ if (length($2) + 3 > w) w = length($2) + 3 } END { print (w > 58 ? w : 58) }' "$pn_me.rows")
   pn_left=0 pn_right=0
   if [ -n "$pn_cols" ] && [ "$pn_cols" -ge 80 ] && [ $((pn_w + 2)) -le "$pn_cols" ]; then
     pn_left=$(( (pn_cols - pn_w) / 2 )); pn_right=$((pn_cols - pn_w - pn_left))
@@ -541,9 +541,9 @@ pane_geom() {
   pn_h=$((pn_head + 1 + pn_vis))
 }
 
-# fzf's header: the hint, dim; the short one under 55 columns.
+# fzf's header: the hint, dim; the short one under 56 columns.
 pane_head() {
-  if [ -n "$pn_cols" ] && [ "$pn_cols" -lt 55 ]; then ph_t='↵ start · ^T type a task · esc hide'
+  if [ -n "$pn_cols" ] && [ "$pn_cols" -lt 56 ]; then ph_t='↵ start · ^T type a task · esc hide'
   else ph_t='↵ start · ^T type a task · ^S …and save it · esc hide'; fi
   printf '\033[2m%s\033[0m' "$ph_t"
 }
