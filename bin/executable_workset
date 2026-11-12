@@ -165,6 +165,8 @@ cmd_plan() {
     if [ -d "$wt" ]; then
       cur=$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null)
       if [ "$cur" = "$branch" ]; then act=reuse; else act=conflict; fi
+    elif git -C "$rp" worktree list --porcelain 2>/dev/null | grep -qxF "branch refs/heads/$branch"; then
+      act=conflict # already checked out in another worktree of the member
     else
       act=create
     fi

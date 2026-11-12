@@ -191,6 +191,22 @@ workset_fn() { # subcommand...
   [[ "$output" == *"conflicting or missing"* ]]
 }
 
+@test "checkout: a branch checked out in a member's main checkout is a conflict, and no member gets a worktree" {
+  mk_repo octo-alpha
+  mk_repo octo-beta
+  git config --file "$GIT_CONFIG_GLOBAL" --add workset.demo.member '~/code/octo-alpha'
+  git config --file "$GIT_CONFIG_GLOBAL" --add workset.demo.member '~/code/octo-beta'
+  git -C "$HOME/code/octo-beta" checkout -q -b feat/probe
+  run "$WS" plan demo feat/probe
+  [[ "$output" == *"octo-alpha"*$'	create'* ]]
+  [[ "$output" == *"octo-beta"*$'	conflict'* ]]
+  run "$WS" checkout demo feat/probe
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"conflicting or missing"* ]]
+  [ ! -e "$HOME/code/octo-alpha/.claude/worktrees/feat-probe" ]
+  if git -C "$HOME/code/octo-alpha" show-ref --verify -q refs/heads/feat/probe; then echo "octo-alpha got a feat/probe branch"; false; fi
+}
+
 @test "close: refuses dirty, refuses unpushed, removes merged and deletes the branch" {
   mk_repo octo-alpha
   mk_origin octo-alpha
