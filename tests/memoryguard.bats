@@ -181,8 +181,8 @@ assert "frobnicate" not in s.split("NOTE:")[0], s' "$STUB_DIR/request.json"
 @test "the log line holds neither the note's text nor its file name" {
   export STUB_ANSWER; STUB_ANSWER="$(answer memory 0.9)"
   run "$MG" decide "$NOTE"
-  ! grep -q 'staging' "$LOG"
-  ! grep -q 'note.md' "$LOG"
+  ! grep -q 'staging' "$LOG" || { echo 'note text in the log'; false; }
+  ! grep -q 'note.md' "$LOG" || { echo 'note name in the log'; false; }
 }
 
 # A stub `claude` that records how it was called and prints a canned envelope.
@@ -437,7 +437,7 @@ Until: when the fix lands")"
   hook_pre "$(payload Edit "$(note_path)" "stays up" "must keep running" "$HOME/work")"
   [ "$(runs)" -eq 1 ]
   grep -q 'must keep running' "$STUB_DIR/request.json"
-  ! grep -q 'stays up' "$STUB_DIR/request.json"
+  ! grep -q 'stays up' "$STUB_DIR/request.json" || { echo 'note text reached the stub'; false; }
   hook_pre "$(payload Edit "$(note_path)" "not in the file" "x" "$HOME/work")"
   [ -z "$output" ]
   [ "$(last_outcome)" = "allow-error" ]
