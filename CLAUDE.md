@@ -223,7 +223,7 @@ rule first.
 
 | Rule | Covers |
 | --- | --- |
-| `git-hooks` | the identity and push gates, the `hook.<name>.run` chain |
+| `git-hooks` | the identity, branch and push gates, the `hook.<name>.run` chain |
 | `git-identity` | signing setup, `bin/git-ssh-pinned`, credential routing |
 | `onepassword` | the three 1Password channels, `onepassword-doctor`, the skill's `VERSIONS` |
 | `packages` | Brewfile and apt lists, the install scripts, `update()` |

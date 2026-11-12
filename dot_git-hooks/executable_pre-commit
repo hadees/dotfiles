@@ -17,8 +17,38 @@
 # no email is declared for the account, or GIT_IDENTITY_CHECK=0 is set for
 # the one commit. Never touches the network. Chains to the repo's own
 # .git/hooks/pre-commit afterwards (see run-local-hook).
+#
+# Before that, the branch gate: a commit is refused in a claude-peer slot that
+# has no branch yet — HEAD detached, with the base record `branchname --state`
+# reports as "base" (no rebase or bisect in progress). Such a commit would land
+# on no branch while the prompt names the branch the slot was cut from. It runs
+# first because every exit of the identity gate leaves through chain's exec.
+# No opinion when: GIT_BRANCH_CHECK=0 (one commit), hook.pre-commit.branch is
+# false/0/no/off, HEAD is on a branch (no helper is run), or no branchname
+# helper is found. The two bypasses are independent.
 hooks_dir=$(dirname "$0")
 chain() { HOOK_NAME=pre-commit exec "$hooks_dir/run-local-hook" "$@"; }
+
+branch_gate() {
+	[ "${GIT_BRANCH_CHECK:-1}" = 0 ] && return 0
+	case $(git config --get hook.pre-commit.branch 2>/dev/null) in
+		false|0|no|off) return 0 ;;
+	esac
+	git symbolic-ref --quiet HEAD >/dev/null 2>&1 && return 0
+	bn=$(command -v branchname 2>/dev/null) || bn=$HOME/bin/branchname
+	[ -x "$bn" ] || return 0
+	st=$("$bn" --state 2>/dev/null) || return 0
+	tab=$(printf '\t')
+	IFS=$tab read -r state _label ref _name <<EOF_STATE
+$st
+EOF_STATE
+	[ "$state" = base ] || return 0
+	# The ref, not the label: a custom format cannot change what this says.
+	ref=${ref#refs/remotes/}; ref=${ref#refs/heads/}
+	echo "pre-commit: this worktree has no branch yet (HEAD is detached at $ref). Create one, then commit again: git switch -c <type>/<slug>. Bypass once with GIT_BRANCH_CHECK=0." >&2
+	exit 1
+}
+branch_gate
 
 [ "${GIT_IDENTITY_CHECK:-1}" = 0 ] && chain "$@"
 
