@@ -16,7 +16,7 @@ setup() {
   export GIT_CONFIG_NOSYSTEM=1
   git config --file "$GIT_CONFIG_GLOBAL" init.defaultBranch main
   # CI runners export XDG_CONFIG_HOME, which would move the systemd unit.
-  unset CLAUDE_CONFIG_DIR XDG_STATE_HOME XDG_CONFIG_HOME
+  unset CLAUDE_CONFIG_DIR XDG_STATE_HOME XDG_CONFIG_HOME CLAUDE_PROJECT_DIR
 
   PB="$BATS_TEST_DIRNAME/../bin/executable_postbox"
   export POSTBOX_STATE="$BATS_TEST_TMPDIR/state"
@@ -595,12 +595,23 @@ reg() {
   printf '{"pid":%s,"cwd":"%s","name":"%s","status":"idle","messagingSocketPath":"%s"}\n' "$$" "$2" "$3" "$4" > "$1/sessions/$3.json"
 }
 
-# claude-peer stub: logs its arguments, prints $FAKE_CLAIMS.
+# claude-peer stub: logs its arguments. `peers --leader <d>` prints $FAKE_CLAIMS
+# (only for <d> = $FAKE_LEADER when that is set: the real match is exact);
+# `peers <dir>` prints $FAKE_LIVE, else $FAKE_CLAIMS; `log show --all` prints
+# the file $FAKE_LOG.
 peer_stub() {
   cat > "$BIN/claude-peer" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$*" >> "$PEER_LOG"
-[ -z "${FAKE_CLAIMS:-}" ] || printf '%s\n' "$FAKE_CLAIMS"
+case $1 in
+  peers)
+    if [ "${2-}" = --leader ]; then
+      [ -z "${FAKE_LEADER:-}" ] || [ "$3" = "$FAKE_LEADER" ] || exit 0
+      c=${FAKE_CLAIMS:-}
+    else c=${FAKE_LIVE-${FAKE_CLAIMS:-}}; fi
+    [ -z "$c" ] || printf '%s\n' "$c" ;;
+  log) [ ! -f "${FAKE_LOG:-/nonexistent}" ] || cat "$FAKE_LOG" ;;
+esac
 STUB
   chmod +x "$BIN/claude-peer"
   export PEER_LOG="$BATS_TEST_TMPDIR/peer.log" POSTBOX_CLAUDE_PEER="$BIN/claude-peer"
@@ -809,6 +820,127 @@ claim_line() { printf '%s\t%s\t%s\t%s\n' "$1" "${2:-4242}" "$WORK" "${1##*/}"; }
   [[ "$output" == *"Claude Peers: Peer1 (alpha) is up"* ]]
   [[ "$output" == *"1 unread message(s) for "* ]]
   [[ "$output" == *"BlueLake: review please"* ]]
+}
+
+@test "hook prompt: a prompt from a subdirectory of the leader announces nothing, stops nothing" {
+  leader_profile; peer_stub
+  wt="$HOME/code/alpha"; mkdir -p "$wt" "$WORK/sub"
+  reg "$CLAUDE_CONFIG_DIR" "$wt" PeerA "$(mksock a.sock)"
+  export FAKE_CLAIMS="$(claim_line "$wt")" FAKE_LEADER="$WORK" POSTBOX_NOW=1000 CLAUDE_PROJECT_DIR="$WORK"
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it." ]
+  run payload '{"cwd":"'"$WORK"'/sub","session_id":"s1"}' hook prompt
+  [ -z "$output" ]
+  grep -q -- "peers --leader $WORK\$" "$PEER_LOG"
+  ! grep -q -- "--leader $WORK/sub" "$PEER_LOG"
+}
+
+@test "hook prompt: without CLAUDE_PROJECT_DIR the worktree's own claim keeps a live peer from being reported stopped" {
+  leader_profile; peer_stub
+  wt="$HOME/code/alpha"; mkdir -p "$wt" "$WORK/sub"
+  reg "$CLAUDE_CONFIG_DIR" "$wt" PeerA "$(mksock a.sock)"
+  export FAKE_CLAIMS="$(claim_line "$wt")" FAKE_LEADER="$WORK" POSTBOX_NOW=1000
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [[ "$output" == *"PeerA (alpha) is up"* ]]
+  run payload '{"cwd":"'"$WORK"'/sub","session_id":"s1"}' hook prompt
+  [ -z "$output" ]
+  grep -q -- "^peers $wt\$" "$PEER_LOG"
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ -z "$output" ]
+  # Really gone (its pid dead: no claim anywhere): reported once.
+  export FAKE_CLAIMS=''
+  run payload '{"cwd":"'"$WORK"'/sub","session_id":"s1"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: alpha has stopped." ]
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ -z "$output" ]
+}
+
+@test "hook prompt: from a subdirectory, the inbox checked is the start directory's agent" {
+  mkdir -p "$WORK/sub"
+  export CLAUDE_PROJECT_DIR="$WORK"
+  run payload '{"cwd":"'"$WORK"'/sub","session_id":"s1"}' hook prompt
+  top=$("$PB" name "$WORK"); sub=$("$PB" name "$WORK/sub")
+  [ "$top" != "$sub" ]
+  grep -q -- "check-inbox --agent $top " "$AM_LOG"
+  ! grep -q -- "--agent $sub " "$AM_LOG"
+}
+
+# The claude-peer log, as `log show --all` prints it.
+iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }
+logl() { printf '%s\t%s\t%s\t%s\n' "$(iso "$1")" "$2" "$3" "${4-}" >> "$FAKE_LOG"; }
+
+# A leader with one live peer, alpha, already announced.
+news_leader() {
+  leader_profile; peer_stub
+  wt="$HOME/code/alpha"; mkdir -p "$wt"
+  reg "$CLAUDE_CONFIG_DIR" "$wt" PeerA "$(mksock a.sock)"
+  export FAKE_CLAIMS="$(claim_line "$wt")" FAKE_LOG="$BATS_TEST_TMPDIR/peer-log" POSTBOX_NOW=1800000000
+  : > "$FAKE_LOG"
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [[ "$output" == *"PeerA (alpha) is up"* ]]
+}
+
+@test "hook prompt: a tab's claim, note and done are relayed once each, in their own words" {
+  news_leader
+  logl 1799999000 Alpha claim "build T3"
+  logl 1799999100 Alpha note "halfway"
+  logl 1799999200 Alpha done "DONE: abc123"
+  logl 1799999300 Beta done ""
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: Alpha claimed: build T3
+postbox: Claude Peers: Alpha noted: halfway
+postbox: Claude Peers: Alpha done: DONE: abc123
+postbox: Claude Peers: Beta done." ]
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ -z "$output" ]
+  [ "$(cat "$POSTBOX_STATE/rollcall/log/$(printf '%s' "$(cd "$WORK" && pwd -P)" | tr -c 'A-Za-z0-9._-' '_')")" = 4 ]
+}
+
+@test "hook prompt: an end or gone line replaces the bare stopped line; idle is relayed as written" {
+  news_leader
+  logl 1799999000 Beta idle "Beta has been idle for 12m"
+  logl 1799999100 Alpha end "Alpha ended after 3h (build T3)"
+  export FAKE_CLAIMS=''
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: Beta has been idle for 12m
+postbox: Claude Peers: Alpha ended after 3h (build T3)" ]
+  news_leader
+  logl 1799999200 Alpha gone "Alpha's pane is gone"
+  export FAKE_CLAIMS=''
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: Alpha's pane is gone" ]
+}
+
+@test "hook prompt: Lead's own lines and the leader directory's are not echoed back; other kinds are not relayed" {
+  news_leader
+  logl 1799999000 Lead claim "build peer contexts"
+  logl 1799999000 "${WORK##*/}" note "from the leader"
+  logl 1799999000 Lead start "Alpha by Lead"
+  logl 1799999000 Lead stop "Alpha by Lead"
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ -z "$output" ]
+}
+
+@test "hook prompt: six new lines print five and a count of the rest" {
+  news_leader
+  for i in 1 2 3 4 5 6; do logl 1799999000 Alpha note "n$i"; done
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ "${#lines[@]}" -eq 6 ]
+  [ "${lines[4]}" = "postbox: Claude Peers: Alpha noted: n5" ]
+  [ "${lines[5]}" = "postbox: Claude Peers: 1 more in claude-peer log show --all" ]
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ -z "$output" ]
+}
+
+@test "hook prompt: with no counter an hour-old line is relayed; a line two days old never is" {
+  news_leader
+  rm -rf "$POSTBOX_STATE/rollcall/log"
+  logl $((1800000000 - 2 * 86400)) Alpha note "ancient"
+  logl $((1800000000 - 3600)) Alpha note "an hour ago"
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: Alpha noted: an hour ago" ]
+  run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ -z "$output" ]
 }
 
 # --- guard ----------------------------------------------------------------------
