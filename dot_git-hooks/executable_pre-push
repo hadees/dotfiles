@@ -15,7 +15,12 @@
 # insensitively. Conventional Commits subjects lead with a type (and often an
 # emoji before it), so anchoring at the start would never fire on one; the
 # word boundary is what keeps "swipe" and "wiping" out. `[^[:alnum:]]` is
-# deliberate in place of `\b`, which BSD grep does not implement.
+# deliberate in place of `\b`, which BSD grep does not implement. A subject
+# that *starts* with git's autosquash prefixes (`fixup! `, `squash! `,
+# `amend! `) is just as unfinished — it exists to be folded away — and is
+# refused by the same gate; there the anchor is the point, since the prefix
+# only means something at the start. Bodies are never read: "wip" in a body
+# is prose.
 #
 # A force-push is not visible to a hook as a flag: git only says which refs
 # are about to move. So it is inferred the way git itself decides whether a
@@ -85,7 +90,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 		unfinished=$(
 			for sha in $commits; do
 				subject=$(git log -1 --format=%s "$sha" 2>/dev/null)
-				printf '%s' "$subject" | grep -qiE '(^|[^[:alnum:]])wip([^[:alnum:]]|$)' \
+				# wip in any case; the autosquash prefixes exactly as git writes them.
+				{ printf '%s' "$subject" | grep -qiE '(^|[^[:alnum:]])wip([^[:alnum:]]|$)' \
+					|| printf '%s' "$subject" | grep -qE '^(fixup|squash|amend)! '; } \
 					&& printf '  %s %s\n' "$(git rev-parse --short "$sha")" "$subject"
 			done
 		)
@@ -93,6 +100,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 			echo "pre-push: refusing to push ${local_ref#refs/*/} — it still carries unfinished commits:" >&2
 			printf '%s\n' "$unfinished" >&2
 			echo "  Reword or squash them away, or bypass once with GIT_PUSH_CHECK=0." >&2
+			echo "  To allow them on this repo for good: git config hook.pre-push.wip false" >&2
 			exit 1
 		fi
 	fi
