@@ -136,12 +136,15 @@ registered `peer-N` worktrees remain; nothing uses or removes them any more
 (`git worktree remove <path>`).
 
 **A pane waits until it is told.** `claude-peer run --as <slot> --wait` is
-what a slot pane runs: it prints `<Label>: Return starts a Claude here, c
-continues the last session, q leaves a shell` (with the picker, below, on:
-`Return picks a context, …`) and makes no worktree, claim or
-Claude until it is woken. Return starts a fresh session, `c` one with
-`--continue`, `q` (or Ctrl-C) removes its wait file and leaves a plain shell,
-anything else asks again; when the session ends for any reason the claim goes
+what a slot pane runs, and makes no worktree, claim or Claude until it is
+woken. With the picker on (below) the waiting screen *is* the picker, open at
+once; Esc puts it away and leaves the quiet line `<Label>: Return picks a
+context, c continues the last session, q leaves a shell`, where Return opens it
+again. With the picker `off` the quiet line is all there is: `<Label>: Return
+starts a Claude here, c continues the last session, q leaves a shell`. At the
+quiet line Return starts (or picks), `c` continues with `--continue`, `q` (or
+Ctrl-C) removes its wait file and leaves a plain shell, anything else asks
+again; when the session ends for any reason the claim goes
 and the pane waits again, so a pane never ends. A waiting pane owns
 `<git common dir>/claude-peer.wait/<slot>.<pid>` (line 1 the leader's
 directory); the next pane to register deletes the files of dead pids. Outside a
@@ -264,26 +267,40 @@ and restates no procedure. `{owner}` and `{repo}` in `40-prs.ctx` are gh's own p
 typed literally, and only `{input}` is substituted. The lookup rule is the one above: top,
 `<owner>/`, `<owner>/<repo>/`, a deeper file wins by name.
 
-**The picker.** Return in a waiting pane opens a list of rows instead of starting a blank
-session (`git config claude-peer.picker fzf|list|off`, read in the leader directory when the
-pane starts; unset is `fzf` when `fzf` is on PATH and stdout is a terminal, else `list`; `off`
-is the pre-picker pane, hint line and all). `pick_rows` builds the rows, `id<TAB>display`:
+**The picker.** A waiting pane shows it at once, every time it starts waiting and again
+each time a session ends (`git config claude-peer.picker fzf|list|off`, read in the leader
+directory when the pane starts; unset is `fzf` when `fzf` is on PATH and stdout is a terminal,
+else `list`; `off` is the pre-picker pane, quiet line and all). fzf needs 0.75 or newer
+(`fzf_ok`); an older one prints `fzf <version> is older than 0.75; using the list` once, and
+with `list` or `off` fzf is never run. `pick_rows` builds the rows, `id<TAB>display`, the
+display being the name padded to one column (8 to 16 wide), two spaces and the title:
 `@fresh`, each context of the repository, `@continue`, `@resume` (`claude … --resume` alone,
-so Claude's own list chooses), `@task`. A line typed at the waiting prompt that is exactly a
-context name starts it. Both front ends are reached through `pane_pick`; every question in
-them (`<ask>: `, `Task: `, `Save as …`) is read by `pane_ask`, which is `pane_block`, so a
-`start` request interrupts any of them. fzf runs as a background child the pane `wait`s on,
-with its signals reset in the subshell (the pane ignores `TTIN` and `TTOU`); a request while
-it is open sends it TERM, runs `stty sane` on the terminal and handles the request. fzf exits
-130: back to waiting; `ctrl-t` or `ctrl-s` (or exit 1) with a typed query: that text is the
-task, and `ctrl-s` also saves it; any other failure prints `fzf failed` once and the pane
-uses the numbered list from then on. Saving writes `<root>/<owner>/<repo>/90-<name>.ctx`
-(`title:` the first 60 characters, a blank line, the task) and refuses, with one `not saved:`
-line and the task still starting, a bad name, a name the directory already has under any
-prefix, or a repository with no origin. The preview is `claude-peer context show`, reached
-through `CLAUDE_PEER_SELF`, the script's absolute path, exported by the pane. The tests use a
-stub `fzf` on `PATH`; whether the real fzf works as a background child in a workgroup pane is
-live check L-a/L-b.
+so Claude's own list chooses), `@task`, `@shell`. `pane_size` reads `CLAUDE_PEER_SIZE`
+(`rows cols`, the tests' handle) or `stty size`; `pane_geom` makes the block at least 58
+wide, centred when the pane has 80 columns or more, and at most 12 rows tall. fzf is called
+small and flat: `--height` the block's, `--margin` the centring, no preview, no border, the
+hint dim in its header (`pane_head`; a shorter one under 55 columns), `--no-mouse` so the
+wheel still scrolls back through what the last session left, `FZF_DEFAULT_OPTS` unset and
+only its `--color` words passed on (`fzf_colors`). `pane_art` (empty for now) prints above
+the list and above the quiet line. Esc (130), and an fzf that ends with nothing chosen, put
+the pane in the quiet state; nothing reopens fzf without a key, so a broken fzf cannot spin.
+The numbered list is printed under the same left padding and read by `pane_ask`; Return
+alone is row 1, a number its row, a name its context (or a built-in row by its shown name),
+`c r n s` as the hint says, `q` and Ctrl-C a shell; a reader that ends with no line (no
+terminal) goes quiet. A line typed at the quiet prompt that is exactly a context name starts
+it. Every question (`<ask>: `, `Task: `, `Save as …`) is read by `pane_ask`, which is
+`pane_block`, so a `start` request interrupts any of them, and an empty answer or Ctrl-C
+goes back to the picker (`Save as`: Return skips the save, the task still starts). fzf runs
+as a background child the pane `wait`s on, with its signals reset in the subshell (the pane
+ignores `TTIN` and `TTOU`); a request while it is open sends it TERM, runs `stty sane` on the
+terminal and handles the request. `ctrl-t` or `ctrl-s` (or exit 1) with a typed query: that
+text is the task, and `ctrl-s` also saves it; `ctrl-t` with nothing typed opens the picker
+again; any other failure prints `fzf failed` once and the pane uses the numbered list from
+then on. Saving writes `<root>/<owner>/<repo>/90-<name>.ctx` (`title:` the first 40
+characters, a blank line, the task) and refuses, with one `not saved:` line and the task
+still starting, a bad name, a name the directory already has under any prefix, or a
+repository with no origin. The tests use a stub `fzf` on `PATH`; whether the real fzf works
+as a background child in a workgroup pane is live check L-a/L-b.
 
 **The Hermes peer** exists only in `Claude Peers + Hermes`, and is a plain shell
 unless a Hermes profile routes the directory; the gate below is now the second

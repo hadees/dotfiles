@@ -515,6 +515,8 @@ name an owner, a repository or a private skill, at lower levels:
   owning overlay's source under a lower number, a commit there, and an apply.
 - Deleting a source file leaves the deployed one in place; add its target path
   to that overlay's `.chezmoiremove`.
+- A `title:` is at most 40 characters; the picker shows it beside the name
+  and grows wider for a longer one.
 - A context is a launcher: it points at a skill or a document in the
   repository ("the way this repository documents") and restates no procedure.
   For a repository some profile on the machine is denied, this is a rule, not a
