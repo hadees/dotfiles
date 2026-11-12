@@ -832,7 +832,7 @@ claim_line() { printf '%s\t%s\t%s\t%s\n' "$1" "${2:-4242}" "$WORK" "${1##*/}"; }
   run payload '{"cwd":"'"$WORK"'/sub","session_id":"s1"}' hook prompt
   [ -z "$output" ]
   grep -q -- "peers --leader $WORK\$" "$PEER_LOG"
-  ! grep -q -- "--leader $WORK/sub" "$PEER_LOG"
+  ! grep -q -- "--leader $WORK/sub" "$PEER_LOG" || { echo "the roll-call asked for the subdirectory's peers"; false; }
 }
 
 @test "hook prompt: without CLAUDE_PROJECT_DIR the worktree's own claim keeps a live peer from being reported stopped" {
@@ -862,7 +862,7 @@ claim_line() { printf '%s\t%s\t%s\t%s\n' "$1" "${2:-4242}" "$WORK" "${1##*/}"; }
   top=$("$PB" name "$WORK"); sub=$("$PB" name "$WORK/sub")
   [ "$top" != "$sub" ]
   grep -q -- "check-inbox --agent $top " "$AM_LOG"
-  ! grep -q -- "--agent $sub " "$AM_LOG"
+  ! grep -q -- "--agent $sub " "$AM_LOG" || { echo "the inbox checked was the subdirectory's agent"; false; }
 }
 
 # The claude-peer log, as `log show --all` prints it.
