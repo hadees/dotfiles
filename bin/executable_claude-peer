@@ -134,6 +134,14 @@
 #   context dir [--repo [<dir>]]
 #                            the contexts root, or this repository's directory
 #                            in it (<root>/<owner>/<repo>)
+#   art [--slot <slot>] [--frame <name>] [--z all|near|near-mid|none] [--truecolor|--256]
+#                            print the sleeper a waiting pane shows (one frame,
+#                            its z's; cap colour by slot, git config
+#                            claude-peer.<slot>.cap; claude-peer.art false hides
+#                            it in panes, claude-peer.art-file replaces it)
+#   art --screen [--slot <slot>]
+#                            the quiet waiting screen, padded as a pane pads it,
+#                            for this terminal or CLAUDE_PEER_SIZE
 #
 # Exit codes of start and stop: 0 done; 1 failed; 2 usage; 3 already in
 # the requested state; 4 nothing to act on; 5 refused because busy.
@@ -506,6 +514,189 @@ fzf_ok() {
   printf '%s\n' "$fzf_ver" | awk -F. '{ exit !($1 + 0 > 0 || $2 + 0 >= 75) }'
 }
 
+# --- the sleeper: the figure above the picker -----------------------------------------
+
+# The built-in figure, in the art format (an override file uses the same): palette
+# lines, a margin, the z's (character row, column), frames of pixel rows. `.` is
+# empty and `E` a closed eye, which fills both pixel rows of its cell.
+art_default() {
+  cat <<'ART'
+palette O 217 119 87
+palette D 170 85 60
+palette C 90 120 200
+palette B 60 85 160
+palette W 240 240 240
+palette K 15 15 15
+margin 9
+z far 1 0
+z mid 2 3
+z near 3 6
+frame asleep
+..................
+..................
+......CCCCC.......
+....CCCCCCCCC.....
+...CCCCCCCCCCCC...
+...CCCCCCCCCCBCC..
+...BBBBBBBBBB..CC.
+...OOOOOOOOOO...CW
+...OOEEOOOEEO...WW
+...OOEEOOOEEO.....
+.OOOOOOOOOOOOOO...
+.OOOOOOOOOOOOOO...
+...OOOOOOOOOO.....
+...OOOOOOOOOO.....
+...DDDDDDDDDD.....
+...DDDDDDDDDD.....
+...O.O....O.O.....
+...O.O....O.O.....
+ART
+}
+
+# frame z(all|near|near-mid|none) mode(truecolor|256) cap band, art format on stdin
+# -> one line per character row: two pixel rows each, the same colour above and
+# below a space on that background, two colours ▀ over a background, one ▀ or ▄,
+# an eye a bold ▬ in K on O; each cell then a reset. A file that does not parse:
+# one line, the reason, and status 3. A frame that is not there is `asleep`.
+art_awk() {
+  awk -v want="$1" -v zs="$2" -v mode="$3" -v cap="$4" -v band="$5" '
+    function bad(m) { print m; err = 1; exit 3 }
+    function lvl(v,   i, d, best, bi) {
+      best = 999
+      for (i = 0; i < 6; i++) { d = v - L[i]; if (d < 0) d = -d; if (d < best) { best = d; bi = i } }
+      return bi
+    }
+    function c256(r, g, b,   ri, gi, bi, dc, gr, gv, dg) {
+      ri = lvl(r); gi = lvl(g); bi = lvl(b)
+      dc = (r - L[ri]) * (r - L[ri]) + (g - L[gi]) * (g - L[gi]) + (b - L[bi]) * (b - L[bi])
+      gr = int(((r + g + b) / 3 - 8) / 10 + 0.5); if (gr < 0) gr = 0; if (gr > 23) gr = 23
+      gv = 8 + 10 * gr
+      dg = (r - gv) * (r - gv) + (g - gv) * (g - gv) + (b - gv) * (b - gv)
+      return dg < dc ? 232 + gr : 16 + 36 * ri + 6 * gi + bi
+    }
+    function col(k, fb,   c) {
+      split(pal[k], c, " ")
+      if (mode == "truecolor") return fb ";2;" c[1] ";" c[2] ";" c[3]
+      return fb ";5;" c256(c[1] + 0, c[2] + 0, c[3] + 0)
+    }
+    function cell(a, b) {
+      if (a == "." && b == ".") return " "
+      if (a == "E") return "\033[1;" col("K", 38) ";" col("O", 48) "m▬\033[0m"
+      if (a == b) return "\033[" col(a, 48) "m \033[0m"
+      if (b == ".") return "\033[" col(a, 38) "m▀\033[0m"
+      if (a == ".") return "\033[" col(b, 38) "m▄\033[0m"
+      return "\033[" col(a, 38) ";" col(b, 48) "m▀\033[0m"
+    }
+    BEGIN { split("0 95 135 175 215 255", t, " "); for (i = 0; i < 6; i++) L[i] = t[i + 1] + 0; fr = "" }
+    { sub(/\r$/, "") }
+    /^[ \t]*(#|$)/ { next }
+    $1 == "palette" {
+      if (NF != 5 || length($2) != 1 || $2 !~ /^[A-Za-z]$/ || $2 == "E") bad("line " NR ": palette <letter> <r> <g> <b>")
+      for (i = 3; i <= 5; i++) if ($i !~ /^[0-9]+$/ || $i + 0 > 255) bad("line " NR ": a colour channel is 0 to 255")
+      pal[$2] = ($3 + 0) " " ($4 + 0) " " ($5 + 0); fr = ""; next
+    }
+    $1 == "margin" { if (NF != 2 || $2 !~ /^[0-9]+$/) bad("line " NR ": margin <columns>"); margin = $2 + 0; fr = ""; next }
+    $1 == "z" {
+      if (NF != 4 || $2 !~ /^(near|mid|far)$/ || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/) bad("line " NR ": z near|mid|far <row> <column>")
+      zr[$2] = $3 + 0; zc[$2] = $4 + 0; fr = ""; next
+    }
+    $1 == "cap" { if (NF != 2 || $2 != "fixed") bad("line " NR ": cap fixed"); fixed = 1; fr = ""; next }
+    $1 == "frame" {
+      if (NF != 2) bad("line " NR ": frame <name>")
+      fr = $2; if (fr in nrow) bad("line " NR ": frame " fr " twice"); nrow[fr] = 0; next
+    }
+    NF == 1 && fr != "" {
+      if ($1 !~ /^[A-Za-z.]+$/) bad("line " NR ": a pixel row is palette letters, . and E")
+      n = ++nrow[fr]; row[fr, n] = $1
+      if (length($1) != length(row[fr, 1])) bad("line " NR ": frame " fr " has rows of unequal width")
+      next
+    }
+    { bad("line " NR ": not understood") }
+    END {
+      if (err) exit 3
+      if (!("asleep" in nrow)) bad("no frame asleep")
+      for (f in nrow) {
+        if (nrow[f] == 0 || nrow[f] % 2) bad("frame " f ": rows must be an even number")
+        for (n = 1; n <= nrow[f]; n++) for (j = 1; j <= length(row[f, n]); j++) {
+          a = substr(row[f, n], j, 1)
+          if (a != "." && a != "E" && !(a in pal)) bad("frame " f ": " a " is not in the palette")
+          if (n % 2) { b = substr(row[f, n + 1], j, 1); if ((a == "E") != (b == "E")) bad("frame " f ": an eye must fill both pixel rows of its cell") }
+          if (a == "E" && !(("K" in pal) && ("O" in pal))) bad("eyes need palette K and O")
+        }
+      }
+      for (k in zr) if (zc[k] >= margin) bad("z " k ": column " zc[k] " is not inside the margin")
+      if (!fixed && cap != "") { pal["C"] = cap; pal["B"] = band }
+      f = (want in nrow) ? want : "asleep"
+      if (zs == "all" || zs == "near-mid" || zs == "near") on["near"] = 1
+      if (zs == "all" || zs == "near-mid") on["mid"] = 1
+      if (zs == "all") on["far"] = 1
+      zt["far"] = "\033[1mZ\033[0m"; zt["mid"] = "\033[38;5;250mz\033[0m"; zt["near"] = "\033[2mz\033[0m"
+      w = length(row[f, 1])
+      for (i = 0; i < nrow[f] / 2; i++) {
+        line = ""
+        for (m = 0; m < margin; m++) {
+          s = " "
+          for (k in on) if ((k in zr) && zr[k] == i && zc[k] == m) s = zt[k]
+          line = line s
+        }
+        up = row[f, 2 * i + 1]; lo = row[f, 2 * i + 2]
+        for (j = 1; j <= w; j++) line = line cell(substr(up, j, 1), substr(lo, j, 1))
+        print line
+      }
+    }'
+}
+
+# slot -> ac_cap and ac_band, "r g b": git config claude-peer.<slot>.cap, else by
+# the slot's place in the pool (Base16 Eighties hues; the second is the approved blue).
+art_cap() {
+  ac_h=$(git config --get "claude-peer.$1.cap" 2>/dev/null) || ac_h=
+  ac_h=${ac_h#\#}
+  if ! printf '%s\n' "$ac_h" | LC_ALL=C grep -Eq '^[0-9A-Fa-f]{6}$'; then
+    ac_i=0 ac_pos=0
+    for ac_w in $(pool_words 2>/dev/null); do
+      [ "$ac_w" != "$1" ] || { ac_pos=$ac_i; break; }
+      ac_i=$((ac_i + 1))
+    done
+    set -- 99cc99 5a78c8 cc99cc 66cccc ffcc66 f2777a
+    shift $((ac_pos % 6)); ac_h=$1
+  fi
+  ac_r=$((0x$(printf '%s' "$ac_h" | cut -c1-2))) ac_g=$((0x$(printf '%s' "$ac_h" | cut -c3-4))) ac_b=$((0x$(printf '%s' "$ac_h" | cut -c5-6)))
+  ac_cap="$ac_r $ac_g $ac_b"
+  case $ac_h in
+    5a78c8|5A78C8) ac_band='60 85 160';;
+    *) ac_band="$((ac_r * 7 / 10)) $((ac_g * 7 / 10)) $((ac_b * 7 / 10))";;
+  esac
+}
+
+# frame z slot [mode] -> the rendered rows: from git config claude-peer.art-file when
+# it parses (else one line saying why, and the built-in). Mode: truecolor when
+# COLORTERM says so, else 256.
+art_lines() {
+  al_m=${4-}
+  [ -n "$al_m" ] || case ${COLORTERM-} in truecolor|24bit) al_m=truecolor;; *) al_m=256;; esac
+  art_cap "$3"
+  al_f=$(git config --path --get claude-peer.art-file 2>/dev/null) || al_f=
+  if [ -n "$al_f" ]; then
+    if [ ! -r "$al_f" ]; then warn "$al_f: cannot be read"
+    elif al_o=$(art_awk "$1" "$2" "$al_m" "$ac_cap" "$ac_band" <"$al_f"); then printf '%s\n' "$al_o"; return 0
+    else warn "$al_f: $(printf '%s\n' "$al_o" | sed -n 1p)"; fi
+  fi
+  art_default | art_awk "$1" "$2" "$al_m" "$ac_cap" "$ac_band"
+}
+
+# second-line -> the art block: the asleep frame with its z's and, beside it on
+# character rows 4 and 5 (pn_lay beside) or under it (under), `✻ <Label> · <repo>`
+# and the second line, dim. <repo> is cut, never the label, to fit pn_w - 3 columns.
+art_block() {
+  ab_room=$((pn_w - 3)); [ "$pn_lay" != beside ] || ab_room=$((ab_room - 29))
+  ab_r=$((ab_room - 5 - ${#label})); [ "$ab_r" -ge 0 ] || ab_r=0
+  ab_repo=$(printf '%s' "$rname" | cut -c1-"$((ab_r > 0 ? ab_r : 1))"); [ "$ab_r" -gt 0 ] || ab_repo=
+  ab_t=$(printf '✻ \033[1m%s\033[0m · %s' "$label" "$ab_repo") ab_s=$(printf '\033[2m%s\033[0m' "$1")
+  art_lines asleep all "$slot" | AB_T=$ab_t AB_S=$ab_s AB_L=$pn_lay awk '
+      { print $0 (ENVIRON["AB_L"] == "beside" ? (NR == 5 ? "  " ENVIRON["AB_T"] : NR == 6 ? "  " ENVIRON["AB_S"] : "") : "") }
+      END { if (ENVIRON["AB_L"] == "under") { print ENVIRON["AB_T"]; print ENVIRON["AB_S"] } }'
+}
+
 # pn_rows pn_cols: CLAUDE_PEER_SIZE ("rows cols"), else the terminal's, else empty.
 pane_size() {
   pn_rows= pn_cols=
@@ -525,10 +716,25 @@ pane_size() {
 
 # The block: pn_n rows, pn_head header lines, pn_w wide, centred by pn_left and
 # pn_right (pn_pad: pn_left spaces) from 80 columns, pn_vis rows shown, pn_h high.
+# pn_lay: where the sleeper goes (beside, under, none) and pn_al its block's lines.
 pane_geom() {
   pn_n=$(wc -l <"$pn_me.rows" | tr -d ' ')
+  pn_lay=none pn_al=0
+  if [ -n "$pn_cols" ] && [ "$(git config --get claude-peer.art 2>/dev/null)" != false ]; then
+    if [ "$pn_cols" -ge 80 ] && [ "$pn_rows" -ge 16 ]; then pn_lay=beside
+    elif [ "$pn_cols" -ge 30 ] && [ "$pn_rows" -ge 18 ]; then pn_lay=under; fi
+  fi
   pn_head=1
   pn_w=$(awk -F'\t' '{ if (length($2) + 3 > w) w = length($2) + 3 } END { print (w > 58 ? w : 58) }' "$pn_me.rows")
+  if [ "$pn_lay" != none ]; then
+    pn_al=$(art_lines asleep none "$slot" 2>/dev/null | wc -l | tr -d ' ')
+    [ "$pn_lay" = beside ] || pn_al=$((pn_al + 2))
+    pn_head=$((pn_al + 2))
+    # the beside title row: 3 of fzf's, 27 of art, 2, then `✻ <Label> · <repo>`
+    pg_t=$((3 + 29 + 5 + ${#label} + ${#rname}))
+    [ "$pg_t" -le $((pn_cols - 2)) ] || pg_t=$((pn_cols - 2))
+    [ "$pn_w" -ge "$pg_t" ] || pn_w=$pg_t
+  fi
   pn_left=0 pn_right=0
   if [ -n "$pn_cols" ] && [ "$pn_cols" -ge 80 ] && [ $((pn_w + 2)) -le "$pn_cols" ]; then
     pn_left=$(( (pn_cols - pn_w) / 2 )); pn_right=$((pn_cols - pn_w - pn_left))
@@ -541,15 +747,44 @@ pane_geom() {
   pn_h=$((pn_head + 1 + pn_vis))
 }
 
-# fzf's header: the hint, dim; the short one under 56 columns.
+# fzf's header: the sleeper's block and an empty line when it shows, then the
+# hint, dim; the short one under 56 columns.
 pane_head() {
+  [ "$pn_lay" = none ] || { art_block 'waiting · ⏎ pick a context'; echo; }
   if [ -n "$pn_cols" ] && [ "$pn_cols" -lt 56 ]; then ph_t='↵ start · ^T type a task · esc hide'
   else ph_t='↵ start · ^T type a task · ^S …and save it · esc hide'; fi
   printf '\033[2m%s\033[0m' "$ph_t"
 }
 
-# Printed above the list's rows and above the quiet hint line.
-pane_art() { :; }
+# second-line: the sleeper's block in ordinary output, where fzf's header would put
+# it (pn_pad and two), then an empty line; nothing with pn_lay none.
+pane_art() {
+  [ "$pn_lay" != none ] || return 0
+  art_block "$1" | sed "s/^/$pn_pad  /"
+  echo
+}
+
+# The quiet state: the sleeper with the hint as its second line, else C4b's line.
+# pn_qn: how many lines to erase before it is drawn again (0: leave them).
+pane_quiet() {
+  pane_size
+  [ -f "$pn_me.rows" ] || pick_rows "$pn_slug" >"$pn_me.rows"
+  pane_geom
+  pn_qn=0
+  if [ "$pn_lay" != none ]; then
+    if [ "$pn_pick" = off ]; then pane_art '⏎ start · c continue · q shell'
+    else pane_art '⏎ picker · c continue · q shell'; fi
+    pn_qn=$((pn_al + 2))
+  elif [ "$pn_pick" = off ]; then printf '%s: Return starts a Claude here, c continues the last session, q leaves a shell\n' "$label"
+  else printf '%s: Return picks a context, c continues the last session, q leaves a shell\n' "$label"; fi
+}
+
+# The quiet block, the empty line and the typed line go before the block is drawn
+# again or the picker opens, so one sleeper is ever on screen.
+pane_unquiet() {
+  [ "$pn_qn" -le 0 ] || printf '\033[%sA\r\033[J' "$pn_qn"
+  pn_qn=0
+}
 
 # prompt -> the answer in pn_ans; status 1 when a request, Ctrl-C or end of input
 # cut it short, and pn_why says which (request, intr, eof). A request is handled
@@ -707,7 +942,7 @@ pane_fzf() {
 # The numbered list, read by the pane's own line reader.
 pane_list() {
   while :; do
-    pane_art
+    pane_art 'waiting · ⏎ pick a context'
     awk -F'\t' -v p="$pn_pad" '{ printf "%s%2d  %s\n", p, NR, $2 }' "$pn_me.rows"
     printf '%sc continue · r resume · n task · s task, saved · q shell\n' "$pn_pad"
     if ! pane_ask "$label ▸ "; then
@@ -749,7 +984,7 @@ pane() {
   mkdir -p "$pn_wd" || die "cannot create $pn_wd"
   pn_me=$pn_wd/$slot.$$
   pn_tty=${CLAUDE_PEER_TTY:-/dev/tty}
-  pn_rpid= pn_reader=1 pn_intr= pn_ended=0 pn_pad= pn_rows= pn_cols=
+  pn_rpid= pn_reader=1 pn_intr= pn_ended=0 pn_pad= pn_rows= pn_cols= pn_lay=none pn_al=0 pn_qn=0
   trap : USR1
   trap 'pn_intr=1' INT
   trap '' TTIN TTOU
@@ -783,12 +1018,7 @@ pane() {
     while [ -z "$pn_ev" ]; do
       if [ -f "$pn_me.start" ]; then pn_ev=request; break; fi
       if [ "$pn_state" = picker ]; then pn_ev=pick; break; fi
-      if [ -n "$pn_show" ]; then
-        pane_size
-        pane_art
-        if [ "$pn_pick" = off ]; then printf '%s: Return starts a Claude here, c continues the last session, q leaves a shell\n' "$label"
-        else printf '%s: Return picks a context, c continues the last session, q leaves a shell\n' "$label"; fi
-      fi
+      [ -z "$pn_show" ] || pane_quiet
       pn_show=
       pane_block
       if [ -f "$pn_me.start" ]; then pn_ev=request
@@ -796,10 +1026,10 @@ pane() {
       elif [ -f "$pn_me.key" ]; then
         pn_k=$(cat "$pn_me.key"); rm -f "$pn_me.key"
         case $pn_k in
-          '') if [ "$pn_pick" = off ]; then pn_ev=fresh; else pn_ev=pick; fi;;
+          '') if [ "$pn_pick" = off ]; then pn_ev=fresh; else pane_unquiet; pn_ev=pick; fi;;
           c) pn_ev=continue;;
           q) pn_ev=quit;;
-          *) if [ "$pn_pick" != off ] && pane_has_ctx "$pn_k"; then pn_ev=named; else pn_show=1; fi;;
+          *) if [ "$pn_pick" != off ] && pane_has_ctx "$pn_k"; then pn_ev=named; else pane_unquiet; pn_show=1; fi;;
         esac
       elif [ "$pn_ended" = 1 ] && [ "$pn_reader" = 1 ]; then
         pn_reader=0   # the reader ended with no line: no terminal, only a request wakes this pane
@@ -1764,6 +1994,39 @@ cmd_context() {
   esac
 }
 
+# [--slot <slot>] [--frame <name>] [--z all|near|near-mid|none] [--truecolor|--256]
+# | --screen [--slot <slot>]: the operator's preview of the sleeper, and the tests' handle.
+cmd_art() {
+  slot= ar_f=asleep ar_z=all ar_m= ar_s=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --slot) [ $# -ge 2 ] || usage; slot=$2; shift;;
+      --frame) [ $# -ge 2 ] || usage; ar_f=$2; shift;;
+      --z) [ $# -ge 2 ] || usage; case $2 in all|near|near-mid|none) ar_z=$2;; *) usage;; esac; shift;;
+      --truecolor) ar_m=truecolor;;
+      --256) ar_m=256;;
+      --screen) ar_s=1;;
+      *) usage;;
+    esac
+    shift
+  done
+  [ -n "$slot" ] || slot=$(pool_words | awk '{ print $1 }')
+  slot_ok "$slot" || die "'$slot' is not a slot name (lowercase letters, digits, - and _)"
+  [ -n "$ar_s" ] || { art_lines "$ar_f" "$ar_z" "$slot" "$ar_m"; return 0; }
+  # the quiet waiting screen, worked out as the pane works it out
+  label=$(label_of "$slot")
+  repo=$(repo_root_q) || repo=$(pwd -P)
+  rname=$(rname_of "$repo")
+  pn_pick=$(git config --get claude-peer.picker 2>/dev/null) || pn_pick=
+  pn_slug=
+  [ "$pn_pick" = off ] || pn_slug=$(origin_slug 2>/dev/null) || pn_slug=
+  pn_tty=/dev/tty
+  ar_d=$(mktemp -d "${TMPDIR:-/tmp}/claude-peer-art.XXXXXX") || die "cannot make a temporary directory"
+  pn_me=$ar_d/screen
+  pane_quiet
+  rm -rf "$ar_d"
+}
+
 [ $# -ge 1 ] || usage
 cmd=$1; shift
 case $cmd in
@@ -1782,6 +2045,7 @@ case $cmd in
   default) cmd_default "$@";;
   status) cmd_status "$@";;
   context) cmd_context "$@";;
+  art) cmd_art "$@";;
   -h|--help|help) usage;;
   *) warn "unknown command '$cmd'"; usage;;
 esac

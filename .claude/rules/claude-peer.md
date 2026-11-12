@@ -284,7 +284,7 @@ more, and at most 12 rows tall. fzf is called
 small and flat: `--height` the block's, `--margin` the centring, no preview, no border, the
 hint dim in its header (`pane_head`; a shorter one under 56 columns, and under 38 columns the hint itself is cut), `--no-mouse` so the
 wheel still scrolls back through what the last session left, `FZF_DEFAULT_OPTS` unset and
-only its `--color` words passed on (`fzf_colors`). `pane_art` (empty for now) prints above
+only its `--color` words passed on (`fzf_colors`). `pane_art` prints the sleeper (below) above
 the list and above the quiet line. Esc (130), and an fzf that ends with nothing chosen, put
 the pane in the quiet state; nothing reopens fzf without a key, so a broken fzf cannot spin.
 The numbered list is printed under the same left padding and read by `pane_ask`; Return
@@ -304,6 +304,39 @@ characters, a blank line, the task) and refuses, with one `not saved:` line and 
 still starting, a bad name, a name the directory already has under any prefix, or a
 repository with no origin. The tests use a stub `fzf` on `PATH`; whether the real fzf works
 as a background child in a workgroup pane is live check L-a/L-b.
+
+**The sleeper.** A waiting pane draws a small figure asleep above the picker: `art_default`
+is the built-in in the art format (`palette <letter> <r> <g> <b>`, `margin`, `z near|mid|far
+<row> <col>`, optional `cap fixed`, `frame <name>` then pixel rows of equal width and an even
+count; `.` empty, `E` a closed eye filling both pixel rows of its cell; frames `asleep`, and
+`asleep-sway`, `wake-1`, `wake-2` falling back to it). `art_awk` renders two pixel rows per
+character row: the same colour twice is a space on that background (a block glyph showed
+seams; the operator rejected it), two colours `▀` over a background, one `▀` or `▄`, an eye a
+bold `▬` in `K` on `O`; truecolor when `COLORTERM` says so, else the nearest 256-colour cell
+(one awk, POSIX: drawn under mawk and gawk by the list's screen test on every CI job). The z's
+are a bold `Z`, a `z` in 256-colour 250 and a dim `z`; fzf would grey the bold one under the
+theme's `header` colour, which `--color=header:-1` prevents. The cap is coloured per slot
+(`art_cap`: `git config claude-peer.<slot>.cap '#rrggbb'`, else the slot's place in the pool:
+green, the approved blue, purple, cyan, yellow, red, from Base16 Eighties; the band is 0.7 of
+it). `git config claude-peer.art false` hides it; `claude-peer.art-file <path>` replaces it,
+and a file that does not parse prints `claude-peer: <path>: <reason>` and the built-in is
+drawn. `pane_geom` sets `pn_lay`: `beside` at 80 columns and 16 rows or more (`✻ <Label> ·
+<repo>` and a dim second line on the figure's rows 4 and 5), `under` from 30 to 79 columns
+and 18 rows (those two lines below it), else `none` and every screen is the picker's own; an
+unknown size is `none`. In fzf the figure is header text (`pane_head`), so fzf draws and
+erases it and the list scrolls under it; `pn_w` also fits `3 + 29 + ✻ <Label> · <repo>`,
+capped at the pane, and `<repo>` is cut, never the label. Above the list and in the quiet state
+`pane_art` prints it under `pn_pad` and two spaces, then an empty line; in the quiet state its
+second line (`⏎ picker · c continue · q shell`, or `⏎ start …` with the picker off) replaces
+the quiet line. The one cursor movement: before the quiet block is drawn again (a mistyped
+line) or the picker opens from it (Return), `pane_unquiet` moves up over the block, its empty
+line and the typed line and erases down (`ESC[11A`, `ESC[J` beside; 13 under), so one sleeper is
+ever on screen; a session started from quiet (`c`, a context name, Return with the picker off)
+leaves it above the session. A pane resized between going quiet and the next key miscounts once.
+`claude-peer art [--slot] [--frame] [--z all|near|near-mid|none] [--truecolor|--256]` prints a
+frame; `art --screen [--slot]` prints the quiet screen as a pane would pad it, for the terminal
+or `CLAUDE_PEER_SIZE`: the operator's preview and the screen tests' reference. The figure is
+the operator's approved original, not Anthropic's mascot; a private override file may differ.
 
 **The Hermes peer** exists only in `Claude Peers + Hermes`, and is a plain shell
 unless a Hermes profile routes the directory; the gate below is now the second
@@ -335,7 +368,10 @@ never the caller's server) at fixed sizes, captures it with `capture-pane -p`
 (`-e` for colours) and asserts on the screen as drawn: the harness probe (size,
 `$SHELL`, glyph widths, 24-bit colour), the gate, the CI promises, and the numbered
 list (centred, every row whole, a question under it, a `start` taking it, an older
-fzf falling back to it). Waits are for text and for a still screen, never a bare
+fzf falling back to it), the fzf picker, and the sleeper (cell for cell against
+`claude-peer art`, whole while the list scrolls, absent at 15 rows, one after Esc and
+Return, and above the list). The sleeper's tests unset the `claude-peer.art false` that
+`setup` sets for the rest. Waits are for text and for a still screen, never a bare
 `sleep`. Run it with
 `PATH="$(brew --prefix)/bin:$PATH" SCREEN_TESTS_REQUIRE='tmux fzf' bats tests/claude-peer-screen.bats`.
 `SCREEN_TESTS_REQUIRE` lists what the caller promises is installed (`tmux`, `fzf`

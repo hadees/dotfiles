@@ -1861,6 +1861,7 @@ fzfsize() {
   hellofix
   fzfstub
   git config --global claude-peer.picker fzf
+  git config --global claude-peer.art false   # C4b's geometry; the sleeper's is tested below
   fzfsize '40 120'
   grep -qxF -- --margin=0,31,0,31 "$FAKE_FZF_LOG"
   grep -qxF -- --height=13 "$FAKE_FZF_LOG"
@@ -1877,6 +1878,7 @@ fzfsize() {
   hellofix
   fzfstub
   git config --global claude-peer.picker fzf
+  git config --global claude-peer.art false   # C4b's geometry; the sleeper's is tested below
   fzfsize '40 55'
   [ "$(grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -cF '^S')" -eq 0 ]
   fzfsize '40 56'
@@ -2043,4 +2045,147 @@ fzfsize() {
   [ "$(shell_runs)" -eq 0 ]
   typeline alpha ''
   until_ok 'grep -q "claude-peer proj-alpha\$" "$FAKE_SHELL_LOG"'
+}
+
+# --- the sleeper --------------------------------------------------------------------
+
+ESC=$'\033'
+
+# fzf_header: the --header= argument the stub got (it spans lines: one per header line)
+fzf_header() { sed -n '/^--header=/,/^--print-query$/p' "$FAKE_FZF_LOG" | sed '$d'; }
+
+@test "art: nine lines, four eyes, the reference colours and the three z's; --z, --256, the slot's cap" {
+  run sh "$BIN" art --slot beta --truecolor
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 9 ]
+  [ "$(printf '%s' "$output" | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ]
+  [[ "$output" == *'48;2;90;120;200'* && "$output" == *'48;2;217;119;87'* ]]
+  [[ "$output" == *"${ESC}[1mZ"* && "$output" == *"${ESC}[38;5;250mz"* && "$output" == *"${ESC}[2mz"* ]]
+  run sh "$BIN" art --slot beta --truecolor --z none
+  [[ "$output" != *z* && "$output" != *Z* ]]
+  run sh "$BIN" art --slot alpha --truecolor
+  [[ "$output" != *'90;120;200'* && "$output" == *'153;204;153'* ]]
+  run sh "$BIN" art --slot beta --256
+  [[ "$output" != *'38;2;'* && "$output" != *'48;2;'* ]]
+  git config --global claude-peer.beta.cap '#102030'
+  run sh "$BIN" art --slot beta --truecolor
+  [[ "$output" == *'48;2;16;32;48'* && "$output" == *'11;22;33'* && "$output" != *'90;120;200'* ]]
+}
+
+@test "art: claude-peer.art-file replaces the figure; one that does not parse says why and the built-in is drawn" {
+  printf 'palette X 1 2 3\nmargin 1\nframe asleep\n.XX\n.XX\n' >"$BATS_TEST_TMPDIR/one.art"
+  git config --global claude-peer.art-file "$BATS_TEST_TMPDIR/one.art"
+  run sh "$BIN" art --truecolor
+  [ "$status" -eq 0 ]
+  [ "$output" = "  ${ESC}[48;2;1;2;3m ${ESC}[0m${ESC}[48;2;1;2;3m ${ESC}[0m" ]
+  printf 'palette X 1 2 3\nframe asleep\nXX\nX\n' >"$BATS_TEST_TMPDIR/bad.art"
+  git config --global claude-peer.art-file "$BATS_TEST_TMPDIR/bad.art"
+  run --separate-stderr sh "$BIN" art --truecolor
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "claude-peer: $BATS_TEST_TMPDIR/bad.art: line 4: frame asleep has rows of unequal width" ]
+  [ "${#lines[@]}" -eq 9 ]
+  [ "$(printf '%s' "$output" | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ]
+}
+
+@test "sleeper in fzf: beside at 120 columns, under at 60, none at 15 rows or with claude-peer.art false" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  fzfsize '40 120'
+  [ "$(fzf_header | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ]
+  fzf_header | grep -qF '✻ '
+  fzf_header | grep -F '✻ ' | grep -F Alpha | grep -qF proj
+  fzf_header | grep -qF 'waiting · ⏎ pick a context'
+  fzf_header | grep -qF 'esc hide'
+  grep -qxF -- --height=23 "$FAKE_FZF_LOG"
+  grep -qxF -- --margin=0,31,0,31 "$FAKE_FZF_LOG"
+  fzfsize '17 120'
+  grep -qxF -- --height=17 "$FAKE_FZF_LOG"
+  fzfsize '15 120'
+  ! fzf_header | grep -qF '▬'
+  grep -qxF -- --height=13 "$FAKE_FZF_LOG"
+  fzfsize '40 60'
+  [ "$(fzf_header | wc -l | tr -d ' ')" -eq 13 ]
+  fzf_header | sed -n 10p | grep -qF '✻ '
+  fzf_header | sed -n 11p | grep -qF 'waiting · ⏎ pick a context'
+  [ -z "$(fzf_header | sed -n 12p)" ]
+  grep -qxF -- --margin=0,0,0,0 "$FAKE_FZF_LOG"
+  git config --global claude-peer.art false
+  fzfsize '40 120'
+  ! fzf_header | grep -qF '▬'
+  grep -qxF -- --height=13 "$FAKE_FZF_LOG"
+}
+
+@test "sleeper: a repository name too long for the block is cut, the label never" {
+  local long=a-repository-name-of-forty-characters-x
+  long=${long}y
+  [ "${#long}" -eq 40 ]
+  mkdir -p "$BATS_TEST_TMPDIR/$long"
+  git -C "$BATS_TEST_TMPDIR/$long" init -q
+  git -C "$BATS_TEST_TMPDIR/$long" commit -q --allow-empty -m init
+  fzfstub
+  git config --global claude-peer.picker fzf
+  rm -f "$FAKE_FZF_LOG.calls"
+  CLAUDE_PEER_SIZE='40 80' FAKE_FZF_SLEEP=30 pane alpha "$BATS_TEST_TMPDIR/$long"
+  until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+  # 78 wide, 75 of header, 46 beside the figure: `✻ Alpha · ` and 36 of the name
+  fzf_header | grep -F '✻ ' | grep -qF "Alpha${ESC}[0m · ${long:0:36}"
+  ! fzf_header | grep -qF "${long:0:37}"
+}
+
+@test "sleeper above the list: the figure's lines start at the block's text, then an empty line, then row 1" {
+  hellofix
+  git config --global claude-peer.picker list
+  CLAUDE_PEER_SIZE='40 120' pane alpha
+  pane_says alpha "$LISTHINT"
+  local out="$BATS_TEST_TMPDIR/pane-alpha.out"
+  [ "$(sed -n 1,9p "$out" | grep -c "^$(printf '%33s' '')")" -eq 9 ]
+  [ "$(sed -n 1,9p "$out" | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ]
+  [ -z "$(sed -n 10p "$out")" ]
+  sed -n 11p "$out" | grep -q "^$(printf '%31s' '') 1  fresh"
+}
+
+@test "sleeper quiet: Esc prints the figure with the quiet hint, no old line, and art --screen prints the same" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  CLAUDE_PEER_SIZE='40 120' FAKE_FZF_RC=130 pane alpha
+  pane_says alpha '⏎ picker · c continue · q shell'
+  local out="$BATS_TEST_TMPDIR/pane-alpha.out"
+  [ "$(grep -o '▬' "$out" | wc -l | tr -d ' ')" -eq 4 ]
+  ! grep -q 'Alpha: Return picks' "$out"
+  [ "$(CLAUDE_PEER_SIZE='40 120' sh "$BIN" art --screen --slot alpha)" = "$(cat "$out")" ]
+}
+
+# quiet_erases <size> <lines…>: Esc at that size, then each line typed; prints the output
+quiet_erases() {
+  local size=$1; shift
+  rm -f "$FAKE_FZF_LOG.calls"
+  CLAUDE_PEER_SIZE=$size FAKE_FZF_RC=130 pane alpha
+  until_ok '[ "$(fzf_calls)" -eq 1 ]'
+  sleep 1
+  local l
+  for l; do typeline alpha "$l"; done
+  until_ok '[ "$(fzf_calls)" -eq 2 ]'
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+}
+
+@test "sleeper quiet: Return, and a mistyped line, erase the quiet block in place first; nothing is erased without it" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  local out="$BATS_TEST_TMPDIR/pane-alpha.out" erase11="${ESC}[11A"$'\r'"${ESC}[J"
+  quiet_erases '40 120' ''
+  [ "$(pane_count alpha "$erase11")" -eq 1 ]
+  # after the block and its empty line, and the last thing before the stub's second call
+  [[ "$(cat "$out")" == *'q shell'*$'\n\n'"$erase11" ]]
+  quiet_erases '40 120' x ''
+  [ "$(pane_count alpha "$erase11")" -eq 2 ]
+  quiet_erases '40 60' ''
+  [ "$(pane_count alpha "${ESC}[13A"$'\r'"${ESC}[J")" -eq 1 ]
+  quiet_erases '' ''
+  ! grep -qE "${ESC}\[[0-9]+A" "$out"
+  git config --global claude-peer.art false
+  quiet_erases '40 120' ''
+  ! grep -qE "${ESC}\[[0-9]+A" "$out"
 }

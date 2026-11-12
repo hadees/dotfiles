@@ -76,6 +76,8 @@ setup() {
   git config --global user.name octo
   git config --global user.email octo@example.com
   git config --global init.defaultBranch main
+  # the sleeper's own tests unset this; the others keep their bare screens
+  git config --global claude-peer.art false
   cat >"$BATS_TEST_TMPDIR/bin/fakeshell" <<'STUB'
 #!/bin/sh
 echo "pwd=$PWD"
@@ -493,4 +495,155 @@ lineno_of() { printf '%s\n' "$SCREEN" | grep -nE -- "$1" | sed -n '1s/:.*//p' | 
   screen_still
   [ "$(printf '%s\n' "$SCREEN" | grep 'Alpha ▸$' | tail -n 1 | flat | LC_ALL=C awk '{ match($0, /^ */); print RLENGTH }')" -eq 0 ] || { screen_show; false; }
   no_cut
+}
+
+# --- the sleeper ----------------------------------------------------------------------------------
+
+# strip_sgr: every ESC[…m removed
+strip_sgr() { sed $'s/\033\\[[0-9;:]*m//g'; }
+
+# art_rows <slot> [art arguments…]: the figure as `claude-peer art` draws it, plain,
+# trailing blanks removed (as capture-pane gives a line)
+art_rows() {
+  local s=$1; shift
+  sh "$BIN" art --slot "$s" --truecolor "$@" | strip_sgr | sed 's/ *$//'
+}
+
+# from <n> <k>: SCREEN's lines with their first k columns removed (they are spaces), from line n
+from_col() { printf '%s\n' "$SCREEN" | sed -n "$1,\$p" | while IFS= read -r l; do printf '%s\n' "${l:$2}"; done; }
+
+@test "sleeper: above the picker, cell for cell, at 80x24, 110x30 and 60x20" {
+  need tmux fzf
+  git config --global --unset claude-peer.art
+  local size cols rows left nrow art i want got z1
+  for size in '80 24 11 12' '110 30 26 12' '60 20 0 6'; do
+    set -- $size; cols=$1 rows=$2 left=$3 nrow=$4
+    screen_open "$cols" "$rows"
+    screen_wait 'esc hide'
+    screen_still
+    art=$(art_rows alpha)
+    for i in $(seq 1 9); do
+      want=$(printf '%s\n' "$art" | sed -n "${i}p")
+      if [ "$cols" -ge 80 ] && [ "$i" -eq 5 ]; then want="$(printf '%-27s' "$want")  ✻ Alpha · proj"; fi
+      if [ "$cols" -ge 80 ] && [ "$i" -eq 6 ]; then want="$(printf '%-27s' "$want")  waiting · ⏎ pick a context"; fi
+      got=$(from_col 1 $((left + 2)) | sed -n "${i}p")
+      [ "$got" = "$want" ] || { echo "art line $i"; screen_show; false; }
+    done
+    local top=9
+    if [ "$cols" -lt 80 ]; then
+      [ "$(line 10)" = '  ✻ Alpha · proj' ] || { screen_show; false; }
+      [ "$(line 11)" = '  waiting · ⏎ pick a context' ] || { screen_show; false; }
+      top=11
+    fi
+    z1=$(printf '%s\n' "$SCREEN" | sed -n 1,9p)
+    [ "$(printf '%s' "$z1" | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ] || { screen_show; false; }
+    [ "$(printf '%s' "$z1" | grep -o 'Z' | wc -l | tr -d ' ')" -eq 1 ] || { screen_show; false; }
+    [ "$(printf '%s' "$z1" | grep -o 'z' | wc -l | tr -d ' ')" -eq 2 ] || { screen_show; false; }
+    [ -z "$(line $((top + 1)))" ] || { screen_show; false; }
+    [ "$(line $((top + 2)))" = "$(printf "%$((left + 2))s" '')$HINT" ] || { screen_show; false; }
+    [ "$(line $((top + 3)))" = "$(printf "%${left}s" '')Alpha ▸" ] || { screen_show; false; }
+    [ "$(printf '%s\n' "$SCREEN" | sed -n "$((top + 4)),\$p" | grep -c '[^ ]')" -eq "$nrow" ] || { screen_show; false; }
+    [[ "$(line $((top + 4)))" =~ ^\ *▸\ fresh\  ]] || { screen_show; false; }
+    if [ "$cols" -lt 80 ]; then
+      ! printf '%s\n' "$SCREEN" | grep -q '│.' || { screen_show; false; }
+    else
+      # every row shown, and the screen exactly full: the far Z still on line 2, the last row on the last line
+      [[ "$(line 2)" == *Z* ]] || { screen_show; false; }
+      if [ "$rows" -eq 24 ]; then [[ "$(line 24)" =~ shell\ +Drop\ to\ a\ shell$ ]] || { screen_show; false; }; fi
+      [ "$(indent_of 'Alpha ▸$')" -eq "$left" ] || { screen_show; false; }
+      [ "$(widest)" -le $((left + 58)) ] || { screen_show; false; }
+    fi
+    no_cut
+    no_border
+    [[ "$SCREEN_E" == *'48;2;217;119;87'* && "$SCREEN_E" == *'153;204;153'* ]] || { printf '%q\n' "$SCREEN_E"; false; }
+    [[ "$SCREEN_E" != *'116;115;105'* ]] || { printf '%q\n' "$SCREEN_E"; false; }
+    # the far Z: bold, and in the terminal's own colour (no 38; before it on its line)
+    local l2 pre
+    l2=$(printf '%s\n' "$SCREEN_E" | sed -n 2p); pre=${l2%%Z*}
+    [[ "$pre" =~ $'\033'\[([0-9]*[;:])*1([;:][0-9]*)*m ]] || { printf '%q\n' "$l2"; false; }
+    [[ "$pre" != *$'\033[38;'* ]] || { printf '%q\n' "$l2"; false; }
+    screen_close
+  done
+}
+
+@test "sleeper: it stays whole while the list scrolls" {
+  need tmux fzf
+  git config --global --unset claude-peer.art
+  local before i
+  screen_open 60 20
+  screen_wait 'esc hide'
+  screen_still
+  before=$(printf '%s\n' "$SCREEN" | sed -n 1,11p)
+  for i in $(seq 1 8); do screen_keys Down; done
+  screen_wait '▸ continue '
+  screen_still
+  [ "$(printf '%s\n' "$SCREEN" | sed -n 1,11p)" = "$before" ] || { screen_show; false; }
+}
+
+@test "sleeper: a pane of 15 rows shows the picker without it" {
+  need tmux fzf
+  git config --global --unset claude-peer.art
+  screen_open 80 15
+  screen_wait 'esc hide'
+  screen_still
+  [[ "$SCREEN" != *▬* ]] || { screen_show; false; }
+  [ "$(line 1)" = "$(printf '%13s' '')$HINT" ] || { screen_show; false; }
+  [ "$(filled)" -eq 14 ] || { screen_show; false; }
+}
+
+# below_args: SCREEN's lines after the stub shell's last `args=` line
+below_args() { printf '%s\n' "$SCREEN" | sed -n "$((ARGS_AT + 1)),\$p"; }
+
+@test "sleeper: Esc leaves it with the quiet line, and neither Return nor a mistyped line makes a second one" {
+  need tmux fzf
+  git config --global --unset claude-peer.art
+  screen_open 110 30 FAKE_SHELL_SLEEP=1
+  screen_wait 'esc hide'
+  screen_keys Enter
+  screen_wait '^args='
+  until_ok 'screen_grab; [ "$(printf "%s\n" "$SCREEN" | sed -n "$(lineno_of "^args="),\$p" | grep -c "esc hide")" -ge 1 ]' || { screen_show; false; }
+  screen_still
+  ARGS_AT=$(lineno_of '^args=')
+  local args_line want
+  args_line=$(line "$ARGS_AT")
+  screen_keys Escape
+  screen_wait '⏎ picker · c continue · q shell'
+  screen_still
+  want=$(CLAUDE_PEER_SIZE='30 110' sh "$BIN" art --screen --slot alpha | strip_sgr | sed 's/ *$//')
+  [ "$(below_args | sed -n "1,$(printf '%s\n' "$want" | wc -l | tr -d ' ')p")" = "$want" ] || { printf '%s\n' "$want"; screen_show; false; }
+  [[ "$SCREEN" != *'Alpha: Return picks'* && "$SCREEN" != *'esc hide'* ]] || { screen_show; false; }
+  screen_type x
+  screen_keys Enter
+  screen_still
+  [ "$(below_args | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ] || { screen_show; false; }
+  [ "$(below_args | grep -o '✻' | wc -l | tr -d ' ')" -eq 1 ] || { screen_show; false; }
+  [ "$(line "$ARGS_AT")" = "$args_line" ] || { screen_show; false; }
+  screen_keys Enter
+  screen_wait 'esc hide'
+  screen_still
+  [ "$(below_args | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ] || { screen_show; false; }
+  [ "$(below_args | grep -o '✻' | wc -l | tr -d ' ')" -eq 1 ] || { screen_show; false; }
+  [ "$(line "$ARGS_AT")" = "$args_line" ] || { screen_show; false; }
+  [[ "$(line $((ARGS_AT + 2)))" == *Z* ]] || { screen_show; false; }
+}
+
+@test "sleeper: above the list" {
+  need tmux
+  git config --global --unset claude-peer.art
+  git config --global claude-peer.picker list
+  screen_open 110 30
+  screen_wait 'q shell$'
+  screen_still
+  local art i want
+  art=$(art_rows alpha)
+  for i in $(seq 1 9); do
+    want=$(printf '%s\n' "$art" | sed -n "${i}p")
+    [ "$i" -ne 5 ] || want="$(printf '%-27s' "$want")  ✻ Alpha · proj"
+    [ "$i" -ne 6 ] || want="$(printf '%-27s' "$want")  waiting · ⏎ pick a context"
+    [ "$(from_col 1 28 | sed -n "${i}p")" = "$want" ] || { echo "art line $i"; screen_show; false; }
+  done
+  [ -z "$(line 10)" ] || { screen_show; false; }
+  [ "$(indent_of '^ *1  fresh')" -eq 27 ] || { screen_show; false; }
+  [ "$(lineno_of '^ *1  fresh')" -eq 11 ] || { screen_show; false; }
+  [ "$(printf '%s\n' "$SCREEN" | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ] || { screen_show; false; }
 }
