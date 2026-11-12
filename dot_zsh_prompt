@@ -6,9 +6,10 @@
 #   grey 243  fg 252  red 210  orange 209  yellow 221  green 151  cyan 80
 #   blue 110  magenta 182  brown 173  teal 79  rose 175  lime 185
 #   purple 104  peach 216
-# Nerd Font glyphs (branch , github , ssh 󰣀, pr ) are shown only when
-# ~/bin/has-glyphs confirms the terminal font renders them (over ssh: when
-# the client is iTerm); other terminals degrade to plain text.
+# Nerd Font glyphs (branch , github , ssh 󰣀, pr , detached base
+# ) are shown only when ~/bin/has-glyphs confirms the terminal font
+# renders them (over ssh: when the client is iTerm); other terminals degrade
+# to plain text.
 
 if [[ $COLORTERM = gnome-* && $TERM = xterm ]] && infocmp gnome-256color >/dev/null 2>&1; then
 	export TERM='gnome-256color'
@@ -36,7 +37,7 @@ export VIRTUAL_ENV_DISABLE_PROMPT=1
 # nf_github replaces the plain-text "@" rather than adding to it: icons
 # stand in for words (cf. oh-my-posh's UpstreamIcon, shown bare before the
 # name), so the segment reads " user" with glyphs and "@user" without.
-nf_branch='' nf_github='@' nf_ssh='' nf_python='' nf_direnv='' nf_pr='pr ' nf_on=''
+nf_branch='' nf_github='@' nf_ssh='' nf_python='' nf_direnv='' nf_pr='pr ' nf_detached='' nf_on=''
 if [[ -n $SSH_TTY ]]; then
 	[[ $LC_TERMINAL == iTerm2 ]] && nf_on=1
 elif [[ -x $HOME/bin/has-glyphs ]]; then
@@ -60,6 +61,10 @@ if [[ -n $nf_on ]]; then
 	# Pull-request glyph for the open-PR segment, gated on its own likewise.
 	if [[ -n $SSH_TTY ]] || "$HOME/bin/has-glyphs" f407 2>/dev/null; then
 		nf_pr=$'\U0000F407 '  # U+F407 nf-oct-git_pull_request
+	fi
+	# Commit glyph in front of a detached slot's base, gated on its own.
+	if [[ -n $SSH_TTY ]] || "$HOME/bin/has-glyphs" f417 2>/dev/null; then
+		nf_detached=$'\U0000F417 '  # U+F417 nf-oct-git_commit
 	fi
 fi
 
@@ -110,14 +115,29 @@ prompt_git() {
 			command git rev-parse --verify refs/stash &>/dev/null && git_status+="%F{$c_magenta}\$%f"
 		fi
 
-		branch="$(command git symbolic-ref --quiet --short HEAD 2>/dev/null || \
-			command git rev-parse --short HEAD 2>/dev/null || \
-			echo '(unknown)')"
+		# On a branch, git's answer. Detached, ~/bin/branchname (one run,
+		# only here): a claude-peer slot's recorded base as "(main)", glyph in
+		# front where nf_detached is set; anything else falls back to the sha.
+		local mark="$nf_branch" state='' label='' base_ref='' _name
+		branch="$(command git symbolic-ref --quiet --short HEAD 2>/dev/null)"
+		if [[ -z $branch ]]; then
+			[[ -x $HOME/bin/branchname ]] &&
+				IFS=$'\t' read -r state label base_ref _name < <("$HOME/bin/branchname" --state 2>/dev/null)
+			if [[ $state == base && -n $label ]]; then
+				mark="$nf_detached" branch="$label"
+			else
+				base_ref=''
+				branch="$(command git rev-parse --short HEAD 2>/dev/null || echo '(unknown)')"
+			fi
+		fi
+		branch=${branch//\%/%%}
 
 		# Commits ahead/behind upstream. Plain ↑/↓ (not Nerd Font ⇡/⇣, which
 		# SauceCodePro NFM lacks) so this renders in any terminal unguarded.
 		local arrows='' counts
 		counts="$(command git rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)"
+		[[ -z $counts && $base_ref == refs/* ]] &&
+			counts="$(command git rev-list --left-right --count "${base_ref}...HEAD" 2>/dev/null)"
 		if [[ -n $counts ]]; then
 			local behind="${counts%%[^0-9]*}" ahead="${counts##*[^0-9]}"
 			(( ahead )) && arrows+="%F{$c_lime}↑${ahead}%f"
@@ -163,7 +183,7 @@ prompt_git() {
 		gh_user="$(command git config github.user 2>/dev/null)"
 		[[ -n $gh_user ]] && gh_segment=" %F{$c_grey}as%f %F{$c_purple}${nf_github}${gh_user}%f"
 
-		print -n -- " %F{$c_grey}on%f %F{$c_blue}${nf_branch}${branch}%f${git_status}${arrows}${pr_segment}${gh_segment}"
+		print -n -- " %F{$c_grey}on%f %F{$c_blue}${mark}${branch}%f${git_status}${arrows}${pr_segment}${gh_segment}"
 	fi
 }
 
