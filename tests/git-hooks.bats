@@ -647,3 +647,17 @@ slot_repo() {
   doctor "$SLOT"
   [[ "$output" == *"branch-gate: inert (no ~/bin/branchname)"* ]]
 }
+
+@test "pre-commit: ~/bin/branchname wins over an unrelated branchname earlier on PATH" {
+  slot_repo
+  mkdir -p "$BATS_TEST_TMPDIR/other"
+  printf '#!/bin/sh\necho ran > "%s/other/ran"\nexit 0\n' "$BATS_TEST_TMPDIR" > "$BATS_TEST_TMPDIR/other/branchname"
+  chmod +x "$BATS_TEST_TMPDIR/other/branchname"
+  run env PATH="$BATS_TEST_TMPDIR/other:$PATH" git -C "$SLOT" commit -q -m "feat: x"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"detached at main"* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/other/ran" ]
+  run env PATH="$BATS_TEST_TMPDIR/other:$PATH" zsh -c "source '$BATS_TEST_DIRNAME/../dot_functions'; cd '$SLOT'; git-doctor"
+  [[ "$output" == *"WOULD REFUSE: detached at main"* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/other/ran" ]
+}

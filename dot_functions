@@ -2641,7 +2641,8 @@ function git-doctor() {
 	if [[ -n $hooks && -x ${hooks/#\~/$HOME}/pre-commit ]]; then
 		local bgval bgbin bgst bgref;
 		bgval="$(command git config --get hook.pre-commit.branch 2>/dev/null)";
-		bgbin=${commands[branchname]:-$HOME/bin/branchname};
+		bgbin=$HOME/bin/branchname;
+		[[ -x $bgbin ]] || bgbin=${commands[branchname]:-$bgbin};
 		if [[ $bgval == (false|0|no|off) ]]; then
 			print -r -- "branch-gate: off (hook.pre-commit.branch=$bgval)";
 		elif [[ ! -x $bgbin ]]; then

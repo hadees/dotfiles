@@ -29,7 +29,8 @@ It reads the state word and the ref (field 3, `refs/remotes/` or
 cannot change what it says. Switches: `GIT_BRANCH_CHECK=0` for one commit,
 `hook.pre-commit.branch = false` (`0`/`no`/`off`) for a repo or machine; the
 two bypasses are independent of `GIT_IDENTITY_CHECK`. No helper found
-(`command -v branchname`, else `~/bin/branchname`) means no opinion. Not
+(`~/bin/branchname` first, then PATH, so a stranger's unrelated `branchname`
+never runs inside a commit hook) means no opinion. Not
 covered: commits made by `cherry-pick`, `revert` or a rebase (the githooks
 page names only `git commit` for this hook), `--no-verify`, a repository
 with its own `core.hooksPath`, and a commit on the real `main` — not gated,
