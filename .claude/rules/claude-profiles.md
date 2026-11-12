@@ -123,6 +123,16 @@ other switches). `tests/claude-profiles.bats` gives its sandbox a fresh cookie
 in `setup`, so only the tests about this line ever meet it. The cookie is
 described in `cc-status-shim.md`.
 
+**The same block says when iTerm2 has moved past the skill.** On an attended
+launch `iterm2_skill_drift` compares the installed iTerm2's version (one read
+of `Info.plist`) with the stamp in `iterm2-doctor`; a difference prints
+`claude: iTerm2 <ver> is newer|older than the skill's notes (<stamp>): run
+iterm2-doctor`. Both lines share one `git config claude.iterm2-check` read,
+made only when at least one has something to say. `claude-doctor`'s `iterm2:`
+line shows the same sentence or `matches the skill's notes`. The mechanism is in
+`iterm2-skill.md`; `tests/claude-profiles.bats` sets `ITERM2_APP` to a missing
+path in `setup`.
+
 **Each profile must be logged in once** with `claude auth login`; credentials
 live in the macOS Keychain and cannot be copied between profiles — verified,
 copying `.claude.json` does not carry a session.

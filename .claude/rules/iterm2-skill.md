@@ -59,6 +59,21 @@ Three consequences shape the code here:
   names**, of dynamic profiles and AutoLaunch scripts — those are usually
   named after a host or a client.
 
+- **`claude` compares the two at every attended launch.** `iterm2_skill_drift`
+  (beside `iterm2_app_path`) reads `Contents/Info.plist` once with `$(<file)`,
+  takes the version from the `CFBundleShortVersionString` string, and takes the
+  stamp from the body of `iterm2-doctor` (`functions[iterm2-doctor]`, matching
+  the `local stamp=` literal) without running the doctor, so it forks nothing.
+  It sets `REPLY` to `iTerm2 <ver> is newer|older than the skill's notes
+  (<stamp>): run iterm2-doctor`, or to empty when the versions are equal or
+  anything is missing (no app, a binary plist, no match). `claude` prints it as
+  a `claude:` stderr line and `claude-doctor` as its `iterm2:` line;
+  `git config claude.iterm2-check false` silences both, the same switch as the
+  API-cookie line. The `local stamp=` literal must stay one plain
+  `local stamp=<version>;` assignment, or the match misses and the check goes
+  silent. `tests/claude-profiles.bats` points `ITERM2_APP` at a path that does
+  not exist in `setup`, so no test meets the developer's real iTerm2.
+
 Two facts from that research matter to this repo directly. `PrefsCustomFolder`
 points at this clone, so `com.googlecode.iterm2.plist` is tracked here — and,
 because the clone is where iTerm2 both reads and writes it, the plist is a

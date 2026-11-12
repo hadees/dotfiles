@@ -53,9 +53,11 @@
 # UserPromptSubmit of a session (marked by <session_id>.named beside the seats
 # file, written whether or not a rename happened) and on every Stop and
 # StopFailure, just before the paint, so a later
-# rename by iTerm2 heals at the end of the turn. Never on SessionStart: that
-# fires before the workgroup's entry may have, and a rename landing first would
-# be captured as the "original" title the workgroup restores on exit. The title
+# rename by iTerm2 heals at the end of the turn. Also at SessionStart, for every
+# role, so the row is named before anything is typed; the first prompt still
+# renames and heals a title iTerm2 sets later. Known cost: if the workgroup
+# entry comes after it, the workgroup may record this name as the title to
+# restore on exit. The title
 # is cut at 80 characters and control characters are dropped. $WORKSET needs
 # no tabname; without it, no tabname, no cwd or no repo means no rename.
 # tabname's role (peer, lead, plain) also picks a text colour at a turn end that
@@ -94,18 +96,23 @@
 # start at the end of the turn. lsof and one ps run only on a Stop that has at
 # least one quiet shell task.
 #
-#   cc-status             hook mode: payload on stdin, exit 0 always
-#   cc-status explain     payload on stdin; print the decision, call nothing
+#   cc-status             hook mode (legacy): payload on stdin, calls the hook itself
+#   cc-status after       hook mode behind iTerm2's own `it2 handle-agent-hook`: never
+#                         calls the hook, sends only what the rule file's table allows
+#   cc-status explain [after]
+#                         payload on stdin; print the decision, call nothing
 #                         (cookie= is the API cookie's state; see iterm2-cookie)
 #   cc-status settings    print the hooks block for a profile's settings.json
 #
-# Wiring: each profile's settings.json runs cc-status on every hook event;
-# point that command at this file instead (`cc-status settings` prints it).
-# The file is deliberately NAMED cc-status, in a directory off PATH. iTerm2
-# 3.7.3's own health check accepts a hook only if the command is a bare
-# executable path ending in /cc-status (a wrapper line, or any other name,
-# makes the app report its integration broken and a Reinstall append a raw
-# cc-status beside it). The symlink iTerm2 maintains at
+# Wiring: each profile's settings.json runs one command per hook event;
+# `cc-status settings` prints it. With iTerm2 3.7.7+ (an `it2` beside the
+# cc-status symlink) it is a single line: the cookie clause, `it2
+# handle-agent-hook` on the payload, then `cc-status after`. 3.7.7 accepts a
+# hook entry only when it runs a program inside ~/.config/iterm2, and the
+# handler comes first so upstream changes flow through. Without that `it2` the
+# command is this file's bare absolute path (legacy mode), which iTerm2 3.7.3's
+# health check requires: it tests the literal string with isExecutableFile and
+# wants it to end in /cc-status. The symlink iTerm2 maintains at
 # ~/.config/iterm2/cc-status is left alone — the app recreates it over
 # anything else put there — and is where the real binary is found;
 # CC_STATUS_BIN overrides that (tests). it2 is taken from beside the real
@@ -119,9 +126,19 @@ set -u
 
 real=${CC_STATUS_BIN:-$HOME/.config/iterm2/cc-status}
 mode=${1:-}
+# `after` runs behind iTerm2's own handler, which has already painted: it never calls
+# the hook and writes only what the table in the rule file allows.
+after=
+case $mode in after) after=1 ;; explain) [ "${2:-}" = after ] && after=1 ;; esac
 
 if [ "$mode" = settings ]; then
   cmd="$HOME/.local/libexec/cc-status-shim/cc-status"
+  if [ -x "$HOME/.config/iterm2/it2" ]; then
+    # C: iTerm2's handler on the untouched payload, then the shim as a corrector.
+    ckf="$HOME/.local/state/iterm2/api-cookie"
+    cmd="p=\$(cat); [ $ckf -nt \"$HOME/Library/Application Support/iTerm2/private/socket\" ] && read -r ITERM2_COOKIE ITERM2_KEY <$ckf && [ -n \"\$ITERM2_KEY\" ] && export ITERM2_COOKIE ITERM2_KEY; printf '%s' \"\$p\" | $HOME/.config/iterm2/it2 handle-agent-hook; printf '%s' \"\$p\" | $cmd after"
+  fi
+  cmd=$(printf '%s' "$cmd" | sed 's/\\/\\\\/g; s/"/\\"/g')
   printf 'cc-status settings: the shim does not edit settings.json — each profile'"'"'s\nfile is owned by its overlay. Put this in that file, replacing iTerm2'"'"'s own\ncc-status entries (never beside them):\n\n{\n  "hooks": {\n'
   sep=
   for ev in SessionStart SessionEnd UserPromptSubmit PreToolUse PostToolUse PermissionRequest Notification Stop StopFailure SubagentStart SubagentStop; do
@@ -131,19 +148,27 @@ if [ "$mode" = settings ]; then
   done
   printf '\n  }\n}\n\n'
   cat <<'TXT'
-The command is a bare absolute path: iTerm2 3.7.3's health check tests the
-literal string with isExecutableFile, so "~" and "$HOME" fail it and the app
-reports the integration broken. iTerm2 > Reinstall rewrites the entry back to
-the raw cc-status (re-paste afterwards); Uninstall strips it. SubagentStart is
-not one of the ten events iTerm2 wires; cc-status ignores it, and the shim
-uses it to track which seats are running.
+With iTerm2 3.7.7+ (an it2 beside cc-status in ~/.config/iterm2) the command is
+one line: the cookie clause, iTerm2's own `it2 handle-agent-hook` on the payload,
+then `cc-status after` to correct what the handler painted. 3.7.7 only accepts a
+hook entry that runs a program inside ~/.config/iterm2, and the handler comes
+first so new upstream behaviour is never lost. Without that it2 the command is
+the bare absolute path: iTerm2 3.7.3's health check tests the literal string
+with isExecutableFile, so "~" and "$HOME" fail it. Either way, iTerm2 >
+Reinstall may rewrite entries (re-apply the overlay afterwards) and Uninstall
+strips raw ones. SubagentStart is not one of the ten events iTerm2 wires; the
+shim uses it to track which seats are running.
 TXT
   exit 0
 fi
 
 target=$(readlink "$real" 2>/dev/null || printf '%s' "$real")
-it2="$(dirname "$target")/it2"
-[ -x "$it2" ] || it2=$(command -v it2 2>/dev/null || true)
+if [ -n "$after" ] && [ -x "$HOME/.config/iterm2/it2" ]; then
+  it2=$HOME/.config/iterm2/it2
+else
+  it2="$(dirname "$target")/it2"
+  [ -x "$it2" ] || it2=$(command -v it2 2>/dev/null || true)
+fi
 sid=${ITERM_SESSION_ID:-}; sid=${sid#*:}   # two steps: dash under set -u rejects ${unset#pat}
 [ -x "$real" ] || real=
 [ -x "$it2" ] || it2=
@@ -151,7 +176,7 @@ sid=${ITERM_SESSION_ID:-}; sid=${sid#*:}   # two steps: dash under set -u reject
 # A leading dash is cc-status's own flag (--agent codex): not ours to read.
 case $mode in -*) [ -n "$real" ] && exec "$real" "$@"; exit 0 ;; esac
 
-if [ "$mode" != explain ]; then
+if [ "$mode" != explain ] && [ -z "$after" ]; then   # `after` never needs the real cc-status
   [ -n "$real" ] || exit 0
   case $target in "$0"|*/cc-status-shim/cc-status) exit 0 ;; esac   # never recurse into ourselves
 fi
@@ -180,7 +205,7 @@ if [ "$mode" != explain ] && [ -z "${ITERM2_COOKIE:-}" ]; then
 fi
 
 payload=$(cat)
-pass() { printf '%s' "$payload" | "$real"; exit 0; }
+pass() { [ -n "$after" ] && exit 0; printf '%s' "$payload" | "$real"; exit 0; }
 
 # Cheap gate before paying for python3: Claude Code emits compact JSON. Only
 # turn-ending events (Stop and StopFailure always: the rename; SubagentStop only
@@ -224,8 +249,9 @@ fi
 py=$(cat <<'PY'
 import functools, json, os, re, shutil, subprocess, sys, time
 
-mode, real, it2, sid, cookie = sys.argv[1:6]
+mode, real, it2, sid, cookie, after = sys.argv[1:7]
 explain = mode == "explain"
+after = after == "1"
 raw = sys.stdin.read()
 
 def call(argv, data=None, timeout=5, silent=False):
@@ -332,16 +358,28 @@ elif event == "SubagentStart" and seat and isinstance(aid, str) and ID.fullmatch
 elif event == "SubagentStop" and aid:
     live = [r for r in live if r[0] != aid]
 
+# What the handler arms for the row to fall back to when the turn is interrupted. A colour or
+# detail sent without it cancels that; a count sent alone does not.
+EXPIRY = ["--expires-on", "progress-end", "--then-status", "idle", "--then-dot-color", "#00d75f",
+          "--then-text-color", "#888888", "--then-detail", ""]
+
+def write(status=None, detail=None, dot=None, text=None, count=None, expire=False):
+    # One set-status carrying only the fields given; nothing at all when none is.
+    if detail is not None:
+        detail = " ".join(detail.split())
+        if len(detail) > 180:
+            detail = detail[:180] + "…"
+    argv = [it2, "set-status", "--session", sid]
+    for flag, v in (("--status", status), ("--detail", detail), ("--dot-color", dot),
+                    ("--text-color", text), ("--background-tasks", count)):
+        if v is not None:
+            argv += [flag, str(v)]
+    if len(argv) > 4:
+        call(argv + (EXPIRY if expire else []), silent=True)
+
 def paint(status, detail, dot, text, count=None):
     # The full field set every time, whatever cc-status did or failed to do.
-    d = " ".join(detail.split())
-    if len(d) > 180:
-        d = d[:180] + "…"
-    argv = [it2, "set-status", "--session", sid, "--status", status, "--detail", d,
-            "--dot-color", dot, "--text-color", text]
-    if count is not None:
-        argv += ["--background-tasks", str(count)]
-    call(argv, silent=True)
+    write(status, detail, dot, text, count)
 
 def run_out(argv, timeout=5):
     # stdout of a read-only probe; None when it is missing, hung or failed to start.
@@ -419,7 +457,9 @@ now = time.time()
 scratch = payload.get("scratchpad_dir")
 active, quiet, rows, fed = [], [], [], None
 stalled, busy_cpu, keep, quiet_ages = [], set(), {}, []
+n_raw = 0   # entries a SubagentStop listed, before the stopped agent is dropped
 if event in ("Stop", "StopFailure", "SubagentStop") and isinstance(tasks, list) and tasks:
+    n_raw = len(tasks)
     if event == "SubagentStop" and aid:
         tasks = [t for t in tasks if not (isinstance(t, dict) and t.get("task_id") == aid)]
     prior = tasks_read()
@@ -482,7 +522,7 @@ if event in ("Stop", "StopFailure") and not active and isinstance(msg, str):
 # The session's name and role: "<WORKSET or tabname of cwd>", behind "[<group>] " when
 # tabstatus.group-prefix is true. Returns (title or None, the reason it is not renamed, role).
 def session_title():
-    if seat or event not in ("UserPromptSubmit", "Stop", "StopFailure"):
+    if seat or event not in ("SessionStart", "UserPromptSubmit", "Stop", "StopFailure"):
         return None, "event", "plain"
     if event == "UserPromptSubmit" and nf and os.path.exists(nf):
         return None, "already named", "plain"
@@ -515,6 +555,60 @@ in_seat_tool = bool(seat) and event in ("PreToolUse", "PostToolUse")
 paint_stalled = bool(stalled) and not active
 paint_idle = bool(quiet) and not active and not question and not paint_stalled
 
+def stalled_text():
+    m = max(m for _, m in stalled)
+    return f"stalled {m} min: {', '.join(label(t) for t, _ in stalled)}"
+
+def quiet_text():
+    n = len(quiet)
+    what = ", ".join(label(t) + (" (cpu busy)" if isinstance(t, dict) and t.get("task_id") in busy_cpu else "")
+                     for t in quiet)
+    # the shortest silence among the quiet tasks; a task with no file has no age
+    since = f", quiet {int(min(quiet_ages) // 60)} min" if quiet_ages else ""
+    return f"idle · {n} quiet background task{'s' if n != 1 else ''}{since}: {what}"
+
+def seat_text():
+    k = len(active)
+    return f"{', '.join(dict.fromkeys(busy))} running · {k} background task{'s' if k != 1 else ''} running"
+
+# After mode, turn ends: the writes that correct what the handler just painted. Status words
+# only when nothing is active and the handler's row would be wrong (stale working, or a done
+# hiding a question); never over an error.
+plan, title, why, role = [], None, "", "plain"
+if explain or after:
+    title, why, role = session_title()
+if after and event in ("Stop", "StopFailure"):
+    if paint_stalled:
+        plan.append(dict(status="waiting", detail=stalled_text(), dot=stalled_color, text=stalled_color, count=0))
+    elif question and event == "Stop":
+        plan.append(dict(status="waiting", detail=question, dot=question_color, text=question_color, count=0))
+    elif paint_idle or (event == "StopFailure" and question and quiet and not active):
+        plan.append(dict(status="idle", detail=quiet_text(), dot=quiet_color, text="#888888", count=0))
+    elif busy:
+        c = seat_color(busy[0])
+        plan.append(dict(detail=seat_text(), dot=c, text=c, count=len(active)))
+    elif active and quiet:
+        k = len(active)
+        plan.append(dict(detail=f"{k} background task{'s' if k != 1 else ''} running", count=k))
+    elif not active and role in ("peer", "lead") and (peer_color if role == "peer" else lead_color):
+        plan.append(dict(text=peer_color if role == "peer" else lead_color))
+elif after and in_seat_tool:
+    tool = payload.get("tool_name")
+    plan.append(dict(detail=f"{seat}: {tool}" if tool else seat, dot=seat_col, text=seat_col, expire=True))
+elif after and event == "SubagentStart" and seat:
+    plan.append(dict(detail=f"{seat} running", dot=seat_col, text=seat_col, expire=True))
+elif after and event == "SubagentStop" and fed is not None:
+    # Mid-turn: never a status word. The count alone is bookkeeping and keeps the handler's expiry;
+    # anything more is an assertion and carries the expiry again.
+    k = len(active)
+    if busy:
+        c = seat_color(busy[0])
+        plan.append(dict(detail=seat_text(), dot=c, text=c, count=k, expire=True))
+    elif k and k != n_raw:
+        plan.append(dict(detail=f"{k} background task{'s' if k != 1 else ''} running", count=k, expire=True))
+    elif k != n_raw:
+        plan.append(dict(count=0))
+
 if explain:
     action = ("seat-paint" if in_seat_tool else "passthrough" if fed is None else
               "rewrite+idle" if paint_idle else "rewrite+stalled" if paint_stalled else "rewrite")
@@ -529,7 +623,6 @@ if explain:
     print(f"seat={seat or 'none'} colour={seat_col or 'none'} state={len(live)}")
     print(f"question={'yes ' + question if question else 'no'}")
     print(f"action={action}")
-    title, why, role = session_title()
     print(f"name={title or 'none'}")
     print(f"role={role}")
     print(f"colour={(peer_color if role == 'peer' else lead_color if role == 'lead' else None) or 'none'}")
@@ -538,6 +631,12 @@ if explain:
     print(f"cookie={cookie}")
     print(f"cc-status={real or 'absent'}")
     print(f"it2={it2 or 'absent'}")
+    print(f"mode={'after' if after else 'legacy'}")
+    if after:
+        got = {"name"} if title else set()
+        for kw in plan:
+            got |= {"expiry" if k == "expire" else k for k, v in kw.items() if v is not None and v is not False}
+        print("writes=" + (",".join(n for n in ("name", "status", "detail", "dot", "text", "count", "expiry") if n in got) or "none"))
     sys.exit(0)
 
 if live != before or event in ("SessionStart", "SessionEnd"):
@@ -548,19 +647,22 @@ if live != before or event in ("SessionStart", "SessionEnd"):
             os.remove(nf)
         except (OSError, TypeError):
             pass
-if in_seat_tool:
+if in_seat_tool and not after:
     tool = payload.get("tool_name")
     paint("working", f"{seat}: {tool}" if tool else seat, seat_col, seat_col)
     sys.exit(0)
 
-if fed is None:
+if after:
+    pass   # iTerm2's handler already saw the real payload
+elif fed is None:
     call([real], raw.encode(), 10)
 else:
     payload["background_tasks"] = fed
     call([real], json.dumps(payload).encode(), 10)
 
 # Before the paints, so the last it2 call of a turn end is still the paint.
-title, _, role = session_title()
+if not after:
+    title, _, role = session_title()
 # The first prompt is marked whatever the outcome, so python starts once per session for it.
 if event == "UserPromptSubmit" and nf and not seat:
     try:
@@ -570,27 +672,21 @@ if event == "UserPromptSubmit" and nf and not seat:
         pass
 if title:
     call([it2, "session", "set-name", title, "--session", sid], silent=True)
+if after:
+    for kw in plan:
+        write(**kw)
+    sys.exit(0)
 if event == "SubagentStart" and seat:
     paint("working", f"{seat} running", seat_col, seat_col)
 if paint_stalled:
-    m = max(m for _, m in stalled)
-    paint("waiting", f"stalled {m} min: {', '.join(label(t) for t, _ in stalled)}",
-          stalled_color, stalled_color, 0)
+    paint("waiting", stalled_text(), stalled_color, stalled_color, 0)
 elif question:
     paint("waiting", question, question_color, question_color, 0)
 elif paint_idle:
-    n = len(quiet)
-    what = ", ".join(label(t) + (" (cpu busy)" if isinstance(t, dict) and t.get("task_id") in busy_cpu else "")
-                     for t in quiet)
-    # the shortest silence among the quiet tasks; a task with no file has no age
-    since = f", quiet {int(min(quiet_ages) // 60)} min" if quiet_ages else ""
-    paint("idle", f"idle · {n} quiet background task{'s' if n != 1 else ''}{since}: {what}",
-          quiet_color, "#888888", 0)
+    paint("idle", quiet_text(), quiet_color, "#888888", 0)
 elif busy:
-    k = len(active)
     c = seat_color(busy[0])
-    paint("working", f"{', '.join(dict.fromkeys(busy))} running · {k} background task{'s' if k != 1 else ''} running",
-          c, c, k)
+    paint("working", seat_text(), c, c, len(active))
 elif event in ("Stop", "StopFailure") and not active and role in ("peer", "lead"):
     # Only the text colour: set-status keeps every field it is not given, so the dot stays the status colour.
     c = peer_color if role == "peer" else lead_color
@@ -598,5 +694,5 @@ elif event in ("Stop", "StopFailure") and not active and role in ("peer", "lead"
         call([it2, "set-status", "--session", sid, "--text-color", c], silent=True)
 PY
 )
-printf '%s' "$payload" | python3 -c "$py" "$mode" "$real" "$it2" "$sid" "$cookie"
+printf '%s' "$payload" | python3 -c "$py" "$mode" "$real" "$it2" "$sid" "$cookie" "$after"
 exit 0

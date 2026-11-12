@@ -9,9 +9,18 @@
 # The skill's own checker, scripts/verify.sh, is exercised the same way.
 
 setup() {
+  # python3 is resolved to its real interpreter before HOME is sandboxed and
+  # re-exposed under a stub below: an asdf shim resolves relative to $HOME and
+  # exits 126 once that is overridden.
+  REAL_PYTHON3="$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null)" || REAL_PYTHON3=''
   export HOME="$BATS_TEST_TMPDIR/home"
   mkdir -p "$HOME"
-  unset CLAUDECODE ITERM_SESSION_ID
+  # The hooks: lines read git config for profile directories and the
+  # environment for CLAUDE_CONFIG_DIR; neither may come from the caller.
+  export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig"
+  export GIT_CONFIG_SYSTEM=/dev/null
+  export GIT_CONFIG_NOSYSTEM=1
+  unset CLAUDECODE ITERM_SESSION_ID CLAUDE_CONFIG_DIR
   export TERM_PROGRAM=bats
 
   DOTFUNCTIONS="$BATS_TEST_DIRNAME/../dot_functions"
@@ -36,6 +45,10 @@ val=$(sed -n "s/^$key=//p" "$file")
 printf '%s\n' "$val"
 EOF
   chmod +x "$STUB/defaults"
+  if [ -n "$REAL_PYTHON3" ]; then
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$REAL_PYTHON3" > "$STUB/python3"
+    chmod +x "$STUB/python3"
+  fi
   export PREFS="$BATS_TEST_TMPDIR/prefs"
   PATH="$STUB:$PATH"
 }
@@ -80,7 +93,7 @@ doctor_stamp() {
   make_app "$(doctor_stamp)"
   doctor
   [ "$status" -eq 0 ]
-  [[ "$output" == *"defined: ok (4 helpers)"* ]]
+  [[ "$output" == *"defined: ok (6 helpers)"* ]]
   [[ "$output" == *"app:     $APP ($(doctor_stamp))"* ]]
   [[ "$output" == *"skill:   written against iTerm2 $(doctor_stamp) — matches"* ]]
   # House style: every label is padded so its value starts in column 10, the
@@ -119,6 +132,51 @@ doctor_stamp() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"app:     NOT INSTALLED"* ]]
   [[ "$output" == *"skill:   written against iTerm2 $(doctor_stamp)"* ]]
+}
+
+# iterm2_skill_drift sets REPLY (no output, no child process): one sentence when
+# the bundle's version is not the doctor's stamp, else empty.
+drift() {
+  run zsh -c "source '$DOTFUNCTIONS'; iterm2_skill_drift; print -r -- \"[\$REPLY]\""
+}
+
+@test "iterm2_skill_drift: a matching version is empty" {
+  make_app x
+  write_info_plist "$APP" "$(doctor_stamp)" ""
+  drift
+  [ "$status" -eq 0 ]
+  [ "$output" = "[]" ]
+}
+
+@test "iterm2_skill_drift: newer and older name the versions and the stamp" {
+  make_app x
+  write_info_plist "$APP" 99.0.0 ""
+  drift
+  [ "$output" = "[iTerm2 99.0.0 is newer than the skill's notes ($(doctor_stamp)): run iterm2-doctor]" ]
+  write_info_plist "$APP" 0.0.1 ""
+  drift
+  [ "$output" = "[iTerm2 0.0.1 is older than the skill's notes ($(doctor_stamp)): run iterm2-doctor]" ]
+}
+
+@test "iterm2_skill_drift: an empty or binary plist, or no app, is empty" {
+  make_app 99.0.0
+  drift
+  [ "$output" = "[]" ]
+  printf 'bplist00\000\001CFBundleShortVersionString' > "$APP/Contents/Info.plist"
+  drift
+  [ "$output" = "[]" ]
+  export ITERM2_APP="$BATS_TEST_TMPDIR/nowhere.app"
+  drift
+  [ "$output" = "[]" ]
+}
+
+@test "iterm2_app_path: sets REPLY to the path it prints, empty when none" {
+  make_app 1.0
+  run zsh -c "source '$DOTFUNCTIONS'; iterm2_app_path >/dev/null; print -r -- \"[\$REPLY]\""
+  [ "$output" = "[$APP]" ]
+  export ITERM2_APP="$BATS_TEST_TMPDIR/nowhere.app"
+  run zsh -c "source '$DOTFUNCTIONS'; REPLY=old; iterm2_app_path >/dev/null; print -r -- \"[\$REPLY]\""
+  [ "$output" = "[]" ]
 }
 
 @test "iterm2-doctor: prefs, api, and startup keys come from the domain, absent ones say so" {
@@ -236,6 +294,69 @@ EOF
   cp "$STUB/defaults" "$STUB/it2"; chmod +x "$STUB/it2"
   doctor
   [[ "$output" == *"(executable); it2: PATH"* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/ran" ]
+}
+
+# Settings files for the hooks: lines. "c" is the handler-then-shim line on
+# all eleven events, "bare" the shim alone — the wiring tests/claude-profiles.bats
+# pins in full; here only what iterm2-doctor makes of them.
+write_settings() {
+  python3 - "$1" "$2" "$HOME" <<'PY'
+import json, sys
+path, kind, home = sys.argv[1:]
+ev = "SessionStart SessionEnd UserPromptSubmit PreToolUse PostToolUse PermissionRequest Notification Stop StopFailure SubagentStart SubagentStop".split()
+shim = home + "/.local/libexec/cc-status-shim/cc-status"
+cmd = shim if kind == "bare" else "p=$(cat); printf '%s' \"$p\" | " + home + "/.config/iterm2/it2 handle-agent-hook; printf '%s' \"$p\" | " + shim + " after"
+json.dump({"hooks": {e: [{"hooks": [{"type": "command", "command": cmd}]}] for e in ev}}, open(path, "w"))
+PY
+}
+
+@test "iterm2-doctor: hooks lines judge each profile directory and mark the one the launch alert reads" {
+  command -v python3 >/dev/null || skip "python3 not installed"
+  make_app "$(doctor_stamp)"
+  mkdir -p "$HOME/.claude" "$HOME/.claude-other" "$HOME/.claude-bare" "$HOME/.claude-empty"
+  git config --file "$GIT_CONFIG_GLOBAL" claude.profile.other "~/.claude-other"
+  git config --file "$GIT_CONFIG_GLOBAL" claude.profile.bare "~/.claude-bare"
+  git config --file "$GIT_CONFIG_GLOBAL" claude.profile.empty "~/.claude-empty"
+  write_settings "$HOME/.claude/settings.json" c
+  write_settings "$HOME/.claude-other/settings.json" c
+  write_settings "$HOME/.claude-bare/settings.json" bare
+  printf 'NoSyncClaudeCodeConfigDirPath=%s\n' "$HOME/.claude-other" > "$PREFS/com.googlecode.iterm2"
+  doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *$'hooks:   ~/.claude: iTerm2\'s check passes (10/10 owned); handler first on 11/11; raw beside the shim on 0\n'* ]]
+  [[ "$output" == *"hooks:   ~/.claude-other: iTerm2's check passes (10/10 owned); handler first on 11/11; raw beside the shim on 0 — the launch alert reads this one"* ]]
+  [[ "$output" == *"hooks:   ~/.claude-bare: iTerm2's check FAILS (0/10 owned) — re-apply the overlay that owns this file; handler first on 0/11; raw beside the shim on 0"$'\n'* ]]
+  # A directory without a settings.json prints nothing.
+  [[ "$output" != *"claude-empty"* ]]
+  # An unreadable file is named as such.
+  printf 'not json' > "$HOME/.claude-bare/settings.json"
+  doctor
+  [[ "$output" == *"hooks:   ~/.claude-bare: iTerm2's check unreadable settings.json"* ]]
+}
+
+@test "iterm2-doctor: hooks line says when no profile carries a settings.json" {
+  make_app "$(doctor_stamp)"
+  doctor
+  [[ "$output" == *"hooks:   no profile carries a settings.json"* ]]
+}
+
+@test "iterm2-doctor: shim line asks the shim's own explain and runs nothing of iTerm2's" {
+  command -v python3 >/dev/null || skip "python3 not installed"
+  make_app "$(doctor_stamp)"
+  doctor
+  [[ "$output" == *"shim:    MISSING — chezmoi apply"* ]]
+  mkdir -p "$HOME/.local/libexec/cc-status-shim" "$HOME/.config/iterm2"
+  cp "$BATS_TEST_DIRNAME/../dot_local/libexec/cc-status-shim/executable_cc-status" "$HOME/.local/libexec/cc-status-shim/cc-status"
+  chmod +x "$HOME/.local/libexec/cc-status-shim/cc-status"
+  # Stubs that leave a marker if anything runs them.
+  printf '#!/bin/sh\ntouch "%s/ran"\n' "$BATS_TEST_TMPDIR" | tee "$HOME/.config/iterm2/it2" > "$HOME/.config/iterm2/cc-status"
+  chmod +x "$HOME/.config/iterm2/it2" "$HOME/.config/iterm2/cc-status"
+  doctor
+  [[ "$output" == *"shim:    ~/.local/libexec/cc-status-shim/cc-status cannot paint: not inside an iTerm2 session"* ]]
+  export ITERM_SESSION_ID=w0t0p0:FIXTURE
+  doctor
+  [[ "$output" == *"shim:    ~/.local/libexec/cc-status-shim/cc-status can paint (it2: $HOME/.config/iterm2/it2; session id set)"* ]]
   [ ! -e "$BATS_TEST_TMPDIR/ran" ]
 }
 

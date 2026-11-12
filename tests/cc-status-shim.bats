@@ -244,7 +244,7 @@ rename_only() {
   [[ $output == *"event=PreToolUse"* && $output == *"action=passthrough"* ]]
 }
 
-@test "settings: valid JSON naming all eleven events, each with the bare expanded shim path" {
+@test "settings: valid JSON naming all eleven events, each with the bare expanded shim path, without iTerm2's it2" {
   run sh "$SHIM" settings
   [ "$status" -eq 0 ]
   printf '%s\n' "$output" | sed -n '/^{/,/^}/p' > "$BATS_TEST_TMPDIR/settings.json"
@@ -257,6 +257,47 @@ for ev, entries in h.items():
         for hook in e["hooks"]:
             assert hook["command"] == sys.argv[2] + "/.local/libexec/cc-status-shim/cc-status", (ev, hook)
 PY
+}
+
+# settings_c: C as the rule file spells it, built from $HOME (single spaces, only the socket path quoted).
+settings_c() {
+  printf '%s' "p=\$(cat); [ $HOME/.local/state/iterm2/api-cookie -nt \"$HOME/Library/Application Support/iTerm2/private/socket\" ] && read -r ITERM2_COOKIE ITERM2_KEY <$HOME/.local/state/iterm2/api-cookie && [ -n \"\$ITERM2_KEY\" ] && export ITERM2_COOKIE ITERM2_KEY; printf '%s' \"\$p\" | $HOME/.config/iterm2/it2 handle-agent-hook; printf '%s' \"\$p\" | $HOME/.local/libexec/cc-status-shim/cc-status after"
+}
+
+@test "settings: with iTerm2's it2 every command is the handler, then the shim" {
+  mkdir -p "$HOME/.config/iterm2"
+  : > "$HOME/.config/iterm2/it2"; chmod +x "$HOME/.config/iterm2/it2"
+  run sh "$SHIM" settings
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | sed -n '/^{/,/^}/p' > "$BATS_TEST_TMPDIR/settings.json"
+  settings_c > "$BATS_TEST_TMPDIR/c.txt"
+  python3 - "$BATS_TEST_TMPDIR/settings.json" "$BATS_TEST_TMPDIR/c.txt" <<'PY'
+import json, sys
+h = json.load(open(sys.argv[1]))["hooks"]
+c = open(sys.argv[2]).read()
+assert len(h) == 11, sorted(h)
+for ev, entries in h.items():
+    for e in entries:
+        for hook in e["hooks"]:
+            assert hook["command"] == c, (ev, hook["command"], c)
+PY
+}
+
+@test "settings: the printed line runs under sh, handing the handler and the shim the same bytes" {
+  mkdir -p "$HOME/.config/iterm2" "$HOME/.local/libexec/cc-status-shim"
+  printf '#!/bin/sh\ncat > "%s/handler_in"\nprintf "%%s\\n" "$@" > "%s/handler_argv"\n' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$HOME/.config/iterm2/it2"
+  printf '#!/bin/sh\ncat > "%s/shim_in"\nprintf "%%s\\n" "$@" > "%s/shim_argv"\n' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR" > "$HOME/.local/libexec/cc-status-shim/cc-status"
+  chmod +x "$HOME/.config/iterm2/it2" "$HOME/.local/libexec/cc-status-shim/cc-status"
+  run sh "$SHIM" settings
+  printf '%s\n' "$output" | sed -n '/^{/,/^}/p' > "$BATS_TEST_TMPDIR/settings.json"
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["hooks"]["Stop"][0]["hooks"][0]["command"])' "$BATS_TEST_TMPDIR/settings.json" > "$BATS_TEST_TMPDIR/cmd.sh"
+  printf '{"hook_event_name":"Stop","x":"a b"}' > "$BATS_TEST_TMPDIR/payload"
+  run sh -c "$(cat "$BATS_TEST_TMPDIR/cmd.sh")" < "$BATS_TEST_TMPDIR/payload"
+  [ "$status" -eq 0 ]
+  cmp "$BATS_TEST_TMPDIR/payload" "$BATS_TEST_TMPDIR/handler_in"
+  cmp "$BATS_TEST_TMPDIR/payload" "$BATS_TEST_TMPDIR/shim_in"
+  [ "$(cat "$BATS_TEST_TMPDIR/handler_argv")" = handle-agent-hook ]
+  [ "$(cat "$BATS_TEST_TMPDIR/shim_argv")" = after ]
 }
 
 @test "shim: it2 is taken from beside the real binary, not from PATH" {
@@ -918,7 +959,7 @@ NAMED_FILE() { printf '%s/tabstatus/s1.named' "$XDG_STATE_HOME"; }
   ! grep -qx 'set-name' "$BATS_TEST_TMPDIR/argv_all"
 }
 
-@test "rename: SessionStart and SessionEnd delete the marker and never rename" {
+@test "rename: SessionEnd never renames; SessionStart and SessionEnd delete the marker" {
   local ev
   for ev in SessionStart SessionEnd; do
     mkdir -p "$(dirname "$(NAMED_FILE)")"
@@ -926,7 +967,45 @@ NAMED_FILE() { printf '%s/tabstatus/s1.named' "$XDG_STATE_HOME"; }
     run_shim <<< "$(named_payload "$ev")"
     [ ! -e "$(NAMED_FILE)" ]
   done
+  rm -f "$BATS_TEST_TMPDIR/argv_all"
+  run_shim <<< "$(named_payload SessionEnd)"
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ] || ! grep -qx 'set-name' "$BATS_TEST_TMPDIR/argv_all"
+}
+
+# session_start_names <label> <expected title> <runner>: a SessionStart names the row once, paints nothing, writes no marker.
+session_start_names() {
+  [ -n "$1" ] && printf '%s\n' "$1" > "$BATS_TEST_TMPDIR/role.out"
+  "$3" <<< "$(named_payload SessionStart)"
+  [ "$(it2_argv)" = "session|set-name|$2|--session|ABC-123" ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
+  [ ! -e "$(NAMED_FILE)" ]
+}
+
+@test "rename: SessionStart names a peer, a lead and a plain cwd, in legacy and after mode" {
+  local run
+  for run in run_shim run_after; do
+    rm -f "$BATS_TEST_TMPDIR"/{argv,argv_all,calls}
+    session_start_names $'peer\tproj · Alpha' "proj · Alpha" $run
+    rm -f "$BATS_TEST_TMPDIR"/{argv,argv_all,calls}
+    session_start_names $'lead\tproj ▸ Lead' "proj ▸ Lead" $run
+    rm -f "$BATS_TEST_TMPDIR"/{argv,argv_all,calls} "$BATS_TEST_TMPDIR/role.out"
+    session_start_names "" proj $run
+  done
+}
+
+@test "rename: SessionStart in a set names the row after the set, in both modes" {
+  export WORKSET=myset
+  session_start_names "" myset run_shim
+  rm -f "$BATS_TEST_TMPDIR"/{argv,argv_all,calls}
+  session_start_names "" myset run_after
+}
+
+@test "rename: SessionStart outside a repo renames nothing and still passes the payload on" {
+  local p; p=$(named_payload SessionStart /elsewhere)
+  run_shim <<< "$p"
+  [ "$status" -eq 0 ]
   [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  [ "$(cat "$BATS_TEST_TMPDIR/fed")" = "$p" ]
 }
 
 @test "explain: prints name= and rename= with the reason" {
@@ -1060,5 +1139,226 @@ uncookied_bytes() { wc -c < "$HOME/.local/state/iterm2/uncookied" 2>/dev/null ||
   run sh "$SHIM" explain <<< "$(named_payload Stop)"
   [[ $output == *"cookie=rejected"* ]]
   [ ! -e "$COOKIE_DIR/uncookied" ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
+# after: `cc-status after` runs behind iTerm2's own handler. It never calls the hook, needs no real
+# cc-status, and writes set-status fields only as the rule file's table allows. Stop and StopFailure
+# payloads carry session_id and cwd so the rename also happens (and is argv_all's first call).
+run_after() { run sh "$SHIM" after; }
+after_stop() { payload "${1:-Stop}" "${2:-[]}" '"cwd":"/work/proj","session_id":"s1"'"${3:+,$3}"; }
+# status_flags: the number of --status flags among everything it2 was given.
+status_flags() { { grep -cx -- '--status' "$BATS_TEST_TMPDIR/argv_all" || true; } 2>/dev/null; }
+
+@test "after: a PreToolUse outside a seat starts neither python nor it2" {
+  run_after <<< '{"hook_event_name":"PreToolUse","tool_name":"Bash"}'
+  [ "$status" -eq 0 ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  [ ! -e "$BATS_TEST_TMPDIR/fed" ]
+}
+
+@test "after: never the hook, whatever the event, and it needs no real cc-status" {
+  export CC_STATUS_BIN="$BATS_TEST_TMPDIR/absent"
+  local ev
+  for ev in SessionStart SessionEnd UserPromptSubmit PreToolUse PostToolUse PermissionRequest Notification Stop StopFailure SubagentStart SubagentStop; do
+    run_after <<< "$(after_stop "$ev" '[{"task_id":"a"}]' '"agent_id":"ag1","agent_type":"plan-fable","tool_name":"Bash"')"
+    [ "$status" -eq 0 ]
+    run_after <<< "$(after_stop "$ev")"
+    [ "$status" -eq 0 ]
+  done
+  [ ! -e "$BATS_TEST_TMPDIR/fed" ]
+  ! grep -qx 'handle-agent-hook' "$BATS_TEST_TMPDIR/argv_all"
+}
+
+@test "after: a plain Stop sends only the rename" {
+  run_after <<< "$(after_stop)"
+  rename_only
+}
+
+@test "after: Stop with one active and one quiet task only corrects the count" {
+  age_file a 7200
+  age_file b 30
+  run_after <<< "$(after_stop Stop '[{"task_id":"a","task_type":"local_bash","description":"old"},{"task_id":"b","task_type":"local_agent","description":"busy"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--detail|1 background task running|--background-tasks|1" ]
+  [ "$(status_flags)" -eq 0 ]
+}
+
+@test "after: Stop with only active tasks writes nothing but the rename" {
+  age_file b 30
+  run_after <<< "$(after_stop Stop '[{"task_id":"b","task_type":"local_agent","description":"busy"}]')"
+  rename_only
+}
+
+@test "after: Stop with all quiet tasks paints idle in amber, count 0" {
+  age_file a 7200
+  run_after <<< "$(after_stop Stop '[{"task_id":"a","task_type":"local_agent","description":"quietly"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|idle|--detail|idle · 1 quiet background task, quiet 120 min: quietly|--dot-color|#af8700|--text-color|#888888|--background-tasks|0" ]
+}
+
+@test "after: a stalled task paints waiting in red, count 0" {
+  age_file a 7200
+  echo > "$BATS_TEST_TMPDIR/lsof.out"
+  run_after <<< "$(after_stop Stop '[{"task_id":"a","task_type":"local_bash","description":"install.sh"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|stalled 120 min: install.sh|--dot-color|#ff5f5f|--text-color|#ff5f5f|--background-tasks|0" ]
+}
+
+@test "after: a closing question on Stop paints waiting in yellow, count 0" {
+  run_after <<< "$(after_stop Stop '[]' '"last_assistant_message":"Done.\n\nWhich branch?"')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|Which branch?|--dot-color|#ffd75f|--text-color|#ffd75f|--background-tasks|0" ]
+}
+
+@test "after: StopFailure ending in a question never writes a status; all quiet it paints idle" {
+  run_after <<< "$(after_stop StopFailure '[]' '"last_assistant_message":"Which branch?"')"
+  rename_only
+  [ "$(status_flags)" -eq 0 ]
+  age_file a 7200
+  rm "$BATS_TEST_TMPDIR/argv_all" "$BATS_TEST_TMPDIR/calls"
+  run_after <<< "$(after_stop StopFailure '[{"task_id":"a","task_type":"local_agent","description":"quietly"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|idle|--detail|idle · 1 quiet background task, quiet 120 min: quietly|--dot-color|#af8700|--text-color|#888888|--background-tasks|0" ]
+  rm "$BATS_TEST_TMPDIR/argv_all" "$BATS_TEST_TMPDIR/calls"
+  run_after <<< "$(after_stop StopFailure '[{"task_id":"a","task_type":"local_agent","description":"quietly"}]' '"last_assistant_message":"Retry?"')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|idle|--detail|idle · 1 quiet background task, quiet 120 min: quietly|--dot-color|#af8700|--text-color|#888888|--background-tasks|0" ]
+}
+
+@test "after: a Stop over a running background seat repaints its colours and count, no status" {
+  mkdir -p "$(dirname "$SEATS_FILE")"
+  printf 'ag1\tplan-fable\n' > "$SEATS_FILE"
+  age_file ag1 30
+  run_after <<< "$(after_stop Stop '[{"task_id":"ag1","task_type":"local_agent"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--detail|plan-fable running · 1 background task running|--dot-color|#d787ff|--text-color|#d787ff|--background-tasks|1" ]
+  [ "$(status_flags)" -eq 0 ]
+}
+
+@test "after: a peer's plain Stop sends exactly the peer text colour" {
+  printf 'peer\tproj · Alpha\n' > "$BATS_TEST_TMPDIR/role.out"
+  run_after <<< "$(after_stop)"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--text-color|#8a8a8a" ]
+}
+
+@test "after: the contract: no event but Stop and StopFailure ever sends --status" {
+  local ev
+  for ev in SessionStart SessionEnd UserPromptSubmit PreToolUse PostToolUse PermissionRequest Notification SubagentStart SubagentStop; do
+    run_after <<< "$(after_stop "$ev")"
+    run_after <<< "$(after_stop "$ev" '[{"task_id":"a"}]' '"agent_id":"ag1","agent_type":"plan-fable","tool_name":"Bash"')"
+  done
+  [ "$(status_flags)" -eq 0 ]
+}
+
+@test "after: no it2, or no session id: exit 0 and nothing recorded" {
+  rm "$STUB/it2"
+  run_after <<< "$(after_stop)"
+  [ "$status" -eq 0 ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  printf '#!/bin/sh\necho x >> "%s/calls"\n' "$BATS_TEST_TMPDIR" > "$STUB/it2"; chmod +x "$STUB/it2"
+  ITERM_SESSION_ID= run_after <<< "$(after_stop)"
+  [ "$status" -eq 0 ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
+@test "after: explain after names the mode and the fields it would write, calling nothing" {
+  run sh "$SHIM" explain after <<< "$(after_stop)"
+  [[ $output == *"mode=after"* ]]
+  [[ $output == *"writes=name"$'\n'* || $output == *"writes=name" ]]
+  run sh "$SHIM" explain after <<< "$(after_stop Stop '[]' '"last_assistant_message":"Which branch?"')"
+  [[ $output == *"writes=name,status,detail,dot,text,count"* ]]
+  run sh "$SHIM" explain after <<< '{"hook_event_name":"PreToolUse","tool_name":"Bash"}'
+  [[ $output == *"writes=none"* ]]
+  run sh "$SHIM" explain <<< "$(after_stop)"
+  [[ $output == *"mode=legacy"* ]]
+  [[ $output != *"writes="* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
+# after, mid-turn: a seat's tool calls and its start repaint its colours with the handler's expiry,
+# and SubagentStop corrects only the count (or the count and a detail), never a status word.
+EXPIRY_ARGV='--expires-on|progress-end|--then-status|idle|--then-dot-color|#00d75f|--then-text-color|#888888|--then-detail|'
+# no_python: a python3 stub that records its start, then runs the real one.
+no_python() {
+  printf '#!/bin/sh\necho x >> "%s/py_calls"\nexec "%s" "$@"\n' "$BATS_TEST_TMPDIR" "$(command -v python3)" > "$STUB/python3"
+  chmod +x "$STUB/python3"
+}
+sub_stop() { payload SubagentStop "$1" '"session_id":"s1","agent_id":"ag1"'"${2:+,$2}"; }
+
+@test "after: an in-seat PreToolUse and PostToolUse repaint the seat colour with the expiry, no status" {
+  local ev
+  for ev in PreToolUse PostToolUse; do
+    rm -f "$BATS_TEST_TMPDIR/argv" "$BATS_TEST_TMPDIR/calls"
+    run_after <<< "$(seat_payload "$ev" plan-fable '"tool_name":"Bash"')"
+    [ "$(it2_argv)" = "set-status|--session|ABC-123|--detail|plan-fable: Bash|--dot-color|#d787ff|--text-color|#d787ff|$EXPIRY_ARGV" ]
+    [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
+  done
+  [ "$(status_flags)" -eq 0 ]
+  ! grep -qx -- '--background-tasks' "$BATS_TEST_TMPDIR/argv_all"
+}
+
+@test "after: an in-seat tool call with no tool name shows the seat alone" {
+  run_after <<< "$(seat_payload PreToolUse work-sonnet)"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--detail|work-sonnet|--dot-color|#00afaf|--text-color|#00afaf|$EXPIRY_ARGV" ]
+}
+
+@test "after: SubagentStart of a seat sends the seat text and colours with the expiry" {
+  run_after <<< "$(seat_payload SubagentStart plan-fable)"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--detail|plan-fable running|--dot-color|#d787ff|--text-color|#d787ff|$EXPIRY_ARGV" ]
+  [ "$(status_flags)" -eq 0 ]
+}
+
+@test "after: in-seat PermissionRequest and Notification record nothing" {
+  run_after <<< "$(seat_payload PermissionRequest plan-fable)"
+  run_after <<< "$(seat_payload Notification plan-fable)"
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
+@test "after: the gate sends hooks of a seat to python, and a SubagentStop without tasks starts none" {
+  no_python
+  run_after <<< "$(seat_payload PreToolUse scout-haiku '"tool_name":"Read"')"
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/py_calls")" -eq 1 ]
+  run_after <<< "$(seat_payload SubagentStart scout-haiku)"
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/py_calls")" -eq 2 ]
+  rm "$BATS_TEST_TMPDIR/py_calls" "$BATS_TEST_TMPDIR/calls"
+  run_after <<< '{"hook_event_name":"SubagentStop","agent_id":"ag1","background_tasks":[]}'
+  run_after <<< '{"hook_event_name":"SubagentStop","agent_id":"ag1"}'
+  [ ! -e "$BATS_TEST_TMPDIR/py_calls" ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
+@test "after: a SubagentStop listing only the stopped agent sends exactly the zero count" {
+  run_after <<< "$(sub_stop '[{"task_id":"ag1","task_type":"local_agent"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--background-tasks|0" ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
+}
+
+@test "after: a SubagentStop beside an active task sends the detail, the count and the expiry" {
+  age_file b 30
+  run_after <<< "$(sub_stop '[{"task_id":"ag1","task_type":"local_agent"},{"task_id":"b","task_type":"local_bash"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--detail|1 background task running|--background-tasks|1|$EXPIRY_ARGV" ]
+  [ "$(status_flags)" -eq 0 ]
+}
+
+@test "after: a SubagentStop beside only a quiet shell sends exactly the zero count" {
+  age_file a 7200
+  run_after <<< "$(sub_stop '[{"task_id":"ag1","task_type":"local_agent"},{"task_id":"a","task_type":"local_bash"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--background-tasks|0" ]
+}
+
+@test "after: a SubagentStop with a running seat among the active sends the seat colours, count and expiry" {
+  mkdir -p "$(dirname "$SEATS_FILE")"
+  printf 'ag2\tplan-fable\n' > "$SEATS_FILE"
+  age_file ag2 30
+  run_after <<< "$(sub_stop '[{"task_id":"ag1","task_type":"local_agent"},{"task_id":"ag2","task_type":"local_agent"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--detail|plan-fable running · 1 background task running|--dot-color|#d787ff|--text-color|#d787ff|--background-tasks|1|$EXPIRY_ARGV" ]
+  [ "$(status_flags)" -eq 0 ]
+}
+
+@test "after: a SubagentStop whose list holds one active task and not the stopped agent sends nothing" {
+  age_file b 30
+  run_after <<< "$(sub_stop '[{"task_id":"b","task_type":"local_bash"}]')"
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+}
+
+@test "after: explain after names the mid-turn writes" {
+  run sh "$SHIM" explain after <<< "$(seat_payload PreToolUse plan-fable '"tool_name":"Bash"')"
+  [[ $output == *"writes=detail,dot,text,expiry"* ]]
+  run sh "$SHIM" explain after <<< "$(sub_stop '[{"task_id":"ag1","task_type":"local_agent"}]')"
+  [[ $output == *"writes=count"$'\n'* || $output == *"writes=count" ]]
   [ ! -e "$BATS_TEST_TMPDIR/calls" ]
 }

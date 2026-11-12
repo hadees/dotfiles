@@ -58,6 +58,10 @@ setup() {
   # this file.
   mkdir -p "$HOME/.local/state/iterm2"
   : > "$HOME/.local/state/iterm2/api-cookie"
+  # An iTerm2 that does not exist, so no test meets the developer's real one
+  # (a Sparkle update past the skill's stamp would add a launch line to every
+  # pty test). The tests about the drift line point it at a fake bundle.
+  export ITERM2_APP="$BATS_TEST_TMPDIR/no-iterm2.app"
 
   DOTFUNCTIONS="$BATS_TEST_DIRNAME/../dot_functions"
 }
@@ -163,7 +167,7 @@ claude_in() {
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: claude: function"* ]]
-  [[ "$output" == *"defined: ok (11 helpers)"* ]]
+  [[ "$output" == *"defined: ok (14 helpers)"* ]]
   [[ "$output" == *"binary:  $BATS_TEST_TMPDIR/bin/claude"* ]]
   [[ "$output" == *"account: personal-account"* ]]
   [[ "$output" == *"launch:  $HOME/.claude-personal"* ]]
@@ -208,7 +212,7 @@ JSON
   [[ "$output" == *"denies logged: 0"* ]]
 }
 
-@test "claude-doctor: tabstatus counts events on the shim, on raw cc-status, on neither" {
+@test "claude-doctor: tabstatus counts events on the shim, on iTerm2's own hook, on neither" {
   repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
   command -v python3 >/dev/null || skip "python3 not installed"
   # A real python3 for the same reason as the deny test above.
@@ -219,36 +223,62 @@ JSON
   settings="$HOME/.claude-personal/settings.json"
   shim="$HOME/.local/libexec/cc-status-shim/cc-status"
   tabstatus() { run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"; }
+  wiring() { run zsh -c "source '$DOTFUNCTIONS'; tabstatus_wiring '$1'"; }
 
   tabstatus
   [[ "$output" == *"tabstatus: no settings.json in $settings; shim: MISSING"* ]]
 
   printf '#!/bin/sh\n' > "$shim"; chmod +x "$shim"
   printf 'a\tplan-fable\nb\twork-sonnet\n' > "$HOME/.local/state/tabstatus/s1.seats"
-  # Settings with every one of the eleven events on the shim, then Stop on a
-  # bare raw entry and SubagentStart on nothing, then Stop on the guarded form.
-  python3 - "$settings" "$shim" "$HOME" <<'PY'
+  # C as the rule file spells it, built from $HOME (the same construction as tests/cc-status-shim.bats).
+  C="p=\$(cat); [ $HOME/.local/state/iterm2/api-cookie -nt \"$HOME/Library/Application Support/iTerm2/private/socket\" ] && read -r ITERM2_COOKIE ITERM2_KEY <$HOME/.local/state/iterm2/api-cookie && [ -n \"\$ITERM2_KEY\" ] && export ITERM2_COOKIE ITERM2_KEY; printf '%s' \"\$p\" | $HOME/.config/iterm2/it2 handle-agent-hook; printf '%s' \"\$p\" | $HOME/.local/libexec/cc-status-shim/cc-status after"
+  # Fixtures: every one of the eleven events on the bare shim (all), on C (c),
+  # on C with a quoted iTerm2 handler entry beside it on ten (beside); then
+  # Stop on a bare iTerm2 cc-status and SubagentStart on nothing (bare), and
+  # Stop on the guarded form (guarded).
+  python3 - "$settings" "$shim" "$HOME" "$C" <<'PY'
 import json, sys
-path, shim, home = sys.argv[1:]
+path, shim, home, c = sys.argv[1:]
 ev = "SessionStart SessionEnd UserPromptSubmit PreToolUse PostToolUse PermissionRequest Notification Stop StopFailure SubagentStart SubagentStop".split()
 def entry(cmd): return [{"hooks": [{"type": "command", "command": cmd}]}]
 raw = home + "/.config/iterm2/cc-status"
+handler = '"%s/.config/iterm2/it2" handle-agent-hook' % home
 for name, over in (("all", {}), ("bare", {"Stop": raw, "SubagentStart": None}),
                    ("guarded", {"Stop": "[ -x %s ] && %s || true" % (raw, raw), "SubagentStart": None})):
     hooks = {e: entry(over.get(e, shim)) for e in ev if over.get(e, shim) is not None}
     json.dump({"hooks": hooks}, open(path + "." + name, "w"))
+hooks = {e: entry(c) for e in ev}
+json.dump({"hooks": hooks}, open(path + ".c", "w"))
+for e in ev:
+    if e != "SubagentStart": hooks[e] = hooks[e] + entry(handler)
+json.dump({"hooks": hooks}, open(path + ".beside", "w"))
 PY
+  wiring "$settings.all"
+  [ "$status" -eq 0 ]
+  [ "$output" = "events=11 shim=11 after=0 raw=0 both=0 none=0 owned=0" ]
+  wiring "$settings.c"
+  [ "$output" = "events=11 shim=11 after=11 raw=0 both=0 none=0 owned=10" ]
+  wiring "$settings.beside"
+  [ "$output" = "events=11 shim=11 after=11 raw=10 both=10 none=0 owned=10" ]
+  wiring "$settings.bare"
+  [ "$output" = "events=11 shim=9 after=0 raw=1 both=0 none=1 owned=1" ]
+  wiring "$settings.guarded"
+  [ "$output" = "events=11 shim=9 after=0 raw=1 both=0 none=1 owned=1" ]
+
   cp "$settings.all" "$settings"
   tabstatus
   [ "$status" -eq 0 ]
-  [[ "$output" == *"tabstatus: shim on 11/11 events, raw cc-status on 0, none on 0 in $settings; shim: $shim; seats live: 2"* ]]
+  [[ "$output" == *"tabstatus: shim on 11/11 events (handler first on 0), raw iTerm2 hook on 0, both on 0, none on 0 in $settings; shim: $shim; seats live: 2"* ]]
+  cp "$settings.c" "$settings"
+  tabstatus
+  [[ "$output" == *"tabstatus: shim on 11/11 events (handler first on 11), raw iTerm2 hook on 0, both on 0, none on 0 in $settings"* ]]
   cp "$settings.bare" "$settings"
   tabstatus
-  [[ "$output" == *"tabstatus: shim on 9/11 events, raw cc-status on 1, none on 1 in $settings"* ]]
-  cp "$settings.guarded" "$settings"
-  tabstatus
-  [[ "$output" == *"tabstatus: shim on 9/11 events, raw cc-status on 1, none on 1 in $settings"* ]]
+  [[ "$output" == *"tabstatus: shim on 9/11 events (handler first on 0), raw iTerm2 hook on 1, both on 0, none on 1 in $settings"* ]]
   echo '{not json' > "$settings"
+  wiring "$settings"
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
   tabstatus
   [[ "$output" == *"tabstatus: ? (unreadable settings.json) in $settings"* ]]
 }
@@ -1037,6 +1067,43 @@ cookie_line_setup() {
   PTY_DIR=$repo PTY_ANSWER=n pty_claude
   [[ "$output" != *"no iTerm2 API cookie"* ]]
   [[ "$output" == *"rc=0"* ]]
+}
+
+# The launch line about an iTerm2 that has moved past the skill's stamp needs
+# an attended launch and a bundle whose Info.plist names another version.
+drift_app() {
+  export ITERM2_APP="$BATS_TEST_TMPDIR/iTerm.app"
+  mkdir -p "$ITERM2_APP/Contents"
+  printf '<plist><dict>\n\t<key>CFBundleShortVersionString</key>\n\t<string>99.0.0</string>\n</dict></plist>\n' \
+    > "$ITERM2_APP/Contents/Info.plist"
+}
+
+@test "claude: an attended launch past the skill's iTerm2 says so once; print mode and the switch do not" {
+  drift_app
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" == *"claude: iTerm2 99.0.0 is newer than the skill's notes ("*"): run iterm2-doctor"* ]]
+  [[ "$output" == *"rc=0"* ]]
+  [ "$(printf '%s' "$output" | grep -c "than the skill's notes")" -eq 1 ]
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude -p hello
+  [[ "$output" != *"than the skill's notes"* ]]
+  git config --file "$GIT_CONFIG_GLOBAL" claude.iterm2-check false
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" != *"than the skill's notes"* ]]
+  [[ "$output" == *"rc=0"* ]]
+}
+
+@test "claude-doctor: the iterm2 line says match, drift, and a silenced check" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"iterm2:  matches the skill's notes"* ]]
+  drift_app
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"iterm2:  iTerm2 99.0.0 is newer than the skill's notes ("*"): run iterm2-doctor"* ]]
+  [[ "$output" != *"claude does not warn"* ]]
+  git config --file "$GIT_CONFIG_GLOBAL" claude.iterm2-check false
+  run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
+  [[ "$output" == *"run iterm2-doctor (claude.iterm2-check is false, so claude does not warn)"* ]]
 }
 
 # The wrapper chooses the iTerm2 Workgroup a tab enters by setting the session
