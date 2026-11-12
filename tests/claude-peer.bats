@@ -2761,3 +2761,753 @@ stopmark() { echo "$(git -C "$REPO/.claude/worktrees/alpha" rev-parse --absolute
   [ "$status" -eq 1 ]
   [[ "$output" == *"lead is Lead's name"* ]]
 }
+
+# --- overlays ----------------------------------------------------------------------
+# An overlay is a ~/.config/chezmoi/<name>.toml (other than chezmoi.toml) whose
+# `chezmoi --config <cfg> source-path` is a git repository. A chezmoi stub answers
+# from <cfg>.src, so nothing reads the real configs; fixtures are invented.
+
+# overlay_stub: a chezmoi stub first on PATH. `--config <cfg> source-path` prints
+# the content of <cfg>.src, a bare `source-path` prints $FAKE_CHEZMOI_SOURCE,
+# $FAKE_CHEZMOI_FAIL makes every call fail; each call is logged.
+overlay_stub() {
+  cat >"$BATS_TEST_TMPDIR/bin/chezmoi" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >>"$BATS_TEST_TMPDIR/chezmoi.log"
+[ -z "${FAKE_CHEZMOI_FAIL-}" ] || exit 1
+case " $* " in
+  *" source-path "*)
+    cfg=
+    while [ $# -gt 0 ]; do
+      [ "$1" = --config ] && cfg=$2
+      shift
+    done
+    if [ -n "$cfg" ]; then cat "$cfg.src" 2>/dev/null
+    elif [ -n "${FAKE_CHEZMOI_SOURCE-}" ]; then printf '%s\n' "$FAKE_CHEZMOI_SOURCE"
+    fi
+    exit 0;;
+esac
+exit 0
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/chezmoi"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+}
+
+# overlay_cfg <file> <dir>: ~/.config/chezmoi/<file>, whose source is <dir>
+overlay_cfg() {
+  mkdir -p "$HOME/.config/chezmoi"
+  : >"$HOME/.config/chezmoi/$1"
+  printf '%s\n' "$2" >"$HOME/.config/chezmoi/$1.src"
+}
+
+# overlay_repo <name>: a repository with one commit under the test directory; prints its physical path
+overlay_repo() {
+  mkdir -p "$BATS_TEST_TMPDIR/$1"
+  git -C "$BATS_TEST_TMPDIR/$1" init -q
+  git -C "$BATS_TEST_TMPDIR/$1" commit -q --allow-empty -m initial
+  ( cd "$BATS_TEST_TMPDIR/$1" && pwd -P )
+}
+
+# ov_busy <repo> <leader>: a live claim in a linked worktree of <repo> and a live wait file, both led from <leader>
+ov_busy() {
+  git -C "$1" worktree add -q --detach "$1/.claude/worktrees/alpha"
+  sleep 60 & OV_CLAIM=$!
+  sleep 60 & OV_WAIT=$!
+  PANES="$PANES $OV_CLAIM $OV_WAIT"
+  if [ "${3-}" != wait-only ]; then
+    printf '%s\n%s\nAlpha\n' "$OV_CLAIM" "$2" >"$(git -C "$1/.claude/worktrees/alpha" rev-parse --absolute-git-dir)/claude-peer.claim"
+  fi
+  mkdir -p "$1/.git/claude-peer.wait"
+  printf '%s\n' "$2" >"$1/.git/claude-peer.wait/beta.$OV_WAIT"
+}
+
+@test "overlays: none configured prints nothing and never runs chezmoi" {
+  overlay_stub
+  run --separate-stderr sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ -z "$stderr" ]
+  # chezmoi.toml alone is no overlay either
+  OV1=$(overlay_repo ov1)
+  overlay_cfg chezmoi.toml "$OV1"
+  run --separate-stderr sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ -z "$stderr" ]
+  [ ! -e "$BATS_TEST_TMPDIR/chezmoi.log" ]
+}
+
+@test "overlays: one overlay is a row, idle; chezmoi.toml is never a row" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  overlay_cfg chezmoi.toml "$OV1"
+  overlay_cfg fake1.toml "$OV1"
+  run --separate-stderr sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ "$output" = "fake1"$'\t'"$OV1"$'\t'"idle"$'\t'"-"$'\t'"-" ]
+  [ -z "$stderr" ]
+  ! grep -qF "chezmoi.toml" "$BATS_TEST_TMPDIR/chezmoi.log" || { echo "chezmoi.toml was asked"; false; }
+}
+
+@test "overlays: two overlays list in name order, by C order not the locale's" {
+  overlay_stub
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg fake_a.toml "$OV1"
+  overlay_cfg fake-b.toml "$OV2"
+  # A locale that sorts '-' after '_', so C order is what decides; skip where
+  # none is installed (Rocky's minimal container has none).
+  loc=$(locale -a 2>/dev/null | grep -ixE 'en_US\.utf-?8' | head -n 1)
+  [ -n "$loc" ] || skip "no en_US UTF-8 locale installed"
+  LC_ALL=$loc run --separate-stderr sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | cut -f1 | paste -sd' ' -)" = "fake-b fake_a" ]
+  [ "$(printf '%s\n' "$output" | cut -f2 | paste -sd' ' -)" = "$OV2 $OV1" ]
+  [ -z "$stderr" ]
+}
+
+@test "overlays: a config name becomes a label name" {
+  overlay_stub
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg Fake.Two.toml "$OV1"
+  overlay_cfg 9x.toml "$OV2"
+  run --separate-stderr sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | cut -f1 | paste -sd' ' -)" = "fake-two o-9x" ]
+}
+
+@test "overlays: a linked worktree as the source resolves to its main checkout" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  git -C "$OV1" worktree add -q --detach "$BATS_TEST_TMPDIR/ov1-linked"
+  overlay_cfg fake1.toml "$BATS_TEST_TMPDIR/ov1-linked/"
+  run --separate-stderr sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | cut -f2)" = "$OV1" ]
+}
+
+@test "overlays: a candidate that cannot be one is named on stderr and left out" {
+  overlay_stub
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2); OV3=$(overlay_repo ov3); OV4=$(overlay_repo ov4)
+  mkdir -p "$BATS_TEST_TMPDIR/plain"
+  overlay_cfg fake1.toml "$OV1"
+  overlay_cfg fake1b.toml "$OV1"
+  overlay_cfg fake2.toml "$BATS_TEST_TMPDIR/missing"
+  overlay_cfg fake3.toml "$BATS_TEST_TMPDIR/plain"
+  overlay_cfg fake4.toml "$OV2"
+  overlay_cfg Fake.Five.toml "$OV3"
+  overlay_cfg fake-five.toml "$OV4"
+  : >"$HOME/.config/chezmoi/fake6.toml"
+  FAKE_CHEZMOI_SOURCE="$OV2" run --separate-stderr sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | cut -f1,2 | paste -sd' ' -)" = "$(printf 'fake-five\t%s fake1\t%s' "$OV3" "$OV1")" ]
+  [ "$(printf '%s\n' "$stderr" | wc -l | tr -d ' ')" -eq 6 ]
+  [[ "$stderr" == *"claude-peer: overlay config fake1b.toml: same repository as fake1.toml; skipped"* ]]
+  [[ "$stderr" == *"claude-peer: overlay config fake2.toml: chezmoi names no source directory; skipped"* ]]
+  [[ "$stderr" == *"claude-peer: overlay config fake3.toml: $BATS_TEST_TMPDIR/plain is not inside a non-bare git repository; skipped"* ]]
+  [[ "$stderr" == *"claude-peer: overlay config fake4.toml: its source is the public source; skipped"* ]]
+  [[ "$stderr" == *"claude-peer: overlay config fake-five.toml: the name 'fake-five' is already taken by Fake.Five.toml; skipped"* ]]
+  [[ "$stderr" == *"claude-peer: overlay config fake6.toml: chezmoi names no source directory; skipped"* ]]
+}
+
+@test "overlays: candidates without chezmoi on PATH are one line and no rows" {
+  local d="$BATS_TEST_TMPDIR/minimal" t
+  mkdir -p "$d"
+  for t in git sort tr awk sed cut uname; do ln -s "$(command -v $t)" "$d/$t"; done
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  run --separate-stderr env PATH="$d" /bin/sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$stderr" = "claude-peer: chezmoi is not on PATH; overlays cannot be resolved" ]
+}
+
+@test "overlays: a pane of another repository's tab makes the state waiting or running" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  ov_busy "$OV1" "$REPO" wait-only
+  run sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ "$output" = "fake1"$'\t'"$OV1"$'\t'"waiting"$'\t'"$REPO"$'\t'"$OV_WAIT" ]
+  # a live claim beats a wait file
+  printf '%s\n%s\nAlpha\n' "$OV_CLAIM" "$REPO" >"$(git -C "$OV1/.claude/worktrees/alpha" rev-parse --absolute-git-dir)/claude-peer.claim"
+  run sh "$BIN" overlays
+  [ "$output" = "fake1"$'\t'"$OV1"$'\t'"running"$'\t'"$REPO"$'\t'"$OV_CLAIM" ]
+}
+
+@test "overlays: a pane led from inside the overlay itself leaves it idle" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  mkdir -p "$OV1/sub"
+  ov_busy "$OV1" "$OV1/sub"
+  run sh "$BIN" overlays
+  [ "$status" -eq 0 ]
+  [ "$output" = "fake1"$'\t'"$OV1"$'\t'"idle"$'\t'"-"$'\t'"-" ]
+  printf '%s\n' "$OV1" >"$OV1/.git/claude-peer.wait/beta.$OV_WAIT"
+  run sh "$BIN" overlays
+  [ "$output" = "fake1"$'\t'"$OV1"$'\t'"idle"$'\t'"-"$'\t'"-" ]
+}
+
+@test "overlays: arguments are usage, exit 2" {
+  # an unknown verb is exit 2 as well, so the verb must also be known
+  run sh "$BIN" overlays extra
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"unknown command"* ]]
+  [[ "$output" == *"Usage: claude-peer"* ]]
+}
+
+# opane <name> <root> [<leader dir> [<tag>]]: a waiting `overlay <name>` pane started in
+# <leader dir> (default $REPO), waiting on the wait file in the OVERLAY's git directory;
+# its terminal is the FIFO tty-<tag> (tag defaults to the name)
+opane() {
+  local n=$1 r=$2 d=${3:-$REPO} t=${4:-$1}
+  local tty=$BATS_TEST_TMPDIR/tty-$t
+  [ -p "$tty" ] || mkfifo "$tty"
+  ( cd "$d" && export CLAUDE_PEER_TTY="$tty" &&
+    exec sh "$BIN" overlay "$n" >"$BATS_TEST_TMPDIR/pane-$t.out" 2>&1 3>&- ) &
+  LAST_PANE=$!
+  PANES="$PANES $LAST_PANE"
+  until_ok "[ -f '$r/.git/claude-peer.wait/overlay.$LAST_PANE' ]"
+}
+
+# obg <arg> <tag>: `overlay <arg>` in the background from $REPO, output in bg-<tag>.out, then
+# wait for the plain shell (a version that wrongly makes it a waiting pane must fail the
+# test, not hang it)
+obg() {
+  ( cd "$REPO" && exec sh "$BIN" overlay "$1" >"$BATS_TEST_TMPDIR/bg-$2.out" 2>&1 3>&- ) &
+  PANES="$PANES $!"
+  until_ok "grep -q '^args=-i\$' '$BATS_TEST_TMPDIR/bg-$2.out'"
+}
+
+@test "overlay: a waiting pane stands in the overlay and leaves the leader's repository alone" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  opane fake1 "$OV1"
+  [ "$(sed -n 1p "$OV1/.git/claude-peer.wait/overlay.$LAST_PANE")" = "$REPO" ]
+  [ ! -e "$OV1/.claude/worktrees/overlay" ]
+  [ -z "$(find "$OV1/.git" -name 'claude-peer.claim' -o -name 'claude-peer.lock')" ]
+  [ ! -e "$REPO/.claude" ]
+  [ -z "$(find "$REPO/.git" -name 'claude-peer.*')" ]
+  [ "$(shell_runs)" -eq 0 ]
+  grep -q "^Fake1: Return starts a Claude here, c continues the last session, q leaves a shell$" "$BATS_TEST_TMPDIR/pane-fake1.out"
+  run sh "$BIN" overlays
+  [ "$output" = "fake1"$'\t'"$OV1"$'\t'"waiting"$'\t'"$REPO"$'\t'"$LAST_PANE" ]
+}
+
+@test "overlay: Return starts a session in the overlay's own slot, claimed for the leader" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  FAKE_SHELL_SLEEP=3 opane fake1 "$OV1"
+  press fake1 ''
+  until_ok 'grep -q "pwd=$OV1/.claude/worktrees/overlay args=.*claude-peer ov1-overlay\$" "$FAKE_SHELL_LOG"'
+  local c; c=$(claim_of "$OV1/.claude/worktrees/overlay")
+  [ "$(sed -n 2p "$c")" = "$REPO" ]
+  [ "$(sed -n 3p "$c")" = "Overlay" ]
+  [ "$(grep -cxF '**/.claude/worktrees/' "$OV1/.git/info/exclude")" -eq 1 ]
+  [ ! -e "$REPO/.claude" ]
+  [ -z "$(find "$REPO/.git" -name 'claude-peer.*')" ]
+  grep -qx "Overlay" "$BATS_TEST_TMPDIR/pane-fake1.out"
+}
+
+@test "overlay: a new worktree is detached at origin/HEAD when the overlay has one" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  git clone -q --bare "$OV1" "$BATS_TEST_TMPDIR/ov1-remote.git"
+  git -C "$OV1" remote add origin "$BATS_TEST_TMPDIR/ov1-remote.git"
+  git -C "$OV1" fetch -q origin
+  git -C "$OV1" remote set-head origin -a >/dev/null
+  git -C "$OV1" commit -q --allow-empty -m 'local only'
+  FAKE_SHELL_SLEEP=2 opane fake1 "$OV1"
+  press fake1 ''
+  until_ok 'grep -q "claude-peer ov1-overlay\$" "$FAKE_SHELL_LOG"'
+  ! git -C "$OV1/.claude/worktrees/overlay" symbolic-ref -q HEAD
+  [ "$(git -C "$OV1/.claude/worktrees/overlay" rev-parse HEAD)" = "$(git -C "$OV1" rev-parse origin/HEAD)" ]
+  [ "$(git -C "$OV1" rev-parse HEAD)" != "$(git -C "$OV1" rev-parse origin/HEAD)" ]
+}
+
+@test "overlay: a slot left on a branch with a dirty file is reused untouched" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  git -C "$OV1" worktree add -q -b side "$OV1/.claude/worktrees/overlay"
+  echo edit >"$OV1/.claude/worktrees/overlay/scratch.txt"
+  git -C "$OV1/.claude/worktrees/overlay" add scratch.txt
+  FAKE_SHELL_SLEEP=2 opane fake1 "$OV1"
+  press fake1 ''
+  until_ok 'grep -q "pwd=$OV1/.claude/worktrees/overlay args=.*claude-peer ov1-overlay\$" "$FAKE_SHELL_LOG"'
+  [ "$(git -C "$OV1/.claude/worktrees/overlay" symbolic-ref --short HEAD)" = side ]
+  [ "$(git -C "$OV1/.claude/worktrees/overlay" status --porcelain)" = "A  scratch.txt" ]
+}
+
+@test "overlay: a second leader's pane takes the overlay's pool and says the first is in use" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  mkdir "$REPO/sub"
+  FAKE_SHELL_SLEEP=4 opane fake1 "$OV1" "$REPO" a
+  press a ''
+  until_ok 'grep -q "claude-peer ov1-overlay\$" "$FAKE_SHELL_LOG"'
+  FAKE_SHELL_SLEEP=2 opane fake1 "$OV1" "$REPO/sub" b
+  press b ''
+  until_ok 'grep -q "claude-peer ov1-delta\$" "$FAKE_SHELL_LOG"'
+  grep -qF "Delta (this pane's Fake1 is in use by the peers of $REPO)" "$BATS_TEST_TMPDIR/pane-b.out"
+}
+
+@test "overlay: an unknown name, and an overlay deleted after listing, are one line and a plain shell" {
+  overlay_stub
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  run sh "$BIN" overlay nope
+  [ "$status" -eq 0 ]
+  [[ "$output" == "claude-peer: no overlay 'nope' on this machine (claude-peer overlays lists them; a changed set needs claude-peer install with iTerm2 quit); plain shell"$'\n'"pwd=$REPO"$'\n'* ]]
+  [[ "$output" == *"args=-i" ]]
+  run sh "$BIN" overlay 2
+  [[ "$output" == *"no overlay pane 2 is installed on this machine"* ]]
+  rm -rf "$OV1"
+  run sh "$BIN" overlay fake1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no overlay 'fake1' on this machine"* ]]
+  [[ "$output" == *"pwd=$REPO"$'\n'* ]]
+  [[ "$output" == *"args=-i" ]]
+}
+
+@test "overlay: no argument or two is usage, exit 2" {
+  run sh "$BIN" overlay
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"Usage: claude-peer"* ]]
+  [[ "$output" != *"unknown command"* ]]
+  run sh "$BIN" overlay fake1 fake2
+  [ "$status" -eq 2 ]
+}
+
+@test "overlay: CLAUDE_PROFILE is unset for the session, and a number reaches the pane install wrote" {
+  overlay_stub
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg fake_a.toml "$OV1"
+  overlay_cfg fake-b.toml "$OV2"
+  cat >"$BATS_TEST_TMPDIR/bin/profshell" <<'STUB'
+#!/bin/sh
+echo "pwd=$PWD profile=${CLAUDE_PROFILE-unset}" >>"$FAKE_SHELL_LOG"
+sleep 1
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/profshell"
+  export SHELL="$BATS_TEST_TMPDIR/bin/profshell"
+  export CLAUDE_PROFILE=x
+  # rows sort fake-b, fake_a; the state file says pane 1 is fake-b
+  mkdir -p "$XDG_STATE_HOME/claude-peer"
+  printf 'fake-b fake_a\n' >"$XDG_STATE_HOME/claude-peer/overlays"
+  opane 1 "$OV2" "$REPO" one
+  press one ''
+  until_ok 'grep -q "^pwd=$OV2/.claude/worktrees/overlay profile=unset\$" "$FAKE_SHELL_LOG"'
+  grep -q "^Fake-b: Return" "$BATS_TEST_TMPDIR/pane-one.out"
+}
+
+@test "overlay: a number is the pane install wrote, by the state file, not the row of overlays now" {
+  overlay_stub
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg fake_a.toml "$OV1"
+  overlay_cfg fake-b.toml "$OV2"
+  mkdir -p "$XDG_STATE_HOME/claude-peer"
+  printf 'fake_a\n' >"$XDG_STATE_HOME/claude-peer/overlays"
+  # row 1 of `overlays` is fake-b; the pane install wrote as 1 is fake_a
+  opane 1 "$OV1"
+  grep -q "^Fake_a: Return" "$BATS_TEST_TMPDIR/pane-1.out"
+  [ ! -e "$OV2/.git/claude-peer.wait" ]
+}
+
+@test "overlay: a number with no pane behind it is one line and a plain shell" {
+  overlay_stub
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  local f="$XDG_STATE_HOME/claude-peer/overlays" m
+  obg 1 nofile
+  mkdir -p "${f%/*}"
+  printf 'fake1\n' >"$f"
+  obg 2 past
+  obg 0 zero
+  for m in "nofile 1" "past 2" "zero 0"; do
+    [ "$(sed -n 1p "$BATS_TEST_TMPDIR/bg-${m% *}.out")" = "claude-peer: no overlay pane ${m#* } is installed on this machine (claude-peer status says what is; claude-peer install with iTerm2 quit writes them); plain shell" ]
+    grep -qx "pwd=$REPO" "$BATS_TEST_TMPDIR/bg-${m% *}.out"
+  done
+  # a name in the state file that this machine no longer has
+  printf 'gone fake1\n' >"$f"
+  obg 1 gone
+  [ "$(sed -n 1p "$BATS_TEST_TMPDIR/bg-gone.out")" = "claude-peer: no overlay 'gone' on this machine (claude-peer overlays lists them; a changed set needs claude-peer install with iTerm2 quit); plain shell" ]
+  grep -qx "pwd=$REPO" "$BATS_TEST_TMPDIR/bg-gone.out"
+}
+
+# ov_prefs: the stubs, a chezmoi stub and a fixture store with iTerm2 quit
+ov_prefs() {
+  stubs
+  overlay_stub
+  mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
+  export CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist"
+  OV_STATE="$XDG_STATE_HOME/claude-peer/overlays"
+}
+
+@test "install overlays: with none configured it is today's install, and no state file exists" {
+  ov_prefs
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [ "$output" = "claude-peer: \"Claude Peers\" written and \"Claude Peers + Hermes\" written in $CLAUDE_PEER_PREFS; start iTerm2, then Shell > Workgroups > Claude Peers in a plain tab" ]
+  [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup', 'claudePeer.h']" ]
+  [ ! -e "$OV_STATE" ]
+  [ ! -e "$BATS_TEST_TMPDIR/chezmoi.log" ]
+}
+
+@test "install overlays: two overlays add the pair, one pane each after the others, and a state file" {
+  ov_prefs
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg fake2.toml "$OV2"
+  overlay_cfg fake1.toml "$OV1"
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"Claude Peers + Overlays" written and "Claude Peers + Hermes + Overlays" written in '* ]]
+  g=$(groups "$CLAUDE_PEER_PREFS")
+  [ "$(pyget "$g" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup', 'claudePeer.h', 'claudePeer.v.overlays', 'claudePeer.v.overlays.h']" ]
+  o=$(pyget "$g" 'json.dumps(g[3])'); oh=$(pyget "$g" 'json.dumps(g[4])'); h=$(pyget "$g" 'json.dumps(g[2])')
+  [ "$(pyget "$o" 'g["name"]')" = "Claude Peers + Overlays" ]
+  [ "$(pyget "$oh" 'g["name"]')" = "Claude Peers + Hermes + Overlays" ]
+  [ "$(pyget "$o" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Overlay 1', 'Overlay 2']" ]
+  [ "$(pyget "$oh" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Hermes', 'Overlay 1', 'Overlay 2']" ]
+  [ "$(pyget "$o" 'all(s["uniqueIdentifier"].startswith(g["uniqueIdentifier"] + ".") for s in g["sessions"])')" = True ]
+  [ "$(pyget "$oh" 'all(s["uniqueIdentifier"].startswith(g["uniqueIdentifier"] + ".") for s in g["sessions"])')" = True ]
+  [ "$(pyget "$o" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.v.overlays.main'}" ]
+  [ "$(pyget "$oh" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.v.overlays.h.main'}" ]
+  [ "$(pyget "$oh" '[s["uniqueIdentifier"] for s in g["sessions"]][4:]')" = "['claudePeer.v.overlays.h.hermes', 'claudePeer.v.overlays.h.o.1', 'claudePeer.v.overlays.h.o.2']" ]
+  [ "$(pyget "$oh" '[s["command"] for s in g["sessions"]][:5]')" = "$(pyget "$h" '[s["command"] for s in g["sessions"]]')" ]
+  [ "$(pyget "$o" '[s["command"] for s in g["sessions"]][4:]')" = "['claude-peer overlay 1', 'claude-peer overlay 2']" ]
+  [ "$(pyget "$oh" '[s["command"] for s in g["sessions"]][5:]')" = "['claude-peer overlay 1', 'claude-peer overlay 2']" ]
+  [ "$(pyget "$o" 'set(s["kind"]["kind"] for s in g["sessions"][1:])')" = "{'peer'}" ]
+  [ "$(pyget "$o" 'g["sessions"][-1]["toolbarItems"]')" = "[{'kind': 'modeSwitcher'}]" ]
+  [ "$(cat "$OV_STATE")" = "fake1 fake2" ]
+  # a second install replaces the pair
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"Claude Peers + Overlays" replaced and "Claude Peers + Hermes + Overlays" replaced'* ]]
+  [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" 'len(g)')" = 5 ]
+  # the plain definitions are what they were
+  run sh "$BIN" workgroup
+  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma']" ]
+}
+
+@test "install overlays: a smaller set rebuilds the pair, none removes it and the state file" {
+  ov_prefs
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg fake1.toml "$OV1"
+  overlay_cfg fake2.toml "$OV2"
+  sh "$BIN" install >/dev/null
+  rm "$HOME/.config/chezmoi/fake1.toml"
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"Claude Peers + Overlays" replaced'* ]]
+  g=$(groups "$CLAUDE_PEER_PREFS")
+  [ "$(pyget "$g" '[s["displayName"] for s in g[3]["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Overlay 1']" ]
+  [ "$(cat "$OV_STATE")" = fake2 ]
+  rm "$HOME/.config/chezmoi/fake2.toml"
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"Claude Peers + Overlays" removed and "Claude Peers + Hermes + Overlays" removed'* ]]
+  [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup', 'claudePeer.h']" ]
+  [ ! -e "$OV_STATE" ]
+}
+
+@test "install overlays: with the enter file the pair gets its triggers, and loses them with the overlays" {
+  ov_prefs
+  addprofiles "$CLAUDE_PEER_PREFS"
+  OV1=$(overlay_repo ov1)
+  sh "$BIN" install >/dev/null
+  sh "$BIN" default peers >/dev/null
+  before=$(params "$CLAUDE_PEER_PREFS")
+  overlay_cfg fake1.toml "$OV1"
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"variable triggers changed in 2 profiles"* ]]
+  [ "$(params "$CLAUDE_PEER_PREFS")" = "One:builtin.claudeCode:j* One:claudePeer.workgroup:v One:claudePeer.h:v One:claudePeer.v.overlays:v One:claudePeer.v.overlays.h:v Two:builtin.claudeCode:j* Two:claudePeer.workgroup:v Two:claudePeer.h:v Two:claudePeer.v.overlays:v Two:claudePeer.v.overlays.h:v Other:someone.else:j" ]
+  python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
+import plistlib, sys
+pl = plistlib.load(open(sys.argv[1], "rb"))
+rx = {t["parameter"]: t["eventParams"]["variableValueRegex"] for t in pl["New Bookmarks"][0]["Triggers"] if "eventParams" in t}
+assert rx["claudePeer.v.overlays"] == "^overlays:", rx
+assert rx["claudePeer.v.overlays.h"] == "^overlays/hermes:", rx
+PY
+  rm "$HOME/.config/chezmoi/fake1.toml"
+  run sh "$BIN" install
+  [[ "$output" == *"variable triggers changed in 2 profiles"* ]]
+  [ "$(params "$CLAUDE_PEER_PREFS")" = "$before" ]
+}
+
+@test "install overlays: a store that cannot be written leaves no state file" {
+  ov_prefs
+  mkprefs "$CLAUDE_PEER_PREFS" junk
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  run sh "$BIN" install
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"not a JSON list"* ]]
+  [ ! -e "$OV_STATE" ]
+}
+
+@test "install overlays: a skipped config reaches the operator's stderr and gets no pane" {
+  ov_prefs
+  OV1=$(overlay_repo ov1)
+  overlay_cfg fake1.toml "$OV1"
+  overlay_cfg fake2.toml "$BATS_TEST_TMPDIR/nowhere"
+  run --separate-stderr sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [[ "$stderr" == *"overlay config fake2.toml: chezmoi names no source directory; skipped"* ]]
+  [ "$(cat "$OV_STATE")" = fake1 ]
+}
+
+# ov_store_strings <plist>: every string the store holds, one per line; data values are
+# decoded and, where they are JSON, walked
+ov_store_strings() {
+  python3 -I - "$1" <<'PY'
+import json, plistlib, sys
+def walk(v):
+    if isinstance(v, dict):
+        for k, x in v.items():
+            yield str(k)
+            yield from walk(x)
+    elif isinstance(v, (list, tuple)):
+        for x in v:
+            yield from walk(x)
+    elif isinstance(v, bytes):
+        t = v.decode("utf-8", "replace")
+        yield t
+        try:
+            yield from walk(json.loads(t))
+        except ValueError:
+            pass
+    elif isinstance(v, str):
+        yield v
+for s in walk(plistlib.load(open(sys.argv[1], "rb"))):
+    print(s)
+PY
+}
+
+@test "install overlays: the store holds positions and no overlay name, config name or path" {
+  ov_prefs
+  addprofiles "$CLAUDE_PEER_PREFS"
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg fake1.toml "$OV1"
+  overlay_cfg Fake.Two.toml "$OV2"
+  sh "$BIN" install >/dev/null
+  sh "$BIN" default peers >/dev/null
+  sh "$BIN" install >/dev/null
+  local s; s=$(ov_store_strings "$CLAUDE_PEER_PREFS")
+  [[ "$s" == *"claudePeer.v.overlays.h.o.2"* ]]
+  [[ "$s" == *"claude-peer overlay 2"* ]]
+  [[ "$s" == *"Overlay 2"* ]]
+  [[ "${s,,}" != *fake* ]]
+  [[ "$s" != *ov1* ]]
+  [[ "$s" != *ov2* ]]
+  [[ "$s" != *"$BATS_TEST_TMPDIR"* ]]
+  [ "$(cat "$OV_STATE")" = "fake-two fake1" ]
+}
+
+@test "install overlays: the command install wrote reaches its overlay, and a new overlay does not re-point it" {
+  ov_prefs
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg fake1.toml "$OV1"
+  overlay_cfg fake2.toml "$OV2"
+  sh "$BIN" install >/dev/null
+  local g; g=$(groups "$CLAUDE_PEER_PREFS")
+  [ "$(pyget "$g" 'g[3]["sessions"][-1]["command"]')" = "claude-peer overlay 2" ]
+  overlay_cfg fake0.toml "$(overlay_repo ov0)"
+  opane 2 "$OV2"
+  grep -q "^Fake2: Return" "$BATS_TEST_TMPDIR/pane-2.out"
+  ov_status
+  [[ "$output" == *"overlays: installed, out of date (Overlay 1 = Fake1, Overlay 2 = Fake2); this machine has 3 (Overlay 1 = Fake0, Overlay 2 = Fake1, Overlay 3 = Fake2) — claude-peer install (with iTerm2 quit)"* ]]
+}
+
+# --- overlays: status ---------------------------------------------------------------
+
+# ov_status: status, from inside $REPO, with the public source at $REPO
+ov_status() { FAKE_CHEZMOI_SOURCE="$REPO" run --separate-stderr sh "$BIN" status; }
+
+@test "status overlays: a machine with none prints no overlay line at all" {
+  ov_prefs
+  run sh "$BIN" status
+  [ "$status" -eq 0 ]
+  [[ "$output" != *overlay* ]]
+  [[ "$output" != *"out of date"* ]]
+  sh "$BIN" install >/dev/null
+  run sh "$BIN" status
+  [[ "$output" == *"hermes: installed"* ]]
+  [[ "$output" != *overlay* ]]
+}
+
+@test "status overlays: not installed says what this machine has" {
+  ov_prefs
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  overlay_cfg fake2.toml "$(overlay_repo ov2)"
+  ov_status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"overlays: not installed — this machine has 2 (Fake1, Fake2); claude-peer install (with iTerm2 quit)"* ]]
+  [[ "$output" != *"state file"* ]]
+}
+
+@test "status overlays: installed, then out of date when the set changes, then none now" {
+  ov_prefs
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  overlay_cfg fake2.toml "$(overlay_repo ov2)"
+  sh "$BIN" install >/dev/null
+  ov_status
+  [[ "$output" == *"overlays: installed (2 panes: Overlay 1 = Fake1, Overlay 2 = Fake2)"* ]]
+  [[ "$output" != *"out of date"* ]]
+  [[ "$output" != *"state file"* ]]
+  overlay_cfg fake3.toml "$(overlay_repo ov3)"
+  ov_status
+  [[ "$output" == *"overlays: installed, out of date (Overlay 1 = Fake1, Overlay 2 = Fake2); this machine has 3 (Overlay 1 = Fake1, Overlay 2 = Fake2, Overlay 3 = Fake3) — claude-peer install (with iTerm2 quit)"* ]]
+  rm "$HOME"/.config/chezmoi/fake*.toml
+  ov_status
+  [[ "$output" == *"overlays: installed (Overlay 1 = Fake1, Overlay 2 = Fake2), but this machine has none now — claude-peer install (with iTerm2 quit) removes them"* ]]
+}
+
+@test "status overlays: one group of the pair missing is out of date" {
+  ov_prefs
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  sh "$BIN" install >/dev/null
+  python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
+import json, plistlib, sys
+pl = plistlib.load(open(sys.argv[1], "rb"))
+gs = [g for g in json.loads(pl["Workgroups"]) if g["uniqueIdentifier"] != "claudePeer.v.overlays.h"]
+pl["Workgroups"] = json.dumps(gs).encode()
+plistlib.dump(pl, open(sys.argv[1], "wb"))
+PY
+  ov_status
+  [[ "$output" == *"overlays: installed, out of date (Overlay 1 = Fake1); this machine has 1 (Overlay 1 = Fake1)"* ]]
+}
+
+@test "status overlays: as many overlays under other names is out of date" {
+  ov_prefs
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  sh "$BIN" install >/dev/null
+  rm "$HOME/.config/chezmoi/fake1.toml" "$HOME/.config/chezmoi/fake1.toml.src"
+  overlay_cfg fake9.toml "$(overlay_repo ov9)"
+  ov_status
+  [[ "$output" == *"overlays: installed, out of date (Overlay 1 = Fake1); this machine has 1 (Overlay 1 = Fake9) — claude-peer install (with iTerm2 quit)"* ]]
+}
+
+@test "status overlays: the state file and the store disagree in both directions" {
+  ov_prefs
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  sh "$BIN" install >/dev/null
+  rm "$OV_STATE"
+  ov_status
+  [[ "$output" == *"overlays: installed (1 panes: Overlay 1 = Fake1)"* ]]
+  [[ "$output" == *"overlays: installed, but the state file is missing, so claude-peer here stays base and no overlay pane finds its overlay — claude-peer install (with iTerm2 quit)"* ]]
+  mkdir -p "${OV_STATE%/*}"
+  printf 'fake1 fake9\n' >"$OV_STATE"
+  mkprefs "$CLAUDE_PEER_PREFS"
+  ov_status
+  [[ "$output" == *"overlays: not installed — this machine has 1 (Fake1)"* ]]
+  [[ "$output" == *"overlays: the state file lists fake1 fake9 but no overlay workgroup is installed, so a claude tab in the chezmoi source enters no workgroup — claude-peer install (with iTerm2 quit)"* ]]
+  # a state file alone, with no overlay on the machine and none installed, is still said
+  rm "$HOME/.config/chezmoi/fake1.toml"
+  ov_status
+  [[ "$output" == *"overlays: the state file lists fake1 fake9 but no overlay workgroup"* ]]
+}
+
+@test "status overlays: while iTerm2 runs the domain is what is read, for the overlay lines too" {
+  ov_prefs
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  sh "$BIN" install >/dev/null
+  mkprefs "$BATS_TEST_TMPDIR/domain.plist"
+  export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist"
+  ov_status
+  [[ "$output" == *"overlays: installed (1 panes: Overlay 1 = Fake1)"* ]]
+  FAKE_PROCS=iTerm2 ov_status
+  [[ "$output" == *"overlays: not installed — this machine has 1 (Fake1)"* ]]
+}
+
+@test "status overlays: from the shell, where tabs enter from and who is in each pane" {
+  ov_prefs
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg fake1.toml "$OV1"
+  overlay_cfg fake2.toml "$OV2"
+  ov_status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"overlays: entered from $REPO"* ]]
+  [[ "$output" == *"overlay: fake1 idle in $OV1"* ]]
+  [[ "$output" == *"overlay: fake2 idle in $OV2"* ]]
+  [[ "$output" == *"peers: 0 running, 0 waiting in $REPO"*"overlays: entered from"* ]]
+  ov_busy "$OV2" "$REPO" wait-only
+  ov_status
+  [[ "$output" == *"overlay: fake2 waiting in $OV2 (tab of $REPO, pid $OV_WAIT)"* ]]
+  printf '%s\n%s\nAlpha\n' "$OV_CLAIM" "$REPO" >"$(git -C "$OV2/.claude/worktrees/alpha" rev-parse --absolute-git-dir)/claude-peer.claim"
+  ov_status
+  [[ "$output" == *"overlay: fake2 running in $OV2 (tab of $REPO, pid $OV_CLAIM)"* ]]
+  [[ "$output" == *"overlay: fake1 idle in $OV1"* ]]
+  # no source directory for the public source
+  run --separate-stderr sh "$BIN" status
+  [[ "$output" == *"overlays: chezmoi names no source directory in a git repository, so no tab enters them"* ]]
+}
+
+# --- overlays: here ---------------------------------------------------------------
+
+# ov_here: here, from the directory given, with the public source at $REPO
+ov_here() { cd "${1:-$REPO}"; FAKE_CHEZMOI_SOURCE="$REPO" run --separate-stderr sh "$BIN" here; }
+
+# ov_ready: one overlay and the state file install writes
+ov_ready() {
+  overlay_stub
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  mkdir -p "$XDG_STATE_HOME/claude-peer"
+  echo fake1 >"$XDG_STATE_HOME/claude-peer/overlays"
+}
+
+@test "here overlays: the public source with an overlay and the state file enters the overlay workgroup" {
+  ov_ready
+  ov_here
+  [ "$status" -eq 0 ]
+  [ "$output" = overlays ]
+  [ -z "$stderr" ]
+  # a linked worktree of the public source is the public source
+  git -C "$REPO" worktree add -q --detach "$BATS_TEST_TMPDIR/linked"
+  ov_here "$BATS_TEST_TMPDIR/linked"
+  [ "$output" = overlays ]
+  [ -z "$stderr" ]
+  # as is a subdirectory of it
+  mkdir "$REPO/sub"
+  ov_here "$REPO/sub"
+  [ "$output" = overlays ]
+}
+
+@test "here overlays: every other case stays base, silently" {
+  ov_ready
+  # another repository
+  OTHER=$(overlay_repo other)
+  ov_here "$OTHER"
+  [ "$status" -eq 0 ]; [ "$output" = base ]; [ -z "$stderr" ]
+  # no repository
+  mkdir "$BATS_TEST_TMPDIR/plain"
+  ov_here "$BATS_TEST_TMPDIR/plain"
+  [ "$status" -eq 0 ]; [ "$output" = base ]; [ -z "$stderr" ]
+  # chezmoi fails
+  FAKE_CHEZMOI_FAIL=1 ov_here
+  [ "$status" -eq 0 ]; [ "$output" = base ]; [ -z "$stderr" ]
+  # no overlay now
+  rm "$HOME/.config/chezmoi/fake1.toml" "$HOME/.config/chezmoi/fake1.toml.src"
+  ov_here
+  [ "$status" -eq 0 ]; [ "$output" = base ]; [ -z "$stderr" ]
+  # an empty state file
+  overlay_cfg fake1.toml "$(overlay_repo ov1b)"
+  : >"$XDG_STATE_HOME/claude-peer/overlays"
+  ov_here
+  [ "$status" -eq 0 ]; [ "$output" = base ]; [ -z "$stderr" ]
+}
+
+@test "here overlays: without the state file a deployed script still answers base, and never asks chezmoi" {
+  overlay_stub
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  ov_here
+  [ "$status" -eq 0 ]; [ "$output" = base ]; [ -z "$stderr" ]
+  [ ! -e "$BATS_TEST_TMPDIR/chezmoi.log" ]
+  run sh "$BIN" here extra
+  [ "$status" -eq 2 ]
+}
