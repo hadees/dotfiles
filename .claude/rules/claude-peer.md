@@ -46,8 +46,8 @@ returns the four sessions for an id prefix and `with_hermes` the twin of a
 definition. A machine with private overlays gets two more, `Claude Peers +
 Overlays` (`claudePeer.v.overlays`) and `Claude Peers + Hermes + Overlays`
 (`claudePeer.v.overlays.h`), four in all: `build_overlays` returns them from the
-overlay names and `with_overlays` makes each from a base definition, one peer
-per overlay after the others (see **Overlay peers**). `claude-peer install` writes both into the `Workgroups` key (JSON
+panes' bar labels and `with_overlays` makes each from a base definition, one peer
+per overlay after the others, stored by position (see **Overlay peers**). `claude-peer install` writes both into the `Workgroups` key (JSON
 in a data value; replace by id, else append), refuses while iTerm2 runs, and
 edits the custom prefs folder's plist when `LoadPrefsFromCustomFolder` is on,
 else the domain. Both are forced:
@@ -78,7 +78,7 @@ Workgroup trigger per workgroup, matching `^<key>:`, enters it. The keys:
 `<name>/hermes`. `claude-peer here` prints the key for the directory: `overlays` when all hold,
 tested in this order so the common case costs one file test (the state file
 `${XDG_STATE_HOME:-~/.local/state}/claude-peer/overlays`, one line of names, written by
-`install` after the definitions went in and absent or empty otherwise; the caller is in a
+`install` after the definitions went in, read by `here` and by `overlay <N>`, and absent or empty otherwise; the caller is in a
 repository; that repository's main checkout, by `pwd -P` (`root_of`), is the
 main checkout of the repository holding `chezmoi source-path` (`public_root`); this machine
 has an overlay now), else `base`, always exit 0 with no stderr. The state file is the gate:
@@ -415,9 +415,14 @@ repository, sorted by name under `LC_ALL=C` (`overlay_list`; `claude-peer overla
 stderr and skipped: no source directory, not in a git repository, the public source itself,
 the same repository as an earlier config, a name already taken. The name is the config's base
 name lowercased, anything outside `a-z0-9_-` turned into `-`, `o-` in front when it does not
-start with a letter; the bar label is that name capitalised, so no overlay name is a literal in
-any public file. `claude-peer overlay <name|N>` (N is the N-th row of `overlays`) is the pane
-command: it resolves the overlay at run time, `unset`s `CLAUDE_PROFILE`, `cd`s to the overlay's
+start with a letter. No overlay name is a literal in the public source, and none is written into iTerm2's
+preferences either: where the prefs folder is a git clone the `Workgroups` value sits in a
+tracked plist, base64-encoded, where a text leak guard does not read. What is stored where: in
+the preferences a position (id `<gid>.o.<N>`, bar label `Overlay <N>`, command
+`claude-peer overlay <N>`); in the state file the names in pane order; on the terminal the name
+(the pane's header, `status`, `overlays`). `claude-peer overlay <N>` is the pane command: N is
+the N-th name of the state file, resolved against the overlays the machine has now, so a changed
+set never re-points a pane; `overlay <name>` is the form typed by hand. It resolves the overlay at run time, `unset`s `CLAUDE_PROFILE`, `cd`s to the overlay's
 main checkout and then calls `pane` with slot `overlay`, so everything a slot pane does is
 reused: worktree `<overlay>/.claude/worktrees/overlay`, detached at `origin/HEAD` when new and
 reused as left, the `**/.claude/worktrees/` line in that repository's `.git/info/exclude`, the
@@ -444,8 +449,11 @@ pair is built at `install` time for the overlays the machine has then (none: nei
 pair is removed with the state file); `install` needs iTerm2 quit, the one part of this that does.
 Between a change of the overlay set and the next `install` things degrade visibly: a pane whose
 overlay is gone says so and is a plain shell, a new overlay has no pane, and `status` says
-`overlays: installed, out of date (...)`; a state file and a store that disagree get a second
-`overlays:` line saying which tabs enter nothing or stay `base`. From the shell `status` also
+`overlays: installed, out of date (...)` (as many overlays under other names is out of date
+too: the state file's names must be the names now); a pane whose position has no name in the
+state file says so and is a plain shell; a state file and a store that disagree get a second
+`overlays:` line saying which tabs enter nothing or stay `base`. `status` says which pane is which
+overlay: `overlays: installed (N panes: Overlay 1 = <Name>, …)`. From the shell `status` also
 prints `overlays: entered from <public root>` and one `overlay: <name> <state> in <root>` per
 overlay (`idle`, `waiting`, or `running` with the tab that leads it).
 

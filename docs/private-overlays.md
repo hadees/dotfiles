@@ -536,8 +536,13 @@ of any other repository are unchanged.
   `chezmoi --config <cfg> source-path` is a git checkout, the rule `dotfiles()`
   applies. `claude-peer overlays` lists them, with the checkout and whether a
   session runs there.
-- The config file's base name is the tab label: `<name>.toml` is the pane
-  `<Name>` (lowercased, other characters turned into `-`).
+- The bar shows a position, `Overlay 1`, `Overlay 2`, in name order of the
+  config files. Which overlay a pane belongs to is shown inside the pane and by
+  `claude-peer status`; the name (the config file's base name, lowercased, other
+  characters turned into `-`) is kept in a state file on the machine and is
+  never written into iTerm2's preferences. That matters when the prefs folder
+  is a git clone: the workgroup definitions are then in a tracked file, as a
+  base64 value a text search does not see.
 - One-time: `claude-peer install` with iTerm2 quit, as for the base peers, which
   also writes the two overlay workgroups. Run it again whenever an overlay is
   added or removed; until then `claude-peer status` says `overlays: installed,
