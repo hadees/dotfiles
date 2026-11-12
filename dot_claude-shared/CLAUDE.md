@@ -257,6 +257,14 @@ employer-specific — profile-specific memory belongs in that profile's own
 - Warn, never block: before `chezmoi apply`, quitting iTerm2, restarting a
   daemon or pushing, read `claude-peer log show` and tell me who is active
   here. The log does not see other repos.
+- `claude-peer context list` shows the ready-made starts for this repo, each
+  with its file. When I ask you to start a peer on something one of them
+  covers, use `claude-peer start <slot> --context <name> <value>` rather than
+  writing the prompt out. To add or fix one for this repo, write
+  `90-<name>.ctx` in the directory `claude-peer context dir --repo` prints (it
+  works at once) and tell me, so it gets moved into the overlay that owns the
+  repo. When you rename a skill, agent or script, grep that directory for the
+  old name.
 
 ## Commit signing failures (1Password)
 

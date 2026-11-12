@@ -1,7 +1,9 @@
 ---
 paths:
   - "**/bin/executable_claude-peer"
+  - "**/dot_config/claude-peer/**"
   - "**/tests/claude-peer.bats"
+  - "**/tests/claude-peer-screen.bats"
 ---
 
 # Claude peers (one tab, several Claudes)
@@ -135,11 +137,15 @@ registered `peer-N` worktrees remain; nothing uses or removes them any more
 (`git worktree remove <path>`).
 
 **A pane waits until it is told.** `claude-peer run --as <slot> --wait` is
-what a slot pane runs: it prints `<Label>: Return starts a Claude here, c
-continues the last session, q leaves a shell` and makes no worktree, claim or
-Claude until it is woken. Return starts a fresh session, `c` one with
-`--continue`, `q` (or Ctrl-C) removes its wait file and leaves a plain shell,
-anything else asks again; when the session ends for any reason the claim goes
+what a slot pane runs, and makes no worktree, claim or Claude until it is
+woken. With the picker on (below) the waiting screen *is* the picker, open at
+once; Esc puts it away and leaves the quiet line `<Label>: Return picks a
+context, c continues the last session, q leaves a shell`, where Return opens it
+again. With the picker `off` the quiet line is all there is: `<Label>: Return
+starts a Claude here, c continues the last session, q leaves a shell`. At the
+quiet line Return starts (or picks), `c` continues with `--continue`, `q` (or
+Ctrl-C) removes its wait file and leaves a plain shell, anything else asks
+again; when the session ends for any reason the claim goes
 and the pane waits again, so a pane never ends. A waiting pane owns
 `<git common dir>/claude-peer.wait/<slot>.<pid>` (line 1 the leader's
 directory); the next pane to register deletes the files of dead pids. Outside a
@@ -202,7 +208,7 @@ merges or supervises a peer. The one shared thing is the coordination log,
 same file and it outlives any session. It is append-only, one line per entry,
 tab-separated: `<UTC time><TAB><who><TAB><kind><TAB><text>[<TAB><path>…]`, with
 tabs and newlines in text and paths written as spaces. `kind` is `claim`, `note`,
-`done`, `start` or `stop`. `who` is the label of the slot whose worktree the
+`done`, `start`, `stop` or `end`. `who` is the label of the slot whose worktree the
 caller stands in (a live claim), else `Lead` when a live claim names the caller's
 directory as its leader, else the directory's name; `log --as <name> …` overrides
 it. `log claim <task> [-- <path>…]` appends a claim and then prints, for every
@@ -211,12 +217,130 @@ of the other, paths taken relative to the repository top; `.` is all of it),
 `overlap<TAB><who><TAB><their path><TAB><their task>`; it exits 0 whether or not
 anything overlaps, because a claim is advisory and a non-zero exit reads as
 "blocked". `log note <text>` and `log done [<text>]` append those kinds. A claim
-is open until the same `who` logs `done`, or a `stop` line for that label
-follows it, so a stopped peer never leaves a claim open. `log
+is open until the same `who` logs `done`, or a `stop` or `end` line for that
+label follows it, so a stopped or ended peer never leaves a claim open. `log
 show` prints the open claims and the last 24 hours of notes, `--all` the file.
-`start` and `stop` each append `<label> by <who>`. The log is per repository: an
+`start` and `stop` each append `<label> by <who>`. When a session in a pane
+returns, the pane appends `end` as the slot's label, text `<Label> ended after
+<dur>` (`dur_of`: `45s`, `12m`, `3h`, `2d`) plus ` (<task>)` when it had one; a
+refused start writes none, and a pane killed outright writes none (its claim is
+simply dead). The log is per repository: an
 action that reaches the whole machine is not visible from another repository's
 log. `..` in a path is not resolved.
+
+**Contexts** are small text files that say how a peer is started: `key: value`
+header lines (`title`, `ask`, `agent`, `model`, `effort`, `system`, `mode`), an
+empty line, then the body, which is the first prompt (`{input}` is replaced by
+the value, or the value is appended after a blank line). They live under
+`$CLAUDE_PEER_CONTEXTS`, else `~/.config/claude-peer/contexts/`, at three
+levels read in this order: the top (every repository), `<owner>/`, and
+`<owner>/<repo>/`, where `<owner>/<repo>` is the lowercase slug of the main
+checkout's origin (`origin_slug`; a worktree shares it, a repository with no
+usable origin reads the top only). A file is `[NN-]<name>.ctx`; a deeper file of
+the same name replaces a shallower one and takes the later position. An invalid
+file (unknown key, a value that could read as a flag, a header line without
+`: `, a `repo:` key) is skipped by `context list` with a stderr line and fails
+`context show`. `claude-peer context list|show|dir` only reads. `origin_slug` is
+ported from the one in `bin/executable_postbox`.
+
+`claude-peer start <slot|next> [--leader <dir>] --context <name> [value words…]`
+(`-` reads the value from stdin) starts a peer from a context. `start` resolves
+the context for its repository before waking anything and fails at the caller:
+unknown or invalid is 1, `--context` with `--continue` is 2 (a context carries
+its own mode), a context with `ask` and no value is 2. The request file is the
+plain one (mode from the context, the value as the rest); a sidecar
+`<slot>.<pid>.meta` (`by=…`, `context=…`) is written first, and the pane looks
+the context up itself (a file deleted in between: the pane prints why and waits
+on). A pane writes `2` as line 2 of its wait file; `start --context` to a pane
+without it is exit 4 (`predates contexts; reopen its tab`), a plain `start` to
+it works. `pane_go` is the one place that builds the `claude` arguments, in this
+order: `-n <repo>-<slot> [--continue] [definition args] [--agent A] [--model M]
+[--effort E] [--append-system-prompt S] [prompt]`; it reads `PG_CTX`,
+`PG_CTXNAME`, `PG_BY` and `PG_TASK` and clears them. The claim gains lines 4-7:
+who started it (`Lead`, a slot label, a directory name, `pane` for Return, `-`
+unknown), the context name or `-`, the task line (at most 80 characters) or `-`,
+and the start time in epoch seconds; lines 1-3, `peers` and the session name are
+unchanged. The pane's header line is the slot's label, then ` · started by <by>`
+(not for Return) and ` · <task>`.
+
+The public source ships seven top-level contexts, `dot_config/claude-peer/contexts/NN-<name>.ctx`
+(`ask`, `look-at`, `plan`, `prs`, `audit`, `catch-up`, `team`), which deploy on every class but
+`ephemeral`. They name no account, organisation, person or private repository or skill; an
+overlay's file of the same name at the owner or repository level replaces one (the personal
+overlay does this for `audit`). A context is a launcher: it points at a skill or a document
+and restates no procedure. `{owner}` and `{repo}` in `40-prs.ctx` are gh's own placeholders,
+typed literally, and only `{input}` is substituted. The lookup rule is the one above: top,
+`<owner>/`, `<owner>/<repo>/`, a deeper file wins by name.
+
+**The picker.** A waiting pane shows it at once, every time it starts waiting and again
+each time a session ends (`git config claude-peer.picker fzf|list|off`, read in the leader
+directory when the pane starts; unset is `fzf` when `fzf` is on PATH and stdout is a terminal,
+else `list`; `off` is the pre-picker pane, quiet line and all). fzf needs 0.75 or newer
+(`fzf_ok`); an older one prints `fzf <version> is older than 0.75; using the list` once, and
+with `list` or `off` fzf is never run. `pick_rows` builds the rows, `id<TAB>display`, the
+display being the name padded to one column (8 to 16 wide), two spaces and the title:
+`@fresh`, each context of the repository, `@continue`, `@resume` (`claude … --resume` alone,
+so Claude's own list chooses), `@task`, `@shell`. `pane_size` reads `CLAUDE_PEER_SIZE`
+(`rows cols`, the tests' handle) or `stty size`; `pane_geom` makes the block at least 58
+wide (fzf keeps three columns of it, so it is 3 plus the longest display: nothing is cut
+while `3 + name column + 2 + title` fits the pane), centred when the pane has 80 columns or
+more, and at most 12 rows tall. fzf is called
+small and flat: `--height` the block's, `--margin` the centring, no preview, no border, the
+hint dim in its header (`pane_head`; a shorter one under 56 columns, and under 38 columns the hint itself is cut), `--no-mouse` so the
+wheel still scrolls back through what the last session left, `FZF_DEFAULT_OPTS` unset and
+only its `--color` words passed on (`fzf_colors`). `pane_art` prints the sleeper (below) above
+the list and above the quiet line. Esc (130), and an fzf that ends with nothing chosen, put
+the pane in the quiet state; nothing reopens fzf without a key, so a broken fzf cannot spin.
+The numbered list is printed under the same left padding and read by `pane_ask`; Return
+alone is row 1, a number its row, a name its context (or a built-in row by its shown name),
+`c r n s` as the hint says, `q` and Ctrl-C a shell; a reader that ends with no line (no
+terminal) goes quiet. A line typed at the quiet prompt that is exactly a context name starts
+it. Every question (`<ask>: `, `Task: `, `Save as …`) is read by `pane_ask`, which is
+`pane_block`, so a `start` request interrupts any of them, and an empty answer or Ctrl-C
+goes back to the picker (`Save as`: Return skips the save, the task still starts). fzf runs
+as a background child the pane `wait`s on, with its signals reset in the subshell (the pane
+ignores `TTIN` and `TTOU`); a request while it is open sends it TERM, runs `stty sane` on the
+terminal and handles the request. `ctrl-t` or `ctrl-s` (or exit 1) with a typed query: that
+text is the task, and `ctrl-s` also saves it; `ctrl-t` with nothing typed opens the picker
+again; any other failure prints `fzf failed` once and the pane uses the numbered list from
+then on. Saving writes `<root>/<owner>/<repo>/90-<name>.ctx` (`title:` the first 40
+characters, a blank line, the task) and refuses, with one `not saved:` line and the task
+still starting, a bad name, a name the directory already has under any prefix, or a
+repository with no origin. The tests use a stub `fzf` on `PATH`; whether the real fzf works
+as a background child in a workgroup pane is live check L-a/L-b.
+
+**The sleeper.** A waiting pane draws a small figure asleep above the picker: `art_default`
+is the built-in in the art format (`palette <letter> <r> <g> <b>`, `margin`, `z near|mid|far
+<row> <col>`, optional `cap fixed`, `frame <name>` then pixel rows of equal width and an even
+count; `.` empty, `E` a closed eye filling both pixel rows of its cell; frames `asleep`, and
+`asleep-sway`, `wake-1`, `wake-2` falling back to it). `art_awk` renders two pixel rows per
+character row: the same colour twice is a space on that background (a block glyph showed
+seams; the operator rejected it), two colours `▀` over a background, one `▀` or `▄`, an eye a
+bold `▬` in `K` on `O`; truecolor when `COLORTERM` says so, else the nearest 256-colour cell
+(one awk, POSIX: drawn under mawk and gawk by the list's screen test on every CI job). The z's
+are a bold `Z`, a `z` in 256-colour 250 and a dim `z`; fzf would grey the bold one under the
+theme's `header` colour, which `--color=header:-1` prevents. The cap is coloured per slot
+(`art_cap`: `git config claude-peer.<slot>.cap '#rrggbb'`, else the slot's place in the pool:
+green, the approved blue, purple, cyan, yellow, red, from Base16 Eighties; the band is 0.7 of
+it). `git config claude-peer.art false` hides it; `claude-peer.art-file <path>` replaces it,
+and a file that does not parse prints `claude-peer: <path>: <reason>` and the built-in is
+drawn. `pane_geom` sets `pn_lay`: `beside` at 80 columns and 16 rows or more (`✻ <Label> ·
+<repo>` and a dim second line on the figure's rows 4 and 5), `under` from 30 to 79 columns
+and 18 rows (those two lines below it), else `none` and every screen is the picker's own; an
+unknown size is `none`. In fzf the figure is header text (`pane_head`), so fzf draws and
+erases it and the list scrolls under it; `pn_w` also fits `3 + 29 + ✻ <Label> · <repo>`,
+capped at the pane, and `<repo>` is cut, never the label. Above the list and in the quiet state
+`pane_art` prints it under `pn_pad` and two spaces, then an empty line; in the quiet state its
+second line (`⏎ picker · c continue · q shell`, or `⏎ start …` with the picker off) replaces
+the quiet line. The one cursor movement: before the quiet block is drawn again (a mistyped
+line) or the picker opens from it (Return), `pane_unquiet` moves up over the block, its empty
+line and the typed line and erases down (`ESC[11A`, `ESC[J` beside; 13 under), so one sleeper is
+ever on screen; a session started from quiet (`c`, a context name, Return with the picker off)
+leaves it above the session. A pane resized between going quiet and the next key miscounts once.
+`claude-peer art [--slot] [--frame] [--z all|near|near-mid|none] [--truecolor|--256]` prints a
+frame; `art --screen [--slot]` prints the quiet screen as a pane would pad it, for the terminal
+or `CLAUDE_PEER_SIZE`: the operator's preview and the screen tests' reference. The figure is
+the operator's approved original, not Anthropic's mascot; a private override file may differ.
 
 **The Hermes peer** exists only in `Claude Peers + Hermes`, and is a plain shell
 unless a Hermes profile routes the directory; the gate below is now the second
@@ -241,3 +365,32 @@ Code hooks) and is not part of the leader's roll-call.
 
 Tests: `tests/claude-peer.bats` (stub ps/uname/defaults,
 fixture plists; the real store is only touched by the operator's `install`).
+
+**Screen tests.** `tests/claude-peer-screen.bats` draws the real waiting pane in a
+detached tmux server of its own (`tmux -L cps<pid>-<n>`, its own three-line config,
+never the caller's server) at fixed sizes, captures it with `capture-pane -p`
+(`-e` for colours) and asserts on the screen as drawn: the harness probe (size,
+`$SHELL`, glyph widths, 24-bit colour), the gate, the CI promises, and the numbered
+list (centred, every row whole, a question under it, a `start` taking it, an older
+fzf falling back to it), the fzf picker, and the sleeper (cell for cell against
+`claude-peer art`, whole while the list scrolls, absent at 15 rows, one after Esc and
+Return, and above the list). The sleeper's tests unset the `claude-peer.art false` that
+`setup` sets for the rest. Waits are for text and for a still screen, never a bare
+`sleep`. They need a UTF-8 locale and, in a container, an init as process 1
+(`docker run --init`): the harness test and `screen_close` say so by name, and
+`screen_run` fails when tmux did not make the size it was asked for. A tmux older
+than 3.3 gets a fourth config line, `window-size manual`, without which it sizes a
+detached session by the terminal of the client that made it; 3.3 to 3.6a must not
+get it, since their server dies at `new-session` under it (`tmux_old` in the test
+file). Run it with
+`PATH="$(brew --prefix)/bin:$PATH" SCREEN_TESTS_REQUIRE='tmux fzf' bats tests/claude-peer-screen.bats`.
+`SCREEN_TESTS_REQUIRE` lists what the caller promises is installed (`tmux`; `fzf`
+for 0.75 or newer): a missing tool skips its tests, a missing promised one fails
+them; each CI job promises `tmux fzf` on its `bats tests` line. No CI job takes fzf
+from its image's packages: each installs the release named in `.github/fzf-version`
+with `.github/install-fzf.sh`, which checks it against the release's own checksum
+file, and a second step fails unless that fzf is the first on PATH. The pin moves by
+editing that one line; the package lists are for machines and do not move with it.
+The older-fzf test plants a stub that answers `--version` as apt's 0.44.1 does. A red test
+prints the screen it saw (a column ruler, each line ended by `|`). A server left
+behind by a killed bats: `pkill -f 'tmux -L cps'`.

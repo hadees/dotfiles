@@ -54,6 +54,8 @@
 # A peer is a separate project, not a helper: the one shared thing is the log,
 # <git common dir>/claude-peer.log, where each session says what it is doing and
 # where. It is advisory: `log claim` warns of overlap and never fails on it.
+# When a pane's session ends, the pane logs `end`: `<Label> ended after <dur>`
+# and its task, which closes that label's claims as `stop` does.
 # `install` edits the preferences while iTerm2 is quit because iTerm2 writes
 # its preferences back at quit (and, with a custom prefs folder, replaces the
 # domain from the folder at launch); an edit made while it runs is lost.
@@ -65,16 +67,23 @@
 #                            start claude -n <repo>-<slot> through the shell (the
 #                            wrapper applies); exit 3 when a live claim holds it
 #   run --as <slot> --wait [-- claude args...]
-#                            a pane: wait for Return (c continues the last
-#                            session, q leaves a shell) or for `start`, take a
-#                            slot of the pool, run claude, wait again
+#                            a pane: show the picker of contexts at once (git
+#                            config claude-peer.picker fzf|list|off; Esc hides
+#                            it, Return brings it back, c continues the last
+#                            session, q leaves a shell) or wait for `start`,
+#                            take a slot of the pool, run claude, wait again
 #   run <branch> [-- claude args...]
 #                            the same on <repo>/.claude/worktrees/<slug> and
 #                            <branch>
 #   run [--]                 a pane of an older definition: one line, a shell
-#   start <slot|next> [--continue] [--leader <dir>] [--] [prompt words...]
+#   start <slot|next> [--continue] [--leader <dir>] [--context <name>] [--] [words...]
 #                            wake a waiting pane to run claude in <slot> (next:
-#                            whatever the pane would take; prompt - reads stdin)
+#                            whatever the pane would take; words - reads stdin);
+#                            with --context the words are the value of that
+#                            start context (a context carries its own mode, so
+#                            --continue with it is exit 2; ask without a value
+#                            is 2, an unknown context 1, a pane that predates
+#                            contexts 4)
 #                            -> slot<TAB>worktree<TAB>started<TAB>session name;
 #                            exit 3 already running or no slot free, 4 no pane
 #                            waiting, 1 not started in CLAUDE_PEER_START_WAIT s
@@ -117,6 +126,24 @@
 #                            workgroup (claude() sends the key); builtin: the
 #                            job enters Claude Code again; iTerm2 quit
 #   status                   store, iTerm2, workgroup, hermes and default state
+#   context list [--all] [<dir>]
+#                            name<TAB>title<TAB>ask<TAB>flags<TAB>path per start
+#                            context of the repository of <dir> (default $PWD):
+#                            the general ones, then its owner's, then its own;
+#                            --all: every file under the root, no override
+#   context show <name|@fresh|@continue|@resume|@task> [value words...]
+#                            the context's file, scope, flags and first prompt
+#   context dir [--repo [<dir>]]
+#                            the contexts root, or this repository's directory
+#                            in it (<root>/<owner>/<repo>)
+#   art [--slot <slot>] [--frame <name>] [--z all|near|near-mid|none] [--truecolor|--256]
+#                            print the sleeper a waiting pane shows (one frame,
+#                            its z's; cap colour by slot, git config
+#                            claude-peer.<slot>.cap; claude-peer.art false hides
+#                            it in panes, claude-peer.art-file replaces it)
+#   art --screen [--slot <slot>]
+#                            the quiet waiting screen, padded as a pane pads it,
+#                            for this terminal or CLAUDE_PEER_SIZE
 #
 # Exit codes of start and stop: 0 done; 1 failed; 2 usage; 3 already in
 # the requested state; 4 nothing to act on; 5 refused because busy.
@@ -418,10 +445,24 @@ pane_shell() { # leave: forget this pane, hand the terminal back, become a shell
   exec "${SHELL:-/bin/sh}" -i
 }
 
-# mode(fresh|continue) slot(or -) prompt claude-args...: take a slot, run one
+# seconds -> 45s, 12m, 3h, 2d (whole units, rounded down)
+dur_of() {
+  if [ "$1" -lt 60 ]; then echo "${1}s"; elif [ "$1" -lt 3600 ]; then echo "$(( $1 / 60 ))m"
+  elif [ "$1" -lt 86400 ]; then echo "$(( $1 / 3600 ))h"; else echo "$(( $1 / 86400 ))d"; fi
+}
+
+# One line of at most 80 characters, tabs as spaces, for a claim and the pane's
+# header.
+task_line() { printf '%s\n' "$1" | sed -n 1p | tr '\t\r' '  ' | cut -c1-80; }
+
+# mode(fresh|continue|resume) slot(or -) prompt claude-args...: take a slot, run one
 # session in it, return. Never exits: a refusal is printed and the pane waits on.
+# The caller sets PG_CTX (a context path), PG_CTXNAME, PG_BY (who started it) and
+# PG_TASK (one line); they are read, and cleared, here.
 pane_go() {
   pg_mode=$1 pg_req=$2 pg_prompt=$3; shift 3
+  pg_ctx=${PG_CTX-} pg_ctxname=${PG_CTXNAME-} pg_by=${PG_BY-} pg_task=${PG_TASK-}
+  PG_CTX= PG_CTXNAME= PG_BY= PG_TASK=
   if [ "$pg_req" != - ]; then
     out=$(slot_checkout "$repo" "$pg_req" "$(label_of "$pg_req")"); pg_rc=$?
   else
@@ -438,12 +479,516 @@ pane_go() {
   if [ "$pg_taken" != "$slot" ] && [ "$pg_req" = - ] && claim_live "$repo/.claude/worktrees/$slot"; then
     pg_msg="$pg_msg (this pane's $label is in use by the peers of $(sed -n 2p "$(claim_file "$repo/.claude/worktrees/$slot")"))"
   fi
+  case $pg_by in ''|pane) ;; *) pg_msg="$pg_msg · started by $pg_by";; esac
+  [ -z "$pg_task" ] || pg_msg="$pg_msg · $pg_task"
   echo "$pg_msg"
+  pg_t0=$(date +%s)
+  printf '%s\n%s\n%s\n%s\n' "${pg_by:--}" "${pg_ctxname:--}" "${pg_task:--}" "$pg_t0" >>"$(claim_file "$pg_wt")"
   [ "$pg_mode" != continue ] || set -- --continue "$@"
+  if [ -n "$pg_ctx" ]; then
+    for pg_k in agent model effort; do
+      pg_v=$(ctx_get "$pg_ctx" "$pg_k"); [ -z "$pg_v" ] || set -- "$@" "--$pg_k" "$pg_v"
+    done
+    pg_v=$(ctx_get "$pg_ctx" system); [ -z "$pg_v" ] || set -- "$@" --append-system-prompt "$pg_v"
+  fi
   [ -z "$pg_prompt" ] || set -- "$@" "$pg_prompt"
+  [ "$pg_mode" != resume ] || set -- "$@" --resume   # no value: Claude's own list chooses
   run_session "$pg_wt" "$rname-$pg_taken" "$@"
+  # only after a session ran: a refused start returned above, and its `end`
+  # would close a live peer's claims
+  pg_l=$(label_of "$pg_taken")
+  ( cd -- "$repo" && log_add "$pg_l" end "$pg_l ended after $(dur_of $(( $(date +%s) - pg_t0 )))${pg_task:+ ($pg_task)}" ) 2>/dev/null
   [ ! -t 1 ] || printf '\033]21337;status=;indicator=;status-color=;detail=\a'
   return 0
+}
+
+# --- the picker: what a waiting pane shows ------------------------------------------
+
+# slug -> id<TAB>display per row. The display is the name, padded so every title
+# starts in one column (the longest name, 8 to 16 wide), two spaces, the title.
+pick_rows() {
+  { printf '@fresh\tfresh\tA new session, no prompt\n'
+    ctx_files "$1" | while IFS=$ctx_tab read -r pk_n pk_p; do
+      pk_t=$(ctx_get "$pk_p" title)
+      printf '%s\t%s\t%s\n' "$pk_n" "$pk_n" "${pk_t:-$pk_n}"
+    done
+    printf '@continue\tcontinue\tPick up the last conversation\n'
+    printf '@resume\tresume\tChoose an earlier conversation\n'
+    printf '@task\ttask\tType a task and start it\n'
+    printf '@shell\tshell\tDrop to a shell\n'
+  } | awk -F'\t' '{ id[NR] = $1; n[NR] = $2; t[NR] = $3; if (length($2) > w) w = length($2) }
+    END { if (w < 8) w = 8; if (w > 16) w = 16
+          for (i = 1; i <= NR; i++) printf "%s\t%-" w "s  %s\n", id[i], n[i], t[i] }'
+}
+
+# fzf_ok: fzf is 0.75 or newer (major.minor compared as numbers); fzf_ver is its version.
+fzf_ok() {
+  fzf_ver=$(fzf --version 2>/dev/null | sed -n 1p); fzf_ver=${fzf_ver%% *}
+  printf '%s\n' "$fzf_ver" | awk -F. '{ exit !($1 + 0 > 0 || $2 + 0 >= 75) }'
+}
+
+# --- the sleeper: the figure above the picker -----------------------------------------
+
+# The built-in figure, in the art format (an override file uses the same): palette
+# lines, a margin, the z's (character row, column), frames of pixel rows. `.` is
+# empty and `E` a closed eye, which fills both pixel rows of its cell.
+art_default() {
+  cat <<'ART'
+palette O 217 119 87
+palette D 170 85 60
+palette C 90 120 200
+palette B 60 85 160
+palette W 240 240 240
+palette K 15 15 15
+margin 9
+z far 1 0
+z mid 2 3
+z near 3 6
+frame asleep
+..................
+..................
+......CCCCC.......
+....CCCCCCCCC.....
+...CCCCCCCCCCCC...
+...CCCCCCCCCCBCC..
+...BBBBBBBBBB..CC.
+...OOOOOOOOOO...CW
+...OOEEOOOEEO...WW
+...OOEEOOOEEO.....
+.OOOOOOOOOOOOOO...
+.OOOOOOOOOOOOOO...
+...OOOOOOOOOO.....
+...OOOOOOOOOO.....
+...DDDDDDDDDD.....
+...DDDDDDDDDD.....
+...O.O....O.O.....
+...O.O....O.O.....
+ART
+}
+
+# frame z(all|near|near-mid|none) mode(truecolor|256) cap band, art format on stdin
+# -> one line per character row: two pixel rows each, the same colour above and
+# below a space on that background, two colours ▀ over a background, one ▀ or ▄,
+# an eye a bold ▬ in K on O; each cell then a reset. A file that does not parse:
+# one line, the reason, and status 3. A frame that is not there is `asleep`.
+art_awk() {
+  awk -v want="$1" -v zs="$2" -v mode="$3" -v cap="$4" -v band="$5" '
+    function bad(m) { print m; err = 1; exit 3 }
+    function lvl(v,   i, d, best, bi) {
+      best = 999
+      for (i = 0; i < 6; i++) { d = v - L[i]; if (d < 0) d = -d; if (d < best) { best = d; bi = i } }
+      return bi
+    }
+    function c256(r, g, b,   ri, gi, bi, dc, gr, gv, dg) {
+      ri = lvl(r); gi = lvl(g); bi = lvl(b)
+      dc = (r - L[ri]) * (r - L[ri]) + (g - L[gi]) * (g - L[gi]) + (b - L[bi]) * (b - L[bi])
+      gr = int(((r + g + b) / 3 - 8) / 10 + 0.5); if (gr < 0) gr = 0; if (gr > 23) gr = 23
+      gv = 8 + 10 * gr
+      dg = (r - gv) * (r - gv) + (g - gv) * (g - gv) + (b - gv) * (b - gv)
+      return dg < dc ? 232 + gr : 16 + 36 * ri + 6 * gi + bi
+    }
+    function col(k, fb,   c) {
+      split(pal[k], c, " ")
+      if (mode == "truecolor") return fb ";2;" c[1] ";" c[2] ";" c[3]
+      return fb ";5;" c256(c[1] + 0, c[2] + 0, c[3] + 0)
+    }
+    function cell(a, b) {
+      if (a == "." && b == ".") return " "
+      if (a == "E") return "\033[1;" col("K", 38) ";" col("O", 48) "m▬\033[0m"
+      if (a == b) return "\033[" col(a, 48) "m \033[0m"
+      if (b == ".") return "\033[" col(a, 38) "m▀\033[0m"
+      if (a == ".") return "\033[" col(b, 38) "m▄\033[0m"
+      return "\033[" col(a, 38) ";" col(b, 48) "m▀\033[0m"
+    }
+    BEGIN { split("0 95 135 175 215 255", t, " "); for (i = 0; i < 6; i++) L[i] = t[i + 1] + 0; fr = "" }
+    { sub(/\r$/, "") }
+    /^[ \t]*(#|$)/ { next }
+    $1 == "palette" {
+      if (NF != 5 || length($2) != 1 || $2 !~ /^[A-Za-z]$/ || $2 == "E") bad("line " NR ": palette <letter> <r> <g> <b>")
+      for (i = 3; i <= 5; i++) if ($i !~ /^[0-9]+$/ || $i + 0 > 255) bad("line " NR ": a colour channel is 0 to 255")
+      pal[$2] = ($3 + 0) " " ($4 + 0) " " ($5 + 0); fr = ""; next
+    }
+    $1 == "margin" { if (NF != 2 || $2 !~ /^[0-9]+$/) bad("line " NR ": margin <columns>"); margin = $2 + 0; fr = ""; next }
+    $1 == "z" {
+      if (NF != 4 || $2 !~ /^(near|mid|far)$/ || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/) bad("line " NR ": z near|mid|far <row> <column>")
+      zr[$2] = $3 + 0; zc[$2] = $4 + 0; fr = ""; next
+    }
+    $1 == "cap" { if (NF != 2 || $2 != "fixed") bad("line " NR ": cap fixed"); fixed = 1; fr = ""; next }
+    $1 == "frame" {
+      if (NF != 2) bad("line " NR ": frame <name>")
+      fr = $2; if (fr in nrow) bad("line " NR ": frame " fr " twice"); nrow[fr] = 0; next
+    }
+    NF == 1 && fr != "" {
+      if ($1 !~ /^[A-Za-z.]+$/) bad("line " NR ": a pixel row is palette letters, . and E")
+      n = ++nrow[fr]; row[fr, n] = $1
+      if (length($1) != length(row[fr, 1])) bad("line " NR ": frame " fr " has rows of unequal width")
+      next
+    }
+    { bad("line " NR ": not understood") }
+    END {
+      if (err) exit 3
+      if (!("asleep" in nrow)) bad("no frame asleep")
+      for (f in nrow) {
+        if (nrow[f] == 0 || nrow[f] % 2) bad("frame " f ": rows must be an even number")
+        for (n = 1; n <= nrow[f]; n++) for (j = 1; j <= length(row[f, n]); j++) {
+          a = substr(row[f, n], j, 1)
+          if (a != "." && a != "E" && !(a in pal)) bad("frame " f ": " a " is not in the palette")
+          if (n % 2) { b = substr(row[f, n + 1], j, 1); if ((a == "E") != (b == "E")) bad("frame " f ": an eye must fill both pixel rows of its cell") }
+          if (a == "E" && !(("K" in pal) && ("O" in pal))) bad("eyes need palette K and O")
+        }
+      }
+      for (k in zr) if (zc[k] >= margin) bad("z " k ": column " zc[k] " is not inside the margin")
+      if (!fixed && cap != "") { pal["C"] = cap; pal["B"] = band }
+      f = (want in nrow) ? want : "asleep"
+      if (zs == "all" || zs == "near-mid" || zs == "near") on["near"] = 1
+      if (zs == "all" || zs == "near-mid") on["mid"] = 1
+      if (zs == "all") on["far"] = 1
+      zt["far"] = "\033[1mZ\033[0m"; zt["mid"] = "\033[38;5;250mz\033[0m"; zt["near"] = "\033[2mz\033[0m"
+      w = length(row[f, 1])
+      for (i = 0; i < nrow[f] / 2; i++) {
+        line = ""
+        for (m = 0; m < margin; m++) {
+          s = " "
+          for (k in on) if ((k in zr) && zr[k] == i && zc[k] == m) s = zt[k]
+          line = line s
+        }
+        up = row[f, 2 * i + 1]; lo = row[f, 2 * i + 2]
+        for (j = 1; j <= w; j++) line = line cell(substr(up, j, 1), substr(lo, j, 1))
+        print line
+      }
+    }'
+}
+
+# slot -> ac_cap and ac_band, "r g b": git config claude-peer.<slot>.cap, else by
+# the slot's place in the pool (Base16 Eighties hues; the second is the approved blue).
+art_cap() {
+  ac_h=$(git config --get "claude-peer.$1.cap" 2>/dev/null) || ac_h=
+  ac_h=${ac_h#\#}
+  if ! printf '%s\n' "$ac_h" | LC_ALL=C grep -Eq '^[0-9A-Fa-f]{6}$'; then
+    ac_i=0 ac_pos=0
+    for ac_w in $(pool_words 2>/dev/null); do
+      [ "$ac_w" != "$1" ] || { ac_pos=$ac_i; break; }
+      ac_i=$((ac_i + 1))
+    done
+    set -- 99cc99 5a78c8 cc99cc 66cccc ffcc66 f2777a
+    shift $((ac_pos % 6)); ac_h=$1
+  fi
+  ac_r=$((0x$(printf '%s' "$ac_h" | cut -c1-2))) ac_g=$((0x$(printf '%s' "$ac_h" | cut -c3-4))) ac_b=$((0x$(printf '%s' "$ac_h" | cut -c5-6)))
+  ac_cap="$ac_r $ac_g $ac_b"
+  case $ac_h in
+    5a78c8|5A78C8) ac_band='60 85 160';;
+    *) ac_band="$((ac_r * 7 / 10)) $((ac_g * 7 / 10)) $((ac_b * 7 / 10))";;
+  esac
+}
+
+# frame z slot [mode] -> the rendered rows: from git config claude-peer.art-file when
+# it parses (else one line saying why, and the built-in). Mode: truecolor when
+# COLORTERM says so, else 256.
+art_lines() {
+  al_m=${4-}
+  [ -n "$al_m" ] || case ${COLORTERM-} in truecolor|24bit) al_m=truecolor;; *) al_m=256;; esac
+  art_cap "$3"
+  al_f=$(git config --path --get claude-peer.art-file 2>/dev/null) || al_f=
+  if [ -n "$al_f" ]; then
+    if [ ! -r "$al_f" ]; then warn "$al_f: cannot be read"
+    elif al_o=$(art_awk "$1" "$2" "$al_m" "$ac_cap" "$ac_band" <"$al_f"); then printf '%s\n' "$al_o"; return 0
+    else warn "$al_f: $(printf '%s\n' "$al_o" | sed -n 1p)"; fi
+  fi
+  art_default | art_awk "$1" "$2" "$al_m" "$ac_cap" "$ac_band"
+}
+
+# second-line -> the art block: the asleep frame with its z's and, beside it on
+# character rows 4 and 5 (pn_lay beside) or under it (under), `✻ <Label> · <repo>`
+# and the second line, dim. <repo> is cut, never the label, to fit pn_w - 3 columns.
+art_block() {
+  ab_room=$((pn_w - 3)); [ "$pn_lay" != beside ] || ab_room=$((ab_room - 29))
+  ab_r=$((ab_room - 5 - ${#label})); [ "$ab_r" -ge 0 ] || ab_r=0
+  ab_repo=$(printf '%s' "$rname" | cut -c1-"$((ab_r > 0 ? ab_r : 1))"); [ "$ab_r" -gt 0 ] || ab_repo=
+  ab_t=$(printf '✻ \033[1m%s\033[0m · %s' "$label" "$ab_repo") ab_s=$(printf '\033[2m%s\033[0m' "$1")
+  art_lines asleep all "$slot" | AB_T=$ab_t AB_S=$ab_s AB_L=$pn_lay awk '
+      { print $0 (ENVIRON["AB_L"] == "beside" ? (NR == 5 ? "  " ENVIRON["AB_T"] : NR == 6 ? "  " ENVIRON["AB_S"] : "") : "") }
+      END { if (ENVIRON["AB_L"] == "under") { print ENVIRON["AB_T"]; print ENVIRON["AB_S"] } }'
+}
+
+# pn_rows pn_cols: CLAUDE_PEER_SIZE ("rows cols"), else the terminal's, else empty.
+pane_size() {
+  pn_rows= pn_cols=
+  if [ -n "${CLAUDE_PEER_SIZE-}" ]; then
+    # shellcheck disable=SC2086
+    set -- $CLAUDE_PEER_SIZE
+  elif [ -c "$pn_tty" ]; then
+    # shellcheck disable=SC2046
+    set -- $(stty size <"$pn_tty" 2>/dev/null)
+  else
+    set --
+  fi
+  [ $# -ge 2 ] || return 0
+  case $1$2 in ''|*[!0-9]*) return 0;; esac
+  pn_rows=$1 pn_cols=$2
+}
+
+# The block: pn_n rows, pn_head header lines, pn_w wide, centred by pn_left and
+# pn_right (pn_pad: pn_left spaces) from 80 columns, pn_vis rows shown, pn_h high.
+# pn_lay: where the sleeper goes (beside, under, none) and pn_al its block's lines.
+pane_geom() {
+  pn_n=$(wc -l <"$pn_me.rows" | tr -d ' ')
+  pn_lay=none pn_al=0
+  if [ -n "$pn_cols" ] && [ "$(git config --get claude-peer.art 2>/dev/null)" != false ]; then
+    if [ "$pn_cols" -ge 80 ] && [ "$pn_rows" -ge 16 ]; then pn_lay=beside
+    elif [ "$pn_cols" -ge 30 ] && [ "$pn_rows" -ge 18 ]; then pn_lay=under; fi
+  fi
+  pn_head=1
+  pn_w=$(awk -F'\t' '{ if (length($2) + 3 > w) w = length($2) + 3 } END { print (w > 58 ? w : 58) }' "$pn_me.rows")
+  if [ "$pn_lay" != none ]; then
+    pn_al=$(art_lines asleep none "$slot" 2>/dev/null | wc -l | tr -d ' ')
+    [ "$pn_lay" = beside ] || pn_al=$((pn_al + 2))
+    pn_head=$((pn_al + 2))
+    # the beside title row: 3 of fzf's, 27 of art, 2, then `✻ <Label> · <repo>`
+    pg_t=$((3 + 29 + 5 + ${#label} + ${#rname}))
+    [ "$pg_t" -le $((pn_cols - 2)) ] || pg_t=$((pn_cols - 2))
+    [ "$pn_w" -ge "$pg_t" ] || pn_w=$pg_t
+  fi
+  pn_left=0 pn_right=0
+  if [ -n "$pn_cols" ] && [ "$pn_cols" -ge 80 ] && [ $((pn_w + 2)) -le "$pn_cols" ]; then
+    pn_left=$(( (pn_cols - pn_w) / 2 )); pn_right=$((pn_cols - pn_w - pn_left))
+  fi
+  pn_pad=$(printf "%${pn_left}s" '')
+  pn_vis=$pn_n
+  [ "$pn_vis" -le 12 ] || pn_vis=12
+  [ -z "$pn_rows" ] || [ $((pn_rows - pn_head - 1)) -ge "$pn_vis" ] || pn_vis=$((pn_rows - pn_head - 1))
+  [ "$pn_vis" -ge 1 ] || pn_vis=1
+  pn_h=$((pn_head + 1 + pn_vis))
+}
+
+# fzf's header: the sleeper's block and an empty line when it shows, then the
+# hint, dim; the short one under 56 columns.
+pane_head() {
+  [ "$pn_lay" = none ] || { art_block 'waiting · ⏎ pick a context'; echo; }
+  if [ -n "$pn_cols" ] && [ "$pn_cols" -lt 56 ]; then ph_t='↵ start · ^T type a task · esc hide'
+  else ph_t='↵ start · ^T type a task · ^S …and save it · esc hide'; fi
+  printf '\033[2m%s\033[0m' "$ph_t"
+}
+
+# second-line: the sleeper's block in ordinary output, where fzf's header would put
+# it (pn_pad and two), then an empty line; nothing with pn_lay none.
+pane_art() {
+  [ "$pn_lay" != none ] || return 0
+  art_block "$1" | sed "s/^/$pn_pad  /"
+  echo
+}
+
+# The quiet state: the sleeper with the hint as its second line, else C4b's line.
+# pn_qn: how many lines to erase before it is drawn again (0: leave them).
+pane_quiet() {
+  pane_size
+  [ -f "$pn_me.rows" ] || pick_rows "$pn_slug" >"$pn_me.rows"
+  pane_geom
+  pn_qn=0
+  if [ "$pn_lay" != none ]; then
+    if [ "$pn_pick" = off ]; then pane_art '⏎ start · c continue · q shell'
+    else pane_art '⏎ picker · c continue · q shell'; fi
+    pn_qn=$((pn_al + 2))
+  elif [ "$pn_pick" = off ]; then printf '%s: Return starts a Claude here, c continues the last session, q leaves a shell\n' "$label"
+  else printf '%s: Return picks a context, c continues the last session, q leaves a shell\n' "$label"; fi
+}
+
+# The quiet block, the empty line and the typed line go before the block is drawn
+# again or the picker opens, so one sleeper is ever on screen.
+pane_unquiet() {
+  [ "$pn_qn" -le 0 ] || printf '\033[%sA\r\033[J' "$pn_qn"
+  pn_qn=0
+}
+
+# prompt -> the answer in pn_ans; status 1 when a request, Ctrl-C or end of input
+# cut it short, and pn_why says which (request, intr, eof). A request is handled
+# by the pane's loop; a reader that ended with no line means no terminal.
+pane_ask() {
+  printf '%s%s' "$pn_pad" "$1"
+  pane_block
+  if [ -f "$pn_me.start" ]; then pn_why=request; return 1; fi
+  if [ -n "$pn_intr" ]; then pn_intr=; pn_why=intr; return 1; fi
+  if [ ! -f "$pn_me.key" ]; then
+    [ "$pn_ended" != 1 ] || pn_reader=0
+    pn_why=eof; return 1
+  fi
+  pn_ans=$(cat "$pn_me.key"); rm -f "$pn_me.key"
+  return 0
+}
+
+# task-text: write <root>/<slug>/90-<name>.ctx when a name is given. Status 1 only
+# when the question was cut short; every refusal is one line and status 0.
+pane_save() {
+  [ -n "$pn_slug" ] || { echo 'not saved: this repository has no origin remote, so it has no context directory'; return 0; }
+  pane_ask 'Save as (a name like fix-ci, Return skips): ' || return 1
+  [ -n "$pn_ans" ] || return 0
+  sv_n=$pn_ans
+  printf '%s\n' "$sv_n" | LC_ALL=C grep -Eq '^[a-z][a-z0-9_-]*$' ||
+    { echo "not saved: '$sv_n' is not a name (lowercase letters, digits, - and _)"; return 0; }
+  sv_d=$(ctx_dir)/$pn_slug
+  for sv_f in "$sv_d"/*.ctx; do
+    [ -f "$sv_f" ] || continue
+    [ "$(ctx_name_of "$sv_f")" != "$sv_n" ] || { echo "not saved: $sv_n already exists in $sv_d"; return 0; }
+  done
+  mkdir -p "$sv_d" || { echo "not saved: cannot create $sv_d"; return 0; }
+  { printf 'title: %s\n\n' "$(printf '%s\n' "$1" | sed -n 1p | tr '\t\r' '  ' | cut -c1-40)"; printf '%s\n' "$1"; } >"$sv_d/90-$sv_n.ctx" &&
+    echo "saved as $sv_n ($sv_d/90-$sv_n.ctx)"
+  return 0
+}
+
+# task-text save("" or 1) definition-args...: a fresh session whose prompt is the text
+pane_task() {
+  pt_t=$1 pt_s=$2; shift 2
+  [ -z "$pt_s" ] || pane_save "$pt_t" || return 0
+  rm -f "$pn_me"
+  PG_BY=pane PG_TASK=$(task_line "$pt_t")
+  pane_go fresh - "$pt_t" "$@"
+}
+
+# save("" or 1) definition-args...: ask for the task, then start it
+pane_newtask() {
+  pw_s=$1; shift
+  pane_ask 'Task: ' || return 0
+  [ -z "$pn_ans" ] || pane_task "$pn_ans" "$pw_s" "$@"
+}
+
+# context-name definition-args...: ask for its value when it has `ask`, then start it
+pane_named() {
+  px_n=$1; shift
+  px_p=$(ctx_find "$px_n" "$pn_slug") && ctx_check "$px_p" || return 0
+  px_a=$(ctx_get "$px_p" ask); px_v=
+  if [ -n "$px_a" ]; then
+    pane_ask "$px_a: " || return 0
+    px_v=$pn_ans
+    [ -n "$px_v" ] || return 0
+  fi
+  px_m=$(ctx_get "$px_p" mode)
+  rm -f "$pn_me"
+  PG_CTX=$px_p PG_CTXNAME=$px_n PG_BY=pane
+  PG_TASK=$(task_line "$px_n${px_v:+: $px_v}")
+  pane_go "${px_m:-fresh}" - "$(ctx_prompt "$px_p" "$px_v")" "$@"
+}
+
+# row-id definition-args...: what each row runs
+pane_choose() {
+  pc_id=$1; shift
+  case $pc_id in
+    @fresh|@continue|@resume) rm -f "$pn_me"; PG_BY=pane; pane_go "${pc_id#@}" - '' "$@";;
+    @task) pane_newtask "" "$@";;
+    @shell) pane_shell;;
+    *) pane_named "$pc_id" "$@";;
+  esac
+  return 0
+}
+
+# Is the typed line the name of a context of this repository?
+pane_has_ctx() { ctx_files "$pn_slug" 2>/dev/null | cut -f1 | grep -qxF -- "$1"; }
+
+# The colour words of the caller's FZF_DEFAULT_OPTS, as --color=<v>, and nothing
+# else from it: the theme arrives, a --border or --height does not.
+fzf_colors() {
+  fc_out= fc_next=
+  set -f
+  for fc_w in ${FZF_DEFAULT_OPTS-}; do
+    if [ -n "$fc_next" ]; then fc_next= fc_v=$fc_w
+    else
+      case $fc_w in
+        --color) fc_next=1; continue;;
+        --color=*) fc_v=${fc_w#--color=};;
+        *) continue;;
+      esac
+    fi
+    printf '%s\n' "$fc_v" | LC_ALL=C grep -Eq '^[A-Za-z0-9#:,+_-]+$' && fc_out="$fc_out --color=$fc_v"
+  done
+  set +f
+  printf '%s' "$fc_out"
+}
+
+# fzf as a background child the pane waits on, like the reader, so a request
+# (USR1) still interrupts it. Status 1: fzf failed, use the list. Sets
+# pn_state=quiet on Esc, or when fzf ends with nothing chosen.
+pane_fzf() {
+  while :; do
+    rm -f "$pn_me.pick"
+    pn_header=$(pane_head)
+    # shellcheck disable=SC2086
+    ( trap - TTIN TTOU; unset FZF_DEFAULT_OPTS FZF_DEFAULT_OPTS_FILE
+      exec fzf $pn_colors --color=header:-1 \
+        --no-multi --no-sort --no-mouse --layout=reverse --header-first \
+        --height="$pn_h" --info=hidden --no-separator \
+        --margin="0,$pn_right,0,$pn_left" --pointer='▸' --gutter=' ' \
+        --delimiter='\t' --with-nth=2 --prompt="$label ▸ " \
+        --header="$pn_header" --print-query --expect=ctrl-t,ctrl-s \
+        <"$pn_me.rows" >"$pn_me.pick" ) &
+    pn_rpid=$!
+    while :; do
+      wait "$pn_rpid"; pf_rc=$?
+      if [ -f "$pn_me.start" ]; then
+        kill "$pn_rpid" 2>/dev/null; wait "$pn_rpid" 2>/dev/null
+        pn_rpid=
+        # a FIFO (the tests' terminal) would block the open until a writer comes
+        [ ! -c "$pn_tty" ] || stty sane <"$pn_tty" 2>/dev/null
+        return 0
+      fi
+      kill -0 "$pn_rpid" 2>/dev/null || break
+    done
+    pn_rpid=
+    case $pf_rc in
+      0|1) ;;
+      130) pn_state=quiet; return 0;;
+      *) echo "claude-peer: fzf failed (exit $pf_rc); using the list"; pn_pick=list; return 1;;
+    esac
+    pf_q=$(sed -n 1p "$pn_me.pick"); pf_k=$(sed -n 2p "$pn_me.pick"); pf_id=$(sed -n 3p "$pn_me.pick" | cut -f1)
+    case $pf_k in
+      ctrl-t|ctrl-s)
+        [ -n "$pf_q" ] || continue   # nothing typed: the picker again
+        pane_task "$pf_q" "$([ "$pf_k" = ctrl-s ] && echo 1)" "$@"
+        return 0;;
+    esac
+    if [ "$pf_rc" = 0 ] && [ -n "$pf_id" ]; then pane_choose "$pf_id" "$@"
+    elif [ "$pf_rc" = 1 ] && [ -n "$pf_q" ]; then pane_task "$pf_q" "" "$@"
+    else pn_state=quiet
+    fi
+    return 0
+  done
+}
+
+# The numbered list, read by the pane's own line reader.
+pane_list() {
+  while :; do
+    pane_art 'waiting · ⏎ pick a context'
+    awk -F'\t' -v p="$pn_pad" '{ printf "%s%2d  %s\n", p, NR, $2 }' "$pn_me.rows"
+    printf '%sc continue · r resume · n task · s task, saved · q shell\n' "$pn_pad"
+    if ! pane_ask "$label ▸ "; then
+      case $pn_why in intr) pane_shell;; eof) pn_state=quiet;; esac
+      return 0
+    fi
+    pl_id=
+    case $pn_ans in
+      '') pl_id=@fresh;;
+      c) pl_id=@continue;;
+      r) pl_id=@resume;;
+      n) pane_newtask "" "$@"; return 0;;
+      s) pane_newtask 1 "$@"; return 0;;
+      q) pane_shell;;
+      *[!0-9]*)
+        pl_id=$(cut -f1 "$pn_me.rows" | grep -xF -- "$pn_ans" | sed -n 1p)
+        [ -n "$pl_id" ] || case $pn_ans in fresh|continue|resume|task|shell) pl_id=@$pn_ans;; esac;;
+      *) pl_id=$(awk -F'\t' -v n="$pn_ans" 'NR == n { print $1 }' "$pn_me.rows");;
+    esac
+    [ -z "$pl_id" ] || { pane_choose "$pl_id" "$@"; return 0; }
+  done
+}
+
+# The picker state of a waiting pane: show fzf or the list at once, start what is
+# chosen, or set pn_state=quiet.
+pane_pick() {
+  pane_size
+  pick_rows "$pn_slug" >"$pn_me.rows"
+  pane_geom
+  if [ "$pn_pick" = fzf ]; then
+    pane_fzf "$@" && return 0
+  fi
+  pane_list "$@"
 }
 
 # "$@": the definition's claude args. Needs repo rname slot label LEADER.
@@ -452,45 +997,81 @@ pane() {
   mkdir -p "$pn_wd" || die "cannot create $pn_wd"
   pn_me=$pn_wd/$slot.$$
   pn_tty=${CLAUDE_PEER_TTY:-/dev/tty}
-  pn_rpid= pn_reader=1 pn_intr= pn_ended=0
+  pn_rpid= pn_reader=1 pn_intr= pn_ended=0 pn_pad= pn_rows= pn_cols= pn_lay=none pn_al=0 pn_qn=0
   trap : USR1
   trap 'pn_intr=1' INT
   trap '' TTIN TTOU
   trap 'exit 143' TERM
   trap 'exit 129' HUP
   trap pane_cleanup EXIT
+  pn_pick=$(git config --get claude-peer.picker 2>/dev/null)
+  case $pn_pick in
+    fzf|list|off) ;;
+    *) if command -v fzf >/dev/null 2>&1 && [ -t 1 ]; then pn_pick=fzf; else pn_pick=list; fi;;
+  esac
+  if [ "$pn_pick" = fzf ]; then
+    if ! command -v fzf >/dev/null 2>&1; then pn_pick=list
+    elif ! fzf_ok; then echo "claude-peer: fzf $fzf_ver is older than 0.75; using the list"; pn_pick=list
+    fi
+  fi
+  pn_colors=$(fzf_colors)
+  pn_slug=
+  [ "$pn_pick" = off ] || pn_slug=$(origin_slug) || pn_slug=
   if [ "$(git config --get claude-peer.start 2>/dev/null)" = auto ]; then
     settle
+    PG_BY=pane
     pane_go fresh - '' "$@"
   fi
-  pn_show=1
+  pn_show=1 pn_state=picker
   while :; do
     pane_reap "$pn_wd"
-    printf '%s\n' "$LEADER" >"$pn_me"
+    printf '%s\n2\n' "$LEADER" >"$pn_me"
+    [ "$pn_pick" != off ] || pn_state=quiet
     pn_ev=
     while [ -z "$pn_ev" ]; do
       if [ -f "$pn_me.start" ]; then pn_ev=request; break; fi
-      [ -z "$pn_show" ] || printf '%s: Return starts a Claude here, c continues the last session, q leaves a shell\n' "$label"
+      if [ "$pn_state" = picker ]; then pn_ev=pick; break; fi
+      [ -z "$pn_show" ] || pane_quiet
       pn_show=
       pane_block
       if [ -f "$pn_me.start" ]; then pn_ev=request
       elif [ -n "$pn_intr" ]; then pn_ev=quit
       elif [ -f "$pn_me.key" ]; then
         pn_k=$(cat "$pn_me.key"); rm -f "$pn_me.key"
-        case $pn_k in '') pn_ev=fresh;; c) pn_ev=continue;; q) pn_ev=quit;; *) pn_show=1;; esac
+        case $pn_k in
+          '') if [ "$pn_pick" = off ]; then pn_ev=fresh; else pane_unquiet; pn_ev=pick; fi;;
+          c) pn_ev=continue;;
+          q) pn_ev=quit;;
+          *) if [ "$pn_pick" != off ] && pane_has_ctx "$pn_k"; then pn_ev=named; else pane_unquiet; pn_show=1; fi;;
+        esac
       elif [ "$pn_ended" = 1 ] && [ "$pn_reader" = 1 ]; then
         pn_reader=0   # the reader ended with no line: no terminal, only a request wakes this pane
       fi
     done
+    pn_state=picker   # each session's end, and each answer, shows the picker again
     case $pn_ev in
       quit) pane_shell;;
       request)
         pn_mode=$(sed -n 1p "$pn_me.start"); pn_req=$(sed -n 2p "$pn_me.start")
         pn_prompt=$(sed -n '3,$p' "$pn_me.start")
-        rm -f "$pn_me.start" "$pn_me"
+        pn_by=$(sed -n 's/^by=//p' "$pn_me.meta" 2>/dev/null | sed -n 1p)
+        pn_cx=$(sed -n 's/^context=//p' "$pn_me.meta" 2>/dev/null | sed -n 1p)
+        rm -f "$pn_me.start" "$pn_me.meta" "$pn_me"
         slot_ok "$pn_req" || pn_req=-
+        PG_BY=$pn_by
+        if [ -z "$pn_cx" ]; then
+          PG_TASK=$(task_line "$pn_prompt")
+        else
+          # the file can have gone since `start` looked; the reason is printed and the pane waits on
+          pn_cxp=$(ctx_find "$pn_cx" "$(origin_slug)") && ctx_check "$pn_cxp" || { PG_BY=; pn_show=1; continue; }
+          PG_CTX=$pn_cxp PG_CTXNAME=$pn_cx
+          PG_TASK=$(task_line "$pn_cx${pn_prompt:+: $pn_prompt}")
+          pn_prompt=$(ctx_prompt "$pn_cxp" "$pn_prompt")
+        fi
         pane_go "$pn_mode" "$pn_req" "$pn_prompt" "$@";;
-      *) rm -f "$pn_me"; pane_go "$pn_ev" - '' "$@";;
+      pick) pane_pick "$@";;
+      named) pane_choose "$pn_k" "$@";;
+      *) rm -f "$pn_me"; PG_BY=pane; pane_go "$pn_ev" - '' "$@";;
     esac
     pn_show=1
   done
@@ -590,16 +1171,17 @@ cmd_peers() {
   done | LC_ALL=C sort
 }
 
-# <slot|next> [--continue] [--leader <dir>] [--] [prompt words...]
+# <slot|next> [--continue] [--leader <dir>] [--context <name>] [--] [words...]
 cmd_start() {
   [ $# -ge 1 ] || usage
   st_req=$1; shift
   [ "$st_req" = next ] || slot_ok "$st_req" || die "'$st_req' is not a slot name (lowercase letters, digits, - and _)"
-  st_mode=fresh st_leader=
+  st_mode=fresh st_leader= st_cont=0 st_cx=
   while [ $# -gt 0 ]; do
     case $1 in
-      --continue) st_mode=continue; shift;;
+      --continue) st_mode=continue st_cont=1; shift;;
       --leader) [ $# -ge 2 ] || usage; st_leader=$2; shift 2;;
+      --context) [ $# -ge 2 ] || usage; st_cx=$2; shift 2;;
       --) shift; break;;
       *) break;;
     esac
@@ -609,6 +1191,13 @@ cmd_start() {
     -*) usage;;
     *) st_prompt="$*";;
   esac
+  if [ -n "$st_cx" ]; then
+    [ "$st_cont" = 0 ] || { warn "--context carries its own mode; --continue cannot go with it"; exit 2; }
+    st_cxp=$(ctx_find "$st_cx" "$(origin_slug)") && ctx_check "$st_cxp" || exit 1
+    st_ask=$(ctx_get "$st_cxp" ask)
+    [ -z "$st_ask" ] || [ -n "$st_prompt" ] || { warn "context $st_cx needs a value: $st_ask"; exit 2; }
+    st_mode=$(ctx_get "$st_cxp" mode); st_mode=${st_mode:-fresh}
+  fi
   repo=$(repo_root) || exit 1
   rname=$(rname_of "$repo")
   if [ "$st_req" != next ]; then
@@ -633,6 +1222,22 @@ cmd_start() {
   st_pick=$(printf '%s\n' "$st_all" | awk -F'\t' -v s="$st_req" '$1 == s { print; exit }')
   [ -n "$st_pick" ] || st_pick=$(printf '%s\n' "$st_all" | sed -n 1p)
   st_own=$(printf '%s' "$st_pick" | cut -f1); st_pid=$(printf '%s' "$st_pick" | cut -f2)
+  st_dir=$(wait_dir "$repo")
+  if [ -n "$st_cx" ] && [ "$(sed -n 2p "$st_dir/$st_own.$st_pid" 2>/dev/null)" != 2 ]; then
+    warn "the waiting pane (pid $st_pid) predates contexts; reopen its tab"
+    exit 4
+  fi
+  # who is asking: the label of the slot worktree the caller stands in, else Lead
+  # when the caller is where the woken pane's leader is, else the directory's name
+  st_by=
+  if claim_live "$PWD"; then st_by=$(sed -n 3p "$(claim_file "$PWD")"); fi
+  if [ -z "$st_by" ]; then
+    st_here=$(pwd -P)
+    st_top=$(cd "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null && pwd -P)
+    st_pl=$(printf '%s' "$st_pick" | cut -f3)
+    if [ "$st_here" = "$st_pl" ] || [ "${st_top:-$st_here}" = "$st_pl" ]; then st_by=Lead
+    else st_by=$(basename "$PWD"); fi
+  fi
   if [ "$st_req" = next ]; then
     st_pool=$(pool_words) || exit 1
     st_n=0 st_free=0
@@ -642,11 +1247,12 @@ cmd_start() {
     done
     [ "$st_free" = 1 ] || { warn "all $st_n slots are in use in $repo"; exit 3; }
   fi
-  st_dir=$(wait_dir "$repo")
   st_file=$st_dir/$st_own.$st_pid.start
+  st_meta=$st_dir/$st_own.$st_pid.meta
+  { printf 'by=%s\n' "$(log_clean "$st_by")"; [ -z "$st_cx" ] || printf 'context=%s\n' "$st_cx"; } >"$st_meta" || die "cannot write the request in $st_dir"
   { printf '%s\n%s\n' "$st_mode" "$([ "$st_req" = next ] && echo - || echo "$st_req")"; printf '%s' "$st_prompt"; } >"$st_file.tmp" &&
     mv "$st_file.tmp" "$st_file" || die "cannot write the request in $st_dir"
-  kill -USR1 "$st_pid" 2>/dev/null || { rm -f "$st_file"; warn "the pane (pid $st_pid) is gone"; exit 4; }
+  kill -USR1 "$st_pid" 2>/dev/null || { rm -f "$st_file" "$st_meta"; warn "the pane (pid $st_pid) is gone"; exit 4; }
   st_limit=$(( ${CLAUDE_PEER_START_WAIT:-60} * 5 )); st_i=0
   while [ "$st_i" -lt "$st_limit" ]; do
     sleep 0.2
@@ -661,7 +1267,7 @@ cmd_start() {
     # a USR1 that landed before the pane's wait began is lost; send it again
     [ $((st_i % 5)) -ne 0 ] || [ ! -f "$st_file" ] || kill -USR1 "$st_pid" 2>/dev/null
   done
-  rm -f "$st_file"
+  rm -f "$st_file" "$st_meta"
   warn "$st_req did not start within ${CLAUDE_PEER_START_WAIT:-60}s; its pane shows why"
   exit 1
 }
@@ -794,8 +1400,8 @@ log_scan() { # mode
     function ov(a, b) { return a == b || a == "." || b == "." || index(a "/", b "/") == 1 || index(b "/", a "/") == 1 }
     { n++; line[n] = $0; kind[n] = $3; who[n] = $2; ts[n] = $1
       if ($3 == "claim") open[n] = 1
-      else if ($3 == "done" || $3 == "stop") {
-        l = $2; if ($3 == "stop") { l = $4; sub(/ .*/, "", l) }
+      else if ($3 == "done" || $3 == "stop" || $3 == "end") {
+        l = $2; if ($3 != "done") { l = $4; sub(/ .*/, "", l) }
         for (i = 1; i < n; i++) if (who[i] == l && kind[i] == "claim") open[i] = 0 } }
     END {
       nm = split(ENVIRON["LG_MINE"], mine, "\t")
@@ -1208,6 +1814,232 @@ peers_summary() {
   return 0
 }
 
+# --- contexts -----------------------------------------------------------------
+# A context is a small text file: `key: value` header lines, an empty line, then
+# the body, which is the first prompt. They live under ctx_dir at three levels
+# (everywhere, <owner>/, <owner>/<repo>/); a deeper file replaces a shallower
+# one of the same name. Nothing else in this script reads them yet.
+
+ctx_tab=$(printf '\t')
+
+ctx_dir() { printf '%s\n' "${CLAUDE_PEER_CONTEXTS:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-peer/contexts}"; }
+
+# Lowercase owner/repo of the origin of the main checkout of <dir> (default $PWD),
+# or status 1. A worktree shares its main checkout's config, so a peer finds its
+# leader's slug. An origin that is set but gives no usable slug says so once.
+origin_slug() {
+  os_top=$(cd "${1:-$PWD}" 2>/dev/null && repo_root_q) || return 1
+  os_u=$(git -C "$os_top" config --get remote.origin.url 2>/dev/null) || return 1
+  [ -n "$os_u" ] || return 1
+  os_s=${os_u%/}; os_s=${os_s%.git}
+  case $os_s in
+    *://*) os_s=${os_s#*://}; os_s=${os_s#*/};;
+    *:*) os_s=${os_s#*:};;
+    *) os_s=;;
+  esac
+  os_s=$(printf '%s' "${os_s#/}" | LC_ALL=C tr 'A-Z' 'a-z')
+  if printf '%s\n' "$os_s" | LC_ALL=C grep -Eq '^[a-z0-9._-]+(/[a-z0-9._-]+)+$' &&
+    ! printf '%s\n' "$os_s" | LC_ALL=C grep -Eq '(^|/)\.\.?(/|$)'; then
+    printf '%s\n' "$os_s"
+    return 0
+  fi
+  warn "origin '$os_u' gives no owner/repo; only the general contexts apply"
+  return 1
+}
+
+# <slug> -> the directories to read, shallow to deep.
+ctx_levels() {
+  cl_r=$(ctx_dir)
+  printf '%s\n' "$cl_r"
+  [ -z "$1" ] || printf '%s\n%s\n' "$cl_r/${1%%/*}" "$cl_r/$1"
+  return 0
+}
+
+# <file> -> its context name (the file name without NN- and .ctx), or status 1.
+ctx_name_of() {
+  cn=${1##*/}; cn=${cn%.ctx}
+  case $cn in
+    [0-9]*-*) cn_p=${cn%%-*}; case $cn_p in *[!0-9]*) ;; *) cn=${cn#*-};; esac;;
+  esac
+  printf '%s\n' "$cn" | LC_ALL=C grep -Eq '^[a-z][a-z0-9_-]*$' || return 1
+  printf '%s\n' "$cn"
+}
+
+# <slug> -> name<TAB>path per effective context, in display order, validity not
+# looked at. The later of two files with one name wins and takes the later place.
+ctx_scan() {
+  ctx_levels "$1" | while IFS= read -r sc_d; do
+    ( LC_ALL=C; export LC_ALL
+      for sc_f in "$sc_d"/*.ctx; do
+        [ -f "$sc_f" ] || continue
+        sc_n=$(ctx_name_of "$sc_f") || continue
+        printf '%s\t%s\n' "$sc_n" "$sc_f"
+      done )
+  done | awk -F'\t' '{ l[NR] = $0; last[$1] = NR } END { for (i = 1; i <= NR; i++) { split(l[i], a, "\t"); if (last[a[1]] == i) print l[i] } }'
+}
+
+# <path> -> status 0, or 1 and why on stderr.
+ctx_bad() { warn "$1: $2"; return 1; }
+ctx_check() {
+  cc_h=$(sed '/^$/,$d' "$1")
+  while IFS= read -r cc_l; do
+    [ -n "$cc_l" ] || continue
+    case $cc_l in *': '*) ;; *) ctx_bad "$1" "header line without ': ': $cc_l" || return 1;; esac
+    cc_k=${cc_l%%: *}; cc_v=${cc_l#*: }
+    case $cc_k in
+      title|ask|system) ;;
+      agent|model|effort)
+        printf '%s\n' "$cc_v" | LC_ALL=C grep -Eq '^[A-Za-z0-9][]A-Za-z0-9._:[-]*$' || ctx_bad "$1" "$cc_k: '$cc_v' is not a plain value" || return 1;;
+      mode) case $cc_v in fresh|continue) ;; *) ctx_bad "$1" 'mode: must be fresh or continue' || return 1;; esac;;
+      repo) ctx_bad "$1" 'repo: is not a key (a per-repository context goes in <owner>/<repo>/)' || return 1;;
+      *) ctx_bad "$1" "unknown key '$cc_k'" || return 1;;
+    esac
+  done <<EOT
+$cc_h
+EOT
+  return 0
+}
+
+# <slug> -> its valid contexts, as ctx_scan prints them; invalid ones are
+# reported on stderr and left out.
+ctx_files() {
+  ctx_scan "$1" | while IFS=$ctx_tab read -r cf_n cf_p; do
+    ctx_check "$cf_p" && printf '%s\t%s\n' "$cf_n" "$cf_p"
+  done
+}
+
+# <name> <slug> -> the path, or status 1.
+ctx_find() {
+  cf_p=$(ctx_scan "$2" | CF_N=$1 awk -F'\t' '$1 == ENVIRON["CF_N"] { print $2; exit }')
+  [ -n "$cf_p" ] || { warn "no context '$1' here (claude-peer context list)"; return 1; }
+  printf '%s\n' "$cf_p"
+}
+
+# <path> <key> -> the first value of that header key.
+ctx_get() { sed '/^$/,$d' "$1" | CG_P="$2: " awk 'index($0, ENVIRON["CG_P"]) == 1 { print substr($0, length(ENVIRON["CG_P"]) + 1); exit }'; }
+
+# <path> -> the body: after the first empty line, trailing blank lines dropped.
+ctx_body() { awk 'b { l[++n] = $0; if ($0 != "") last = n; next } /^$/ { b = 1 } END { for (i = 1; i <= last; i++) print l[i] }' "$1"; }
+
+# <path> <value> -> the first prompt. The value goes through the environment and
+# awk index/substr, so backslashes and & arrive as typed.
+ctx_prompt() {
+  CP_BODY=$(ctx_body "$1") CP_VALUE=$2 awk 'BEGIN {
+    s = ENVIRON["CP_BODY"]; v = ENVIRON["CP_VALUE"]
+    if (index(s, "{input}") == 0) { print (s == "" || v == "" ? s v : s "\n\n" v); exit }
+    while ((i = index(s, "{input}")) > 0) { o = o substr(s, 1, i - 1) v; s = substr(s, i + 7) }
+    print o s }'
+}
+
+# <path> -> the claude flags it sets, one per line, in the order start passes them.
+ctx_flag_lines() {
+  [ "$(ctx_get "$1" mode)" != continue ] || echo '--continue'
+  for ff_k in agent model effort; do
+    ff_v=$(ctx_get "$1" "$ff_k"); [ -z "$ff_v" ] || echo "--$ff_k $ff_v"
+  done
+  ff_v=$(ctx_get "$1" system); [ -z "$ff_v" ] || echo "--append-system-prompt $ff_v"
+  return 0
+}
+
+# <name> <path> -> name<TAB>title<TAB>ask<TAB>flags<TAB>path
+ctx_row() {
+  cw_f=
+  for cw_k in agent model effort; do
+    cw_v=$(ctx_get "$2" "$cw_k"); [ -z "$cw_v" ] || cw_f="$cw_f $cw_k=$cw_v"
+  done
+  [ "$(ctx_get "$2" mode)" != continue ] || cw_f="$cw_f mode=continue"
+  [ -z "$(ctx_get "$2" system)" ] || cw_f="$cw_f system"
+  cw_t=$(ctx_get "$2" title); cw_a=$(ctx_get "$2" ask)
+  cw_f=${cw_f# }
+  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "${cw_t:-$1}" "${cw_a:--}" "${cw_f:--}" "$2"
+}
+
+# list [--all] [<dir>] | show <name|@builtin> [value words...] | dir [--repo [<dir>]]
+cmd_context() {
+  [ $# -ge 1 ] || usage
+  cx_verb=$1; shift
+  case $cx_verb in
+    list)
+      cx_all=0
+      if [ "${1-}" = --all ]; then cx_all=1; shift; fi
+      [ $# -le 1 ] || usage
+      if [ "$cx_all" = 1 ]; then
+        find "$(ctx_dir)" -type f -name '*.ctx' 2>/dev/null | LC_ALL=C sort | while IFS= read -r cx_p; do
+          cx_n=$(ctx_name_of "$cx_p") && ctx_check "$cx_p" && ctx_row "$cx_n" "$cx_p"
+        done
+      else
+        cx_slug=$(origin_slug "${1:-$PWD}") || cx_slug=
+        ctx_files "$cx_slug" | while IFS=$ctx_tab read -r cx_n cx_p; do ctx_row "$cx_n" "$cx_p"; done
+      fi
+      return 0;;
+    show)
+      [ $# -ge 1 ] || usage
+      cx_name=$1; shift
+      case $cx_name in
+        @fresh) printf '@fresh — Blank session\nclaude -n <name> with no prompt\n'; return 0;;
+        @continue) printf '@continue — Continue the last session\nclaude -n <name> --continue with no prompt\n'; return 0;;
+        @resume) printf '@resume — Resume a session\nclaude -n <name> --resume alone: Claude'"'"'s own list chooses\n'; return 0;;
+        @task) printf '@task — New task\nclaude -n <name> with the text typed in the pane as the prompt\n'; return 0;;
+      esac
+      cx_slug=$(origin_slug) || cx_slug=
+      cx_p=$(ctx_find "$cx_name" "$cx_slug") || exit 1
+      ctx_check "$cx_p" || exit 1
+      cx_t=$(ctx_get "$cx_p" title); cx_a=$(ctx_get "$cx_p" ask)
+      cx_rel=${cx_p#"$(ctx_dir)"/}
+      case $cx_rel in */*) cx_scope=${cx_rel%/*};; *) cx_scope=everywhere;; esac
+      printf '%s — %s\nfile: %s\nscope: %s\n' "$cx_name" "${cx_t:-$cx_name}" "$cx_p" "$cx_scope"
+      [ -z "$cx_a" ] || printf 'asks: %s\n' "$cx_a"
+      ctx_flag_lines "$cx_p" | sed 's/^/flag: /'
+      echo
+      if [ $# -eq 0 ]; then ctx_body "$cx_p"; else ctx_prompt "$cx_p" "$*"; fi
+      return 0;;
+    dir)
+      if [ "${1-}" = --repo ]; then
+        shift; [ $# -le 1 ] || usage
+        cx_slug=$(origin_slug "${1:-$PWD}") || die "this repository has no origin remote, so it has no context directory"
+        printf '%s/%s\n' "$(ctx_dir)" "$cx_slug"
+      else
+        [ $# -eq 0 ] || usage
+        ctx_dir
+      fi
+      return 0;;
+    *) usage;;
+  esac
+}
+
+# [--slot <slot>] [--frame <name>] [--z all|near|near-mid|none] [--truecolor|--256]
+# | --screen [--slot <slot>]: the operator's preview of the sleeper, and the tests' handle.
+cmd_art() {
+  slot= ar_f=asleep ar_z=all ar_m= ar_s=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --slot) [ $# -ge 2 ] || usage; slot=$2; shift;;
+      --frame) [ $# -ge 2 ] || usage; ar_f=$2; shift;;
+      --z) [ $# -ge 2 ] || usage; case $2 in all|near|near-mid|none) ar_z=$2;; *) usage;; esac; shift;;
+      --truecolor) ar_m=truecolor;;
+      --256) ar_m=256;;
+      --screen) ar_s=1;;
+      *) usage;;
+    esac
+    shift
+  done
+  [ -n "$slot" ] || slot=$(pool_words | awk '{ print $1 }')
+  slot_ok "$slot" || die "'$slot' is not a slot name (lowercase letters, digits, - and _)"
+  [ -n "$ar_s" ] || { art_lines "$ar_f" "$ar_z" "$slot" "$ar_m"; return 0; }
+  # the quiet waiting screen, worked out as the pane works it out
+  label=$(label_of "$slot")
+  repo=$(repo_root_q) || repo=$(pwd -P)
+  rname=$(rname_of "$repo")
+  pn_pick=$(git config --get claude-peer.picker 2>/dev/null) || pn_pick=
+  pn_slug=
+  [ "$pn_pick" = off ] || pn_slug=$(origin_slug 2>/dev/null) || pn_slug=
+  pn_tty=/dev/tty
+  ar_d=$(mktemp -d "${TMPDIR:-/tmp}/claude-peer-art.XXXXXX") || die "cannot make a temporary directory"
+  pn_me=$ar_d/screen
+  pane_quiet
+  rm -rf "$ar_d"
+}
+
 [ $# -ge 1 ] || usage
 cmd=$1; shift
 case $cmd in
@@ -1225,6 +2057,8 @@ case $cmd in
   install) cmd_install "$@";;
   default) cmd_default "$@";;
   status) cmd_status "$@";;
+  context) cmd_context "$@";;
+  art) cmd_art "$@";;
   -h|--help|help) usage;;
   *) warn "unknown command '$cmd'"; usage;;
 esac
