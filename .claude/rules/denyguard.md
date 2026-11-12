@@ -21,14 +21,18 @@ list names returns a count regardless.
 PreToolUse hook on Bash that reads the *same* `permissions.deny` list at
 hook time — no second list anywhere — maps every `Read(...)`/`Edit(...)`
 entry to an absolute prefix (`~/x` → `$HOME/x`; `//x` → `/x` from the
-filesystem root; `/x` → project-relative, resolved against the session's
-cwd; bare `x` → gitignore any-depth), and refuses any Bash command whose
+filesystem root; `/x` and `./x` → project-relative, resolved against the
+session's cwd (`./x` is the documented `Read(./.env)` form; read as a bare
+pattern it begins `./`, matches no path and guards nothing); bare `x` →
+gitignore any-depth), and refuses any Bash command whose
 literal path tokens, glob prefixes, or cwd land inside one. It widens
 coverage to every command that names a denied path in its literal text
 (grep, rg, ls, find, wc, awk, diff, `git -C`, a Python file argument, an
 `-exec` argument, a heredoc body — the whole command string is scanned), to
-a glob that could expand into a denied tree, to a relative path or `cd`
-target resolved against the hook's cwd, to a symlink whose target is
+a glob that could expand into a denied tree, to a path attached to an
+option (`--opt=PATH`, `key=PATH` as `dd` writes it, `@PATH` as `curl` does),
+to a relative path resolved against the hook's cwd and against every directory a `cd` or
+`pushd` earlier in the command line could have left the shell in, to a symlink whose target is
 denied, and to a session whose cwd already is one. `denyguard check
 --profile DIR PATH...` exposes the same boundary test for anything else
 that needs it (a working-set opener, for one), and `denyguard settings`
@@ -42,13 +46,72 @@ rule is not itself a hit — `ls ~/.claude` over a profile that only denies
 `~/.claude/projects/**` passes, and so does a heredoc body written as
 documentation (`cat <<EOF … EOF`), which is scanned for a direct hit only,
 never an ancestor guess, so prose that names a denied path passes while a
-script that actually opens it still refuses. A hit fires only when that
+script that actually opens it still refuses. Whose heredoc it is decides
+this (`heredoc_consumer`): the command word of the last simple command before
+the `<<`, never the first word of the line. A body is data when that is `cat`,
+`tee` or `printf` with no pipe after the marker, and, when it sits inside
+`$( )`, when the command that takes the substitution is an assignment or one of
+`SUBSTITUTION_HOSTS` (`git`, `gh`, `local`, `export`, `declare`, `typeset`,
+`readonly`): `git commit -m "$(cat <<'EOF' … EOF)"` is a message. Under
+`bash -c`, `ssh`, `eval` or an unknown tool the same text becomes that
+program's argument and stays under the full rule set. A hit fires only when that
 SAME command also carries a genuine recursion signal — `find`/`rg`/`du`/…
 by nature, or `-r`/`-R`/`--recursive` on `grep`/`cp`/`rm`/`ls`/… — never a
 bare mention of a recursive-sounding word or a flag cluster that merely
-contains the letter (`sort -nr`, `ls -ltr`). First three real firings were
+contains the letter (`sort -nr`, `ls -ltr`). An explicit recursive flag
+(`cp -a` and `--archive` count) over the home directory or `/` is refused
+like any other ancestor: `grep -r x ~` and `cp -R ~ dest` are not exempt.
+First three real firings were
 all false positives of the OLD, whole-command version of this check
 (2026-09-18); this narrowing is that fix.
+
+**A glob is matched component by component, not by its literal prefix.**
+`glob_reach` walks the glob's path and a denied rule's prefix together: a
+component with a glob character must `fnmatchcase` the rule's component
+(both sides already folded, below), a literal one must equal it, and a component
+that is exactly `**` reaches the tree at once. Running out of the rule's
+components first, or both together, is "inside" — the pattern can name the
+denied tree or something in it — and is refused ("may expand into"), so
+`ls ~/code/*` and `ls ~/code/octo-*/x` still refuse. Running out of the
+glob's components first is "ancestor": the pattern can only name a
+directory above the denied tree, so it refuses only when that same simple
+command recurses (`grep -r x ~/co*`), and a data heredoc body, which never
+counts as recursive, passes. Until 2026-11-11 the test was the glob's
+literal directory prefix being an ancestor of any rule, so a home-anchored
+pattern such as `~/.zsh*` was cut back to `$HOME` and refused whenever any
+rule sat under it (found by the audit's own sessions, whose commands
+mentioned such a pattern).
+
+**A recursion that names no path starts where the command stands.**
+`find`, `fd`, `rg`, `ag`, `ack`, `du` and `tree`, `grep -r` and `ls -R`
+search the directory they are in when given no path (`implicit_cwd`; never
+for a call carrying `--help` or `--version`). Whether the command was given
+a path is decided by position and existence (`names_root`), never by a word
+looking like one: an option's value (`rg -g '*.py' gizmo`, `find -name
+'*.md'`, `tree -P '*.py'`) and the search pattern itself (`rg gizmo/x`, `rg
+NOTES` with a file of that name beside it) both look like paths. `find`'s
+first word after its leading `-H -L -P -O -D` options is a root by
+position. For the rest, a word after the options (or after a lone `--`) is a
+root when it has a glob character or exists; the first one of a
+pattern-first command (`grep`, `rg`, `ag`, `ack`, `fd`) is the pattern, and
+one straight after an option may be that option's value, so neither counts
+(`--files`, `-r` and the other recursive flags take none; `du`, `tree` and
+`ls` guard only after a `--long` option or one ending in `P` or `I`, so `du
+-sh src` still names `src`). When no root is named, every base `scan` holds
+is tried as the directory it recurses from: one that is a strict ancestor of
+a denied prefix refuses ("`rg` recurses from `<base>`, which holds
+`<rule>`; name a directory under `<base>` that does not hold it, after the
+pattern"). Unlike
+a named directory, there is no exemption for `$HOME` or `/`. A root that
+does not exist yet is not a root (`rg x newdir/` is refused). A heredoc body
+line read as a command gets the same test, and its refusal adds that prose
+belongs in `cat <<EOF`, on its own or inside `$( )` for `git` and `gh`. `rg` and `ack` fed by a pipe and given no path read stdin,
+not the directory, and are exempt; `grep -r`, `find`, `du`, `tree`, `fd` and
+`ls -R` ignore stdin and are not. A glob with no slash is dropped everywhere else, because a bare star is
+also a markdown bullet, a SQL column list and a product; under a recursive,
+non-data command it is resolved against each base and matched like any
+other glob, so `cp -r * dest` from above a denied tree refuses, and it
+counts as the path the command was given (`grep -r x *.md` passes).
 
 **A heredoc is only the lines between an opener and its terminator.** The
 line that opens one is a command line like any other: it is scanned whole,
@@ -65,17 +128,81 @@ the scan stopped at the marker: whatever followed `<<` on that line went
 unread, here-strings and shifts included, which let `cat <<EOF > <denied
 path>` through — the most common way an agent writes a file.
 
+**A `cd` becomes a further base for what follows.** `scan` keeps `bases`,
+starting as `[cwd]`; a `cd` or `pushd` simple command adds its target
+(`cd_targets`: absolute as written, else joined to each base already
+listed, `~` or no argument being home), and every later token is resolved
+against every base, so `cd ~/code && cat octo-secret/x` from elsewhere
+refuses. The list only grows: a subshell's `cd` is not undone at its
+closing parenthesis, because modelling that could resolve a later token
+against the wrong directory, and keeping every directory the line ever
+stood in is the strict reading. A target containing `$` or a backtick, and
+`cd -`, add nothing. A relative `cd` is joined to every base already
+listed, so the list doubles at each one (after `cd a; cd b` a shell is in
+`a/b`, after `(cd a); cd b` in `b`, and the scan cannot tell which), and
+`MAX_BASES = 64` holds six descending relative `cd`s; sibling hops
+(`cd ../b`) collapse when normalised, an absolute target adds one, and a
+directory already listed is counted once. A command line that would take
+the list past 64 is refused, not followed part of the way: the denial
+reads "changes directory in more ways than denyguard follows (limit 64)"
+and its log line has `(cd limit)` in the rule column, which makes the
+limit countable. A profile with no deny rules is never refused for it.
+Every resolved path is judged once, however many bases produce it.
+
+**Paths are compared in one canonical spelling.** `canon` normalises a path,
+collapses a leading double slash (POSIX `normpath` keeps exactly two), and
+on macOS drops the Data-volume firmlink prefix (`/System/Volumes/Data`,
+which `realpath` does not resolve) and folds case (`fold`: the default APFS
+volume is case-insensitive; on a case-sensitive one that over-refuses, the
+strict side). Every comparison goes through it: the direct and ancestor
+tests and the glob walk in `scan`, the implicit-cwd test, `cwd_hit`, both
+branches of `check`, and an any-depth rule (`Rule.pattern_key`, the pattern
+folded and matched with `fnmatchcase`, so case is `fold`'s alone). A rule
+holds two keys, its prefix and the `realpath` of it (`Rule.keys`), so a rule
+written through a symlinked ancestor binds the real spelling too; the cost is
+one `realpath` per rule per call. A candidate also gets a `realpath` variant
+whether or not it exists yet, resolved as far as it does, so a `>` redirect
+or a `cat` of a new name under a symlink into a denied tree is read like an
+existing one. `denyguard rules` still prints each rule as written, never
+folded. Until 2026-11-12 a path that did not exist had no `realpath` variant
+at all, and an any-depth rule was compared case-sensitively on macOS.
+
 **What it cannot see.** This is a lexical guard, not a sandbox: a shell
-variable other than `$HOME`, `$(...)` output, a script file's own
+variable other than `$HOME` (so a `cd` to one, too), `$(...)` output
+(likewise a `cd` to a command substitution), a per-command directory flag
+such as `-C <dir>`, a script file's own
 contents, `find <parent> -exec` without a recursive tell, `eval`, base64,
 or any program that computes the path at run time all pass through unseen.
-Heredoc reading has two soft spots of its own: a `<<WORD` inside a quoted
+So does a path assembled by shell quoting, backslashes or brace expansion
+(`~/co''de/...`, `~/code/octo-{secret,x}`), and a case-insensitive mount on
+Linux or WSL (case is folded on macOS only).
+Heredoc reading has soft spots of its own: a `<<WORD` inside a quoted
 string still counts as an opener when a later line happens to be exactly
-`WORD` (and its lines get the data reading if that line starts with
-`cat`/`tee`/`printf`), and a delimiter with characters outside
+`WORD` (and its lines get the data reading if the command before the `<<` is
+`cat`/`tee`/`printf`), a git alias that shells out and is fed by
+`$(cat <<EOF)` (the host is taken to be harmless text), and a delimiter with characters outside
 `[A-Za-z0-9_]`, or a second heredoc opened on the same line, is not
 recognised — its body is read as ordinary commands, which is strict, not
 blind.
+A value glued to a short option with no separator (`-f` immediately
+followed by the path) is not read either: only the text after an `=` or a
+leading `@` is tried as a path.
+`ls` of a slash-less glob without `-R` (one directory level, names only) is
+likewise not examined.
+An option's separate value that names an existing file is taken for a root
+(`rg -t py NOTES`, `tree -o FILE`, `du -X FILE`).
+A pattern glued to its short option (`-ePAT`) is not recognised as one.
+`mv` or `ln -s` of an ancestor directory is not read as recursion, so
+relocating a denied tree that way passes.
+`ag` fed by a pipe is refused though it reads stdin (not verified, so not
+exempted).
+A slash-less star under a recursive command (`cp -r * dest`) is refused
+from above a denied tree even where the shell would not expand it onto a
+dot-name: with `dotglob` or `GLOB_DOTS` on it does, and the scanner cannot
+see shell options. Naming directories is the way through.
+False positives of the same test: an option between the pattern and the root
+hides the root (`rg foo --hidden src`: put options first, or write `--`
+before the roots).
 One gap is worth stating separately because a rule's *shape* invites
 over-trust: a token containing a glob is matched only against rules that
 carry a directory prefix, so a bare any-depth rule (`Read(**/*.env)`) does
@@ -94,17 +221,38 @@ would.
 tailnet wrappers fail open because routing there is an optimisation and
 the command is the point; here the *refusal* is the point, and a guard
 that silently becomes a no-op would leave the operator believing the hole
-is closed, which is worse than the hole itself. Missing python3, or an
-unreadable/unparsable `settings.json`: exit 2, which blocks the tool call
+is closed, which is worse than the hole itself. Missing python3, a python3
+that exists but cannot start (the wrapper turns any `hook` status other
+than 0 or 2 into 2; `check` keeps its own 1), an unreadable/unparsable
+`settings.json`, one of the wrong shape (top level, `permissions` or
+`deny` of the wrong type, a non-string rule), a payload that is not a JSON
+object, and any internal error: exit 2, which blocks the tool call
 outright (hooks reference §3 — exit 2 blocks unconditionally, with or
 without JSON on stdout). An ABSENT `permissions.deny` reads as zero rules
 and allows — that is the correct reading of an empty list, not a failure.
+A command line that changes directory in more ways than the scan follows
+(`MAX_BASES`, above) is refused too, as an ordinary JSON deny: the scan
+knows it has stopped looking, and silence there would be the same lie.
+A call that cannot finish its scan is refused too: one `SIGALRM` budget
+(`BUDGET_S = 4.0` seconds, armed after the payload is parsed and disarmed
+before a decision is written) covers the whole hook call, `check`, `rules`,
+`settings` and `dir` excepted. When it runs out the answer is a JSON deny
+("could not finish checking this command within 4 s … use absolute paths
+instead of a relative cd, or split it into smaller Bash calls": relative `cd`s
+are what multiply the work) with `(time limit)` in the log's rule column.
+`DENYGUARD_BUDGET` (seconds, for tests) may only lower it; a value that does
+not parse, is not positive or exceeds `BUDGET_S` is ignored, so the variable
+cannot lift the bound. The bound is a backstop: a data heredoc body is
+resolved against the cwd alone, an absolute spelling once, and a word that
+has passed is not judged again until a `cd` adds a directory.
 The one way this still fails open is documented by Claude Code itself and
 cannot be fixed from here: a hook that TIMES OUT does not block ("don't
-count on a stalled hook to act as a gate" — hooks reference §4). So the
-script does no network, no subprocesses, and stats only paths it has not
-already ruled on lexically; the wiring's `timeout: 10` exists only so a
-wedged mount cannot hold a whole turn for the 600s default.
+count on a stalled hook to act as a gate" — hooks reference §4). The budget
+turns a slow scan into a refusal well before the wiring's `timeout: 10`,
+but a filesystem call that never returns (a wedged mount) is not something
+a signal reliably interrupts, so that caveat stays. The script does no
+network and no subprocesses; the wiring's `timeout: 10` exists so such a
+mount cannot hold a whole turn for the 600s default.
 
 **Cost**: one `sh -c`, one `python3` start, a JSON parse of the settings
 file, and a few dozen `lstat`s — about 25–35ms per Bash call, on every Bash

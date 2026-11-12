@@ -57,10 +57,13 @@
 # failure. The one way this still fails open is documented by Claude Code
 # itself and cannot be fixed from here: a hook that TIMES OUT does not
 # block ("don't count on a stalled hook to act as a gate" — hooks reference
-# §4). So this script does no network, no subprocesses, and only stats
-# paths it has not already ruled on lexically; the wiring's `timeout: 10`
-# (see `denyguard settings`) exists so a wedged mount cannot hold a whole
-# turn for the 600s default instead.
+# §4). So this script does no network and no subprocesses. It resolves each
+# path-shaped word against each directory the command line stood in and
+# through symlinks (a few filesystem calls per word), under a 4 s budget
+# (BUDGET_S): a slow scan is refused, not left to run into the wiring's
+# `timeout: 10` (see `denyguard settings`), which exists so a wedged mount
+# cannot hold a whole turn for the 600s default. A filesystem call that never
+# returns is the one thing the budget cannot interrupt.
 #
 # Usage:
 #   denyguard hook               PreToolUse hook body; reads the event JSON
@@ -85,6 +88,9 @@
 #                       out, so the default profile is addressed the same
 #                       way everywhere).
 #   DENYGUARD_LOG       overrides the denial log path (tests).
+#   DENYGUARD_BUDGET    seconds, to lower the hook's time budget (tests); a
+#                       value that is not positive, does not parse or exceeds
+#                       4 is ignored.
 set -eu
 
 command -v python3 >/dev/null 2>&1 || {
@@ -94,20 +100,30 @@ command -v python3 >/dev/null 2>&1 || {
 
 # `python3 -` reads its own program from stdin, which the heredoc below
 # already occupies — so `hook`'s PreToolUse payload (also arriving on
-# stdin) is saved to fd 3 first and read from there once inside. Same trick
-# as iterm2-prefs-clean's git filter; postbox's heredocs sidestep it by
-# passing a filename in argv instead, which a hook has none of.
+# stdin) is saved to fd 3 first and read from there once inside. postbox's
+# heredocs sidestep it by passing a filename in argv instead, which a hook
+# has none of.
 exec 3<&0
-exec python3 - "$@" <<'PY'
+rc=0
+python3 - "$@" <<'PY' || rc=$?
 import fnmatch
 import json
 import os
 import re
+import signal
 import sys
 import time
 
 HOME = os.environ.get("HOME", "")
 GLOB_CHARS = set("*?[")
+# Directories one command line is followed through (scan). A relative `cd`
+# is joined to every directory already listed, so the list doubles at each
+# one: 64 holds six descending relative `cd`s. Past it scan refuses.
+MAX_BASES = 64
+# One time budget for a whole `hook` call, in seconds. The wiring gives the
+# hook 10 and a hook that times out does not block, so a scan that cannot
+# finish refuses by itself (OutOfTime). DENYGUARD_BUDGET may only lower it.
+BUDGET_S = 4.0
 # A command word that is recursive by nature — no flag needed.
 DEFAULT_RECURSIVE = {
     "find", "fd", "rg", "ag", "ack", "du", "tree", "tar", "zip", "rsync",
@@ -115,7 +131,7 @@ DEFAULT_RECURSIVE = {
 # A command word that is recursive only with one of these flags present,
 # as a standalone `--long` form or inside a `-xyz` short-flag cluster.
 FLAG_RECURSIVE = {
-    "cp": {"-r", "-R", "--recursive"},
+    "cp": {"-r", "-R", "-a", "--recursive", "--archive"},
     "scp": {"-r", "-R", "--recursive"},
     "rm": {"-r", "-R", "--recursive"},
     "chmod": {"-r", "-R", "--recursive"},
@@ -124,8 +140,16 @@ FLAG_RECURSIVE = {
     "diff": {"-r", "-R", "--recursive"},
     "ls": {"-R", "--recursive"},
 }
+# A command word that, with no path argument, searches the directory it
+# stands in (implicit_cwd adds grep -r and ls -R).
+IMPLICIT_CWD = {"find", "fd", "rg", "ag", "ack", "du", "tree"}
 GREP_LIKE = {"grep", "egrep", "fgrep"}
 GREP_RECURSIVE_FLAGS = {"-r", "-R", "--recursive", "--dereference-recursive"}
+# Commands whose first positional is a search pattern, never a place (names_root).
+PATTERN_FIRST = GREP_LIKE | {"rg", "ag", "ack", "fd"}
+# Programs that read stdin, not the directory, when a pipe feeds them and
+# they are given no path (rg's usage text lists `command | rg PATTERN`).
+STDIN_SEARCHERS = {"rg", "ack"}
 RULE_RE = re.compile(r"^(Read|Edit)\((.+)\)$")
 # Split a command string the way a lexical (not a real shell) scanner can:
 # on whitespace, the metacharacters that separate commands/arguments, and
@@ -145,6 +169,11 @@ HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)(-)?\s*(['\"]?)(\w+)\2")
 # refuses it; every other consumer (an interpreter, or any piped body)
 # keeps the full rule set, including the ancestor/recursion check.
 DATA_HEREDOC_CONSUMERS = {"cat", "tee", "printf"}
+# `cat <<EOF` inside `$( )` hands its output to the command around it. Under
+# these that output is text (a message, a body, a value); under anything else
+# (`bash -c`, `ssh`, `eval`, an unknown tool) it may be run.
+SUBSTITUTION_HOSTS = {"git", "gh", "local", "export", "declare", "typeset", "readonly"}
+ASSIGNMENT_RE = re.compile(r"^[A-Za-z_]\w*=")
 # `~` counts as $HOME only at the start of a token or right after `=`/`:`
 # (VAR=~/x, --opt=~/x) — a bare `~` elsewhere is an ordinary character.
 TILDE_RE = re.compile(r"""(?:(?<=[\s;|&()<>'"=:])~|^~)(?=/|$)""")
@@ -176,12 +205,67 @@ def load_deny(dir_):
             "readable JSON\n" % (path, exc)
         )
         sys.exit(2)
-    perms = data.get("permissions") or {}
-    return perms.get("deny") or []
+    bad = None
+    if not isinstance(data, dict):
+        bad = "the top level is not an object"
+    else:
+        perms = data.get("permissions")
+        if perms is not None and not isinstance(perms, dict):
+            bad = "permissions is not an object"
+        else:
+            deny_list = (perms or {}).get("deny")
+            if deny_list is not None and not isinstance(deny_list, list):
+                bad = "permissions.deny is not a list"
+            elif deny_list and not all(isinstance(r, str) for r in deny_list):
+                bad = "permissions.deny holds an entry that is not a string"
+    if bad:
+        sys.stderr.write(
+            "denyguard: cannot read %s: %s; refusing Bash until "
+            "permissions.deny in that file is a list of rule strings\n"
+            % (path, bad)
+        )
+        sys.exit(2)
+    return (data.get("permissions") or {}).get("deny") or []
+
+
+class OutOfTime(BaseException):
+    """Raised by the SIGALRM handler. A BaseException so that no
+    `except Exception` between the timer and cmd_hook can swallow it."""
+
+
+def budget():
+    try:
+        value = float(os.environ.get("DENYGUARD_BUDGET", ""))
+    except ValueError:
+        return BUDGET_S
+    return value if 0 < value <= BUDGET_S else BUDGET_S
+
+
+FIRMLINK = "/System/Volumes/Data"
+
+
+def fold(text):
+    """The case a comparison is made in: the default macOS volume is case-
+    insensitive, so two spellings of one path differ only in case there.
+    On a case-sensitive volume that over-refuses, the strict side."""
+    return text.casefold() if sys.platform == "darwin" else text
+
+
+def canon(path):
+    """One spelling for two spellings of a path: normalised, a leading
+    double slash (which normpath keeps) collapsed, the Data-volume firmlink
+    prefix (which realpath does not resolve) dropped on macOS, then folded."""
+    path = os.path.normpath(path)
+    if path.startswith("//"):
+        path = path[1:]
+    if sys.platform == "darwin" and path.startswith(FIRMLINK + "/"):
+        path = path[len(FIRMLINK):]
+    return fold(path)
 
 
 class Rule:
-    __slots__ = ("tool", "raw", "anchor", "prefix", "kind", "pattern", "evaluable")
+    __slots__ = ("tool", "raw", "anchor", "prefix", "kind", "pattern",
+                 "evaluable", "keys", "pattern_key")
 
     def __init__(self, tool, raw, anchor, prefix, kind, pattern, evaluable):
         self.tool = tool
@@ -191,6 +275,22 @@ class Rule:
         self.kind = kind
         self.pattern = pattern
         self.evaluable = evaluable
+        # prefix and pattern stay as written, for display; comparisons use
+        # these. The prefix as written and its realpath: a rule named
+        # through a symlinked ancestor binds the real spelling too.
+        self.keys = () if prefix is None else tuple(dict.fromkeys(
+            (canon(prefix), canon(os.path.realpath(prefix)))))
+        self.pattern_key = fold(pattern)
+
+
+def inside(key, rule):
+    """Is the canonical `key` one of the rule's trees, or under one?"""
+    return any(key == k or key.startswith(os.path.join(k, "")) for k in rule.keys)
+
+
+def ancestor_of(key, rule):
+    """Is the canonical `key` a strict ancestor of one of the rule's trees?"""
+    return any(k != key and k.startswith(os.path.join(key, "")) for k in rule.keys)
 
 
 def strip_recursive_suffix(s):
@@ -202,8 +302,7 @@ def strip_recursive_suffix(s):
 
 def literal_prefix(path):
     """Text before the first glob character, cut back to the last `/` —
-    used both for a rule's own glob remainder and for a glob-bearing
-    command fragment, so the two compare on the same footing."""
+    a glob rule's fixed directory (a command's glob goes to glob_reach)."""
     idx = next((i for i, c in enumerate(path) if c in GLOB_CHARS), None)
     if idx is None:
         return path
@@ -224,6 +323,8 @@ def parse_rule(tool, path_str, cwd):
         anchor, core = "root", path_str[1:]
     elif path_str.startswith("/"):
         anchor, core = "project-relative", path_str[1:]
+    elif path_str.startswith("./"):
+        anchor, core = "project-relative", path_str[2:]
     else:
         anchor, core = "any-depth", path_str
 
@@ -265,9 +366,10 @@ def parse_deny_list(deny_list, cwd):
 
 
 def match_any_depth(path, pattern):
-    if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path, "*/" + pattern):
+    """Both arguments already canonical (case is fold's business alone)."""
+    if fnmatch.fnmatchcase(path, pattern) or fnmatch.fnmatchcase(path, "*/" + pattern):
         return True
-    return any(fnmatch.fnmatch(part, pattern) for part in path.split(os.sep) if part)
+    return any(fnmatch.fnmatchcase(part, pattern) for part in path.split(os.sep) if part)
 
 
 def split_words(text):
@@ -317,25 +419,46 @@ def recursion_signal(words, command_word):
 
 def split_simple_commands(text):
     """A heredoc-free fragment, split on `; && || | & ( )` into simple
-    commands: (words, command_word, is_heredoc_body=False, is_data=False)."""
+    commands: (words, command_word, is_heredoc_body=False, is_data=False,
+    piped_in) — piped_in is true when exactly `|` or `|&` sits between this
+    command and the previous one on the line."""
     segments = []
     current = []
-    for part in SEP_RE.split(text):
-        if part is None:
-            continue
-        if SEP_RE.fullmatch(part):
-            if current:
-                words = split_words("".join(current))
-                if words:
-                    segments.append((words, command_word_of(words), False, False))
-                current = []
-        else:
+    seps = ""
+    for part in SEP_RE.split(text) + [None]:
+        if part is not None and not SEP_RE.fullmatch(part):
             current.append(part)
-    if current:
+            continue
         words = split_words("".join(current))
+        current = []
         if words:
-            segments.append((words, command_word_of(words), False, False))
+            segments.append((words, command_word_of(words), False, False,
+                             bool(segments) and seps in ("|", "|&")))
+            seps = ""
+        if part is not None:
+            seps += part
     return segments
+
+
+def heredoc_consumer(head):
+    """Whose heredoc is it? `head` is the opener line up to the `<<`: the
+    consumer is the command word of its LAST simple command, the one the
+    operator is written in. `substituted` is true when that command is opened
+    by `$(`; `host` is then the command that takes the substitution's output
+    as an argument (assignment words skipped; empty for a plain assignment)."""
+    parts = SEP_RE.split(head)  # text, separator, text, separator, ...
+    for k in range(len(parts) - 1, -1, -2):
+        words = split_words(parts[k])
+        if words:
+            break
+    else:
+        return "", False, ""
+    if k < 2 or parts[k - 1] != "(" or not parts[k - 2].endswith("$"):
+        return command_word_of(words), False, ""
+    host_words = split_words(parts[k - 2][:-1])
+    while host_words and ASSIGNMENT_RE.match(host_words[0]):
+        host_words.pop(0)
+    return command_word_of(words), True, command_word_of(host_words)
 
 
 def heredoc_of(lines, i, last_exact, last_stripped):
@@ -363,9 +486,9 @@ def heredoc_of(lines, i, last_exact, last_stripped):
 
 def segments_of(text):
     """Every simple command in `text`, in order, as (words, command_word,
-    is_heredoc_body, is_data) — a heredoc body is its own run of segments
-    carrying the word that opened it and whether that body is DATA (fed to
-    cat/tee/printf, unpiped) or kept under the full rule set. The line that
+    is_heredoc_body, is_data, piped_in) — a heredoc body is its own run of
+    segments carrying the word that opened it and whether that body is DATA
+    (fed to cat/tee/printf, unpiped) or kept under the full rule set. The line that
     opens a heredoc is a command line like any other: it is scanned whole,
     less the `<<WORD` operator itself, so a redirect, an argument or a
     chained command written after the marker is never skipped."""
@@ -390,16 +513,17 @@ def segments_of(text):
         # joined, not scanned apart, so `grep -r x <<EOF dir` keeps its
         # recursion signal and its directory in the same simple command.
         segments.extend(split_simple_commands(head + " " + tail))
-        consumer = command_word_of(split_words(head))
-        is_data = consumer in DATA_HEREDOC_CONSUMERS and "|" not in tail
+        consumer, substituted, host = heredoc_consumer(head)
+        is_data = (consumer in DATA_HEREDOC_CONSUMERS and "|" not in tail
+                   and (not substituted or not host or host in SUBSTITUTION_HOSTS))
         for body_line in lines[i + 1:end]:
             if is_data:
                 words = split_words(body_line)
                 if words:
-                    segments.append((words, consumer, True, True))
+                    segments.append((words, consumer, True, True, False))
             else:
-                for words, cw, _, _ in split_simple_commands(body_line):
-                    segments.append((words, cw, True, False))
+                for words, cw, _, _, piped in split_simple_commands(body_line):
+                    segments.append((words, cw, True, False, piped))
         i = end + 1
     return segments
 
@@ -411,12 +535,14 @@ def substitute_home(text):
     return TILDE_RE.sub(HOME, text)
 
 
-def candidate_of_token(raw_tok, cwd):
-    """`raw_tok`, resolved against `cwd`, plus a realpath variant where the
-    resolved path exists (deny rules apply to a symlink and its target
-    alike — doc, "Symlinks"). Each item is (raw_token, resolved_absolute_
-    path, has_glob_chars); empty when the token is a bare word matching no
-    file (just a word, not a path)."""
+def candidate_of_token(raw_tok, cwd, recursive=False):
+    """`raw_tok`, resolved against `cwd`, plus a realpath variant (deny rules
+    apply to a symlink and its target alike — doc, "Symlinks"); a path that
+    does not exist yet gets one too, resolved as far as it exists. Each
+    item is (raw_token, resolved_absolute_path, has_glob_chars); empty when
+    the token is a bare word matching no file (just a word, not a path) —
+    except a slash-less glob under a recursive command, which names
+    whatever it matches there."""
     tok = substitute_home(raw_tok)
     has_glob = any(c in tok for c in GLOB_CHARS)
     if tok.startswith("/"):
@@ -425,69 +551,235 @@ def candidate_of_token(raw_tok, cwd):
         resolved = os.path.normpath(os.path.join(cwd, tok))
     else:
         candidate = os.path.join(cwd, tok)
-        if not os.path.lexists(candidate):
+        if not os.path.lexists(candidate) and not (has_glob and recursive):
             return []
         resolved = os.path.normpath(candidate)
     out = [(raw_tok, resolved, has_glob)]
-    if not has_glob and os.path.exists(resolved):
+    if not has_glob:
         rp = os.path.realpath(resolved)
         if rp != resolved:
             out.append((raw_tok, rp, False))
     return out
 
 
+def token_variants(raw_tok):
+    """The token, the text after its first `=` (`--opt=PATH`, dd's
+    `key=PATH`), then each of those without a leading `@` (curl's `@PATH`).
+    No duplicates, no empty strings."""
+    base = [raw_tok, raw_tok.partition("=")[2]]
+    out = []
+    for v in base + [b[1:] for b in base if b.startswith("@")]:
+        if v and v not in out:
+            out.append(v)
+    return out
+
+
+def cd_targets(words, command_word, bases):
+    """The absolute directories a `cd`/`pushd` simple command can leave the
+    shell in, one per entry of `bases` for a relative target (none for a
+    target unknown at scan time: `$...`, a backtick, or `-`). With no target
+    word, home."""
+    if command_word not in ("cd", "pushd"):
+        return []
+    target = next((w for w in words[1:] if w == "-" or not w.startswith("-")), None)
+    if target == "-" or (target and ("$" in target or "`" in target)):
+        return []
+    target = substitute_home(target) if target else HOME
+    if not target:
+        return []
+    if target.startswith("/"):
+        return [os.path.normpath(target)]
+    return [os.path.normpath(os.path.join(b, target)) for b in bases]
+
+
+def implicit_cwd(words, command_word):
+    """Does this ONE simple command search the directory it stands in when
+    it is given no path? Never for a `--help` or `--version` call."""
+    if "--help" in words or "--version" in words:
+        return False
+    if command_word in IMPLICIT_CWD:
+        return True
+    return (command_word in GREP_LIKE or command_word == "ls") \
+        and recursion_signal(words, command_word)
+
+
+def names_root(words, command_word, bases):
+    """Does this ONE recursive simple command name a place to search? Decided
+    by position and by existence, never by whether a word looks like a path:
+    an option's value and the search pattern can both look like one. `find`
+    takes its roots first, so the first word after its leading options is
+    one. Elsewhere a positional (a word after the options, or after a lone
+    `--`) counts when it has a glob character or exists; the first
+    positional of a pattern-first command is the pattern, and a positional
+    straight after an option may be that option's value, so neither counts
+    (bar the options known to take none)."""
+    rest = words[1:]
+    if command_word == "find":
+        i = 0
+        while i < len(rest):
+            if rest[i] in ("-H", "-L", "-P") or rest[i].startswith("-O"):
+                i += 1
+            elif rest[i] == "-D":
+                i += 2
+            else:
+                break
+        return i < len(rest) and not rest[i].startswith("-") and rest[i] != "!"
+    pattern_first = command_word in PATTERN_FIRST
+    if command_word in GREP_LIKE | {"rg", "ack"} and any(
+            w == "--files" or w.startswith(("--regexp=", "--file=")) for w in rest):
+        pattern_first = False
+    options_over = False
+    option = None  # the option the previous word was, if it was one
+    number = 0
+    for w in rest:
+        if not options_over and w == "--":
+            options_over, option = True, None
+            continue
+        if not options_over and w.startswith("-") and len(w) > 1:
+            option = w
+            continue
+        number += 1
+        guarded = option is not None and (
+            (command_word in PATTERN_FIRST
+             and option != "--files" and option not in GREP_RECURSIVE_FLAGS)
+            or (command_word not in PATTERN_FIRST
+                and (option.startswith("--") or option[-1] in "PI")))
+        option = None
+        if guarded or (pattern_first and number == 1):
+            continue
+        tok = substitute_home(w)
+        if any(c in tok for c in GLOB_CHARS):
+            return True
+        if tok.startswith("/"):
+            if os.path.lexists(tok):
+                return True
+        elif any(os.path.lexists(os.path.join(b, tok)) for b in bases):
+            return True
+    return False
+
+
+def glob_reach(cand, prefix):
+    """How an absolute glob-bearing `cand` can reach the denied `prefix`:
+    "inside" (it can name the tree or something in it), "ancestor" (only a
+    directory above it) or "" (neither). Components are compared one by
+    one, so `.claude*` cannot name `~/code/x` just because both sit under
+    the home directory. Case-sensitive on purpose (fnmatchcase)."""
+    cparts = [p for p in cand.split("/") if p]
+    pparts = [p for p in prefix.split("/") if p]
+    for i, pp in enumerate(pparts):
+        if i == len(cparts):
+            return "ancestor"
+        cp = cparts[i]
+        if cp == "**":
+            return "inside"
+        if any(c in cp for c in GLOB_CHARS):
+            if not fnmatch.fnmatchcase(pp, cp):
+                return ""
+        elif cp != pp:
+            return ""
+    return "inside"
+
+
 def scan(text, cwd, rules):
-    """First rule this text trips, as (fragment, rule, reason) — or None.
+    """First rule this text trips, as (fragment, rule_or_label, reason) — or
+    None. The middle element is a Rule, or a label string for a refusal no
+    one rule caused ("(cd limit)").
     A recursion signal only counts within the SAME simple command as the
     candidate token (`segments_of`); a data heredoc body never counts as
-    one, so an ancestor guess never fires there — only a direct hit does."""
-    for words, command_word, _is_heredoc, is_data in segments_of(text):
+    one, so an ancestor guess never fires there — only a direct hit does.
+    `bases` are the directories a relative token may be relative to: the
+    cwd, then every directory a `cd`/`pushd` earlier in the text could have
+    left the shell in. It only grows — a subshell's `cd` is not undone, the
+    strict reading — and a `cd` that would take it past MAX_BASES is refused,
+    not dropped. No rules, nothing to protect: None at once.
+    A recursive command that names no search root (names_root) starts at
+    each base: a base above a denied tree is refused. A slash-less glob is a
+    path under a recursive command only. The words of a data heredoc body are
+    resolved against the cwd alone (that text is being written, not opened),
+    an absolute spelling once, and a word that has already passed is not
+    judged again while `bases` has not grown."""
+    if not rules:
+        return None
+    bases = [cwd]
+    harmless = set()
+    for words, command_word, is_heredoc, is_data, piped_in in segments_of(text):
         recursive = False if is_data else recursion_signal(words, command_word)
         for raw_tok in words:
-            for tok, cand, has_glob in candidate_of_token(raw_tok, cwd):
+            memo = (raw_tok, recursive, is_data, len(bases))
+            if memo in harmless:
+                continue
+            seen = set()
+            cands = []
+            for v in token_variants(raw_tok):
+                for b in (bases[:1] if is_data or substitute_home(v).startswith("/") else bases):
+                    for c in candidate_of_token(v, b, recursive):
+                        if c[1:] not in seen:
+                            seen.add(c[1:])
+                            cands.append(c)
+            for tok, cand, has_glob in cands:
+                key = canon(cand)
                 if has_glob:
-                    gp = literal_prefix(cand)
-                    if not gp:
-                        continue
                     for rule in rules:
-                        if not rule.evaluable or rule.prefix is None:
-                            continue
-                        if gp == rule.prefix or gp.startswith(rule.prefix + os.sep) \
-                                or rule.prefix.startswith(gp + os.sep):
-                            return tok, rule, "%s may expand into %s" % (tok, rule.raw)
+                        for k in rule.keys:
+                            reach = glob_reach(key, k)
+                            if reach == "inside":
+                                return tok, rule, "%s may expand into %s" % (tok, rule.raw)
+                            if reach == "ancestor" and recursive:
+                                return tok, rule, (
+                                    "%s is an ancestor of %s and %s recurses here; "
+                                    "name the file under it directly, or drop the "
+                                    "recursive flag" % (tok, rule.raw, command_word)
+                                )
                     continue
                 for rule in rules:
                     if rule.anchor == "any-depth":
-                        if match_any_depth(cand, rule.pattern):
+                        if match_any_depth(key, rule.pattern_key):
                             return tok, rule, "%s is inside %s" % (tok, rule.raw)
                         continue
-                    if not rule.evaluable or rule.prefix is None:
-                        continue
-                    if cand == rule.prefix or cand.startswith(rule.prefix + os.sep):
+                    if inside(key, rule):
                         return tok, rule, "%s is inside %s" % (tok, rule.raw)
-                    if not recursive or cand == rule.prefix \
-                            or not rule.prefix.startswith(cand + os.sep):
-                        continue
-                    # A bare $HOME or / candidate is an ancestor of nearly
-                    # everything; only a command that is ALWAYS recursive
-                    # (never just flagged) is trusted to reach that far.
-                    if cand in (HOME, os.sep) and command_word not in DEFAULT_RECURSIVE:
+                    if not recursive or not ancestor_of(key, rule):
                         continue
                     return tok, rule, (
                         "%s is an ancestor of %s and %s recurses here; "
                         "name the file under it directly, or drop the "
                         "recursive flag" % (tok, rule.raw, command_word)
                     )
+            harmless.add(memo)
+        if recursive and implicit_cwd(words, command_word) \
+                and not (piped_in and command_word in STDIN_SEARCHERS) \
+                and not names_root(words, command_word, bases):
+            for b in bases:
+                for rule in rules:
+                    if ancestor_of(canon(b), rule):
+                        return " ".join(words), rule, (
+                            "%s recurses from %s, which holds %s; name a "
+                            "directory under %s that does not hold it, after "
+                            "the pattern%s"
+                            % (command_word, b, rule.raw, b, " (this line is "
+                               "inside a heredoc read as commands; prose "
+                               "belongs in cat <<EOF, on its own or inside "
+                               "$( ) for git and gh)" if is_heredoc else "")
+                        )
+        for d in cd_targets(words, command_word, bases):
+            if d in bases:
+                continue
+            if len(bases) >= MAX_BASES:
+                return " ".join(words), "(cd limit)", (
+                    "this command line changes directory in more ways than "
+                    "denyguard follows (limit %d), so a relative path after "
+                    "it cannot be checked; split the command, or use "
+                    "absolute paths" % MAX_BASES
+                )
+            bases.append(d)
     return None
 
 
 def cwd_hit(cwd, rules):
-    cands = {os.path.normpath(cwd), os.path.realpath(cwd)}
+    cands = {canon(cwd), canon(os.path.realpath(cwd))}
     for rule in rules:
-        if rule.anchor == "any-depth" or not rule.evaluable or rule.prefix is None:
-            continue
         for cand in cands:
-            if cand == rule.prefix or cand.startswith(rule.prefix + os.sep):
+            if inside(cand, rule):
                 return rule
     return None
 
@@ -520,7 +812,7 @@ def log_denial(dir_, rule_raw, fragment):
         pass  # the log is a record of the mechanism acting, not the gate
 
 
-def deny(dir_, rule, fragment, reason):
+def deny(dir_, rule_or_label, fragment, reason):
     sys.stdout.write(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -528,36 +820,66 @@ def deny(dir_, rule, fragment, reason):
             "permissionDecisionReason": reason,
         }
     }) + "\n")
-    log_denial(dir_, rule.raw, fragment)
+    log_denial(dir_, rule_or_label.raw if isinstance(rule_or_label, Rule) else rule_or_label, fragment)
+
+
+def decide(event, dir_):
+    """The verdict on one PreToolUse event: (rule_or_label, fragment, reason)
+    for a refusal, None for no opinion."""
+    cwd = event.get("cwd") or os.getcwd()
+    rules = parse_deny_list(load_deny(dir_), cwd)
+
+    hit = cwd_hit(cwd, rules)
+    if hit is not None:
+        return hit, cwd, "session cwd %s is inside %s" % (cwd, hit.raw)
+
+    tool_input = event.get("tool_input") or {}
+    texts = [tool_input.get("command") or ""] \
+        if event.get("tool_name") == "Bash" and isinstance(tool_input, dict) \
+        else list(strings_of(tool_input))
+
+    for text in texts:
+        found = scan(text, cwd, rules)
+        if found is not None:
+            fragment, rule_or_label, reason = found
+            return rule_or_label, fragment, reason
+    return None
 
 
 def cmd_hook():
     try:
         payload = os.fdopen(3, "r").read()
         event = json.loads(payload)
+        if not isinstance(event, dict):
+            raise ValueError("not a JSON object")
     except Exception as exc:
         sys.stderr.write("denyguard: unreadable PreToolUse payload: %s\n" % exc)
         sys.exit(2)
 
     dir_ = profile_dir()
-    cwd = event.get("cwd") or os.getcwd()
-    rules = parse_deny_list(load_deny(dir_), cwd)
+    limit = budget()
 
-    hit = cwd_hit(cwd, rules)
-    if hit is not None:
-        deny(dir_, hit, cwd, "session cwd %s is inside %s" % (cwd, hit.raw))
-        return
+    def out_of_time(signum, frame):
+        raise OutOfTime()
 
-    tool_input = event.get("tool_input") or {}
-    texts = [tool_input.get("command") or ""] if event.get("tool_name") == "Bash" \
-        else list(strings_of(tool_input))
-
-    for text in texts:
-        found = scan(text, cwd, rules)
-        if found is not None:
-            fragment, rule, reason = found
-            deny(dir_, rule, fragment, reason)
-            return
+    signal.signal(signal.SIGALRM, out_of_time)
+    signal.setitimer(signal.ITIMER_REAL, limit)
+    try:
+        verdict = decide(event, dir_)
+    except OutOfTime:
+        command = (event.get("tool_input") or {}).get("command") \
+            if isinstance(event.get("tool_input"), dict) else ""
+        verdict = ("(time limit)", " ".join(str(command).split())[:80], (
+            "denyguard could not finish checking this command within %g s, so "
+            "it is refused rather than run unchecked; use absolute paths "
+            "instead of a relative cd, or split it into smaller Bash calls" % limit))
+    finally:
+        # Disarmed before anything is written: a second alarm mid-write
+        # would garble the JSON.
+        signal.setitimer(signal.ITIMER_REAL, 0)
+    if verdict is not None:
+        rule_or_label, fragment, reason = verdict
+        deny(dir_, rule_or_label, fragment, reason)
     # No rule tripped: no opinion. Silence is the correct "allow" here —
     # the hooks reference treats empty stdout on exit 0 as no decision.
 
@@ -598,14 +920,12 @@ def cmd_check(argv):
 
     found = False
     for p in paths:
-        rp = os.path.realpath(os.path.expanduser(p))
+        rp = canon(os.path.realpath(os.path.expanduser(p)))
         for rule in rules:
-            if rule.prefix is None:
-                continue
-            if rp == rule.prefix or rp.startswith(rule.prefix + os.sep):
+            if inside(rp, rule):
                 sys.stderr.write("%s is inside %s\n" % (p, rule.raw))
                 found = True
-            elif rule.prefix == rp or rule.prefix.startswith(rp + os.sep):
+            elif ancestor_of(rp, rule):
                 sys.stderr.write("%s contains %s's region\n" % (p, rule.raw))
                 found = True
     sys.exit(1 if found else 0)
@@ -648,5 +968,21 @@ def main():
         sys.exit(2)
 
 
-main()
+try:
+    main()
+except SystemExit:
+    raise
+except BaseException as exc:
+    sys.stderr.write("denyguard: internal error: %s: %s\n" % (type(exc).__name__, exc))
+    sys.exit(2)
 PY
+# `hook` exits only 0 (allow, or JSON deny on stdout) or 2 (block). Anything
+# else — python3 present but unable to start, a crash the wrapper above did
+# not catch — would be read by Claude Code as a non-blocking error and the
+# command would run unchecked, so it is turned into 2. Other subcommands keep
+# their own status: `check` uses 1 for "denied" and callers depend on it.
+if [ "${1-}" = hook ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+  printf 'denyguard: the hook could not run (python3 exited %s); refusing Bash rather than passing the command unchecked\n' "$rc" >&2
+  exit 2
+fi
+exit "$rc"
