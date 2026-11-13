@@ -2,7 +2,7 @@
 
 # ~/bin/iterm2-relaunch: quit iTerm2, do work while it is down, start it again,
 # bring the Claude sessions back. Everything runs in a sandboxed HOME against stubs
-# (uname, ps, osascript, defaults, open, iterm2-prefs, claude-tab, screen-heads-up): no test can
+# (uname, ps, osascript, defaults, open, brew, iterm2-prefs, claude-tab, screen-heads-up): no test can
 # quit, start or script the developer's real iTerm2, and nothing is shown on screen.
 # The ps stub reads a procs file and nothing else, so a CI container that reaps no
 # orphans cannot make a dead process look alive. There is deliberately no sleep stub.
@@ -33,6 +33,11 @@ setup() {
   # named but not created: a test that wants the helper calls heads_up_stub
   export ITERM2_RELAUNCH_HEADS_UP="$BATS_TEST_TMPDIR/bin/screen-heads-up"
   export HU_LOG="$BATS_TEST_TMPDIR/hu.log"
+  # a stub brew, always: no test can reach a real one
+  export ITERM2_RELAUNCH_BREW="$BATS_TEST_TMPDIR/bin/brew"
+  export BREW_LOG="$BATS_TEST_TMPDIR/brew.log" FAKE_BREW_DIR="$BATS_TEST_TMPDIR/casks"
+  export GIT_CONFIG_GLOBAL="$HOME/.gitconfig"
+  mkdir -p "$FAKE_BREW_DIR"
   stubs
 }
 
@@ -73,7 +78,11 @@ STUB
 #!/bin/sh
 case $1 in
   export) echo "defaults-export" >>"$SEQ"; echo '<plist version="1.0"><dict/></plist>' >"$3";;
-  read) printf '%s\n' "${FAKE_CLEAN:-1}";;
+  read)
+    case $* in
+      *KillJobsInServersOnQuit*) [ -n "${FAKE_KILLJOBS-}" ] || exit 1; printf '%s\n' "$FAKE_KILLJOBS";;
+      *) printf '%s\n' "${FAKE_CLEAN:-1}";;
+    esac;;
 esac
 STUB
   # unquoted heredoc: clean_open hands the stub none of the test's variables, so the
@@ -101,8 +110,28 @@ case $1 in
   compose) exit "${FAKE_PREFS_RC:-0}";;
 esac
 STUB
+  # brew: logs its arguments, cwd and whether the three variables are set, and
+  # answers from $FAKE_BREW_DIR (<token>.json for info, <token>.versions for list,
+  # <token>.after becomes the versions once an upgrade succeeds)
+  cat >"$b/brew" <<'STUB'
+#!/bin/sh
+echo "$*|cwd=$(pwd)|askpass=${SUDO_ASKPASS+set}|no_ask=${HOMEBREW_NO_ASK+set}|no_auto=${HOMEBREW_NO_AUTO_UPDATE+set}" >>"$BREW_LOG"
+echo "brew $1" >>"$SEQ"
+d=$FAKE_BREW_DIR
+case $1 in
+  info) [ -f "$d/$4.json" ] || exit 1; cat "$d/$4.json";;
+  list) [ ! -f "$d/$4.versions" ] || cat "$d/$4.versions";;
+  update) exit "${FAKE_UPDATE:-0}";;
+  fetch) exit "${FAKE_FETCH:-0}";;
+  upgrade)
+    /bin/sleep "${FAKE_UPGRADE_SLEEP:-0}"
+    if [ "${FAKE_UPGRADE:-0}" = 0 ] && [ -f "$d/$3.after" ]; then cp "$d/$3.after" "$d/$3.versions"; fi
+    exit "${FAKE_UPGRADE:-0}";;
+esac
+STUB
   cat >"$b/claude-tab" <<'STUB'
 #!/bin/sh
+[ "$1" != list ] || { [ -z "${FAKE_LIST-}" ] || printf '%s\n' "$FAKE_LIST"; exit 0; }
 if [ "$1" = restore ] && [ "${2-}" = --dry-run ]; then
   echo dry >>"$CT_LOG"
   [ -z "${FAKE_DRY_ROWS-}" ] || printf '%s\n' "$FAKE_DRY_ROWS"
@@ -115,7 +144,7 @@ if [ "$1" = restore ] && [ "${FAKE_RESTORE_CRASH:-0}" = 1 ]; then
 fi
 case $1 in save) exit "${FAKE_SAVE:-0}";; restore) exit "${FAKE_RESTORE:-0}";; esac
 STUB
-  chmod +x "$b"/uname "$b"/ps "$b"/osascript "$b"/defaults "$b"/open "$b"/iterm2-prefs "$b"/claude-tab
+  chmod +x "$b"/uname "$b"/ps "$b"/osascript "$b"/defaults "$b"/open "$b"/brew "$b"/iterm2-prefs "$b"/claude-tab
   export PATH="$b:$PATH"
 }
 
@@ -724,4 +753,191 @@ compose" ]
   rm -f "$STATE/run.pid"
   [ "$status" -eq 1 ]
   [ "$output" = "iterm2-relaunch: too late: iTerm2 has been asked to quit (Cancel in its own alert still stops it)" ]
+}
+
+# brew: items.
+
+# cask <token> <installed|null> <version> <outdated true|false> <auto_updates true|false> <artifact>
+# <current versions line, or none>: the stub brew's cask record.
+cask() {
+  local inst='null'
+  [ "$2" = null ] || inst="\"$2\""
+  printf '{"formulae":[],"casks":[{"token":"%s","installed":%s,"version":"%s","outdated":%s,"auto_updates":%s,"artifacts":[{"%s":["x"]},{"zap":[{"trash":"y"}]}]}]}\n' \
+    "$1" "$inst" "$3" "$4" "$5" "$6" >"$FAKE_BREW_DIR/$1.json"
+  [ "$7" = none ] || echo "$1 $7" >"$FAKE_BREW_DIR/$1.versions"
+}
+
+@test "items: an outdated cask is ready with installed -> version; a current one is nothing; a token that is not installed is not listed" {
+  cask claude-code@latest 2.1.322 2.1.323 true false binary none
+  cask claude-code 2.1.0 2.1.0 false false binary none
+  cask notinstalled null 1.0 false false binary none
+  printf '[iterm2-relaunch]\n\tbrew = notinstalled\n\tbrew = nosuchcask\n' >"$HOME/.gitconfig"
+  run sh "$BIN" items
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 3 ]
+  [ "${lines[1]}" = "$(printf 'brew:claude-code@latest\tready\t2.1.322 -> 2.1.323')" ]
+  [ "${lines[2]}" = "$(printf 'brew:claude-code\tnothing\t2.1.0 is current')" ]
+}
+
+@test "items: a cask that updates itself, and one with a pkg artifact, are refused with the reason" {
+  cask selfupdating 3.7.3 3.7.7 true true app none
+  cask withpkg 1.0 2.0 true false pkg none
+  cask withinstaller 1.0 2.0 true false installer none
+  printf '[iterm2-relaunch]\n\tbrew = selfupdating\n\tbrew = withpkg\n\tbrew = withinstaller\n' >"$HOME/.gitconfig"
+  run sh "$BIN" items
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 4 ]
+  [ "${lines[1]}" = "$(printf 'brew:selfupdating\trefused\tupdates itself; its Homebrew record only looks stale')" ]
+  [ "${lines[2]}" = "$(printf 'brew:withpkg\trefused\tits installer may ask for a password; upgrade it from a terminal')" ]
+  [ "${lines[3]}" = "$(printf 'brew:withinstaller\trefused\tits installer may ask for a password; upgrade it from a terminal')" ]
+  pid=$(fake_iterm)
+  run sh "$BIN" --yes brew:selfupdating 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"iterm2-relaunch: brew:selfupdating: updates itself; its Homebrew record only looks stale"* ]]
+  [ ! -s "$OSA_LOG" ]
+  no grep -q "^fetch" "$BREW_LOG"
+  kill -0 "$pid"
+}
+
+@test "items: values of iterm2-relaunch.brew are offered after the two defaults, once each, and only if they are plain tokens" {
+  for t in claude-code@latest claude-code zeta alpha 'bad touch'; do cask "$t" 1.0 2.0 true false binary none; done
+  printf '[iterm2-relaunch]\n\tbrew = zeta\n\tbrew = claude-code\n\tbrew = alpha\n\tbrew = "bad touch"\n' >"$HOME/.gitconfig"
+  run sh "$BIN" items
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "${lines[@]:1}" | cut -f1 | tr '\n' ' ')" = "brew:claude-code@latest brew:claude-code brew:zeta brew:alpha " ]
+  no grep -q "bad" "$BREW_LOG"
+}
+
+@test "brew: a token that is not a plain cask name is a usage error, exit 2" {
+  run sh "$BIN" brew: 2>&1
+  [ "$status" -eq 2 ]
+  run sh "$BIN" 'brew:-x' 2>&1
+  [ "$status" -eq 2 ]
+  run sh "$BIN" 'brew:a b' 2>&1
+  [ "$status" -eq 2 ]
+  [ ! -s "$BREW_LOG" ]
+}
+
+@test "front: brew update runs before the states, brew fetch before the consent, and a failed fetch quits nothing" {
+  export ITERM2_RELAUNCH_DETACH=0
+  cask claude-code@latest 2.1.322 2.1.323 true false binary "2.1.322"
+  fake_iterm >/dev/null
+  run sh "$BIN" --yes --grace 1 brew:claude-code@latest
+  [ "$status" -eq 0 ]
+  [ "$(head -n 4 "$SEQ" | tr '\n' ' ')" = "brew update brew info brew fetch osa-probe " ]
+  grep -Fq "fetch --cask claude-code@latest|" "$BREW_LOG"
+  : >"$SEQ"; : >"$BREW_LOG"; : >"$OSA_LOG"; : >"$CT_LOG"
+  pid=$(fake_iterm)
+  FAKE_FETCH=1 run sh "$BIN" --yes --grace 1 brew:claude-code@latest 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"iterm2-relaunch: brew:claude-code@latest: download failed"* ]]
+  [ ! -s "$OSA_LOG" ]
+  [ ! -s "$CT_LOG" ]
+  grep -q " refused: brew:claude-code@latest: download failed" "$LOG"
+  kill -0 "$pid"
+}
+
+@test "front: a failed brew update warns and the cached state is used; --dry-run says it would update and runs no brew update or fetch" {
+  cask claude-code@latest 2.1.322 2.1.323 true false binary none
+  pid=$(fake_iterm)
+  FAKE_UPDATE=1 run sh "$BIN" --dry-run --no-restore brew:claude-code@latest 2>&1
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "would: brew update first" ]
+  [ "${lines[1]}" = "would: brew:claude-code@latest: 2.1.322 -> 2.1.323" ]
+  no grep -q "^update\|^fetch" "$BREW_LOG"
+  FAKE_UPDATE=1 run sh "$BIN" brew:claude-code@latest </dev/null 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"iterm2-relaunch: brew update failed; using the cached state"* ]]
+  [[ "$output" == *"this quits iTerm2 and ends every session in it"* ]]
+  kill -0 "$pid"
+}
+
+@test "front: a current cask is nothing to do and iTerm2 is left running" {
+  cask claude-code@latest 2.1.323 2.1.323 false false binary none
+  pid=$(fake_iterm)
+  run sh "$BIN" --yes brew:claude-code@latest
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"brew:claude-code@latest: nothing to do"* ]]
+  [[ "$output" == *"nothing to do; iTerm2 left running"* ]]
+  [ ! -s "$OSA_LOG" ]
+  no grep -q "^fetch" "$BREW_LOG"
+  kill -0 "$pid"
+}
+
+@test "front: with jobs surviving a quit it notes, before the consent, that running sessions keep the old version" {
+  cask claude-code@latest 2.1.322 2.1.323 true false binary "2.1.322"
+  fake_iterm >/dev/null
+  FAKE_KILLJOBS=0 run sh "$BIN" brew:claude-code@latest </dev/null 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"iterm2-relaunch: note: jobs survive a quit on this machine, so running Claude sessions keep the old claude-code@latest until restarted"* ]]
+  FAKE_KILLJOBS=1 run sh "$BIN" brew:claude-code@latest </dev/null 2>&1
+  no grep -q "note:" <<<"$output"
+  run sh "$BIN" brew:claude-code@latest </dev/null 2>&1
+  no grep -q "note:" <<<"$output"
+}
+
+@test "_run brew: upgrade --cask runs from HOME with HOMEBREW_NO_ASK and no SUDO_ASKPASS, and the versions before and after are logged" {
+  cask claude-code@latest 2.1.322 2.1.323 true false binary "2.1.322"
+  echo "claude-code@latest 2.1.323" >"$FAKE_BREW_DIR/claude-code@latest.after"
+  fake_iterm >/dev/null
+  SUDO_ASKPASS=/nonexistent runner 0 0 - brew:claude-code@latest
+  [ "$status" -eq 0 ]
+  grep -Fx "upgrade --cask claude-code@latest|cwd=$HOME|askpass=|no_ask=set|no_auto=set" "$BREW_LOG"
+  in_order "quit: exited after" "brew:claude-code@latest: 2.1.322 -> 2.1.323" "brew:claude-code@latest: exit 0" "launch: started" "done: 1 items, 0 failed"
+  no grep -q "kept running" "$LOG"
+}
+
+@test "_run brew: sessions that kept running through an upgrade that changed the version are counted in the log" {
+  cask claude-code@latest 2.1.322 2.1.323 true false binary "2.1.322"
+  echo "claude-code@latest 2.1.323" >"$FAKE_BREW_DIR/claude-code@latest.after"
+  fake_iterm >/dev/null
+  FAKE_LIST=$(printf '1\tp\ta\n2\tp\tb') runner 0 0 - brew:claude-code@latest
+  [ "$status" -eq 0 ]
+  in_order "brew:claude-code@latest: 2.1.322 -> 2.1.323" \
+    "brew:claude-code@latest: 2 Claude sessions kept running through the upgrade and stay on 2.1.322 until each is restarted" \
+    "brew:claude-code@latest: exit 0"
+}
+
+@test "_run brew: an upgrade that fails still starts iTerm2 and restores the tabs, exit 1" {
+  cask claude-code@latest 2.1.322 2.1.323 true false binary "2.1.322"
+  fake_iterm >/dev/null
+  FAKE_UPGRADE=1 FAKE_LIST=$(printf '1\tp\ta') runner 1 0 - brew:claude-code@latest
+  [ "$status" -eq 1 ]
+  in_order "brew:claude-code@latest: 2.1.322 -> 2.1.322" "brew:claude-code@latest: exit 1" "launch: started" "done: 1 items, 1 failed, restore ok"
+  no grep -q "kept running" "$LOG"
+  grep -Fxq restore "$CT_LOG"
+}
+
+@test "_run brew: an upgrade that outlasts the timeout is killed and logged, and iTerm2 still starts" {
+  cask claude-code@latest 2.1.322 2.1.323 true false binary "2.1.322"
+  fake_iterm >/dev/null
+  ITERM2_RELAUNCH_ITEM_TIMEOUT=3 FAKE_UPGRADE_SLEEP=5 runner 0 0 - brew:claude-code@latest
+  [ "$status" -eq 1 ]
+  in_order "brew:claude-code@latest: timed out after 3s" "brew:claude-code@latest: 2.1.322 -> 2.1.322" \
+    "brew:claude-code@latest: exit 124" "launch: started" "done: 1 items, 1 failed"
+}
+
+@test "_run prefs,brew:x: prefs runs first, both are logged, one relaunch" {
+  cask claude-code@latest 2.1.322 2.1.323 true false binary "2.1.322"
+  fake_iterm >/dev/null
+  runner 0 0 - brew:claude-code@latest prefs
+  [ "$status" -eq 0 ]
+  in_order "quit: asked" "prefs: exit 0" "brew:claude-code@latest: exit 0" "launch: started" "done: 2 items, 0 failed"
+  [ "$(grep -c "quit: asked" "$LOG")" -eq 1 ]
+  [ "$(grep -c -Fx -- "-b com.googlecode.iterm2" "$OPEN_LOG")" -eq 1 ]
+}
+
+@test "no Homebrew: brew items are refused, prefs items still work" {
+  export ITERM2_RELAUNCH_BREW="$BATS_TEST_TMPDIR/no-such-brew"
+  pid=$(fake_iterm)
+  run sh "$BIN" --yes brew:claude-code@latest 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"iterm2-relaunch: brew:claude-code@latest: Homebrew not found"* ]]
+  [ ! -s "$OSA_LOG" ]
+  run sh "$BIN" items
+  [ "${#lines[@]}" -eq 1 ]
+  [ ! -s "$BREW_LOG" ]
+  FAKE_PREFS_LINE="composed, 1 waiting, 0 kept" ITERM2_RELAUNCH_DETACH=0 run sh "$BIN" --yes --grace 1 prefs
+  [ "$status" -eq 0 ]
+  [ "$(cat "$PREFS_LOG")" = compose ]
 }

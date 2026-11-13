@@ -15,8 +15,19 @@
 # (nothing was done).
 #
 # Items, run in this order while iTerm2 is down: prefs-install (iterm2-prefs
-# install), prefs (iterm2-prefs compose). Others the runner does not know are
-# logged as `<item>: exit 2`. A failed item never stops the next one.
+# install), prefs (iterm2-prefs compose), then brew:<cask> as given (brew upgrade
+# --cask, for a cask that wants the terminal and its Claude sessions down, such as
+# claude-code@latest). Others the runner does not know are logged as `<item>: exit
+# 2`. A failed item never stops the next one.
+#
+# A brew: item is judged before anything quits: a cask that updates itself (iTerm2
+# included) or installs with a pkg or installer, which may ask for a password, is
+# refused, because the runner has no terminal and a sudo prompt would only fail.
+# `brew update` runs before the states are read and `brew fetch --cask` before the
+# consent, so iTerm2 is down for seconds, not for a download. The upgrade runs with
+# SUDO_ASKPASS unset and is killed after ITERM2_RELAUNCH_ITEM_TIMEOUT polls. With
+# jobs surviving a quit (KillJobsInServersOnQuit 0) running Claude sessions keep the
+# old binary through the upgrade; the front says so and the log counts them.
 #
 # The front does nothing with a side effect before it is sure: every item is
 # judged first (a refused one stops everything, one with nothing to do is dropped),
@@ -59,9 +70,11 @@
 # Siblings are named by absolute path because Alfred's PATH excludes ~/bin.
 #
 # Test seams: ITERM2_RELAUNCH_PREFS, ITERM2_RELAUNCH_CLAUDE_TAB,
-# ITERM2_RELAUNCH_HEADS_UP (default ~/bin/screen-heads-up), ITERM2_RELAUNCH_TICK
-# (seconds per poll, default 1), ITERM2_RELAUNCH_DETACH (0: run the runner in the
-# foreground).
+# ITERM2_RELAUNCH_HEADS_UP (default ~/bin/screen-heads-up), ITERM2_RELAUNCH_BREW
+# (else brew on PATH, else /opt/homebrew/bin or /usr/local/bin; Alfred's PATH has
+# neither), ITERM2_RELAUNCH_ITEM_TIMEOUT (polls a brew: item may take, default 600),
+# ITERM2_RELAUNCH_TICK (seconds per poll, default 1), ITERM2_RELAUNCH_DETACH (0: run
+# the runner in the foreground).
 set -u
 
 warn() { printf 'iterm2-relaunch: %s\n' "$*" >&2; }
@@ -88,6 +101,7 @@ prefs=${ITERM2_RELAUNCH_PREFS:-$HOME/bin/iterm2-prefs}
 ct=${ITERM2_RELAUNCH_CLAUDE_TAB:-$HOME/bin/claude-tab}
 hu=${ITERM2_RELAUNCH_HEADS_UP:-$HOME/bin/screen-heads-up}
 tick=${ITERM2_RELAUNCH_TICK:-1}
+item_timeout=${ITERM2_RELAUNCH_ITEM_TIMEOUT:-600}
 TAB=$(printf '\t')
 NL='
 '
@@ -123,10 +137,31 @@ clean_open() {
   env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin "$@"
 }
 
+# The brew to use, or nothing: the seam if set (it must be executable), else brew on
+# PATH, else the usual prefixes (Alfred's PATH has neither).
+brew_bin() {
+  if [ -n "${ITERM2_RELAUNCH_BREW-}" ]; then
+    [ -x "$ITERM2_RELAUNCH_BREW" ] && printf '%s\n' "$ITERM2_RELAUNCH_BREW"
+    return
+  fi
+  command -v brew && return
+  for _b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+    [ -x "$_b" ] && { printf '%s\n' "$_b"; return; }
+  done
+  return 1
+}
+brew=$(brew_bin 2>/dev/null) || brew=''
+
+# brew from $HOME (a removed cwd kills brew), unattended, no auto update, and no
+# SUDO_ASKPASS: the runner has no terminal, so a sudo that needs a password has to
+# fail at once instead of waiting.
+brew_sh='cd "$HOME" && env -u SUDO_ASKPASS HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ASK=1 "$@"'
+brew_cmd() { sh -c "$brew_sh" sh "$brew" "$@"; }
+
 # The stdlib only, and Python 3.9 clean: /usr/bin/python3 is all a fresh mac has.
 relaunch_py() {
   python3 -I - "$@" <<'PYEOF'
-import os, signal, sys
+import json, os, signal, sys
 
 
 def detach(log, argv):
@@ -155,8 +190,24 @@ def detach(log, argv):
         os._exit(127)
 
 
+def brew_rows(doc):
+    """One `brew info --cask --json=v2` document in, one row per cask out."""
+    try:
+        casks = json.loads(doc).get("casks") or []
+    except ValueError:
+        return 1
+    for c in casks:
+        pw = any(isinstance(a, dict) and ("pkg" in a or "installer" in a) for a in c.get("artifacts") or [])
+        print("\t".join([c["token"], str(c.get("installed") or "-"), str(c.get("version") or "-"),
+                         "1" if c.get("outdated") else "0", "1" if c.get("auto_updates") else "0",
+                         "1" if pw else "0"]))
+    return 0
+
+
 def main():
     verb, args = sys.argv[1], sys.argv[2:]
+    if verb == "brew-rows" and len(args) == 1:
+        return brew_rows(args[0])
     if verb == "_detach" and len(args) >= 2:
         detach(args[0], args[1:])
         return 0
@@ -196,6 +247,41 @@ order_items() {
   done
 }
 
+# brew_upgrade <brew:cask>: the upgrade while iTerm2 is down, with the versions
+# before and after in the log. The upgrade is polled through an exit-status file,
+# not kill -0: a finished child stays a zombie under dash until it is waited for.
+# ponytail: a timeout kills brew and its direct children only; a grandchild may finish.
+brew_upgrade() {
+  bt=${1#brew:}
+  [ -n "$brew" ] || { echo "Homebrew not found"; return 1; }
+  blive=$("$ct" list 2>/dev/null | wc -l | tr -d ' ')
+  bbefore=$(brew_cmd list --cask --versions "$bt" 2>/dev/null); bbefore=${bbefore#* }
+  [ -n "$bbefore" ] || bbefore=-
+  rm -f "$state/brew.rc"
+  sh -c "$brew_sh; echo \$? >\"\$0\"" "$state/brew.rc" "$brew" upgrade --cask "$bt" 3>&- &
+  bpid=$!
+  bn=0
+  while [ ! -s "$state/brew.rc" ] && [ "$bn" -lt "$item_timeout" ]; do sleep "$tick"; bn=$((bn + 1)); done
+  if [ -s "$state/brew.rc" ]; then
+    wait "$bpid"
+    brc=$(cat "$state/brew.rc")
+    case $brc in ''|*[!0-9]*) brc=1;; esac
+  else
+    pkill -P "$bpid" 2>/dev/null
+    kill "$bpid" 2>/dev/null
+    wait "$bpid" 2>/dev/null
+    log_line "$1: timed out after ${bn}s"
+    brc=124
+  fi
+  bafter=$(brew_cmd list --cask --versions "$bt" 2>/dev/null); bafter=${bafter#* }
+  [ -n "$bafter" ] || bafter=-
+  log_line "$1: $bbefore -> $bafter"
+  if [ "$blive" -gt 0 ] && [ "$bbefore" != "$bafter" ]; then
+    log_line "$1: $blive Claude sessions kept running through the upgrade and stay on $bbefore until each is restarted"
+  fi
+  return "$brc"
+}
+
 # run_items: runs `ordered`, sets `total` and `failed`; the items' output is this
 # function's own stdout and stderr.
 run_items() {
@@ -205,6 +291,7 @@ run_items() {
     case $i in
       prefs-install) "$prefs" install;;
       prefs) "$prefs" compose;;
+      brew:*) brew_upgrade "$i";;
       *) (exit 2);;
     esac
     rc=$?
@@ -378,7 +465,11 @@ cmd_cancel() {
 
 # known_item <item>: whether the runner has work of that name.
 known_item() {
-  case $1 in prefs-install|prefs) return 0;; esac
+  case $1 in
+    prefs-install|prefs) return 0;;
+    brew:[!a-zA-Z0-9]*|brew:*[!a-zA-Z0-9@._+/-]*) return 1;;
+    brew:?*) return 0;;
+  esac
   return 1
 }
 
@@ -403,13 +494,37 @@ item_state() {
         'not composed'*) printf 'refused\tnot composed; use prefs-install\n';;
         *) printf 'refused\tcannot read the preferences state\n';;
       esac;;
+    brew:*)
+      if [ -z "$brew" ]; then printf 'refused\tHomebrew not found\n'; return 0; fi
+      row=''
+      if json=$(brew_cmd info --cask --json=v2 "${1#brew:}" 2>/dev/null); then
+        row=$(relaunch_py brew-rows "$json" | head -n 1)
+      fi
+      IFS=$TAB read -r _ inst ver outdated auto pw <<EOF_ROW
+$row
+EOF_ROW
+      if [ -z "${inst-}" ] || [ "$inst" = - ]; then printf 'refused\tnot an installed cask\n'
+      elif [ "$auto" = 1 ]; then printf 'refused\tupdates itself; its Homebrew record only looks stale\n'
+      elif [ "$pw" = 1 ]; then printf 'refused\tits installer may ask for a password; upgrade it from a terminal\n'
+      elif [ "$outdated" = 1 ]; then printf 'ready\t%s -> %s\n' "$inst" "$ver"
+      else printf 'nothing\t%s is current\n' "$inst"
+      fi;;
   esac
 }
 
-# items: the row for the item that applies to the machine's state.
+# items: the row for the item that applies to the machine's state, then one per
+# offered cask (claude-code@latest, claude-code, git config iterm2-relaunch.brew)
+# that is installed.
 cmd_items() {
   case $("$prefs" status --line 2>/dev/null) in composed*) t=prefs;; *) t=prefs-install;; esac
   printf '%s\t%s\n' "$t" "$(item_state "$t")"
+  [ -z "$brew" ] || { printf 'claude-code@latest\nclaude-code\n'; git config --get-all iterm2-relaunch.brew 2>/dev/null; } |
+    awk '!seen[$0]++' | while IFS= read -r c; do
+      known_item "brew:$c" || continue
+      st=$(item_state "brew:$c")
+      [ "$st" != "refused${TAB}not an installed cask" ] || continue
+      printf 'brew:%s\t%s\n' "$c" "$st"
+    done
 }
 
 say() { printf 'iterm2-relaunch: %s\n' "$*"; }
@@ -449,6 +564,16 @@ cmd_front() {
   set +f
   [ -n "$items" ] || { usage >&2; exit 2; }
 
+  # Before the states are read, so they are not last week's. A failed update warns
+  # and the cached state is used.
+  case " $items " in
+    *" brew:"*)
+      if [ -z "$brew" ]; then :
+      elif [ "$dry" = 1 ]; then echo "would: brew update first"
+      else brew_cmd update || warn "brew update failed; using the cached state"
+      fi;;
+  esac
+
   todo='' states='' refusals=''
   for t in $items; do
     st=$(item_state "$t")
@@ -487,6 +612,16 @@ cmd_front() {
     say "iTerm2 was not running; $total items done, $failed failed; $s"
     [ "$failed" -eq 0 ] || rc=1
     exit "$rc"
+  fi
+
+  # The download happens while the terminal is still up.
+  for t in $items; do
+    case $t in brew:*) brew_cmd fetch --cask "${t#brew:}" || refuse "$t: download failed";; esac
+  done
+  if [ "$(defaults read com.googlecode.iterm2 KillJobsInServersOnQuit 2>/dev/null)" = 0 ]; then
+    for t in $items; do
+      case $t in brew:*) say "note: jobs survive a quit on this machine, so running Claude sessions keep the old ${t#brew:} until restarted";; esac
+    done
   fi
 
   if [ "$yes" != 1 ]; then
