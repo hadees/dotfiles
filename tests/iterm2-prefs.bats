@@ -89,7 +89,7 @@ exec(sys.argv[2])
 plistlib.dump(d, open(sys.argv[1], "wb"))' "$LIVEF" "$1"
 }
 
-sums() { shasum "$LIVEF" "$ITERM2_PREFS_RECORD" 2>&1; }
+sums() { cksum "$LIVEF" "$ITERM2_PREFS_RECORD" 2>&1; }
 
 # has <line>: the last run's output holds exactly this line
 has() { grep -Fxq -- "$1" <<<"$output"; }
@@ -646,7 +646,7 @@ STUB
 @test "capture --into: finds the source through chezmoi, the default config first, then each overlay config; an unmanaged fragment exits 1" {
   fake_chezmoi
   frag 10-one '{"Alpha": "src"}'
-  before="$(shasum "$FRAGS/10-one.plist")"
+  before="$(cksum "$FRAGS/10-one.plist")"
   truth_fixture '{"Alpha": "mine"}'
   mkdir -p "$BATS_TEST_TMPDIR/src" "$BATS_TEST_TMPDIR/src2"
   src="$BATS_TEST_TMPDIR/src/10-one.plist"
@@ -663,7 +663,7 @@ STUB
   printf '%s\n' "$src" >"$FAKE_CHEZ/default"
   run sh "$BIN" capture --from "$TRUTH" --into 10-one Alpha
   [ "$output" = "iterm2-prefs: wrote 1 units to $src; commit it there, then run dotfiles" ]
-  [ "$(shasum "$FRAGS/10-one.plist")" = "$before" ]
+  [ "$(cksum "$FRAGS/10-one.plist")" = "$before" ]
   rm -f "$FAKE_CHEZ/default" "$FAKE_CHEZ/a.toml" "$FAKE_CHEZ/b.toml"
   run sh "$BIN" capture --from "$TRUTH" --into 10-one Alpha
   [ "$status" -eq 1 ]
@@ -732,10 +732,10 @@ STUB
   [ "$status" -eq 2 ]
   run sh "$BIN" capture --from "$TRUTH" --bogus
   [ "$status" -eq 2 ]
-  before="$(shasum "$FRAGS/10-one.plist")"
+  before="$(cksum "$FRAGS/10-one.plist")"
   run sh "$BIN" capture --from "$TRUTH" --file "$FRAGS/10-one.plist" Alpha
   [ "$status" -eq 1 ]
-  [ "$(shasum "$FRAGS/10-one.plist")" = "$before" ]
+  [ "$(cksum "$FRAGS/10-one.plist")" = "$before" ]
   run sh "$BIN" capture --from "$TRUTH" --file "$LIVEF" Alpha
   [ "$status" -eq 1 ]
   [[ ! -e "$LIVEF" ]]
