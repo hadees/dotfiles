@@ -63,17 +63,17 @@ jobs:
         run: sh .github/install-fzf.sh --check
       - name: Run tests
         # Files run N at a time (N = cores) through GNU parallel, tests within a
-        # file stay in order: across files, the step took 144 s on ubuntu, 334 s
-        # on macOS (serial: 398 s, 848 s), with no failure in nine runs, whereas
-        # within-file parallelism was twice as slow again and flaky on macOS
-        # (bats polls its semaphore once a second). Results print per finished
+        # file stay in order: across files, the step took 144 s on ubuntu
+        # (serial: 398 s), whereas within-file parallelism was twice as slow
+        # again (bats polls its semaphore once a second). Results print per finished
         # file, --timing keeps the per-test times. The Linux jobs build bats from
         # a tag: a distribution's bats is as old as the distribution, and --jobs
         # hung on WSL with the packaged one. TESTS_WAIT_SCALE=3 triples the
         # polling waits in tests/claude-peer.bats, which a loaded runner outran.
         # The timeout is what turns a hang into a red job. macOS stays serial
-        # for now: on main's newer tests it failed two runs of two, each on a
-        # different timing wait (claude-peer wake, remote-mcp's forwarder start).
+        # for now: across files it failed every run since TESTS_WAIT_SCALE went
+        # in (3 of 3, 5 of 5 overall), on differing timing waits (claude-peer
+        # wake, remote-mcp's forwarder start), so the scale does not rescue it.
         timeout-minutes: 30
         run: |
           jobs=$(getconf _NPROCESSORS_ONLN)
