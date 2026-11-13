@@ -2,7 +2,7 @@
 
 # ~/bin/iterm2-relaunch: quit iTerm2, do work while it is down, start it again,
 # bring the Claude sessions back. Everything runs in a sandboxed HOME against stubs
-# (uname, ps, osascript, defaults, open, iterm2-prefs, claude-tab): no test can
+# (uname, ps, osascript, defaults, open, iterm2-prefs, claude-tab, screen-heads-up): no test can
 # quit, start or script the developer's real iTerm2, and nothing is shown on screen.
 # The ps stub reads a procs file and nothing else, so a CI container that reaps no
 # orphans cannot make a dead process look alive. There is deliberately no sleep stub.
@@ -30,6 +30,9 @@ setup() {
   export ITERM2_RELAUNCH_TICK=0.1
   export ITERM2_RELAUNCH_PREFS="$BATS_TEST_TMPDIR/bin/iterm2-prefs"
   export ITERM2_RELAUNCH_CLAUDE_TAB="$BATS_TEST_TMPDIR/bin/claude-tab"
+  # named but not created: a test that wants the helper calls heads_up_stub
+  export ITERM2_RELAUNCH_HEADS_UP="$BATS_TEST_TMPDIR/bin/screen-heads-up"
+  export HU_LOG="$BATS_TEST_TMPDIR/hu.log"
   stubs
 }
 
@@ -114,6 +117,34 @@ case $1 in save) exit "${FAKE_SAVE:-0}";; restore) exit "${FAKE_RESTORE:-0}";; e
 STUB
   chmod +x "$b"/uname "$b"/ps "$b"/osascript "$b"/defaults "$b"/open "$b"/iterm2-prefs "$b"/claude-tab
   export PATH="$b:$PATH"
+}
+
+# heads_up_stub: the screen-heads-up helper. An ask logs "<what>|<seconds>|" and exits
+# $FAKE_HEADS_UP (its second and later asks $FAKE_HEADS_UP_2 when set; the first
+# $FAKE_HU_BUSY asks exit 4). With FAKE_HU_WAIT=1 an ask waits, like a countdown,
+# until --not-now arrives, then exits 1.
+heads_up_stub() {
+  cat >"$ITERM2_RELAUNCH_HEADS_UP" <<'STUB'
+#!/bin/sh
+d=${BATS_TEST_TMPDIR:?}
+printf '%s|' "$@" >>"$HU_LOG"; echo >>"$HU_LOG"
+case ${1-} in
+  --not-now) echo "hu-not-now" >>"$SEQ"; [ -e "$d/hu.waiting" ] || exit 1; : >"$d/hu.notnow"; exit 0;;
+  --free) echo "hu-free" >>"$SEQ"; exit 0;;
+esac
+echo "hu-ask" >>"$SEQ"
+echo x >>"$d/hu.asks"
+n=$(wc -l <"$d/hu.asks")
+[ "$n" -gt "${FAKE_HU_BUSY:-0}" ] || exit 4
+if [ "${FAKE_HU_WAIT:-0}" = 1 ]; then
+  : >"$d/hu.waiting"
+  while [ ! -e "$d/hu.notnow" ]; do /bin/sleep 0.05; done
+  exit 1
+fi
+[ "$n" -gt "$(( ${FAKE_HU_BUSY:-0} + 1 ))" ] && [ -n "${FAKE_HEADS_UP_2-}" ] && exit "$FAKE_HEADS_UP_2"
+exit "${FAKE_HEADS_UP:-0}"
+STUB
+  chmod +x "$ITERM2_RELAUNCH_HEADS_UP"
 }
 
 # fake_iterm: a live process standing in for iTerm2; lists it and prints its pid. It
@@ -502,6 +533,7 @@ compose" ]
   kill -0 "$pid"
   [ "${lines[0]}" = "iterm2-relaunch: runner $pid has the work (prefs) and asks iTerm2 to quit in 2s" ]
   [ "${lines[1]}" = "iterm2-relaunch: log: $LOG" ]
+  [ "${lines[2]}" = "iterm2-relaunch: to call it off before iTerm2 is asked: iterm2-relaunch cancel" ]
   grep -q " start: items=prefs " "$LOG"
   no grep -q "quit: asked" "$LOG"
   for _ in $(seq 1 150); do grep -q " done: " "$LOG" && break; sleep 0.1; done
@@ -560,4 +592,136 @@ compose" ]
   FAKE_DRY=1 FAKE_DRY_MSG="boom" run sh "$BIN" --yes prefs-install
   [ "$(grep -c " refused: prefs-install: boom" "$LOG")" -eq 2 ]
   [ "$(stat -f %Lp "$STATE/run.log" 2>/dev/null || stat -c %a "$STATE/run.log")" = 600 ]
+}
+
+# The heads-up before the screen is taken, and cancel.
+
+@test "_run: the heads-up is asked before anything else, with the items and the grace, and go lets the quit proceed" {
+  heads_up_stub
+  fake_iterm >/dev/null
+  runner 0 0 - prefs prefs-install
+  [ "$status" -eq 0 ]
+  [ "$(grep -v '^prefs' "$SEQ" | head -n 2 | tr '\n' ' ')" = "hu-ask osa-probe " ]
+  [ "$(head -n 1 "$HU_LOG")" = "iTerm2 quits for prefs,prefs-install and is back in about 15s; every session in it ends and is resumed|1|" ]
+  in_order "quit: in 1s" "heads-up: go" "quit: asked" "done: 2 items, 0 failed"
+}
+
+@test "_run: not now aborts with exit 3, iTerm2 is asked nothing and no item runs" {
+  heads_up_stub
+  pid=$(fake_iterm)
+  FAKE_HEADS_UP=1 runner 0 0 - prefs
+  [ "$status" -eq 3 ]
+  in_order "quit: in 1s" "aborted: not now; nothing done"
+  [ ! -e "$OSA_LOG" ]
+  [ ! -s "$PREFS_LOG" ]
+  [ ! -s "$OPEN_LOG" ]
+  no grep -q -- "--free" "$HU_LOG"
+  [ ! -e "$STATE/run.pid" ]
+  kill -0 "$pid"
+}
+
+@test "_run: without the helper, or when it fails, the grace is waited and logged" {
+  fake_iterm >/dev/null
+  GRACE=2 runner 0 0 - prefs
+  [ "$status" -eq 0 ]
+  in_order "quit: in 2s" "heads-up: no helper; waited 2s" "quit: asked"
+  heads_up_stub
+  fake_iterm >/dev/null
+  FAKE_HEADS_UP=3 runner 0 0 - prefs
+  [ "$status" -eq 0 ]
+  in_order "quit: in 1s" "heads-up: helper failed (exit 3); waited 1s" "quit: asked"
+  no grep -q -- "--free" "$HU_LOG"
+}
+
+@test "_run restore 1: the heads-up is asked again before the restore, and not now leaves the tabs for claude-tab restore by hand" {
+  heads_up_stub
+  fake_iterm >/dev/null
+  FAKE_HEADS_UP_2=1 runner 1 0 - prefs
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^hu-ask' "$SEQ")" -eq 2 ]
+  grep -q "^iTerm2 is back; its Claude tabs are being restored into the front window, leave it alone for about a minute|1|$" "$HU_LOG"
+  in_order "launch: started" "restore: not now; run: claude-tab restore" "done: 1 items, 0 failed, restore skipped"
+  no grep -Fxq restore "$CT_LOG"
+}
+
+@test "_run: exit 4 is asked again and, when it stays 4, counts as not now" {
+  heads_up_stub
+  pid=$(fake_iterm)
+  FAKE_HU_BUSY=2 runner 0 0 - prefs
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^hu-ask' "$SEQ")" -eq 3 ]
+  in_order "heads-up: go" "quit: asked"
+  rm -f "$BATS_TEST_TMPDIR/hu.asks"
+  : >"$SEQ"
+  pid=$(fake_iterm)
+  FAKE_HEADS_UP=4 FAKE_HU_BUSY=99 runner 0 0 - prefs
+  [ "$status" -eq 3 ]
+  [ "$(grep -c '^hu-ask' "$SEQ")" -eq 30 ]
+  in_order "heads-up: another one was waiting" "aborted: not now; nothing done"
+  [ "$(wc -l <"$OPEN_LOG")" -eq 1 ]
+  kill -0 "$pid"
+}
+
+@test "_run: after a go the helper is told --free with --no-restore, on done and on an abort" {
+  heads_up_stub
+  fake_iterm >/dev/null
+  runner 0 0 - prefs
+  [ "$status" -eq 0 ]
+  [ "$(tail -n 1 "$HU_LOG")" = "--free|iTerm2 is back (1 items, 0 failed)|--no-restore|" ]
+  in_order "heads-up: go" "launch: started" "done: 1 items"
+  : >"$HU_LOG"
+  fake_iterm >/dev/null
+  FAKE_PROBE=1 runner 0 0 - prefs
+  [ "$status" -eq 3 ]
+  [ "$(tail -n 1 "$HU_LOG")" = "--free|iTerm2 was not quit|--no-restore|" ]
+}
+
+@test "cancel: a waiting heads-up is told --not-now and the runner ends itself" {
+  heads_up_stub
+  export FAKE_PREFS_LINE="composed, 1 waiting, 0 kept" FAKE_HU_WAIT=1
+  pid=$(fake_iterm)
+  run sh "$BIN" --yes --grace 5 prefs
+  [ "$status" -eq 0 ]
+  for _ in $(seq 1 50); do [ -e "$BATS_TEST_TMPDIR/hu.waiting" ] && break; sleep 0.1; done
+  [ -e "$BATS_TEST_TMPDIR/hu.waiting" ]
+  run sh "$BIN" cancel
+  [ "$status" -eq 0 ]
+  [ "$output" = "iterm2-relaunch: cancelled; iTerm2 was not asked to quit" ]
+  [ ! -e "$STATE/run.pid" ]
+  grep -q "aborted: not now; nothing done" "$LOG"
+  no grep -q "cancelled:" "$LOG"
+  no grep -q "quit: asked" "$LOG"
+  kill -0 "$pid"
+}
+
+@test "cancel: before the quit was asked it stops the runner and says so" {
+  export FAKE_PREFS_LINE="composed, 1 waiting, 0 kept"
+  pid=$(fake_iterm)
+  run sh "$BIN" --yes --grace 5 prefs
+  [ "$status" -eq 0 ]
+  run sh "$BIN" cancel
+  [ "$status" -eq 0 ]
+  [ "$output" = "iterm2-relaunch: cancelled; iTerm2 was not asked to quit" ]
+  [ ! -e "$STATE/run.pid" ]
+  grep -q " cancelled: before iTerm2 was asked to quit" "$LOG"
+  sleep 2
+  kill -0 "$pid"
+  no grep -q "quit: asked" "$LOG"
+  [ ! -e "$OSA_LOG" ] || no grep -q quit "$OSA_LOG"
+}
+
+@test "cancel: after quit: asked it refuses; with no runner it says so" {
+  run sh "$BIN" cancel 2>&1
+  [ "$status" -eq 1 ]
+  [ "$output" = "iterm2-relaunch: no relaunch is under way" ]
+  /bin/sleep 300 3>&- >/dev/null 2>&1 &
+  other=$!
+  mkdir -p "$STATE"
+  echo "$other" >"$STATE/run.pid"
+  echo "2026-11-13T00:00:00Z quit: asked" >"$LOG"
+  run sh "$BIN" cancel 2>&1
+  kill "$other"
+  rm -f "$STATE/run.pid"
+  [ "$status" -eq 1 ]
+  [ "$output" = "iterm2-relaunch: too late: iTerm2 has been asked to quit (Cancel in its own alert still stops it)" ]
 }

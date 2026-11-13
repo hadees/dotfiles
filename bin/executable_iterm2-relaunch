@@ -6,6 +6,7 @@
 #   iterm2-relaunch [--yes] [--dry-run] [--no-restore] [--no-prompt] [--wait <s>] [--grace <s>] <item>[,<item>...]...
 #   iterm2-relaunch items            one row per item: item<TAB>ready|nothing|refused<TAB>detail
 #   iterm2-relaunch status           runner:, last:, log: lines
+#   iterm2-relaunch cancel           call a relaunch off before iTerm2 has been asked to quit
 #   iterm2-relaunch _run <wait> <grace> <restore 0|1> <prompt 0|1> <caller id|-> <item>...
 #                    (internal: the runner, started in a session of its own)
 #
@@ -24,6 +25,14 @@
 # caller is often a Claude session that the quit kills, so the hand-over is verified
 # (the runner is alive and has logged `start:`) and its pid and the log path are
 # printed before the front returns.
+#
+# The operator is warned before the screen is taken: before it asks iTerm2 to quit,
+# and again before the restore types into the window, the runner calls the shared
+# `screen-heads-up "<what>" <grace>` (a countdown that goes ahead unless the
+# operator answers "Not now"). "Not now" before the quit ends the run with nothing
+# done (exit 3); before the restore it leaves the tabs for `claude-tab restore` by
+# hand. Without the helper, or when it cannot ask, the grace is simply waited and
+# logged. `cancel` is the same "not now" for a session or a typed command.
 #
 # Why a quit at all: iTerm2 reads its preferences folder once per launch and
 # writes it back at quit, so a store written under it is overwritten or raises
@@ -50,8 +59,9 @@
 # Siblings are named by absolute path because Alfred's PATH excludes ~/bin.
 #
 # Test seams: ITERM2_RELAUNCH_PREFS, ITERM2_RELAUNCH_CLAUDE_TAB,
-# ITERM2_RELAUNCH_TICK (seconds per poll, default 1), ITERM2_RELAUNCH_DETACH (0: run
-# the runner in the foreground).
+# ITERM2_RELAUNCH_HEADS_UP (default ~/bin/screen-heads-up), ITERM2_RELAUNCH_TICK
+# (seconds per poll, default 1), ITERM2_RELAUNCH_DETACH (0: run the runner in the
+# foreground).
 set -u
 
 warn() { printf 'iterm2-relaunch: %s\n' "$*" >&2; }
@@ -76,6 +86,8 @@ state=$(state_dir)
 log=$state/run.log
 prefs=${ITERM2_RELAUNCH_PREFS:-$HOME/bin/iterm2-prefs}
 ct=${ITERM2_RELAUNCH_CLAUDE_TAB:-$HOME/bin/claude-tab}
+hu=${ITERM2_RELAUNCH_HEADS_UP:-$HOME/bin/screen-heads-up}
+tick=${ITERM2_RELAUNCH_TICK:-1}
 TAB=$(printf '\t')
 NL='
 '
@@ -201,14 +213,52 @@ run_items() {
   done
 }
 
+# heads_up <what>: asks the operator through screen-heads-up and returns 0 to go
+# ahead, 1 for "not now". Sets `went` once the helper has said go. A missing helper
+# or one that cannot ask is waited out for the grace and logged; exit 4 (another
+# heads-up is waiting, so something else is about to take the screen) is asked again.
+went=0
+heads_up() {
+  if [ -x "$hu" ]; then
+    n=0
+    while :; do
+      "$hu" "$1" "$grace" >>"$log" 2>&1
+      rc=$?
+      [ "$rc" -eq 4 ] || break
+      n=$((n + 1))
+      [ "$n" -lt 30 ] || { log_line "heads-up: another one was waiting"; return 1; }
+      sleep "$tick"
+    done
+    case $rc in
+      0) log_line "heads-up: go"; went=1; return 0;;
+      1) return 1;;
+    esac
+    log_line "heads-up: helper failed (exit $rc); waited ${grace}s"
+  else
+    log_line "heads-up: no helper; waited ${grace}s"
+  fi
+  n=0
+  while [ "$n" -lt "$grace" ]; do sleep "$tick"; n=$((n + 1)); done
+  return 0
+}
+
+# free_screen <text>: after a go, tells the helper the screen is free again. Not
+# restoring the front app: its plain `open` would start a missing iTerm2 with the
+# runner's environment.
+free_screen() {
+  [ "$went" = 1 ] || return 0
+  "$hu" --free "$1" --no-restore >>"$log" 2>&1
+}
+
 # _run <wait> <grace> <restore 0|1> <prompt 0|1> <caller id|-> <item>...
 cmd_run() {
   need_macos _run
   [ $# -ge 6 ] || { usage >&2; exit 2; }
   wait=$1 grace=$2 restore=$3 prompt=$4 caller=$5
   shift 5
-  tick=${ITERM2_RELAUNCH_TICK:-1}
   list=$(IFS=,; printf '%s' "$*")
+  est=15
+  for i in "$@"; do case $i in brew:*) est=$((est + 30));; esac; done
   order_items "$@"
 
   ensure_state
@@ -217,10 +267,14 @@ cmd_run() {
 
   if iterm_pid >/dev/null; then
     log_line "quit: in ${grace}s"
-    n=0
-    while [ "$n" -lt "$grace" ]; do sleep "$tick"; n=$((n + 1)); done
+    if ! heads_up "iTerm2 quits for $list and is back in about ${est}s; every session in it ends and is resumed"; then
+      log_line "aborted: not now; nothing done"
+      rm -f "$state/run.pid"
+      exit 3
+    fi
     if ! osascript -e 'tell application id "com.googlecode.iterm2" to get version' >/dev/null 2>>"$log"; then
       log_line "aborted: cannot send Apple events to iTerm2; nothing done"
+      free_screen "iTerm2 was not quit"
       rm -f "$state/run.pid"
       exit 3
     fi
@@ -234,6 +288,7 @@ cmd_run() {
     kill "$qpid" 2>/dev/null
     if iterm_pid >/dev/null; then
       log_line "aborted: iTerm2 still running after ${wait}s; nothing done"
+      free_screen "iTerm2 was not quit"
       rm -f "$state/run.pid"
       exit 3
     fi
@@ -274,12 +329,16 @@ cmd_run() {
       alive=$("$ct" restore --dry-run 2>/dev/null | awk -F'\t' '$1 == "skip:live" { c++ } END { print c + 0 }')
       everyone="iTerm2 was relaunched by iterm2-relaunch ($list), which ended this session mid-run. Nothing in your work tree was changed by it. Look at where you left off (your last turn, your task list, git status), restart anything that was running in the background, and carry on. If you were waiting on the operator, say so and wait."
       callertext="You started this relaunch of iTerm2 (iterm2-relaunch $list) and it has run. Read $log and run iterm2-relaunch status, check that each item did what it should (iterm2-prefs status for prefs, claude --version after an upgrade), report the result to the operator, then carry on with what you were doing."
-      set -- restore
-      if [ "$prompt" = 1 ]; then
-        set -- "$@" --prompt "$everyone"
-        [ "$caller" = - ] || set -- "$@" --prompt-for "$caller" "$callertext"
+      if heads_up "iTerm2 is back; its Claude tabs are being restored into the front window, leave it alone for about a minute"; then
+        set -- restore
+        if [ "$prompt" = 1 ]; then
+          set -- "$@" --prompt "$everyone"
+          [ "$caller" = - ] || set -- "$@" --prompt-for "$caller" "$callertext"
+        fi
+        if "$ct" "$@" >>"$log" 2>&1; then r=ok; else r=failed; fi
+      else
+        log_line "restore: not now; run: claude-tab restore"
       fi
-      if "$ct" "$@" >>"$log" 2>&1; then r=ok; else r=failed; fi
     else
       r=failed
     fi
@@ -293,9 +352,28 @@ cmd_run() {
   [ -z "$alive" ] || [ "$alive" -eq 0 ] ||
     log_line "restore: $alive sessions were still running and were left as they are"
 
+  free_screen "iTerm2 is back ($total items, $failed failed)"
   log_line "done: $total items, $failed failed, restore $r"
   rm -f "$state/run.pid"
   [ "$failed" -eq 0 ]
+}
+
+# cancel: calls a relaunch off while the runner is still in its heads-up or grace.
+cmd_cancel() {
+  runner_pid >/dev/null || die "no relaunch is under way"
+  if grep -q ' quit: asked$' "$log" 2>/dev/null; then
+    die "too late: iTerm2 has been asked to quit (Cancel in its own alert still stops it)"
+  fi
+  if [ -x "$hu" ] && "$hu" --not-now >/dev/null 2>&1; then
+    n=0
+    while [ "$n" -lt 5 ] && runner_pid >/dev/null; do sleep "$tick"; n=$((n + 1)); done
+  fi
+  if pid=$(runner_pid); then
+    kill "$pid" 2>/dev/null
+    rm -f "$state/run.pid"
+    log_line "cancelled: before iTerm2 was asked to quit"
+  fi
+  say "cancelled; iTerm2 was not asked to quit"
 }
 
 # known_item <item>: whether the runner has work of that name.
@@ -446,6 +524,7 @@ cmd_front() {
     if pid=$(runner_pid) && grep -q ' start: ' "$log" 2>/dev/null; then
       say "runner $pid has the work ($list) and asks iTerm2 to quit in ${grace}s"
       say "log: $log"
+      say "to call it off before iTerm2 is asked: iterm2-relaunch cancel"
       exit 0
     fi
     sleep 0.1; n=$((n + 1))
@@ -456,6 +535,7 @@ cmd_front() {
 case ${1:-} in
   status) need_macos status; cmd_status;;
   items) need_macos items; cmd_items;;
+  cancel) need_macos cancel; cmd_cancel;;
   _run) shift; cmd_run "$@";;
   _detach) shift; relaunch_py _detach "$@";;
   -h|--help|help) usage;;
