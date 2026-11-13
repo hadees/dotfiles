@@ -787,7 +787,7 @@ lead_of() { # dir
   if [ -x "$PEERCMD" ] && lo_c=$("$PEERCMD" claim "$1" 2>/dev/null) && [ -n "$lo_c" ]; then
     printf '%s\n' "$lo_c" | awk -F'\t' -v d="$1" '{ v[$1] = $2 }
       END { l = v["leader"]; p = v["lead-pid"]; s = v["lead-sid"]
-            printf "%s\t%s\t%s\n", (l == "" || l == "-") ? d : l, p == "" ? "-" : p, s == "" ? "-" : s }'
+            printf "%s\t%s\t%s\n", (l == "" || l == "-") ? d : l, (p == "" ? "-" : p), (s == "" ? "-" : s) }'
     return 0
   fi
   lo_p=$(cd "$1" 2>/dev/null && pwd -P) || lo_p=$1
