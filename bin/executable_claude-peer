@@ -189,10 +189,12 @@
 #                            it in panes, claude-peer.art-file replaces it,
 #                            claude-peer.art-seconds, default 20, is how long it
 #                            moves in fzf after the last key; 0 holds it still)
-#   art --hermes [--at <n>] [--truecolor|--256] | art --hermes --wait
+#   art --hermes [--at <n>] [--truecolor|--256] | art --hermes --wait|--pick
 #                            the Hermes pane's figure, read from the installed
 #                            Hermes: one frame of its glint (0, the default, is
-#                            still), or the pane's wait (0 Return, 1 q, 3 none)
+#                            still), the pane's wait (0 Return, 1 q, 3 none), or
+#                            its picker (0 fresh, 4 continue, 5 resume, 1 shell,
+#                            6 Esc, 3 no picker here)
 #   art --screen [--slot <slot>]
 #                            the quiet waiting screen, padded as a pane pads it,
 #                            for this terminal or CLAUDE_PEER_SIZE
@@ -999,6 +1001,65 @@ herm_wait() {
   trap - HUP INT TERM
   rm -rf "$hw_d"
   [ -z "$hw_a" ]
+}
+
+# The Hermes pane's picker: the slot panes' fzf with the caduceus, still, where the
+# sleeper goes, and four rows. 0 fresh, 4 continue, 5 resume, 1 shell, 6 Esc (the
+# caller shows the quiet figure). 3, silent: not a terminal, claude-peer.picker list
+# or off, or no fzf 0.75 (the caller waits as before the picker).
+# ponytail: no numbered-list fallback and no contexts yet; Hermes takes no first prompt
+herm_pick() {
+  [ -t 0 ] && [ -t 1 ] || return 3
+  case $(git config --get claude-peer.picker 2>/dev/null) in list|off) return 3;; esac
+  command -v fzf >/dev/null 2>&1 && fzf_ok || return 3
+  # shellcheck disable=SC2046
+  set -- $(stty size 2>/dev/null)
+  [ $# -ge 2 ] || return 3
+  hp_r=$1 hp_c=$2
+  hp_fig=
+  if [ "$(git config --get claude-peer.art 2>/dev/null)" != false ]; then
+    # shellcheck disable=SC2046
+    hp_fig=$(herm_py "$(herm_banner)" 0 $(herm_levels) | sed '$d') || hp_fig=
+  fi
+  hp_hint=$(printf '\033[2m%s\033[0m' '↵ start · esc hide')
+  hp_fh=0
+  [ -z "$hp_fig" ] || hp_fh=$(printf '%s\n' "$hp_fig" | wc -l | tr -d ' ')
+  # the figure only when it, the hint and the four rows fit
+  [ $((hp_fh + 7)) -le "$hp_r" ] || { hp_fig= hp_fh=0; }
+  hp_h=6 hp_head=$hp_hint
+  [ -z "$hp_fig" ] || { hp_h=$((hp_fh + 7)); hp_head=$(printf '%s\n\n%s' "$hp_fig" "$hp_hint"); }
+  hp_e=$(printf '\033')
+  hp_w=$(printf '%s\n' "$hp_fig" | sed "s/$hp_e\[[0-9;]*[A-Za-z]//g" | awk '{ if (length($0) > w) w = length($0) } END { print (w > 58 ? w : 58) }')
+  hp_l=0 hp_rt=0
+  if [ "$hp_c" -ge 80 ] && [ $((hp_w + 2)) -le "$hp_c" ]; then
+    hp_l=$(( (hp_c - hp_w) / 2 )); hp_rt=$((hp_c - hp_w - hp_l))
+  fi
+  if [ "$(art_mode)" = truecolor ]; then hp_k='#ffd696' hp_s='38;2;255;214;150'
+  else hp_k=$(art_c256 '255 214 150') hp_s="38;5;$hp_k"; fi
+  # shellcheck disable=SC2046
+  hp_pick=$(printf '%s\n' \
+      "@fresh	fresh     A new session" \
+      "@continue	continue  Pick up the last conversation" \
+      "@resume	resume    Choose an earlier conversation" \
+      "@shell	shell     Drop to a shell" |
+    ( unset FZF_DEFAULT_OPTS FZF_DEFAULT_OPTS_FILE
+      exec fzf $(fzf_colors) --color=header:-1 --color="pointer:$hp_k,prompt:$hp_k" \
+        --no-multi --no-sort --no-mouse --layout=reverse --header-first \
+        --height="$hp_h" --info=hidden --no-separator \
+        --margin="0,$hp_rt,0,$hp_l" --pointer='▸' --gutter=' ' \
+        --delimiter='\t' --with-nth=2 --prompt="$(printf '\033[%smHermes ▸\033[0m ' "$hp_s")" \
+        --header="$hp_head" ))
+  case $? in
+    0) ;;
+    1|130) return 6;;
+    *) return 3;;
+  esac
+  case ${hp_pick%%	*} in
+    @fresh) return 0;;
+    @continue) return 4;;
+    @resume) return 5;;
+    *) return 1;;
+  esac
 }
 
 # second-line [frame [z]] -> the art block: the frame (asleep, all z's) and, beside it on
@@ -2714,12 +2775,13 @@ cmd_context() {
 # [--slot <slot>] [--frame <name>] [--z all|near|near-mid|none] [--truecolor|--256]
 # | --screen [--slot <slot>]: the operator's preview of the sleeper, and the tests' handle.
 cmd_art() {
-  slot= ar_f=asleep ar_z=all ar_m= ar_s= ar_h= ar_at=0 ar_w=
+  slot= ar_f=asleep ar_z=all ar_m= ar_s= ar_h= ar_at=0 ar_w= ar_p=
   while [ $# -gt 0 ]; do
     case $1 in
       --hermes) ar_h=1;;
       --at) [ $# -ge 2 ] || usage; case $2 in ''|*[!0-9]*) usage;; esac; ar_at=$2; shift;;
       --wait) ar_w=1;;
+      --pick) ar_p=1;;
       --slot) [ $# -ge 2 ] || usage; slot=$2; shift;;
       --frame) [ $# -ge 2 ] || usage; ar_f=$2; shift;;
       --z) [ $# -ge 2 ] || usage; case $2 in all|near|near-mid|none) ar_z=$2;; *) usage;; esac; shift;;
@@ -2732,6 +2794,7 @@ cmd_art() {
   done
   if [ -n "$ar_h" ]; then
     [ -z "$ar_w" ] || { herm_wait; return; }
+    [ -z "$ar_p" ] || { herm_pick; return; }
     # shellcheck disable=SC2046
     herm_py "$(herm_banner)" "$ar_at" $(herm_levels "$ar_m"); return
   fi
