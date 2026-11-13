@@ -1303,8 +1303,8 @@ pane() {
   pn_look= pn_look_id=
   case $(git config --get claude-peer.art-seconds 2>/dev/null) in
     ''|*[!0-9]*)
-      pk_d=$(look_dir) pk_id=${ITERM_SESSION_ID#*:}
-      case ${ITERM_SESSION_ID-} in *:*) ;; *) pk_id=;; esac
+      pk_d=$(look_dir) pk_id=${ITERM_SESSION_ID-}
+      case $pk_id in *:*) pk_id=${pk_id#*:};; *) pk_id=;; esac
       if [ -r "$pk_d/kind" ] && look_ok "$pk_id" && [ $(( $(printf %s "$pk_d" | wc -c) + 42 )) -le 100 ]; then
         pn_look=$pk_d/$pk_id.sock pn_look_id=$pk_id
       fi;;

@@ -477,7 +477,7 @@ pane() {
   local tty=$BATS_TEST_TMPDIR/tty-$t
   [ -p "$tty" ] || mkfifo "$tty"
   ( cd "$d" && export CLAUDE_PEER_TTY="${PANE_TTY:-$tty}" &&
-    exec sh "$BIN" run --as "$s" --wait >"$BATS_TEST_TMPDIR/pane-$t.out" 2>&1 3>&- ) &
+    exec ${PANE_SH:-sh} "$BIN" run --as "$s" --wait >"$BATS_TEST_TMPDIR/pane-$t.out" 2>&1 3>&- ) &
   LAST_PANE=$!
   PANES="$PANES $LAST_PANE"
   until_ok "[ -f '$(git -C "$d" rev-parse --path-format=absolute --git-common-dir)/claude-peer.wait/$s.$LAST_PANE' ]"
@@ -2528,6 +2528,19 @@ lookfix() {
   done
 }
 
+@test "sleeper look: under dash, with no ITERM_SESSION_ID and no art-seconds, the pane still opens its fzf" {
+  command -v dash >/dev/null || skip "dash is not installed"
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  unset ITERM_SESSION_ID
+  PANE_SH=$(command -v dash) CLAUDE_PEER_SIZE='40 120' FAKE_FZF_SLEEP=30 pane alpha
+  until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  [ "$(grep -c 'not set' "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 0 ]
+  [ "$(grep -c -- '--listen' "$FAKE_FZF_LOG")" -eq 0 ]
+}
+
 @test "sleeper look: art-seconds 0 or the art off holds still and listens to nothing" {
   hellofix
   fzfstub
@@ -2582,6 +2595,21 @@ lookhold() {
   ) &
   LOOKHOLD=$!
   until_ok '[ -f "$BATS_TEST_TMPDIR/held" ]'
+}
+
+# locktool: skip unless a tool here locks a descriptor, tried as look_lock tries them
+locktool() {
+  local rc=0
+  if command -v flock >/dev/null 2>&1; then
+    (exec 9>>"$BATS_TEST_TMPDIR/locktool"; flock -n 9) 2>/dev/null || rc=$?
+    [ "$rc" -gt 1 ] || return 0
+  fi
+  if command -v lockf >/dev/null 2>&1; then
+    rc=0
+    (exec 9>>"$BATS_TEST_TMPDIR/locktool"; lockf -s -t 0 9) 2>/dev/null || rc=$?
+    case $rc in 0|75) return 0;; esac
+  fi
+  skip "no tool here locks a descriptor"
 }
 
 @test "look gained: the first one writes focus and binds that pane; a repeat does nothing" {
@@ -2673,6 +2701,7 @@ $LOOKID unbind(every(1))" ]
 }
 
 @test "look gained: calls that overlap leave one pane bound, the one in focus" {
+  locktool
   lookfix; lookcurl; looksock "$LOOKID"; looksock "$LOOKID2"; looksock "$LOOKID3"; looksock "$LOOKID4"
   sh "$BIN" look gained "$LOOKID"
   FAKE_CURL_SLOW="$LOOKID.sock" FAKE_CURL_SLEEP=1 sh "$BIN" look gained "$LOOKID2" 3>&- &
@@ -2694,6 +2723,7 @@ $LOOKID2 unbind(every(1))" ]
 }
 
 @test "look: a call killed while it holds the lock leaves nothing to break" {
+  locktool
   lookfix; lookcurl; looksock "$LOOKID"; looksock "$LOOKID2"; looksock "$LOOKID3"
   sh "$BIN" look gained "$LOOKID"
   FAKE_CURL_SLOW="$LOOKID.sock" FAKE_CURL_SLEEP=2 sh "$BIN" look gained "$LOOKID2" 3>&- &
@@ -2709,6 +2739,7 @@ $LOOKID2 unbind(every(1))" ]
 }
 
 @test "look: a holder that outlives the wait is passed, and counted" {
+  locktool
   lookfix; lookcurl; looksock "$LOOKID"; looksock "$LOOKID2"
   lookhold
   CLAUDE_PEER_LOOK_WAIT=1 run --separate-stderr sh "$BIN" look gained "$LOOKID"
