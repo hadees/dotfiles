@@ -279,7 +279,7 @@ line() { printf '%s\n' "$SCREEN" | sed -n "$1p"; }
 
 @test "ci: every job that runs the suite says what the screen tests may not skip" {
   local wf="$BATS_TEST_DIRNAME/../.github/workflows/tests.yml" pin="$BATS_TEST_DIRNAME/../.github/fzf-version"
-  local suite=' bats ((--[a-z-]+|"[^"]*") )*tests$'
+  local suite=' bats ((--[a-z-]+|"[^"]*"|\$[a-z]+) )*tests$'
   [ "$(grep -cE "$suite" "$wf")" -eq 3 ]
   [ "$(grep -cE "SCREEN_TESTS_REQUIRE='tmux fzf'$suite" "$wf")" -eq 3 ]
   # each of the three installs the pinned fzf, then checks that it is the first on PATH
