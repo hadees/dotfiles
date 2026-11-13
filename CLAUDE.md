@@ -252,6 +252,7 @@ rule first.
 | `worktabs` | the iTerm2 tab launcher, `workspace.*` config, the Alfred workflow |
 | `claude-peer` | Workgroup peers, named slot worktrees, claims, the Hermes peer, overlay peers |
 | `claude-peer-handoff` | Lead and its name, `start --handoff`, `log idle`, the stop mark |
+| `claude-peer-look` | the sleeper that moves while looked at: `look`, its trigger, its lock |
 | `claude-tab` | `claude-tab` list, focus, save, restore; `tabname` |
 | `branchname` | the branch label a prompt or status line shows, the detached-slot base record |
 | `postbox` | cross-profile session mail, its hooks, the courier, the roll-call |

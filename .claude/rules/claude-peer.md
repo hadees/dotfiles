@@ -393,11 +393,17 @@ reads and clears it and, with the sleeper showing, calls `art_wake` once the slo
 up over it (`ESC[9A`, 11 under) and `wake-2` (eyes open) on top, 0.25 s, then the header line
 as before. The list and the quiet state never move and never wake. A context that asks a
 question wakes under its answer. The screen tests hold the figure still from `setup`
-(`art-seconds 0`) and set 3 where they test the movement.
+(`art-seconds 0`) and set 3 where they test the movement; the look tests make their own
+directory under `/tmp` (`CLAUDE_PEER_LOOK`), because the sandbox `HOME` is too long for a
+socket path.
 `claude-peer art [--slot] [--frame] [--z all|near|near-mid|none] [--truecolor|--256]` prints a
 frame; `art --screen [--slot]` prints the quiet screen as a pane would pad it, for the terminal
 or `CLAUDE_PEER_SIZE`: the operator's preview and the screen tests' reference. The figure is
 the operator's approved original, not Anthropic's mascot; a private override file may differ.
+
+**It moves while it is looked at** when `claude-peer look on` is installed: see
+`claude-peer-look.md` for the three modes, `claude-peer look gained|lost`, the trigger, the
+no-interpolation rule and the lock.
 
 **The Hermes peer** exists only in `Claude Peers + Hermes`, and is a plain shell
 unless a Hermes profile routes the directory; the gate below is now the second
@@ -488,7 +494,10 @@ never the caller's server) at fixed sizes, captures it with `capture-pane -p`
 list (centred, every row whole, a question under it, a `start` taking it, an older
 fzf falling back to it), the fzf picker, and the sleeper (cell for cell against
 `claude-peer art`, whole while the list scrolls, absent at 15 rows, one after Esc and
-Return, and above the list). The sleeper's tests unset the `claude-peer.art false` that
+Return, and above the list; looked-at mode: still until told, moving while looked at and
+still again after `look lost` or a second session's `look gained`, moving at once when it
+opens under the operator's eyes, and drawn the same looked at or held still; those need
+`curl` with `UnixSockets`). The sleeper's tests unset the `claude-peer.art false` that
 `setup` sets for the rest. Waits are for text and for a still screen, never a bare
 `sleep`. They need a UTF-8 locale and, in a container, an init as process 1
 (`docker run --init`): the harness test and `screen_close` say so by name, and
