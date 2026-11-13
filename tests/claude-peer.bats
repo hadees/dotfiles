@@ -2665,7 +2665,10 @@ $LOOKID unbind(every(1))" ]
 @test "look: an unknown word is a usage error" {
   run sh "$BIN" look
   [ "$status" -eq 2 ]
-  run sh "$BIN" look on
+  run sh "$BIN" look sideways
+  [ "$status" -eq 2 ]
+  # on and off take no argument; this stops at the usage error before any store is read
+  run sh "$BIN" look on extra
   [ "$status" -eq 2 ]
 }
 
@@ -2743,6 +2746,183 @@ $LOOKID2 rebind(every(1))" ]
   chmod 700 "$CLAUDE_PEER_LOOK"
   [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
   [ "$(looklog)" = "$LOOKID rebind(every(1))" ]
+}
+
+# --- look on / off, and the look line of status ---------------------------------
+# Every test below points CLAUDE_PEER_PREFS at a fixture plist and CLAUDE_PEER_LOOK at a
+# directory of its own: nothing here reads or writes iTerm2's preferences or the real
+# look directory. lookprefs also gives profile One a Run Command trigger that is not ours.
+
+lookprefs() {
+  stubs
+  mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
+  addprofiles "$BATS_TEST_TMPDIR/prefs.plist"
+  python3 -I - "$BATS_TEST_TMPDIR/prefs.plist" <<'PY'
+import plistlib, sys
+p = sys.argv[1]
+pl = plistlib.load(open(p, "rb"))
+pl["New Bookmarks"][0]["Triggers"].append({"action": "ScriptTrigger", "regex": "", "parameter": "echo hi"})
+plistlib.dump(pl, open(p, "wb"), fmt=plistlib.FMT_XML)
+PY
+  export CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist"
+  CLAUDE_PEER_LOOK=$(mktemp -d /tmp/cpl.XXXXXX)
+  export CLAUDE_PEER_LOOK
+}
+lookline() { sh "$BIN" status | grep '^look:'; }
+# lookage <seconds>: make focus that old
+lookage() { python3 -I -c 'import os, sys, time; t = time.time() - int(sys.argv[2]); os.utime(sys.argv[1], (t, t))' "$CLAUDE_PEER_LOOK/focus" "$1"; }
+# looklisten <id>: a socket something accepts (and drops) connections on, until teardown
+looklisten() {
+  python3 -I -c 'import socket, sys
+s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(1)
+open(sys.argv[2], "w").close()
+while True: s.accept()[0].close()' "$CLAUDE_PEER_LOOK/$1.sock" "$BATS_TEST_TMPDIR/listening" &
+  PANES="$PANES $!"
+  until_ok '[ -f "$BATS_TEST_TMPDIR/listening" ]'
+}
+
+@test "look on: one trigger, exactly this one, in each profile that enters a workgroup, and nowhere else; a second run changes nothing" {
+  lookprefs
+  echo timeout >"$CLAUDE_PEER_LOOK/unlocked"; : >"$CLAUDE_PEER_LOOK/lock"; echo "$LOOKID" >"$CLAUDE_PEER_LOOK/focus"
+  run sh "$BIN" look on
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 1 ]
+  [[ "$output" == *"2 of 2 profiles changed" ]]
+  # the stored parameter: one line whose only backslash is the \0 of the changed value
+  cat >"$BATS_TEST_TMPDIR/look.cmd" <<'LINE'
+g='\0'; p="$HOME/bin/claude-peer"; f="$HOME/.local/state/claude-peer/look/focus"; [ -x "$p" ] || exit 0; o=; [ -r "$f" ] && read -r o <"$f"; [ "$o" = "$g" ] || exec "$p" look gained "$g"
+LINE
+  python3 -I - "$CLAUDE_PEER_PREFS" "$BATS_TEST_TMPDIR/look.cmd" <<'PY'
+import plistlib, sys
+pl = plistlib.load(open(sys.argv[1], "rb"))
+LINE = open(sys.argv[2]).read().rstrip("\n")
+want = {"action": "ScriptTrigger", "matchType": 115, "parameter": LINE,
+        "eventParams": {"variableName": "tab.window.currentTab.currentSession.id",
+                        "variableValueRegex": "^[0-9A-Fa-f-]{36}$"},
+        "disabled": 0, "regex": "", "contentregex": "", "partial": False}
+assert LINE.count("\\") == 1, LINE
+by = {b["Name"]: b for b in pl["New Bookmarks"]}
+for n in ("One", "Two"):
+    ours = [t for t in by[n]["Triggers"] if t["action"] == "ScriptTrigger" and "look gained" in t["parameter"]]
+    assert ours == [want], ours
+assert {"action": "ScriptTrigger", "regex": "", "parameter": "echo hi"} in by["One"]["Triggers"]
+assert by["Other"]["Triggers"] == [
+    {"action": "iTermEnterWorkgroupTrigger", "regex": "", "parameter": "someone.else"},
+    {"action": "iTermExitWorkgroupTrigger", "regex": "", "parameter": ""}], by["Other"]
+assert pl["Ponies"] == "sentinel"
+PY
+  [ "$(cat "$CLAUDE_PEER_LOOK/kind")" = variable ]
+  # the files of an earlier run: focus and unlocked start again, lock is never removed
+  [ ! -e "$CLAUDE_PEER_LOOK/focus" ]; [ ! -e "$CLAUDE_PEER_LOOK/unlocked" ]; [ -e "$CLAUDE_PEER_LOOK/lock" ]
+  cp "$CLAUDE_PEER_PREFS" "$BATS_TEST_TMPDIR/after.plist"
+  run sh "$BIN" look on
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"0 of 2 profiles changed" ]]
+  cmp "$CLAUDE_PEER_PREFS" "$BATS_TEST_TMPDIR/after.plist"
+}
+
+@test "look on: the parameter has no interpolation, the profile's flag is not written, and the store names \$HOME, never the home directory" {
+  lookprefs
+  sh "$BIN" look on >/dev/null
+  python3 -I - "$CLAUDE_PEER_PREFS" "$HOME" <<'PY'
+import plistlib, sys
+raw = open(sys.argv[1], "rb").read()
+assert sys.argv[2].encode() not in raw
+pl = plistlib.loads(raw)
+for b in pl["New Bookmarks"]:
+    assert "Triggers Use Interpolated Strings" not in b, b["Name"]
+    for t in b["Triggers"]:
+        assert "\\(" not in t["parameter"], t
+PY
+}
+
+@test "look off: only its own trigger goes, with the marker; default peers, default builtin and install leave it where it is" {
+  lookprefs
+  sh "$BIN" look on >/dev/null
+  sh "$BIN" install >/dev/null
+  sh "$BIN" default peers >/dev/null
+  sh "$BIN" default builtin >/dev/null
+  [ "$(grep -c 'look gained' "$CLAUDE_PEER_PREFS")" -eq 2 ]
+  echo timeout >"$CLAUDE_PEER_LOOK/unlocked"; echo "$LOOKID" >"$CLAUDE_PEER_LOOK/focus"; : >"$CLAUDE_PEER_LOOK/lock"
+  run sh "$BIN" look off
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"2 of 2 profiles changed" ]]
+  ! grep -q 'look gained' "$CLAUDE_PEER_PREFS"
+  grep -q 'echo hi' "$CLAUDE_PEER_PREFS"
+  [ ! -e "$CLAUDE_PEER_LOOK/kind" ]; [ ! -e "$CLAUDE_PEER_LOOK/focus" ]; [ ! -e "$CLAUDE_PEER_LOOK/unlocked" ]
+  [ -e "$CLAUDE_PEER_LOOK/lock" ]
+  run sh "$BIN" look off
+  [[ "$output" == *"0 of 2 profiles changed" ]]
+}
+
+@test "look on: sockets nobody answers on go with it, one that answers stays" {
+  lookprefs
+  looksock "$LOOKID"; looklisten "$LOOKID2"
+  sh "$BIN" look on >/dev/null
+  [ ! -e "$CLAUDE_PEER_LOOK/$LOOKID.sock" ]; [ -S "$CLAUDE_PEER_LOOK/$LOOKID2.sock" ]
+}
+
+@test "look on: refused while iTerm2 runs, with no such profile, or off macOS; nothing written, no marker" {
+  lookprefs
+  cp "$CLAUDE_PEER_PREFS" "$BATS_TEST_TMPDIR/before.plist"
+  FAKE_PROCS=iTerm2 run sh "$BIN" look on
+  [ "$status" -eq 1 ]; [[ "$output" == *"quit iTerm2 first"* ]]
+  FAKE_OS=Linux run sh "$BIN" look on
+  [ "$status" -eq 2 ]; [[ "$output" == *"needs macOS"* ]]
+  cmp "$CLAUDE_PEER_PREFS" "$BATS_TEST_TMPDIR/before.plist"
+  [ ! -e "$CLAUDE_PEER_LOOK/kind" ]
+  mkprefs "$BATS_TEST_TMPDIR/bare.plist"
+  CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/bare.plist" run sh "$BIN" look on
+  [ "$status" -eq 1 ]; [[ "$output" == *"no profile has an Enter Workgroup trigger"* ]]
+  [ ! -e "$CLAUDE_PEER_LOOK/kind" ]
+}
+
+@test "status: the look line reads off, on, marker without trigger, trigger without marker, and out of date" {
+  lookprefs
+  [ "$(lookline)" = "look: off" ]
+  # marker without any trigger, then without one profile's
+  echo variable >"$CLAUDE_PEER_LOOK/kind"
+  [ "$(lookline)" = "look: the marker says on but 2 of 2 profiles lack the trigger (iTerm2's Reinstall rewrites triggers) — claude-peer look on (with iTerm2 quit)" ]
+  sh "$BIN" look on >/dev/null
+  looksock "$LOOKID"; looklisten "$LOOKID2"
+  [ "$(lookline)" = "look: on (variable trigger in 2 of 2 profiles); 1 panes listening, 1 stale; last event never" ]
+  echo "$LOOKID" >"$CLAUDE_PEER_LOOK/focus"; lookage 10800
+  [ "$(lookline)" = "look: on (variable trigger in 2 of 2 profiles); 1 panes listening, 1 stale; last event 3h ago" ]
+  python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
+import plistlib, sys
+p = sys.argv[1]
+pl = plistlib.load(open(p, "rb"))
+pl["New Bookmarks"][1]["Triggers"] = [t for t in pl["New Bookmarks"][1]["Triggers"] if t["action"] != "ScriptTrigger"]
+plistlib.dump(pl, open(p, "wb"), fmt=plistlib.FMT_XML)
+PY
+  [ "$(lookline)" = "look: the marker says on but 1 of 2 profiles lack the trigger (iTerm2's Reinstall rewrites triggers) — claude-peer look on (with iTerm2 quit)" ]
+  sh "$BIN" look on >/dev/null
+  rm "$CLAUDE_PEER_LOOK/kind"
+  [ "$(lookline)" = "look: 2 profiles carry the trigger but the marker is missing, so no pane listens — claude-peer look on (with iTerm2 quit)" ]
+  echo variable >"$CLAUDE_PEER_LOOK/kind"
+  python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
+import plistlib, sys
+p = sys.argv[1]
+pl = plistlib.load(open(p, "rb"))
+for t in pl["New Bookmarks"][0]["Triggers"]:
+    if "look gained" in t["parameter"]:
+        t["parameter"] += " # older"
+plistlib.dump(pl, open(p, "wb"), fmt=plistlib.FMT_XML)
+PY
+  [ "$(lookline)" = "look: installed, out of date (this version's trigger differs) — claude-peer look on (with iTerm2 quit)" ]
+}
+
+@test "status: the look line counts events that passed a held lock, and says when nothing can lock" {
+  lookprefs
+  sh "$BIN" look on >/dev/null
+  base="look: on (variable trigger in 2 of 2 profiles); 0 panes listening, 0 stale; last event never"
+  [ "$(lookline)" = "$base" ]
+  : >"$CLAUDE_PEER_LOOK/unlocked"
+  [ "$(lookline)" = "$base" ]
+  printf 'timeout\ntimeout\n' >"$CLAUDE_PEER_LOOK/unlocked"
+  [ "$(lookline)" = "$base; 2 events passed a held lock" ]
+  echo notool >"$CLAUDE_PEER_LOOK/unlocked"
+  [ "$(lookline)" = "$base; events are not serialised (no flock, and no lockf that locks a descriptor)" ]
 }
 
 @test "sleeper: a repository name too long for the block is cut, the label never" {

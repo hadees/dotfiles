@@ -194,6 +194,10 @@
 #   art --screen [--slot <slot>]
 #                            the quiet waiting screen, padded as a pane pads it,
 #                            for this terminal or CLAUDE_PEER_SIZE
+#   look on|off              write / remove the iTerm2 trigger that tells a waiting
+#                            pane it is looked at, in every profile that enters
+#                            a workgroup, and the marker panes check; iTerm2
+#                            must be quit
 #   look gained|lost <session id>
 #                            the pane of that iTerm2 session is now looked at /
 #                            no longer is: its picker starts or stops moving;
@@ -2053,7 +2057,7 @@ prefs_store() {
 # NSData holding a JSON array), defaults for the domain.
 peer_py() {
   python3 -I - "$@" <<'PYEOF'
-import copy, json, plistlib, subprocess, sys
+import copy, json, os, plistlib, socket, stat, subprocess, sys, time
 
 GROUP, NAME, HGROUP, BUILTIN = "claudePeer.workgroup", "Claude Peers", "claudePeer.h", "builtin.claudeCode"
 mode, kind, path = sys.argv[1:4]
@@ -2196,6 +2200,50 @@ def sync_var_triggers(pl, groups):
             changed.add(id(b))
         b["Triggers"] = keep + mine
     return changed
+
+# The look trigger: when the session now active in the selected tab changes, tell
+# `claude-peer look gained` which one it is. The parameter holds no `\(`, only the
+# `\0` of the changed value, so iTerm2 never evaluates it against a session's
+# variables (the shape that crashed 3.7.7 on a half-built split); the command skips
+# the call when focus already names the session. is_look is how `look off` tells
+# its own trigger from somebody else's Run Command trigger.
+LOOK_VAR = "tab.window.currentTab.currentSession.id"
+LOOK_RE = "^[0-9A-Fa-f-]{36}$"
+LOOK_CMD = ('g=\'\\0\'; p="$HOME/bin/claude-peer"; f="$HOME/.local/state/claude-peer/look/focus"; '
+            '[ -x "$p" ] || exit 0; o=; [ -r "$f" ] && read -r o <"$f"; '
+            '[ "$o" = "$g" ] || exec "$p" look gained "$g"')
+LOOK_TRIGGER = {"action": "ScriptTrigger", "matchType": VAR_ENTER, "parameter": LOOK_CMD,
+                "eventParams": {"variableName": LOOK_VAR, "variableValueRegex": LOOK_RE},
+                "disabled": 0, "regex": "", "contentregex": "", "partial": False}
+
+def is_look(t):
+    p = t.get("parameter")
+    return (t.get("action") == "ScriptTrigger" and isinstance(p, str)
+            and "/bin/claude-peer" in p and " look gained " in p)
+
+def look_of(b):
+    return [t for t in b.get("Triggers") or [] if is_look(t)]
+
+def socks(d):
+    try:
+        return [os.path.join(d, f) for f in sorted(os.listdir(d))
+                if f.endswith(".sock") and stat.S_ISSOCK(os.lstat(os.path.join(d, f)).st_mode)]
+    except OSError:
+        return []
+
+def listening(p):
+    s = socket.socket(socket.AF_UNIX)
+    s.settimeout(1)
+    try:
+        s.connect(p)
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+def dur(n):
+    return "%ds" % n if n < 60 else "%dm" % (n // 60) if n < 3600 else "%dh" % (n // 3600) if n < 86400 else "%dd" % (n // 86400)
 
 def save(pl, was_binary):
     data = plistlib.dumps(pl, fmt=plistlib.FMT_BINARY if was_binary else plistlib.FMT_XML)
@@ -2351,6 +2399,73 @@ elif mode == "default":
     if moved:
         save(pl, was_binary)
     print("%d of %d profiles changed" % (len(moved), len({id(b) for b, _ in found})))
+elif mode == "look":
+    on = sys.argv[4] == "on"
+    try:
+        pl, was_binary = load(kind, path)
+    except Exception as e:
+        fail("cannot read the preferences: %s" % e)
+    profs = list({id(b): b for b, _ in job_triggers(pl)}.values())
+    if not profs:
+        fail("no profile has an Enter Workgroup trigger for Claude Code; set up iTerm2's Claude Code integration first")
+    changed = 0
+    for b in profs:
+        trig = b.get("Triggers") or []
+        new = [t for t in trig if not is_look(t)] + ([copy.deepcopy(LOOK_TRIGGER)] if on else [])
+        if new != trig:
+            b["Triggers"] = new
+            changed += 1
+    if changed:
+        save(pl, was_binary)
+    if on:  # iTerm2 is quit, so a socket that answers nobody is a leftover
+        for p in socks(sys.argv[5]):
+            if not listening(p):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+    print("%d of %d profiles changed" % (changed, len(profs)))
+elif mode == "lookstatus":
+    d = sys.argv[4]
+    try:
+        pl, _ = load(kind, path)
+    except Exception as e:
+        fail("cannot read the iTerm2 preferences (%s): %s" % (kind, e))
+    profs = list({id(b): b for b, _ in job_triggers(pl)}.values())
+    m = len(profs)
+    n = sum(1 for b in profs if look_of(b) == [LOOK_TRIGGER])
+    mine = [look_of(b) for b in pl.get("New Bookmarks", [])]
+    carry = sum(1 for ts in mine if ts)
+    marker = os.access(os.path.join(d, "kind"), os.R_OK)
+    fix = "claude-peer look on (with iTerm2 quit)"
+    if not marker and not carry:
+        print("look: off")
+    elif not marker:
+        print("look: %d profiles carry the trigger but the marker is missing, so no pane listens \u2014 %s" % (carry, fix))
+    elif any(ts and ts != [LOOK_TRIGGER] for ts in mine):
+        print("look: installed, out of date (this version's trigger differs) \u2014 %s" % fix)
+    elif n < m:
+        print("look: the marker says on but %d of %d profiles lack the trigger (iTerm2's Reinstall rewrites triggers) \u2014 %s" % (m - n, m, fix))
+    else:
+        ps = socks(d)
+        k = sum(1 for p in ps if listening(p))
+        try:
+            age = "%s ago" % dur(max(0, int(time.time() - os.stat(os.path.join(d, "focus")).st_mtime)))
+        except OSError:
+            age = "never"
+        try:
+            with open(os.path.join(d, "unlocked")) as f:
+                lines = f.read().splitlines()
+        except OSError:
+            lines = []
+        if not lines:
+            tail = ""
+        elif lines[0] == "notool":
+            tail = "; events are not serialised (no flock, and no lockf that locks a descriptor)"
+        else:
+            tail = "; %d events passed a held lock" % len(lines)
+        print("look: on (variable trigger in %d of %d profiles); %d panes listening, %d stale; last event %s%s"
+              % (n, m, k, len(ps) - k, age, tail))
 PYEOF
 }
 
@@ -2425,6 +2540,7 @@ cmd_status() {
   ovs_filed=$(sed -n 1p "$(overlays_file)" 2>/dev/null)
   ovs_lab=$(overlay_labels "$ovs")
   if proc_running iTerm2; then peer_py status domain "" "$(enter_state)" "$ovs" "$ovs_filed" "$ovs_lab"; else peer_py status "$skind" "$spath" "$(enter_state)" "$ovs" "$ovs_filed" "$ovs_lab"; fi
+  if proc_running iTerm2; then peer_py lookstatus domain "" "$(look_dir)"; else peer_py lookstatus "$skind" "$spath" "$(look_dir)"; fi
   peers_summary
   [ -n "$ovs" ] || return 0
   if st_pub=$(public_root); then printf 'overlays: entered from %s\n' "$st_pub"
@@ -2724,6 +2840,28 @@ look_turn() {
   return 0
 }
 
+# on|off: write (or remove) the trigger that calls `look gained` in every profile that
+# enters a workgroup on a claude job, and the marker that tells panes to listen. The
+# marker goes after the store, so a pane never listens for a trigger that is not there;
+# `lock` stays, because a new file at its path would be a second lock beside a live
+# holder's.
+look_switch() {
+  [ $# -eq 1 ] || usage
+  need_macos "look $1"
+  proc_running iTerm2 && die "quit iTerm2 first — it rewrites its preferences at quit and would overwrite this"
+  prefs_store
+  lk_d=$(look_dir)
+  r=$(peer_py look "$skind" "$spath" "$1" "$lk_d") || exit 1
+  if [ "$1" = on ]; then
+    mkdir -p "$lk_d" && chmod 700 "$lk_d" && rm -f "$lk_d/focus" "$lk_d/unlocked" &&
+      echo variable >"$lk_d/kind" || die "cannot write $lk_d"
+    printf 'claude-peer: a waiting pane now moves while it is looked at; %s\n' "$r"
+  else
+    rm -f "$lk_d/kind" "$lk_d/focus" "$lk_d/unlocked"
+    printf 'claude-peer: a waiting pane is no longer told when it is looked at; %s\n' "$r"
+  fi
+}
+
 # gained|lost <session id>: what iTerm2's trigger calls when the session now looked
 # at changes. Always exit 0 and print nothing, whatever happens: iTerm2 posts a
 # notification for a failed command and logs its output. A burst of calls (one tab
@@ -2732,7 +2870,7 @@ look_turn() {
 # (look_lock); with no lock tool, or a holder past the wait, the call goes ahead and
 # `unlocked` says so.
 cmd_look() {
-  case ${1-} in gained|lost) ;; *) usage;; esac
+  case ${1-} in on|off) look_switch "$@"; return;; gained|lost) ;; *) usage;; esac
   {
     lk_d=$(look_dir) lk_id=${2-}
     [ -d "$lk_d" ] && look_ok "$lk_id" || return 0
