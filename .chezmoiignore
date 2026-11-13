@@ -54,6 +54,10 @@ bin/iterm2-prefs
 .config/iterm2
 # The screen heads-up is a macOS notification
 bin/screen-heads-up
+# pane-sight drives iTerm2's API, and pane-read and pane-shot are its names
+bin/pane-sight
+bin/pane-read
+bin/pane-shot
 {{ end -}}
 
 {{ if eq .machineClass "ephemeral" -}}
