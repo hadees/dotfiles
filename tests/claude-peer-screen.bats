@@ -29,6 +29,7 @@ have() {
     tmux) command -v tmux >/dev/null 2>&1;;
     fzf) command -v fzf >/dev/null 2>&1 && fzf_new;;
     pgrep) command -v pgrep >/dev/null 2>&1;;
+    curl) command -v curl >/dev/null 2>&1 && curl --version 2>/dev/null | grep -q UnixSockets;;
     *) return 1;;
   esac
 }
@@ -43,6 +44,7 @@ reason() {
   case $1 in
     tmux) echo 'no tmux on PATH';;
     pgrep) echo 'no pgrep on PATH (procps)';;
+    curl) echo 'no curl with UnixSockets on PATH (Rocky ships curl-minimal)';;
     *) if ! command -v fzf >/dev/null 2>&1; then echo 'no fzf on PATH'
        else echo "fzf $(fzf_version) is older than 0.75"; fi;;
   esac
@@ -73,12 +75,15 @@ setup() {
   export GIT_CONFIG_NOSYSTEM=1
   export GIT_CEILING_DIRECTORIES="$BATS_TEST_TMPDIR"
   export CLAUDE_PEER_SETTLE=0
+  # a suite run from an iTerm2 tab must not inherit a real session or look directory
+  unset ITERM_SESSION_ID CLAUDE_PEER_LOOK
   git config --global user.name octo
   git config --global user.email octo@example.com
   git config --global init.defaultBranch main
   # the sleeper's own tests unset this; the others keep their bare screens
   git config --global claude-peer.art false
-  # and a figure that holds still; the tests of its movement set a limit of their own
+  # and a figure that holds still; the tests of its movement set a limit of their own,
+  # or are told when they are looked at (look_on)
   git config --global claude-peer.art-seconds 0
   cat >"$BATS_TEST_TMPDIR/bin/fakeshell" <<'STUB'
 #!/bin/sh
@@ -120,6 +125,7 @@ STUB
 }
 
 teardown() {
+  case ${CLAUDE_PEER_LOOK-} in /tmp/cpl.*) rm -rf "$CLAUDE_PEER_LOOK";; esac
   tm kill-server >/dev/null 2>&1 || true
   [ ! -e "$BATS_TEST_TMPDIR/claude-ran" ]
 }
@@ -825,6 +831,86 @@ fzf_kids() { local f; f=$(pgrep -P "$PANE_PID" -x fzf) || { echo 'no fzf under t
   screen_still 5 0.5
   art_matches 11 '✻ Alpha · proj' 'waiting · ⏎ pick a context'
   [ -z "$(fzf_kids)" ] || { fzf_kids; false; }
+}
+
+# look_on: the look mode of the waiting pane: a look directory with the marker, a session
+# id, and no limit of the user's own (the socket path must fit sun_path, so /tmp)
+LOOK_ID=11111111-2222-3333-4444-555555555555
+LOOK_ID2=66666666-7777-8888-9999-000000000000
+look_on() {
+  CLAUDE_PEER_LOOK=$(mktemp -d /tmp/cpl.XXXXXX)
+  export CLAUDE_PEER_LOOK
+  echo variable >"$CLAUDE_PEER_LOOK/kind"
+  export ITERM_SESSION_ID=w0t0p0:$LOOK_ID
+  git config --global --unset claude-peer.art
+  git config --global --unset claude-peer.art-seconds
+}
+
+# look_sock: the pane's fzf is listening
+look_sock() { [ -S "$CLAUDE_PEER_LOOK/$LOOK_ID.sock" ]; }
+
+# moves: three pose changes in a row, each with no child under the fzf
+moves() {
+  local prev n
+  for n in 1 2 3; do
+    prev=$(top9)
+    until_ok 'screen_grab; [ "$(top9)" != "$prev" ]' || { screen_show; return 1; }
+    [ -z "$(fzf_kids)" ] || { fzf_kids; return 1; }
+  done
+}
+
+@test "sleeper look: still until told, moves while it is looked at, stops when another session is" {
+  need tmux fzf pgrep curl
+  look_on
+  screen_open 80 24
+  screen_wait 'esc hide'
+  until_ok look_sock
+  screen_still 5 0.5
+  [ -z "$(fzf_kids)" ] || { fzf_kids; false; }
+  sh "$BIN" look gained "$LOOK_ID"
+  moves
+  screen_type pr
+  screen_wait 'Alpha ▸ pr$'
+  moves
+  sh "$BIN" look gained "$LOOK_ID2"
+  screen_still 5 0.5
+  sh "$BIN" look gained "$LOOK_ID"
+  moves
+  sh "$BIN" look lost "$LOOK_ID"
+  screen_still 5 0.5
+}
+
+@test "sleeper look: a pane that opens under the operator's eyes moves at once" {
+  need tmux fzf pgrep curl
+  look_on
+  printf '%s\n' "$LOOK_ID" >"$CLAUDE_PEER_LOOK/focus"
+  screen_open 80 24
+  screen_wait 'esc hide'
+  moves
+}
+
+@test "sleeper look: looked at or held still, the picker is drawn the same" {
+  need tmux fzf curl
+  look_on
+  local size kept kept_e
+  for size in '80 24' '110 30' '60 20'; do
+    set -- $size
+    git config --global claude-peer.art-seconds 0
+    screen_open "$1" "$2"
+    screen_wait 'esc hide'
+    screen_still
+    kept=$SCREEN kept_e=$SCREEN_E
+    screen_close
+    git config --global --unset claude-peer.art-seconds
+    screen_open "$1" "$2"
+    screen_wait 'esc hide'
+    until_ok look_sock
+    curl -s -o /dev/null -m 2 --unix-socket "$CLAUDE_PEER_LOOK/$LOOK_ID.sock" -X POST -d 'change-with-nth(6)' http://localhost/
+    screen_still
+    [ "$SCREEN" = "$kept" ] || { echo "SCREEN differs at $1x$2; held still:"; printf '%s\n' "$kept"; screen_show; false; }
+    [ "$SCREEN_E" = "$kept_e" ] || { echo "SCREEN_E differs at $1x$2"; printf '%q\n%q\n' "$kept_e" "$SCREEN_E"; false; }
+    screen_close
+  done
 }
 
 # woke <header>: the figure above the session's header is awake, drawn once
