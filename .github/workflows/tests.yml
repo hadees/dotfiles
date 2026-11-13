@@ -196,7 +196,7 @@ jobs:
       - uses: Vampire/setup-wsl@v5
         with:
           distribution: Ubuntu-24.04
-          additional-packages: zsh rsync curl tmux
+          additional-packages: zsh rsync curl tmux parallel
       - name: Install Bats from source
         run: |
           git clone --depth 1 --branch v1.14.0 https://github.com/bats-core/bats-core.git /tmp/bats-core
@@ -212,4 +212,10 @@ jobs:
         # No Node here on purpose: tests/finicky.bats and tests/chrome-pairing.bats
         # are OS-independent logic, run on ubuntu and macOS, so skipping them on
         # WSL is intended (NODE_TESTS_REQUIRED stays unset).
-        run: SCREEN_TESTS_REQUIRE='tmux fzf' bats tests
+        # Parallel across files as on the test job, but in a session of its own
+        # with no terminal: with the step's terminal, --jobs hung; without one it
+        # passed three runs of three at 530 s (serial: 1066 s).
+        timeout-minutes: 30
+        run: |
+          exec </dev/null
+          TESTS_WAIT_SCALE=3 SCREEN_TESTS_REQUIRE='tmux fzf' setsid -w bats --timing --jobs "$(getconf _NPROCESSORS_ONLN)" --no-parallelize-within-files tests
