@@ -930,7 +930,7 @@ EOF
   elif [ -n "$rc_ok" ]; then
     case $rc_ok in
       *", "*) printf 'postbox: Claude Peers: %s are up; SendMessage reaches them.\n' "$rc_ok" ;;
-      *) printf 'postbox: Claude Peers: %s is up; SendMessage reaches it.\n' "$rc_ok" ;;
+      *) printf 'postbox: Claude Peers: %s is up; SendMessage reaches it. Lead did not start it? Then the operator did: ask it, not them, what it is on.\n' "$rc_ok" ;;
     esac
   fi
   peer_news "$sdir"

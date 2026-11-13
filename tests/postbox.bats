@@ -718,7 +718,7 @@ claim_line() { printf '%s\t%s\t%s\t%s\n' "$1" "${2:-4242}" "$WORK" "${1##*/}"; }
   [ ! -e "$BATS_TEST_TMPDIR/py.log" ]
   export FAKE_CLAIMS="$(claim_line "$wt")"
   run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
-  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it." ]
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it. Lead did not start it? Then the operator did: ask it, not them, what it is on." ]
   run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
   [ -z "$output" ]
   [ "$(wc -l < "$BATS_TEST_TMPDIR/py.log" | tr -d ' ')" -eq 1 ]
@@ -748,7 +748,7 @@ claim_line() { printf '%s\t%s\t%s\t%s\n' "$1" "${2:-4242}" "$WORK" "${1##*/}"; }
   [[ "$output" == *"PeerA (alpha) is up"* ]]
   export FAKE_CLAIMS="$(claim_line "$wt" 4343)"
   run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
-  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it." ]
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it. Lead did not start it? Then the operator did: ask it, not them, what it is on." ]
   run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
   [ -z "$output" ]
 }
@@ -798,7 +798,7 @@ claim_line() { printf '%s\t%s\t%s\t%s\n' "$1" "${2:-4242}" "$WORK" "${1##*/}"; }
   printf 'done\n' > "$POSTBOX_STATE/rollcall/s1"
   export FAKE_CLAIMS="$(claim_line "$wt")" POSTBOX_NOW=1000
   run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
-  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it." ]
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it. Lead did not start it? Then the operator did: ask it, not them, what it is on." ]
 }
 
 @test "hook prompt: a peer never runs the roll-call" {
@@ -837,7 +837,7 @@ claim_line() { printf '%s\t%s\t%s\t%s\n' "$1" "${2:-4242}" "$WORK" "${1##*/}"; }
   reg "$CLAUDE_CONFIG_DIR" "$wt" PeerA "$(mksock a.sock)"
   export FAKE_CLAIMS="$(claim_line "$wt")" FAKE_LEADER="$WORK" POSTBOX_NOW=1000 CLAUDE_PROJECT_DIR="$WORK"
   run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
-  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it." ]
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it. Lead did not start it? Then the operator did: ask it, not them, what it is on." ]
   run payload '{"cwd":"'"$WORK"'/sub","session_id":"s1"}' hook prompt
   [ -z "$output" ]
   grep -q -- "peers --leader $WORK\$" "$PEER_LOG"
