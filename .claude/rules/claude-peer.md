@@ -69,6 +69,16 @@ what this version builds and say `installed, out of date (...); this version
 defines N (...)` when they differ (the script changed since `install` last
 ran), or `not installed`.
 
+`iterm2-relaunch claude-peer` (`iterm2-relaunch.md`) is the way to run `install`
+(and `default peers`, when `status` asks for exactly that) without a second
+terminal: it quits iTerm2, runs them while it is down and starts it again. When
+`prefs-install` is due too, it runs first in the same relaunch, because
+`iterm2-prefs install` repoints the two domain keys `install` finds the store
+by. `Workgroups` and the Enter triggers are not a preferences fragment:
+`iterm2-prefs` reserves them and ignores a fragment that sets them, since
+`install` builds them from the machine's overlays at run time and keeps the
+overlay-pane names out of tracked files.
+
 **How a tab gets its workgroup.** The `claude` job trigger names one workgroup
 per iTerm2 profile, and an iTerm2 profile says nothing about the repo, so the
 choice is the `claude()` wrapper's, made before the job starts. It sets the

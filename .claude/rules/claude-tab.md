@@ -35,6 +35,30 @@ session opened by `workset open` comes back without its extra directories. The
 registry layout is observed, not an interface. Tests: `tests/claude-tab.bats`
 (stub osascript/ps/sleep, fixture registries).
 
+**A saved row has nine columns**, `profile_dir, session_id, cwd, label, name,
+tty, where, window, status`; `status` is the registry's, `-` when it has none,
+and a file without the ninth column restores as before. `save` also writes
+`<file>.peers` (`cwd<TAB>slot` for each running slot peer of a saved tab's
+directory, from `claude-peer slots`; it rotates to `.peers.prev` with the main
+file and is absent when no peer runs) and says `noted <k> running peers in
+<file>.peers` on stderr. Overlay peers never show in the leader's `slots`, so
+none is noted. `restore` gained four flags: `--prompt <text>`, appended as one
+shell-quoted argument to the resume command of every session whose saved status
+was not `idle`; `--prompt-for <session id> <text>`, the same for that one
+session, idle or not (a live one is not resumed: the text is typed into the tab
+its tty belongs to, in any window, `claude-tab: told the live session <label> in
+its tab`); `--no-peers`; `--peer-wait <s>` (default 60). A prompt that is empty
+or holds a newline, tab or carriage return is a usage error. After the tabs,
+each noted peer gets `claude-peer start <slot> --continue -- <prompt>` from its
+leader's directory: exit 0 counts as started, 3 as already running, 4 means the
+pane is not waiting yet (the leader's `claude` has not entered its workgroup),
+so it is tried again every two seconds until `--peer-wait`; the summary is
+`claude-tab: peers: <s> started, <a> already running, <f> not started`.
+`--dry-run` starts no peer and lists them as `peer<TAB>-<TAB><slot><TAB><leader>`.
+Nothing alive is started twice: a row whose session is live is `skip:live`.
+`iterm2-relaunch` is the main caller: it runs `save` before the quit and
+`restore` after, with the two prompts (`iterm2-relaunch.md`).
+
 `bin/claude-tab` reads the other side of the same join: `list` prints one
 row per live Claude Code session across every profile (from each profile's
 `sessions/<pid>.json` registry, the files `claude_sessions_here` reads),

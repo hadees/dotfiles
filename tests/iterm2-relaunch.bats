@@ -114,7 +114,7 @@ esac
 STUB
   # brew: logs its arguments, cwd and whether the three variables are set, and
   # answers from $FAKE_BREW_DIR (<token>.json for info, <token>.versions for list,
-  # <token>.after becomes the versions once an upgrade succeeds)
+  # after.<token> becomes the versions once an upgrade succeeds)
   cat >"$b/brew" <<'STUB'
 #!/bin/sh
 echo "$*|cwd=$(pwd)|askpass=${SUDO_ASKPASS+set}|no_ask=${HOMEBREW_NO_ASK+set}|no_auto=${HOMEBREW_NO_AUTO_UPDATE+set}" >>"$BREW_LOG"
@@ -127,7 +127,7 @@ case $1 in
   fetch) exit "${FAKE_FETCH:-0}";;
   upgrade)
     /bin/sleep "${FAKE_UPGRADE_SLEEP:-0}"
-    if [ "${FAKE_UPGRADE:-0}" = 0 ] && [ -f "$d/$3.after" ]; then cp "$d/$3.after" "$d/$3.versions"; fi
+    if [ "${FAKE_UPGRADE:-0}" = 0 ] && [ -f "$d/after.$3" ]; then cp "$d/after.$3" "$d/$3.versions"; fi
     exit "${FAKE_UPGRADE:-0}";;
 esac
 STUB
@@ -894,7 +894,7 @@ cask() {
 
 @test "_run brew: upgrade --cask runs from HOME with HOMEBREW_NO_ASK and no SUDO_ASKPASS, and the versions before and after are logged" {
   cask claude-code@latest 2.1.322 2.1.323 true false binary "2.1.322"
-  echo "claude-code@latest 2.1.323" >"$FAKE_BREW_DIR/claude-code@latest.after"
+  echo "claude-code@latest 2.1.323" >"$FAKE_BREW_DIR/after.claude-code@latest"
   fake_iterm >/dev/null
   SUDO_ASKPASS=/nonexistent runner 0 0 - brew:claude-code@latest
   [ "$status" -eq 0 ]
@@ -905,7 +905,7 @@ cask() {
 
 @test "_run brew: sessions that kept running through an upgrade that changed the version are counted in the log" {
   cask claude-code@latest 2.1.322 2.1.323 true false binary "2.1.322"
-  echo "claude-code@latest 2.1.323" >"$FAKE_BREW_DIR/claude-code@latest.after"
+  echo "claude-code@latest 2.1.323" >"$FAKE_BREW_DIR/after.claude-code@latest"
   fake_iterm >/dev/null
   FAKE_LIST=$(printf '1\tp\ta\n2\tp\tb') runner 0 0 - brew:claude-code@latest
   [ "$status" -eq 0 ]

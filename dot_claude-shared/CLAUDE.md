@@ -348,6 +348,23 @@ employer-specific — profile-specific memory belongs in that profile's own
   proxy variables for any proxy-aware tool, and `command ssh` bypasses the
   wrapper entirely.
 
+## Relaunching iTerm2
+
+- Work that needs iTerm2 or the Claude sessions down (composed preferences
+  waiting, a `claude-code` upgrade) goes through `iterm2-relaunch <items>`;
+  `iterm2-relaunch items` lists what is ready. Upgrade what needs no quit
+  first (Homebrew MCP tools where attached, else `update`): the MCP server
+  dies with the session, so it can never do the `claude-code` one.
+- It ends every session in iTerm2, yours included. Never run it unasked.
+  Offer it when an item is ready and I am at a stopping point, saying what
+  quits, which items run, that I get a heads-up with a "Not now", that
+  iTerm2 may ask "Quit iTerm2?", and that sessions come back resumed (or
+  just carry on, where jobs survive a quit).
+- After my yes: `iterm2-relaunch --yes <items>`, read the hand-over lines
+  (runner pid, log), and end the turn.
+- When a prompt naming the log arrives, read it, run `iterm2-relaunch
+  status`, verify each item, and report.
+
 ## Delegation and model routing
 
 - **The main conversation is the orchestrator and, for a dependent chain, the
