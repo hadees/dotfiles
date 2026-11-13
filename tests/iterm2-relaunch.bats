@@ -763,12 +763,42 @@ compose" ]
   other=$!
   mkdir -p "$STATE"
   echo "$other" >"$STATE/run.pid"
-  echo "2026-11-13T00:00:00Z quit: asked" >"$LOG"
-  run sh "$BIN" cancel 2>&1
+  for line in asking asked; do
+    echo "2026-11-13T00:00:00Z quit: $line" >"$LOG"
+    run sh "$BIN" cancel 2>&1
+    [ "$status" -eq 1 ]
+    [ "$output" = "iterm2-relaunch: too late: iTerm2 has been asked to quit (Cancel in its own alert still stops it)" ]
+    kill -0 "$other"
+  done
   kill "$other"
   rm -f "$STATE/run.pid"
-  [ "$status" -eq 1 ]
-  [ "$output" = "iterm2-relaunch: too late: iTerm2 has been asked to quit (Cancel in its own alert still stops it)" ]
+}
+
+@test "_run: a TERM or INT after the quit was asked is ignored, the items run and iTerm2 is started" {
+  export FAKE_PREFS_LINE="composed, 1 waiting, 0 kept" FAKE_QUIT_DELAY=1
+  fake_iterm >/dev/null
+  run sh "$BIN" --yes --grace 1 prefs
+  [ "$status" -eq 0 ]
+  pid=$(cat "$STATE/run.pid")
+  for _ in $(seq 1 100); do grep -q " quit: asked" "$LOG" && break; sleep 0.05; done
+  kill -TERM "$pid"
+  kill -INT "$pid"
+  for _ in $(seq 1 150); do grep -q " done: " "$LOG" && break; sleep 0.1; done
+  in_order "quit: asking" "quit: asked" "prefs: exit 0" "launch: started" "done: 1 items, 0 failed"
+  no grep -q "cancelled:" "$LOG"
+  grep -Fxq -- "-b com.googlecode.iterm2" "$OPEN_LOG"
+}
+
+@test "_run: a runner that ends after the quit was asked and before the launch still starts iTerm2, once" {
+  fake_iterm >/dev/null
+  copy="$BATS_TEST_TMPDIR/relaunch-copy"
+  sed 's/^  run_items >>"\$log" 2>&1$/  exit 9/' "$BIN" >"$copy"
+  grep -q '^  exit 9$' "$copy"
+  run sh "$copy" _run 5 1 0 0 - prefs
+  [ "$status" -eq 9 ]
+  [ ! -s "$PREFS_LOG" ]
+  in_order "quit: asked" "launch: the runner ended early; starting iTerm2"
+  [ "$(grep -c -Fx -- "-b com.googlecode.iterm2" "$OPEN_LOG")" -eq 1 ]
 }
 
 # brew: items.

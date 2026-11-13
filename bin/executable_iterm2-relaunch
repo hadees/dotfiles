@@ -60,6 +60,12 @@
 # killpg on the job's group, so a process that called setsid, forked again and
 # ignores SIGHUP outlives it. That is `detach`, standard-library Python, no launchd.
 #
+# From the moment the quit is asked (`quit: asking` in the log, which `cancel` refuses
+# on) until iTerm2 is started again the runner cannot be called off or killed
+# short: TERM and INT only set a flag, and an EXIT trap starts iTerm2 if the runner
+# ends anyway, so a quit that was asked never leaves the operator without it. Before
+# that, the same signals end the run at the next wait with `cancelled:`.
+#
 # Why the Apple-event probe comes first: a runner that cannot send Apple events
 # must find out before it has asked for anything. The quit itself runs in the
 # background, because a synchronous one blocks for as long as iTerm2's own "Quit
@@ -394,21 +400,23 @@ run_items() {
 }
 
 # heads_up <what>: asks the operator through screen-heads-up and returns 0 to go
-# ahead, 1 for "not now". Sets `went` once the helper has said go. A missing helper
+# ahead, 1 for "not now" or when `cancelled` was set while it waited. Sets `went` once the helper has said go. A missing helper
 # or one that cannot ask is waited out for the grace and logged; exit 4 (another
 # heads-up is waiting, so something else is about to take the screen) is asked again.
 went=0
+cancelled=0 need_launch=0
 heads_up() {
   if [ -x "$hu" ]; then
     n=0
     while :; do
       "$hu" "$1" "$grace" >>"$log" 2>&1
       rc=$?
-      [ "$rc" -eq 4 ] || break
+      [ "$rc" -eq 4 ] && [ "$cancelled" = 0 ] || break
       n=$((n + 1))
       [ "$n" -lt 30 ] || { log_line "heads-up: another one was waiting"; return 1; }
       sleep "$tick"
     done
+    [ "$cancelled" = 0 ] || return 1
     case $rc in
       0) log_line "heads-up: go"; went=1; return 0;;
       1) return 1;;
@@ -418,8 +426,8 @@ heads_up() {
     log_line "heads-up: no helper; waited ${grace}s"
   fi
   n=0
-  while [ "$n" -lt "$grace" ]; do sleep "$tick"; n=$((n + 1)); done
-  return 0
+  while [ "$n" -lt "$grace" ] && [ "$cancelled" = 0 ]; do sleep "$tick"; n=$((n + 1)); done
+  [ "$cancelled" = 0 ]
 }
 
 # free_screen <text>: after a go, tells the helper the screen is free again. Not
@@ -428,6 +436,24 @@ heads_up() {
 free_screen() {
   [ "$went" = 1 ] || return 0
   "$hu" --free "$1" --no-restore >>"$log" 2>&1
+}
+
+# cancel_exit: a cancel arrived before iTerm2 was asked to quit.
+cancel_exit() {
+  log_line "cancelled: before iTerm2 was asked to quit"
+  free_screen "iTerm2 was not quit"
+  rm -f "$state/run.pid"
+  exit 3
+}
+
+# on_exit: a runner that ends after the quit was asked and before iTerm2 was started
+# again (a failed command, a bug) still starts it: the operator is never left
+# without iTerm2.
+on_exit() {
+  [ "$need_launch" = 1 ] || return 0
+  need_launch=0
+  log_line "launch: the runner ended early; starting iTerm2"
+  start_iterm
 }
 
 # _run <wait> <grace> <restore 0|1> <prompt 0|1> <caller id|-> <item>...
@@ -442,12 +468,19 @@ cmd_run() {
   order_items "$@"
 
   ensure_state
+  # From here to the quit a TERM or INT (cancel) only sets a flag the waits check. A
+  # handler, not `trap ''`: an ignored signal would be inherited by every item.
+  trap 'cancelled=1' TERM INT
+  trap on_exit EXIT
   printf '%s\n' "$$" >"$state/run.pid" && chmod 600 "$state/run.pid"
   log_line "start: items=$list restore=$restore prompt=$prompt caller=$caller pid=$$"
 
   if iterm_pid >/dev/null; then
     log_line "quit: in ${grace}s"
-    if ! heads_up "iTerm2 quits for $list and is back in about ${est}s; every session in it ends and is resumed"; then
+    heads_up_ok=0
+    heads_up "iTerm2 quits for $list and is back in about ${est}s; every session in it ends and is resumed" && heads_up_ok=1
+    [ "$cancelled" = 0 ] || cancel_exit
+    if [ "$heads_up_ok" = 0 ]; then
       log_line "aborted: not now; nothing done"
       rm -f "$state/run.pid"
       exit 3
@@ -460,6 +493,13 @@ cmd_run() {
     fi
     ( umask 077; defaults export com.googlecode.iterm2 "$state/domain-before-quit.plist" >>"$log" 2>&1 ) ||
       log_line "quit: domain not saved (defaults export failed); continuing"
+    # `asking` is logged first, so a cancel that reads the log after this is refused;
+    # a cancel that got in before it left the flag, which is checked once more here.
+    log_line "quit: asking"
+    [ "$cancelled" = 0 ] || cancel_exit
+    # From here until iTerm2 is started again the flag is never read: the quit is
+    # under way, and a runner that stopped now would leave the operator without iTerm2.
+    need_launch=1
     osascript -e 'tell application id "com.googlecode.iterm2" to quit' >>"$log" 2>&1 3>&- &
     qpid=$!
     log_line "quit: asked"
@@ -468,6 +508,7 @@ cmd_run() {
     kill "$qpid" 2>/dev/null
     if iterm_pid >/dev/null; then
       log_line "aborted: iTerm2 still running after ${wait}s; nothing done"
+      need_launch=0
       free_screen "iTerm2 was not quit"
       rm -f "$state/run.pid"
       exit 3
@@ -496,6 +537,8 @@ cmd_run() {
   else
     log_line "launch: failed"
   fi
+  need_launch=0
+  trap - TERM INT
 
   r=skipped alive=''
   if [ "$restore" = 1 ] && [ -n "$started" ]; then
@@ -541,17 +584,19 @@ cmd_run() {
 # cancel: calls a relaunch off while the runner is still in its heads-up or grace.
 cmd_cancel() {
   runner_pid >/dev/null || die "no relaunch is under way"
-  if grep -q ' quit: asked$' "$log" 2>/dev/null; then
+  if grep -Eq ' quit: (asking|asked)$' "$log" 2>/dev/null; then
     die "too late: iTerm2 has been asked to quit (Cancel in its own alert still stops it)"
   fi
   if [ -x "$hu" ] && "$hu" --not-now >/dev/null 2>&1; then
     n=0
     while [ "$n" -lt 5 ] && runner_pid >/dev/null; do sleep "$tick"; n=$((n + 1)); done
   fi
+  # The runner logs `cancelled:` and removes run.pid itself; wait for it to be gone.
   if pid=$(runner_pid); then
     kill "$pid" 2>/dev/null
-    rm -f "$state/run.pid"
-    log_line "cancelled: before iTerm2 was asked to quit"
+    n=0
+    while [ "$n" -lt 20 ] && runner_pid >/dev/null; do sleep "$tick"; n=$((n + 1)); done
+    ! runner_pid >/dev/null || die "the runner has not stopped; it is past the point where it can be called off (see $log)"
   fi
   say "cancelled; iTerm2 was not asked to quit"
 }
