@@ -268,7 +268,7 @@ shared_templates() {
   # in every session, so it holds only the behaviour and may not grow into a
   # manual (26457 characters before this section; at most 700 more, then 500
   # more for the peer-contexts bullet, then 1050 more for the three hand-back
-  # bullets, then 1900 more for the Lead section).
+  # bullets, then 1900 more for the Lead section, then 600 more for Seeing another pane).
   local shared
   shared="$(tr '\n' ' ' < "$BATS_TEST_DIRNAME/../dot_claude-shared/CLAUDE.md" | tr -s ' ')"
   grep -q 'only when I ask' <<< "$shared" || { echo "shared memory: no ask-first rule for start/stop"; false; }
@@ -277,7 +277,7 @@ shared_templates() {
   # Code points, counted by python: wc -m counts bytes under the C locale of
   # the Rocky CI container.
   n="$(python3 -c 'import sys; print(len(open(sys.argv[1], encoding="utf-8").read()))' "$BATS_TEST_DIRNAME/../dot_claude-shared/CLAUDE.md")"
-  [ "$n" -le 30600 ] || { echo "shared memory is $n characters, limit 30600"; false; }
+  [ "$n" -le 31200 ] || { echo "shared memory is $n characters, limit 31200"; false; }
 }
 
 @test "the shared memory carries the Lead rule, and names the line postbox prints" {
