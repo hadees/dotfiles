@@ -18,7 +18,8 @@
 # claude that this profile's registry does not hold) is refused, a
 # directory this profile's deny list covers is refused (denyguard), and a
 # terminal with no session in a directory that routes to another profile is
-# refused. Every doubt refuses. `why` and `list` print names, pids, directories
+# refused; so is a terminal whose processes cannot be listed. Every doubt
+# refuses. `why` and `list` print names, pids, directories
 # and profile labels, never what a pane shows.
 #
 # The registry is every profile's `sessions/<pid>.json`, an observed layout as
@@ -35,22 +36,33 @@
 # the pane shows. This script has no other way to make an image: it never runs
 # screencapture or osascript, and tests/pane-sight.bats fails if it does.
 #
-# Seams (tests): PANE_SIGHT_PEER, PANE_SIGHT_DENYGUARD, PANE_SIGHT_TABNAME,
-# PANE_SIGHT_FUNCTIONS, PANE_SIGHT_ZSH, PANE_SIGHT_IT2, PANE_SIGHT_PYTHON,
-# PANE_SIGHT_SUPPORT.
+# Inputs: the judges and helpers come from fixed places under $HOME (bin/claude-peer,
+# bin/denyguard, bin/tabname, .functions, it2 at .config/iterm2/it2, iTerm2's files
+# under Library/Application Support, the audit log under .local/state) and zsh and
+# the system tools from PATH, and from no variable: one word in front of the
+# command must not change who judges. The only variables read are
+# PANE_SIGHT_PYTHON and PANE_SIGHT_TIMEOUT, neither of which judges. The git
+# variables that name a config are unset before git is first asked.
+#
+# The caller is the session this command runs under: the nearest ancestor that is
+# a registered session decides, and CLAUDE_CONFIG_DIR must agree with it. This is
+# the sanctioned route and the record, not a sandbox: a session with Bash can call
+# it2 itself.
 
 usage() { sed -n '/^# Usage:/,/^#$/{ /^#$/d; s/^# \{0,1\}//p; }' "$0" >&2; exit 2; }
 say() { printf 'pane-sight: %s\n' "$*" >&2; }
 fail4() { say "$*"; exit 4; }
 
+unset GIT_CONFIG_GLOBAL GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+
 TAB=$(printf '\t')
-PEER=${PANE_SIGHT_PEER:-$HOME/bin/claude-peer}
-DENY=${PANE_SIGHT_DENYGUARD:-$HOME/bin/denyguard}
-TABNAME=${PANE_SIGHT_TABNAME:-$HOME/bin/tabname}
-FUNCS=${PANE_SIGHT_FUNCTIONS:-$HOME/.functions}
-ZSH=${PANE_SIGHT_ZSH:-zsh}
-SUPPORT=${PANE_SIGHT_SUPPORT:-$HOME/Library/Application Support}
-AUDIT_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/pane-sight
+PEER=$HOME/bin/claude-peer
+DENY=$HOME/bin/denyguard
+TABNAME=$HOME/bin/tabname
+FUNCS=$HOME/.functions
+ZSH=zsh
+SUPPORT="$HOME/Library/Application Support"
+AUDIT_DIR=$HOME/.local/state/pane-sight
 AUDIT=$AUDIT_DIR/audit.log
 
 need_macos() {
@@ -151,7 +163,8 @@ cap() { printf '%s' "$1" | awk '{ print toupper(substr($0, 1, 1)) substr($0, 2) 
 # The processes of a terminal, from two ps calls: pid TAB ucomm TAB the directory
 # its environment names in CLAUDE_CONFIG_DIR (the last such word; "-" for none).
 # The ucomm column can hold spaces. ps hides some environments, so scope does not
-# rest on this alone.
+# rest on this alone. A CLAUDE_CONFIG_DIR whose value holds a space is read cut at
+# the space; cut, it matches nothing known and refuses.
 TTYP_PY='import os, re, sys
 names, envs = {}, {}
 for l in os.environ.get("PS_NAMES", "").split("\n"):
@@ -168,11 +181,28 @@ for l in os.environ.get("PS_ENVS", "").split("\n"):
         v = os.path.join(os.environ["HOME"], ".claude")
     envs[m.group(1)] = os.path.normpath(os.path.expanduser(v)) if v is not None else "-"
 for pid in list(names) + [p for p in envs if p not in names]:
-    print("%s\t%s\t%s" % (pid, names.get(pid, "-"), envs.get(pid, "-")))'
+    print("%s\t%s\t%s" % (pid, names.get(pid) or "-", envs.get(pid, "-")))'
+# Fails, printing nothing, when either ps call fails or prints nothing or python fails.
 tty_procs() { # <tty>
-  PS_NAMES=$(ps -o pid=,ucomm= -t "${1#/dev/}" 2>/dev/null </dev/null) \
-  PS_ENVS=$(ps -Eww -o pid=,command= -t "${1#/dev/}" 2>/dev/null </dev/null) \
-    python3 -c "$TTYP_PY"
+  tp_names=$(ps -o pid=,ucomm= -t "${1#/dev/}" 2>/dev/null </dev/null) || return 1
+  tp_envs=$(ps -Eww -o pid=,command= -t "${1#/dev/}" 2>/dev/null </dev/null) || return 1
+  [ -n "$tp_names" ] && [ -n "$tp_envs" ] || return 1
+  PS_NAMES=$tp_names PS_ENVS=$tp_envs python3 -c "$TTYP_PY" || return 1
+}
+
+# The command's own ancestors, nearest first, as pid TAB ucomm TAB the directory its
+# environment names in CLAUDE_CONFIG_DIR ("-" for none): walked with ps -o ppid=,
+# at most 40 steps, ending at pid 0, pid 1 or an empty answer.
+ancestors() {
+  an_pid=$$ an_n=0
+  while [ "$an_n" -lt 40 ]; do
+    an_pid=$(ps -o ppid= -p "$an_pid" 2>/dev/null </dev/null | tr -d ' \t')
+    case $an_pid in ''|0|1|*[!0-9]*) break ;; esac
+    an_n=$((an_n + 1))
+    an_uc=$(ps -o ucomm= -p "$an_pid" 2>/dev/null </dev/null)
+    an_cm=$(ps -Eww -o command= -p "$an_pid" 2>/dev/null </dev/null)
+    PS_NAMES="$an_pid $an_uc" PS_ENVS="$an_pid $an_cm" python3 -c "$TTYP_PY"
+  done
 }
 
 # --- resolution --------------------------------------------------------------------
@@ -335,7 +365,12 @@ refuse() { s_code=$1 s_text="refused: $t_label: $2"; return 3; }
 # claude process's own); a process named exactly claude that M does not hold.
 scope() {
   s_code= s_text= s_prof=-
-  PROCS=$(tty_procs "$t_tty")
+  PROCS=$(tty_procs "$t_tty") || PROCS=
+  # who is on the terminal must be knowable: the target's own pid has to be in the list
+  if [ -z "$PROCS" ] || { [ "$t_pid" != - ] && ! printf '%s\n' "$PROCS" | awk -F'\t' -v p="$t_pid" '$1 == p { f = 1 } END { exit !f }'; }; then
+    refuse no-processes "cannot tell who is on its terminal"
+    return 3
+  fi
   p_pids=$(printf '%s\n' "$PROCS" | awk -F'\t' 'NF { printf " %s", $1 } END { print " " }')
   ON=$(printf '%s\n' "$REG" | awk -F'\t' -v p="$p_pids" 'NF && index(p, " " $1 " ")')
   M=$(printf '%s\n' "$ON" | awk -F'\t' -v c="$CALLER" 'NF && $2 == c')
@@ -399,9 +434,9 @@ audit() {
 # --- talking to iTerm2 -----------------------------------------------------------------
 # Only `it2 session read` and `it2 session get-var tty|path` are ever run.
 
+# it2 comes from one place: iTerm2's Claude Code integration links it there.
 find_it2() {
-  f=${PANE_SIGHT_IT2:-}
-  [ -n "$f" ] || { f=$HOME/.config/iterm2/it2; [ -x "$f" ] || f=/Applications/iTerm.app/Contents/Resources/utilities/it2; }
+  f=$HOME/.config/iterm2/it2
   [ -x "$f" ] && printf '%s\n' "$f"
 }
 
@@ -438,7 +473,7 @@ api_env() {
 # limit, 125 is "cannot ask" (it2 missing, API off); both have said why.
 it2_call() {
   ic_it2=$(find_it2)
-  [ -n "$ic_it2" ] || { say "it2 is missing (iTerm2 ships it in its Resources/utilities)"; return 125; }
+  [ -n "$ic_it2" ] || { say "it2 is missing ($HOME/.config/iterm2/it2: iTerm2's Claude Code integration links it there)"; return 125; }
   ic_dom=com.googlecode.iterm2
   [ "$t_suite" = - ] || ic_dom=$t_suite
   [ "$(defaults read "$ic_dom" EnableAPIServer 2>/dev/null </dev/null)" = 1 ] ||
@@ -677,14 +712,52 @@ cmd_shot() {
   exit 0
 }
 
+# A refusal of the caller comes before any name is resolved; read and shot leave a
+# best-effort audit row with kind and label "-".
+caller_refuse() { # <code> <sentence>
+  t_kind=- t_label=-
+  case $verb in read|shot) audit "$verb" "refused:$1" "" ;; esac
+  say "refused: $2"
+  exit 3
+}
+
+# caller_of: sets CALLER and OWN. The caller is the claim (CLAUDE_CONFIG_DIR) when no
+# ancestor is a registered session; else the profile of the nearest registered
+# ancestor, and a claim that differs from it is refused. An ancestor named claude that
+# no registry holds, met before any registered one, is refused. A pid held by
+# registries of more than one directory, one of them not the claim, counts as that
+# other directory.
+caller_of() {
+  co_a=
+  while IFS=$TAB read -r co_pid co_uc co_dir; do
+    [ -n "$co_pid" ] || continue
+    co_rows=$(printf '%s\n' "$REG" | awk -F'\t' -v p="$co_pid" '$1 == p')
+    if [ -n "$co_rows" ]; then
+      co_a=$(printf '%s\n' "$co_rows" | awk -F'\t' -v c="$CLAIM" '$2 != c { print $2; exit }')
+      [ -n "$co_a" ] || co_a=$CLAIM
+      break
+    fi
+    [ "$co_uc" != claude ] ||
+      caller_refuse caller-unknown "this command runs under a Claude process (pid $co_pid) that no profile's registry holds"
+  done <<EOF_ANC
+$ANC
+EOF_ANC
+  CALLER=${co_a:-$CLAIM}
+  OWN=$(profile_label "$CALLER")
+  [ "$CALLER" = "$CLAIM" ] ||
+    caller_refuse caller-mismatch "CLAUDE_CONFIG_DIR names the $(profile_label "$CLAIM") profile, but this command runs under a session of the $OWN profile"
+}
+
 # init: the caller, its repository's panes, and the registry.
 init() {
-  CALLER=$(norm "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
-  OWN=$(profile_label "$CALLER")
+  CLAIM=$(norm "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
+  ANC=$(ancestors)
+  EXTRA_DIRS=$(printf '%s\n' "$CLAIM"; printf '%s\n' "$ANC" | awk -F'\t' 'NF && $3 != "-" { print $3 }')
+  REG=$(registry)
+  caller_of
   TOP=$(git rev-parse --show-toplevel 2>/dev/null)
   PANES=
   [ -x "$PEER" ] && PANES=$("$PEER" panes 2>/dev/null </dev/null)
-  REG=$(registry)
 }
 
 cmd_why() {

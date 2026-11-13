@@ -2,11 +2,12 @@
 
 # pane-sight names another iTerm2 pane and decides, before anything is read,
 # whether this profile may see it. These tests drive the real script under a
-# sandboxed HOME against the REAL denyguard and the REAL dot_functions (through
-# the seams), with stub ps, uname, defaults, claude-peer and tabname. Sessions
-# are registry fixtures backed by live `sleep` processes; the ps stub answers
-# from a table file. Nothing here talks to iTerm2. Every owner, repository and
-# profile name is a fixture (see CLAUDE.md).
+# sandboxed HOME against the REAL denyguard and the REAL dot_functions, copied to
+# the fixed places the script reads them from (it has no seam to point elsewhere),
+# with stub ps, uname, defaults, claude-peer, tabname and it2. Sessions are
+# registry fixtures backed by live `sleep` processes; the ps stub answers from a
+# table file. Nothing here talks to iTerm2. Every owner, repository and profile
+# name is a fixture (see CLAUDE.md).
 
 bats_require_minimum_version 1.5.0
 
@@ -21,7 +22,9 @@ setup() {
   export GIT_CONFIG_GLOBAL="$HOME/.gitconfig"
   export GIT_CONFIG_SYSTEM=/dev/null
   export GIT_CONFIG_NOSYSTEM=1
-  unset XDG_STATE_HOME PANE_SIGHT_IT2 PANE_SIGHT_PYTHON PANE_SIGHT_SUPPORT
+  # the script unsets GIT_CONFIG_GLOBAL, so git reads $HOME/.gitconfig and the XDG
+  # config of the sandbox; none of these may point at the developer's own
+  unset XDG_STATE_HOME XDG_CONFIG_HOME GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS PANE_SIGHT_PYTHON
   gc() { git config --file "$GIT_CONFIG_GLOBAL" "$@"; }
   gc init.defaultBranch main
   gc credential.https://github.com/octo-personal.username personal-account
@@ -37,7 +40,8 @@ setup() {
 
   BIN="$BATS_TEST_TMPDIR/bin"
   mkdir -p "$BIN"
-  printf '#!/bin/sh\nexec "%s" "$@"\n' "$REAL_PYTHON3" > "$BIN/python3"
+  # FAKE_TTYP_FAIL makes the python inside tty_procs (the one given PS_NAMES) fail
+  printf '#!/bin/sh\n[ -z "${FAKE_TTYP_FAIL-}" ] || [ -z "${PS_NAMES-}" ] || exit 1\nexec "%s" "$@"\n' "$REAL_PYTHON3" > "$BIN/python3"
   ln -sf "$(command -v git)" "$BIN/git"
   cp "$BATS_TEST_DIRNAME/../bin/executable_pane-sight" "$BIN/pane-sight"
   ln -s pane-sight "$BIN/pane-read"
@@ -53,8 +57,11 @@ STUB
 printf '%s\n' "$*" >> "${DEFAULTS_LOG:-/dev/null}"
 printf '%s\n' "${FAKE_API:-1}"
 STUB
-  # ps: from the table file, "pid TAB tty TAB ucomm TAB command" per line; every
-  # call is logged
+  # ps: from the table file, "pid TAB tty TAB ucomm TAB command TAB ppid" per line;
+  # every call is logged. A pid the table does not hold has $FAKE_PARENT for a
+  # parent (that is the script's own pid). The terminal listings can be made to
+  # fail (FAKE_PS_T_FAIL), to print nothing (FAKE_PS_T_EMPTY) or to leave one pid
+  # out (FAKE_PS_HIDE).
   export PS_TABLE="$BATS_TEST_TMPDIR/ps-table" PS_LOG="$BATS_TEST_TMPDIR/ps-log"
   : > "$PS_TABLE"; : > "$PS_LOG"
   cat > "$BIN/ps" <<'STUB'
@@ -62,9 +69,14 @@ STUB
 printf '%s\n' "$*" >> "$PS_LOG"
 for last; do :; done
 case "$*" in
+  *" -t "*) [ -z "${FAKE_PS_T_FAIL-}" ] || exit 1; [ -z "${FAKE_PS_T_EMPTY-}" ] || exit 0 ;;
+esac
+case "$*" in
   *"-o tty= -p "*) awk -F'\t' -v p="$last" '$1 == p { print $2; exit }' "$PS_TABLE" ;;
-  *"-o pid=,ucomm= -t "*) awk -F'\t' -v t="$last" '$2 == t { printf "%5s %s\n", $1, $3 }' "$PS_TABLE" ;;
-  *"-Eww -o pid=,command= -t "*) awk -F'\t' -v t="$last" '$2 == t { printf "%5s %s\n", $1, $4 }' "$PS_TABLE" ;;
+  *"-o ppid= -p "*) awk -F'\t' -v p="$last" -v d="${FAKE_PARENT-}" '$1 == p { print $5; f = 1; exit } END { if (!f) print d }' "$PS_TABLE" ;;
+  *"-o ucomm= -p "*) awk -F'\t' -v p="$last" '$1 == p { print $3; exit }' "$PS_TABLE" ;;
+  *"-o pid=,ucomm= -t "*) awk -F'\t' -v t="$last" -v h="${FAKE_PS_HIDE-}" '$2 == t && $1 != h { printf "%5s %s\n", $1, $3 }' "$PS_TABLE" ;;
+  *"-Eww -o pid=,command= -t "*) awk -F'\t' -v t="$last" -v h="${FAKE_PS_HIDE-}" '$2 == t && $1 != h { printf "%5s %s\n", $1, $4 }' "$PS_TABLE" ;;
   *"-Eww -o command= -p "*) awk -F'\t' -v p="$last" '$1 == p { print $4; exit }' "$PS_TABLE" ;;
 esac
 exit 0
@@ -85,13 +97,16 @@ if [ "$1" = --role ]; then shift; printf 'peer\t%s\n' "$(basename "$1")"; exit 0
 basename "$1"
 STUB
   chmod +x "$BIN/uname" "$BIN/defaults" "$BIN/ps" "$BIN/python3" "$HOME/bin/claude-peer" "$HOME/bin/tabname"
-  # it2: logs its arguments, the suite and the cookie it was given; any verb but
-  # `session read` and `session get-var tty|path` is exit 97 and is recorded
+  # it2, at the one place the script looks: logs its arguments, the suite and the
+  # cookie it was given; any verb but `session read` and `session get-var tty|path`
+  # is exit 97 and is recorded
   export IT2_LOG="$BATS_TEST_TMPDIR/it2-log" IT2_BAD="$BATS_TEST_TMPDIR/it2-bad" DEFAULTS_LOG="$BATS_TEST_TMPDIR/defaults-log"
   export FAKE_SCREEN="$BATS_TEST_TMPDIR/screen"
   : > "$IT2_LOG"; : > "$IT2_BAD"; : > "$FAKE_SCREEN"
   export FAKE_TTY='"\/dev\/ttys010"' FAKE_PATH="Variable 'path' not set"
-  cat > "$BATS_TEST_TMPDIR/it2" <<'STUB'
+  mkdir -p "$HOME/.config/iterm2"
+  IT2="$HOME/.config/iterm2/it2"
+  cat > "$IT2" <<'STUB'
 #!/bin/sh
 printf '%s\tsuite=%s\tcookie=%s\n' "$*" "${IT2_SUITE-}" "${ITERM2_COOKIE-}" >> "$IT2_LOG"
 [ -z "${FAKE_IT2_SLEEP-}" ] || sleep "$FAKE_IT2_SLEEP"
@@ -102,8 +117,7 @@ case "$1 $2 $3" in
   *) printf '%s\n' "$*" >> "$IT2_BAD"; exit 97 ;;
 esac
 STUB
-  chmod +x "$BATS_TEST_TMPDIR/it2"
-  export PANE_SIGHT_IT2="$BATS_TEST_TMPDIR/it2"
+  chmod +x "$IT2"
   # the runtime: a fake iterm2 package, so no real iTerm2 is ever asked. A shot
   # may only come from rpc.async_screenshot; screencapture and osascript are
   # stubs that record that they ran.
@@ -132,9 +146,10 @@ PY
   chmod +x "$BIN/fakepy"
   export PANE_SIGHT_PYTHON="$BIN/fakepy" TMPDIR="$BATS_TEST_TMPDIR/tmp"
   mkdir -p "$TMPDIR"
-  export PANE_SIGHT_PEER="$HOME/bin/claude-peer" PANE_SIGHT_TABNAME="$HOME/bin/tabname"
-  export PANE_SIGHT_DENYGUARD="$BATS_TEST_DIRNAME/../bin/executable_denyguard"
-  export PANE_SIGHT_FUNCTIONS="$BATS_TEST_DIRNAME/../dot_functions"
+  # the judges, at the fixed places under the sandboxed HOME
+  cp "$BATS_TEST_DIRNAME/../bin/executable_denyguard" "$HOME/bin/denyguard"
+  cp "$BATS_TEST_DIRNAME/../dot_functions" "$HOME/.functions"
+  chmod +x "$HOME/bin/denyguard"
 
   MAIN="$(mk_repo octo-personal-main octo-personal/main)"
   cd "$MAIN"
@@ -159,8 +174,8 @@ mk_repo() {
   printf '%s\n' "$r"
 }
 
-# mk_session <profile dir> <name> <cwd> <tty> [<session uuid> [<suite>]]: a live
-# registry session on a terminal; its pid is left in SPID.
+# mk_session <profile dir> <name> <cwd> <tty> [<session uuid> [<suite> [<config dir in its environment>]]]:
+# a live registry session on a terminal; its pid is left in SPID.
 mk_session() {
   sleep 600 3>&- >/dev/null 2>&1 &
   SPID=$!
@@ -170,6 +185,7 @@ mk_session() {
   local env=''
   [ -z "${5-}" ] || env="ITERM_SESSION_ID=w0t0p0:$5"
   [ -z "${6-}" ] || env="$env IT2_SUITE=$6"
+  [ -z "${7-}" ] || env="$env CLAUDE_CONFIG_DIR=$7"
   printf '%s\t%s\tclaude\tclaude --resume %s\n' "$SPID" "$4" "$env" >> "$PS_TABLE"
 }
 
@@ -180,9 +196,15 @@ end_session() {
   mv "$PS_TABLE.new" "$PS_TABLE"
 }
 
-# ps_row <pid> <tty> [<ucomm> [<command with its environment>]]: a process with a
-# terminal; by default a shell with nothing to show in its environment.
-ps_row() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "${3:-sh}" "${4:-sh}" >> "$PS_TABLE"; }
+# ps_row <pid> <tty> [<ucomm> [<command with its environment> [<ppid>]]]: a process
+# with a terminal; by default a shell with nothing to show in its environment.
+ps_row() { printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "${3:-sh}" "${4:-sh}" "${5-}" >> "$PS_TABLE"; }
+
+# set_ppid <pid> <ppid>: the parent ps answers for a process already in the table.
+set_ppid() {
+  awk -F'\t' -v OFS='\t' -v p="$1" -v pp="$2" '$1 == p { $5 = pp } { print }' "$PS_TABLE" > "$PS_TABLE.new"
+  mv "$PS_TABLE.new" "$PS_TABLE"
+}
 
 # pane_row <slot> <running|waiting> <pid> <leader> <worktree> <session id> <suite>
 pane_row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@" >> "$PANES_FILE"; }
@@ -297,10 +319,12 @@ U5=55555555-5555-5555-5555-555555555555
 
 @test "refused: denyguard missing, and a settings.json that does not parse" {
   mk_session "$PERSONAL" scribe "$MAIN" ttys019 "$U1"
-  PANE_SIGHT_DENYGUARD="$BATS_TEST_TMPDIR/no-denyguard" run pane-sight why scribe
+  mv "$HOME/bin/denyguard" "$BATS_TEST_TMPDIR/denyguard.away"
+  run pane-sight why scribe
   [ "$status" -eq 3 ]
   [ "$(val verdict)" = "refused: deny-unknown" ]
   [[ "$output" == *"denyguard could not say whether its directory is allowed"* ]]
+  mv "$BATS_TEST_TMPDIR/denyguard.away" "$HOME/bin/denyguard"
   printf '{not json\n' > "$PERSONAL/settings.json"
   run pane-sight why scribe
   [ "$status" -eq 3 ]
@@ -329,11 +353,15 @@ U5=55555555-5555-5555-5555-555555555555
 @test "refused: the resolver cannot be asked" {
   ps_row 90008 ttys022
   pane_row alpha waiting 90008 "$MAIN" "$MAIN/.claude/worktrees/alpha" "$U1" -
-  PANE_SIGHT_FUNCTIONS="$BATS_TEST_TMPDIR/no-functions" run pane-sight why alpha
+  mv "$HOME/.functions" "$BATS_TEST_TMPDIR/functions.away"
+  run pane-sight why alpha
   [ "$status" -eq 3 ]
   [ "$(val verdict)" = "refused: route-unknown" ]
   [[ "$output" == *"could not ask which profile its directory routes to"* ]]
-  PANE_SIGHT_ZSH="$BATS_TEST_TMPDIR/no-zsh" run pane-sight why alpha
+  mv "$BATS_TEST_TMPDIR/functions.away" "$HOME/.functions"
+  # a zsh that does not run, first on PATH
+  printf '#!/bin/sh\nexit 127\n' > "$BIN/zsh"; chmod +x "$BIN/zsh"
+  run pane-sight why alpha
   [ "$status" -eq 3 ]
   [ "$(val verdict)" = "refused: route-unknown" ]
 }
@@ -412,9 +440,8 @@ U5=55555555-5555-5555-5555-555555555555
 }
 
 @test "status --line: ready, and each not-ready reason" {
-  printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/it2"; chmod +x "$BATS_TEST_TMPDIR/it2"
   printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/py"; chmod +x "$BATS_TEST_TMPDIR/py"
-  export PANE_SIGHT_IT2="$BATS_TEST_TMPDIR/it2" PANE_SIGHT_PYTHON="$BATS_TEST_TMPDIR/py"
+  export PANE_SIGHT_PYTHON="$BATS_TEST_TMPDIR/py"
   run pane-sight status --line
   [ "$status" -eq 0 ]
   [ "$output" = "ready (0 reads, 0 shots, 0 refused)" ]
@@ -428,26 +455,31 @@ U5=55555555-5555-5555-5555-555555555555
   [ "$output" = "ready (1 reads, 1 shots, 1 refused)" ]
   run pane-sight status
   [ "$status" -eq 0 ]
-  [[ "$output" == *"it2:       $BATS_TEST_TMPDIR/it2"* ]]
+  [[ "$output" == *"it2:       $HOME/.config/iterm2/it2"* ]]
   [[ "$output" == *"api:       on"* ]]
   [[ "$output" == *"audit:     1 reads, 1 shots, 1 refused, 1 failed"* ]]
-  PANE_SIGHT_IT2="$BATS_TEST_TMPDIR/none" run pane-sight status --line
+  mv "$IT2" "$BATS_TEST_TMPDIR/it2.away"
+  run pane-sight status --line
   [ "$output" = "not ready: it2 is missing" ]
+  mv "$BATS_TEST_TMPDIR/it2.away" "$IT2"
   PANE_SIGHT_PYTHON="$BATS_TEST_TMPDIR/none" run pane-sight status --line
   [ "$output" = "not ready: no Python runtime with the iterm2 library" ]
   FAKE_API=0 run pane-sight status --line
   [ "$output" = "not ready: iTerm2's API is off" ]
-  PANE_SIGHT_DENYGUARD="$BATS_TEST_TMPDIR/none" run pane-sight status --line
+  mv "$HOME/bin/denyguard" "$BATS_TEST_TMPDIR/denyguard.away"
+  run pane-sight status --line
   [ "$output" = "not ready: denyguard is missing" ]
-  PANE_SIGHT_FUNCTIONS="$BATS_TEST_TMPDIR/none" run pane-sight status --line
+  mv "$BATS_TEST_TMPDIR/denyguard.away" "$HOME/bin/denyguard"
+  mv "$HOME/.functions" "$BATS_TEST_TMPDIR/functions.away"
+  run pane-sight status --line
   [ "$output" = "not ready: the profile resolver is missing" ]
   # the runtime is found under iTerm2's own support directory
   unset PANE_SIGHT_PYTHON
-  export PANE_SIGHT_SUPPORT="$BATS_TEST_TMPDIR/support"
-  mkdir -p "$PANE_SIGHT_SUPPORT/iTerm2/iterm2env/versions/3.10/bin"
-  cp "$BATS_TEST_TMPDIR/py" "$PANE_SIGHT_SUPPORT/iTerm2/iterm2env/versions/3.10/bin/python3"
+  support="$HOME/Library/Application Support"
+  mkdir -p "$support/iTerm2/iterm2env/versions/3.10/bin"
+  cp "$BATS_TEST_TMPDIR/py" "$support/iTerm2/iterm2env/versions/3.10/bin/python3"
   run pane-sight status
-  [[ "$output" == *"runtime:   $PANE_SIGHT_SUPPORT/iTerm2/iterm2env/versions/3.10/bin/python3"* ]]
+  [[ "$output" == *"runtime:   $support/iTerm2/iterm2env/versions/3.10/bin/python3"* ]]
 }
 
 @test "a public-only machine (no pins, no settings.json) reads its own default profile's panes" {
@@ -647,11 +679,11 @@ audit_rows() { cat "$HOME/.local/state/pane-sight/audit.log"; }
   [[ "$(ls -ld "$HOME/.local/state/pane-sight" | cut -c1-10)" == "drwx------" ]]
   [[ "$(ls -l "$HOME/.local/state/pane-sight/audit.log" | cut -c1-10)" == "-rw-------" ]]
   # a state directory that cannot be made: the text is never shown
-  : > "$BATS_TEST_TMPDIR/blocker"
-  XDG_STATE_HOME="$BATS_TEST_TMPDIR/blocker" run --separate-stderr pane-sight read alpha
+  rm -r "$HOME/.local/state/pane-sight"; : > "$HOME/.local/state/pane-sight"
+  run --separate-stderr pane-sight read alpha
   [ "$status" -eq 1 ]
   [ -z "$output" ]
-  [[ "$stderr" == *"cannot write $BATS_TEST_TMPDIR/blocker/pane-sight/audit.log; nothing was shown"* ]]
+  [[ "$stderr" == *"cannot write $HOME/.local/state/pane-sight/audit.log; nothing was shown"* ]]
 }
 
 @test "the session id and the terminal must agree, or nothing is read" {
@@ -926,7 +958,7 @@ sh_() { pane-sight shot "$@" 2>/dev/null; }
 
 @test "no runtime: exit 1 with the fix, and iTerm2 was asked nothing" {
   peer_alpha
-  PANE_SIGHT_PYTHON= PANE_SIGHT_SUPPORT="$BATS_TEST_TMPDIR/nosupport" run --separate-stderr pane-sight shot alpha
+  PANE_SIGHT_PYTHON= run --separate-stderr pane-sight shot alpha
   [ "$status" -eq 1 ]
   [ -z "$output" ]
   [[ "$stderr" == *"no Python runtime with the iterm2 library (iTerm2 > Scripts > Manage > Install Python Runtime, or set PANE_SIGHT_PYTHON)"* ]]
@@ -982,11 +1014,11 @@ sh_() { pane-sight shot "$@" 2>/dev/null; }
   peer_alpha
   run --separate-stderr pane-sight shot alpha --out "$BATS_TEST_TMPDIR/a.png"
   [ "$(audit_rows | cut -f7)" = "bytes=$(wc -c < "$FAKE_PNG" | tr -d ' ') file=$BATS_TEST_TMPDIR/a.png noted=1" ]
-  : > "$BATS_TEST_TMPDIR/blocker"
-  XDG_STATE_HOME="$BATS_TEST_TMPDIR/blocker" run --separate-stderr pane-sight shot alpha --out "$BATS_TEST_TMPDIR/b.png"
+  rm -r "$HOME/.local/state/pane-sight"; : > "$HOME/.local/state/pane-sight"
+  run --separate-stderr pane-sight shot alpha --out "$BATS_TEST_TMPDIR/b.png"
   [ "$status" -eq 1 ]
   [ -z "$output" ]
-  [[ "$stderr" == *"cannot write $BATS_TEST_TMPDIR/blocker/pane-sight/audit.log; nothing was shown"* ]]
+  [[ "$stderr" == *"cannot write $HOME/.local/state/pane-sight/audit.log; nothing was shown"* ]]
   [ ! -e "$BATS_TEST_TMPDIR/b.png" ]
 }
 
@@ -1159,4 +1191,278 @@ no_it2_read() { ! grep -q 'session read' "$IT2_LOG" || { echo "a refused pane wa
   [ "$(grep -c ' -t ' "$PS_LOG")" -eq 2 ]
   grep -qx -- '-o pid=,ucomm= -t ttys074' "$PS_LOG"
   grep -qx -- '-Eww -o pid=,command= -t ttys074' "$PS_LOG"
+}
+
+# --- who can see the terminal at all -----------------------------------------------------
+
+@test "who is on the terminal cannot be listed: refused no-processes, before iTerm2 is asked anything" {
+  peer_alpha
+  echo secrets > "$FAKE_SCREEN"
+  # the listing fails, prints nothing, leaves out the target's own pid, or its python fails
+  for cause in FAKE_PS_T_FAIL=1 FAKE_PS_T_EMPTY=1 FAKE_PS_HIDE=90001 FAKE_TTYP_FAIL=1; do
+    env "$cause" pane-sight read alpha > "$BATS_TEST_TMPDIR/out" 2> "$BATS_TEST_TMPDIR/err" && { echo "$cause: read"; false; }
+    [ ! -s "$BATS_TEST_TMPDIR/out" ]
+    grep -qx "pane-sight: refused: alpha: cannot tell who is on its terminal" "$BATS_TEST_TMPDIR/err" || { echo "$cause: $(cat "$BATS_TEST_TMPDIR/err")"; false; }
+  done
+  [ ! -s "$IT2_LOG" ]
+  [ ! -s "$DEFAULTS_LOG" ]
+  [ "$(audit_rows | cut -f3 | sort -u)" = "refused:no-processes" ]
+  [ "$(audit_rows | wc -l)" -eq 4 ]
+  FAKE_PS_T_EMPTY=1 run pane-sight why alpha
+  [ "$status" -eq 3 ]
+  [ "$(val verdict)" = "refused: no-processes" ]
+  # a bare session id has no pid of its own, but its terminal must list somebody
+  FAKE_TTY='"\/dev\/ttys098"' run --separate-stderr pane-sight read "$U1"
+  [ "$status" -eq 3 ]
+  [[ "$stderr" == *"cannot tell who is on its terminal"* ]]
+  no_it2_read
+}
+
+@test "a CLAUDE_CONFIG_DIR with a space in it is read cut at the space, and a cut value that matches nothing known refuses" {
+  ps_row 91020 ttys097 node "node x.js CLAUDE_CONFIG_DIR=$HOME/My Profile ITERM_SESSION_ID=w0t0p0:$U1"
+  pane_row alpha waiting 91020 "$MAIN" "$MAIN/.claude/worktrees/alpha" "$U1" -
+  run pane-sight why alpha
+  [ "$status" -eq 3 ]
+  [ "$(val verdict)" = "refused: other-profile" ]
+  [[ "$output" == *"of the My profile"* ]]
+  # as the caller's own ancestor: a Claude process whose cut value no registry holds
+  ps_row 92060 ttys097 claude "claude CLAUDE_CONFIG_DIR=$HOME/My Profile"
+  FAKE_PARENT=92060 run --separate-stderr pane-sight why alpha
+  [ "$status" -eq 3 ]
+  [[ "$stderr" == *"this command runs under a Claude process (pid 92060) that no profile's registry holds"* ]]
+}
+
+# --- who is asking ----------------------------------------------------------------------------
+
+# under <session pid> <shell pid>: this command runs in a shell whose parent is the session.
+under() { ps_row "$2" ttys099 zsh zsh "$1"; export FAKE_PARENT=$2; }
+
+@test "CLAUDE_CONFIG_DIR naming another profile, under this profile's session: caller-mismatch, nothing resolved, it2 not run, one audit row" {
+  mk_session "$PERSONAL" host "$MAIN" ttys080 "$U1"; host=$SPID
+  under "$host" 92001
+  mk_session "$WORK" ledger "$MAIN" ttys081 "$U2"
+  CLAUDE_CONFIG_DIR="$WORK" run --separate-stderr pane-sight read ledger
+  [ "$status" -eq 3 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"pane-sight: refused: CLAUDE_CONFIG_DIR names the work profile, but this command runs under a session of the personal profile"* ]]
+  [ ! -s "$IT2_LOG" ]
+  [ ! -s "$DEFAULTS_LOG" ]
+  [ ! -s "$PEER_LOG" ]
+  [ "$(audit_rows | wc -l)" -eq 1 ]
+  [ "$(audit_rows | cut -f2-5)" = "$(printf 'read\trefused:caller-mismatch\t-\t-')" ]
+  # a claim of a directory that holds a record of the same session is no way round it:
+  # the registry that is not the claim's decides
+  fake="$HOME/fake-prof"; mkdir -p "$fake/sessions"
+  cp "$PERSONAL/sessions/$host.json" "$fake/sessions/"
+  CLAUDE_CONFIG_DIR="$fake" run --separate-stderr pane-sight shot ledger
+  [ "$status" -eq 3 ]
+  [[ "$stderr" == *"names the fake-prof profile, but this command runs under a session of the personal profile"* ]]
+  [ "$(audit_rows | wc -l)" -eq 2 ]
+  [ ! -s "$RT_LOG" ]
+}
+
+@test "the same variable in a shell with no session above it: the caller is what it says, and the pane is judged by that profile's rules" {
+  mk_session "$WORK" ledger "$MAIN" ttys082 "$U1"
+  CLAUDE_CONFIG_DIR="$WORK" run pane-sight why ledger
+  [ "$status" -eq 0 ]
+  [ "$(val verdict)" = readable ]
+  printf '{"permissions": {"deny": ["Read(~/code/octo-personal-main/**)"]}}\n' > "$WORK/settings.json"
+  CLAUDE_CONFIG_DIR="$WORK" run pane-sight why ledger
+  [ "$status" -eq 3 ]
+  [ "$(val verdict)" = "refused: denied" ]
+  # the default profile when nothing is set
+  unset CLAUDE_CONFIG_DIR
+  run pane-sight why ledger
+  [ "$(val verdict)" = "refused: other-profile" ]
+  [[ "$output" == *"this session is default"* ]]
+}
+
+@test "an ancestor named claude that no registry holds: caller-unknown, naming its pid" {
+  ps_row 92010 ttys083 zsh zsh 92011
+  ps_row 92011 ttys083 claude "claude --resume"
+  export FAKE_PARENT=92010
+  run --separate-stderr pane-sight read alpha
+  [ "$status" -eq 3 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"pane-sight: refused: this command runs under a Claude process (pid 92011) that no profile's registry holds"* ]]
+  [ "$(audit_rows | cut -f2-5)" = "$(printf 'read\trefused:caller-unknown\t-\t-')" ]
+  [ ! -s "$PEER_LOG" ]
+  # a process that only has claude in its name is not one
+  ps_row 92012 ttys083 claudette "claudette" 
+  FAKE_PARENT=92012 run pane-sight why alpha
+  [ "$status" -eq 4 ]
+}
+
+@test "an ancestor session under a directory nothing names is found through its own environment: equal to the claim it proceeds, unequal it is a mismatch" {
+  prof="$HOME/elsewhere/prof"; mkdir -p "$prof/sessions"
+  mk_session "$prof" host "$MAIN" ttys084 "$U1" "" "$prof"; host=$SPID
+  under "$host" 92020
+  mk_session "$prof" scribe "$MAIN" ttys085 "$U2"
+  CLAUDE_CONFIG_DIR="$prof" run pane-sight why scribe
+  [ "$status" -eq 0 ]
+  [ "$(val verdict)" = readable ]
+  CLAUDE_CONFIG_DIR="$PERSONAL" run --separate-stderr pane-sight why scribe
+  [ "$status" -eq 3 ]
+  [[ "$stderr" == *"names the personal profile, but this command runs under a session of the prof profile"* ]]
+}
+
+@test "the nearest registered ancestor decides" {
+  mk_session "$WORK" outer "$MAIN" ttys086 "$U1"; outer=$SPID
+  mk_session "$PERSONAL" inner "$MAIN" ttys087 "$U2"; inner=$SPID
+  under "$inner" 92030
+  ps_row 92031 ttys087 zsh zsh "$outer"
+  set_ppid "$inner" 92031
+  mk_session "$PERSONAL" scribe "$MAIN" ttys088 "$U3"
+  run pane-sight why scribe
+  [ "$status" -eq 0 ]
+  [ "$(val verdict)" = readable ]
+  CLAUDE_CONFIG_DIR="$WORK" run --separate-stderr pane-sight why scribe
+  [ "$status" -eq 3 ]
+  [[ "$stderr" == *"names the work profile, but this command runs under a session of the personal profile"* ]]
+}
+
+# standin <name> <body>: an executable stand-in that records that it ran
+standin() { printf '#!/bin/sh\n: >> "%s"\n%s\n' "$BATS_TEST_TMPDIR/standin-ran" "$2" > "$BATS_TEST_TMPDIR/$1"; chmod +x "$BATS_TEST_TMPDIR/$1"; }
+not_run() { [ ! -e "$BATS_TEST_TMPDIR/standin-ran" ] || { echo "a stand-in ran"; false; }; }
+
+# denied_pane / pinned_pane: a pane of this profile in a denied directory; a waiting pane
+# whose directory routes elsewhere
+denied_pane() {
+  secret="$(mk_repo octo-secret octo-personal/secret)"
+  printf '{"permissions": {"deny": ["Read(~/code/octo-secret/**)"]}}\n' > "$PERSONAL/settings.json"
+  mk_session "$PERSONAL" vault "$secret" ttys110 "$U1"
+}
+pinned_pane() {
+  pinned="$(mk_repo octo-personal-pinned octo-personal/pinned)"
+  git config --file "$GIT_CONFIG_GLOBAL" claude.octo-personal/pinned.profile work-account
+  ps_row 93001 ttys111
+  pane_row alpha waiting 93001 "$pinned" "$pinned/.claude/worktrees/alpha" "$U2" -
+}
+
+@test "each variable that was a seam is ignored: PANE_SIGHT_DENYGUARD" {
+  denied_pane
+  standin allow 'exit 0'
+  PANE_SIGHT_DENYGUARD="$BATS_TEST_TMPDIR/allow" run pane-sight why vault
+  [ "$status" -eq 3 ]
+  [ "$(val verdict)" = "refused: denied" ]
+  not_run
+}
+
+@test "each variable that was a seam is ignored: PANE_SIGHT_FUNCTIONS" {
+  pinned_pane
+  printf 'claude_profile_dir() { print -r -- "%s"; }\n' "$PERSONAL" > "$BATS_TEST_TMPDIR/functions"
+  PANE_SIGHT_FUNCTIONS="$BATS_TEST_TMPDIR/functions" run pane-sight why alpha
+  [ "$status" -eq 3 ]
+  [ "$(val verdict)" = "refused: other-route" ]
+}
+
+@test "each variable that was a seam is ignored: PANE_SIGHT_ZSH" {
+  pinned_pane
+  standin zsh 'echo same'
+  PANE_SIGHT_ZSH="$BATS_TEST_TMPDIR/zsh" run pane-sight why alpha
+  [ "$status" -eq 3 ]
+  [ "$(val verdict)" = "refused: other-route" ]
+  not_run
+}
+
+@test "each variable that was a seam is ignored: PANE_SIGHT_PEER" {
+  pinned_pane
+  ps_row 93002 ttys112
+  printf 'alpha\twaiting\t93002\t%s\t%s\t%s\t-\n' "$MAIN" "$MAIN/.claude/worktrees/alpha" "$U3" > "$BATS_TEST_TMPDIR/panes-permissive"
+  standin peer 'cat "'"$BATS_TEST_TMPDIR"'/panes-permissive"'
+  PANE_SIGHT_PEER="$BATS_TEST_TMPDIR/peer" run pane-sight why alpha
+  [ "$status" -eq 3 ]
+  [ "$(val pid)" = 93001 ]
+  [ "$(val verdict)" = "refused: other-route" ]
+  not_run
+}
+
+@test "each variable that was a seam is ignored: PANE_SIGHT_TABNAME" {
+  mk_session "$WORK" ledger "$MAIN" ttys113 "$U1"
+  standin tabname 'echo evil-label'
+  PANE_SIGHT_TABNAME="$BATS_TEST_TMPDIR/tabname" run pane-sight why ledger
+  [ "$status" -eq 3 ]
+  [ "$(val verdict)" = "refused: other-profile" ]
+  [ "$(val label)" = octo-personal-main ]
+  [[ "$output" != *evil-label* ]]
+  not_run
+}
+
+@test "each variable that was a seam is ignored: PANE_SIGHT_IT2" {
+  ps_row 93003 ttys114
+  mk_session "$WORK" ledger "$MAIN" ttys114 "$U3"
+  standin it2 'echo "\"\\/dev\\/ttys999\""'
+  FAKE_TTY='"\/dev\/ttys114"' PANE_SIGHT_IT2="$BATS_TEST_TMPDIR/it2" run pane-sight why "$U1"
+  [ "$status" -eq 3 ]
+  [ "$(val verdict)" = "refused: other-profile" ]
+  [ "$(val tty)" = /dev/ttys114 ]
+  not_run
+}
+
+@test "each variable that was a seam is ignored: PANE_SIGHT_SUPPORT" {
+  mkdir -p "$BATS_TEST_TMPDIR/support/iTerm2/iterm2env/versions/3.10/bin"
+  printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/support/iTerm2/iterm2env/versions/3.10/bin/python3"
+  chmod +x "$BATS_TEST_TMPDIR/support/iTerm2/iterm2env/versions/3.10/bin/python3"
+  unset PANE_SIGHT_PYTHON
+  PANE_SIGHT_SUPPORT="$BATS_TEST_TMPDIR/support" run pane-sight status
+  [[ "$output" == *"runtime:   MISSING"* ]]
+}
+
+@test "a HOME with nothing in it refuses every pane deny-unknown" {
+  bare="$BATS_TEST_TMPDIR/bare"; mkdir -p "$bare"
+  mk_session "$bare/.claude" scribe "$MAIN" ttys115 "$U1"
+  run env -u CLAUDE_CONFIG_DIR HOME="$bare" pane-sight why scribe
+  [ "$status" -eq 3 ]
+  [ "$(val verdict)" = "refused: deny-unknown" ]
+}
+
+@test "GIT_CONFIG_GLOBAL at an empty file, or a config given in the environment, does not change an other-route verdict" {
+  pinned_pane
+  : > "$BATS_TEST_TMPDIR/empty-gitconfig"
+  GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/empty-gitconfig" run pane-sight why alpha
+  [ "$status" -eq 3 ]
+  [ "$(val verdict)" = "refused: other-route" ]
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=claude.octo-personal/pinned.profile GIT_CONFIG_VALUE_0=personal-account run pane-sight why alpha
+  [ "$status" -eq 3 ]
+  [ "$(val verdict)" = "refused: other-route" ]
+}
+
+@test "XDG_STATE_HOME does not move the audit row" {
+  mk_session "$WORK" ledger "$MAIN" ttys116 "$U1"
+  XDG_STATE_HOME="$BATS_TEST_TMPDIR/xdg" run pane-sight read ledger
+  [ "$status" -eq 3 ]
+  [ ! -e "$BATS_TEST_TMPDIR/xdg" ]
+  [ "$(audit_rows | wc -l)" -eq 1 ]
+}
+
+@test "it2 comes from the one place: absent there, it2 is missing and the exit is 1" {
+  peer_alpha
+  cp "$IT2" "$BATS_TEST_TMPDIR/it2-elsewhere"
+  rm "$IT2"
+  PANE_SIGHT_IT2="$BATS_TEST_TMPDIR/it2-elsewhere" run --separate-stderr pane-sight read alpha
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"it2 is missing ($HOME/.config/iterm2/it2: iTerm2's Claude Code integration links it there)"* ]]
+  [ ! -s "$IT2_LOG" ]
+  [[ "$(audit_rows)" == *$'\tread\tfailed:it2\t'* ]]
+}
+
+@test "the script's text holds none of the seven names that were seams" {
+  ! grep -Eq 'PANE_SIGHT_(PEER|DENYGUARD|TABNAME|FUNCTIONS|ZSH|IT2|SUPPORT)' "$BATS_TEST_DIRNAME/../bin/executable_pane-sight" ||
+    { echo "a seam is back in pane-sight"; false; }
+  grep -q 'unset GIT_CONFIG_GLOBAL GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS' "$BATS_TEST_DIRNAME/../bin/executable_pane-sight"
+}
+
+@test "why and list refuse a mismatched caller the same way, with no rows" {
+  mk_session "$PERSONAL" host "$MAIN" ttys117 "$U1"
+  under "$SPID" 92040
+  mk_session "$WORK" ledger "$MAIN" ttys118 "$U2"
+  for v in "why ledger" list; do
+    CLAUDE_CONFIG_DIR="$WORK" run --separate-stderr pane-sight $v
+    [ "$status" -eq 3 ]
+    [ -z "$output" ]
+    [[ "$stderr" == "pane-sight: refused: CLAUDE_CONFIG_DIR names the work profile, but this command runs under a session of the personal profile" ]]
+  done
+  # neither writes an audit row
+  [ ! -e "$HOME/.local/state/pane-sight/audit.log" ]
 }
