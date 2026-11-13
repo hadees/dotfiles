@@ -202,8 +202,11 @@ and runs even with `--dry-run`.
 
 ## The public base
 
-`dot_config/iterm2/prefs.d/10-base.plist` holds theme, fonts, key bindings and
-the Default profile, extracted with an explicit include list through `capture
+`dot_config/iterm2/prefs.d/10-base.plist` holds theme, fonts, key bindings,
+the Default profile and the settings the public tools rely on (session
+restoration running jobs in servers and restoring window contents, Session
+Status kept per peer, the slow-trigger offer declined; startup windows are
+left to each machine), extracted with an explicit include list through `capture
 --from domain --file`, never by copying the domain. It must pass `iterm2-prefs
 lint --public` (no data value, no path or host list, no address); a key outside
 the list does not get in by being convenient.

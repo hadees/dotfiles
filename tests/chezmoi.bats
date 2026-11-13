@@ -115,6 +115,7 @@ teardown() {
     [ -f "$TMPHOME/.config/iterm2/prefs.d/10-base.plist" ]
     [ -x "$TMPHOME/bin/iterm2-prefs" ]
     [ -x "$TMPHOME/bin/iterm2-relaunch" ]
+    [ -x "$TMPHOME/bin/screen-heads-up" ]
   else
     [ ! -e "$TMPHOME/.mackup.cfg" ]
     [ ! -e "$TMPHOME/.finicky.ts" ]
@@ -122,6 +123,7 @@ teardown() {
     [ ! -e "$TMPHOME/.config/iterm2" ]
     [ ! -e "$TMPHOME/bin/iterm2-prefs" ]
     [ ! -e "$TMPHOME/bin/iterm2-relaunch" ]
+    [ ! -e "$TMPHOME/bin/screen-heads-up" ]
   fi
   # Repo-level, on every OS: iTerm2 reads the clone (PrefsCustomFolder), so a
   # copy in $HOME is read by nothing, and CLAUDE.md is guidance for this repo

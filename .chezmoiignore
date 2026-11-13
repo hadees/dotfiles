@@ -53,6 +53,8 @@ bin/worktabs
 bin/iterm2-prefs
 bin/iterm2-relaunch
 .config/iterm2
+# The screen heads-up is a macOS notification
+bin/screen-heads-up
 {{ end -}}
 
 {{ if eq .machineClass "ephemeral" -}}

@@ -496,7 +496,7 @@ fragments into a machine-local store with a three-way rule against a record of
 the last compose (`.claude/rules/iterm2-prefs.md` has the mechanism).
 
 ```
-~/.config/iterm2/prefs.d/10-base.plist       public    theme, fonts, keys, the Default profile
+~/.config/iterm2/prefs.d/10-base.plist       public    theme, fonts, keys, the Default profile, tool-required settings
 ~/.config/iterm2/prefs.d/20-personal.plist   personal  only its own keys (optional)
 ~/.config/iterm2/prefs.d/30-work.plist       work      only its own keys (optional)
 ~/.local/state/iterm2/prefs/com.googlecode.iterm2.plist
