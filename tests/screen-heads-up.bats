@@ -92,7 +92,7 @@ start_bg() { # <what> <seconds>
   done
   FAKE_TN_EXIT=7 run screen-heads-up "doing x" 3
   [ "$status" -eq 0 ]
-  ! grep -q 'not-now' "$STATE/log"
+  ! grep -q 'not-now' "$STATE/log" || { echo "unexpected: not-now logged"; false; }
 }
 
 @test "--not-now ends a waiting heads-up with exit 1, and says so when none waits" {
