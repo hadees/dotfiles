@@ -416,7 +416,7 @@ run_session() {
 
 # --- slot names, the pool, waiting panes ---------------------------------------------
 
-POOL_DEFAULT='alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu'
+POOL_DEFAULT='alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega'
 
 # LC_ALL=C: in a UTF-8 locale [a-z] also matches capitals. `next` is the word
 # `start` uses for "whatever the pane would take", so it is not a slot.
