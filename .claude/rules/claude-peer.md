@@ -125,7 +125,7 @@ trigger is `leaderOnly`, so the leader's `claude` ending tears the group down
 and terminates the peers that were started (a waiting pane has nothing to lose); worktrees and transcripts survive, `claude-peer run
 <branch>` or `run --as <slot>` then `claude --continue` resumes. The Session Status tool lists
 buried peers, one row each, and a click swaps the peer in; keep *Merge
-workgroup statuses* **off** (on, four Claudes are one row). Rows read
+workgroup statuses* **off** (on, every Claude of the tab is one row). Rows read
 `<repo> ▸ Lead` for the leader once a peer is running and `<repo> · <Label>`
 for peers, both from `tabname` (see the cc-status shim paragraph on roles).
 
@@ -188,8 +188,9 @@ stopping and the pane falls back to request-only waiting; its claude gets them
 back. TERM and HUP kill the reader and delete the wait file.
 
 **The pool.** A pane's slot is a preference. The pool is the words of `git
-config claude-peer.slots` (default `alpha beta gamma delta epsilon zeta eta theta
-iota kappa lambda mu`); its first five are the bar's names. A pane takes its
+config claude-peer.slots` (default the 24 Greek letters, `alpha` to `omega`, four tabs of five
+and four over); its first five are the bar's names. A configured pool of five or fewer
+has no spare names, so a second tab takes a free one from under the first. A pane takes its
 own slot when no Claude runs in it, else the first free name from the pool's
 sixth on, and only then a free one of the first five, so one tab is always
 Alpha to Epsilon under their labels and a second tab gets Zeta, Eta, Theta,
@@ -441,7 +442,7 @@ main checkout and then calls `pane` with slot `overlay`, so everything a slot pa
 reused: worktree `<overlay>/.claude/worktrees/overlay`, detached at `origin/HEAD` when new and
 reused as left, the `**/.claude/worktrees/` line in that repository's `.git/info/exclude`, the
 claim, the pool (a second tab of the public source finds `overlay` in use and takes the pool
-from its fourth name on, as Alpha does), Return/`c`/`q`, and `claude` through an interactive
+from its sixth name on, as Alpha does), Return/`c`/`q`, and `claude` through an interactive
 shell so the `claude()` wrapper resolves the profile from the overlay's own origin and pin,
 which are read and never written. It changes directory, and does not call `run`, because `run`
 takes the leader to be the directory it stands in: the claim must name the public source as
@@ -459,8 +460,8 @@ session order and ⌥⇧⌘1…8 pick by position, so the Hermes twin of the ove
 `claudePeer.h` plus the overlays, not by `with_hermes` of the first: Lead, Alpha, Beta, Gamma, Delta,
 Epsilon, then the overlays, or the same and Hermes, then the overlays. Hermes is ⌥⇧⌘7 (the
 operator's order, 2026-11-13: Hermes after Epsilon in both bars); ⌥⇧⌘9 is "last", so it becomes
-the last overlay, and with Hermes and two overlays the bar is exactly nine: a third overlay
-has no number (iTerm2 3.7.7 source; not yet seen on a real tab). One
+the last overlay, and with Hermes and three overlays the ninth pane (Overlay 2) has no
+number and ⌥⇧⌘9 still picks the last (iTerm2 3.7.7 source; not yet seen on a real tab). One
 pair is built at `install` time for the overlays the machine has then (none: neither, and a stale
 pair is removed with the state file); `install` needs iTerm2 quit, the one part of this that does.
 Between a change of the overlay set and the next `install` things degrade visibly: a pane whose

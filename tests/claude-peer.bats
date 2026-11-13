@@ -748,10 +748,10 @@ hold() {
   ! grep -q "	end	" "$REPO/$LOG" 2>/dev/null
 }
 
-@test "the pool: a configured pool falls back to a free one of the first three" {
-  git config claude-peer.slots 'alpha beta gamma delta'
+@test "the pool: a configured pool falls back to a free one of the first five" {
+  git config claude-peer.slots 'alpha beta gamma delta epsilon zeta'
   hold alpha
-  hold delta
+  hold zeta
   pane alpha
   press alpha ''
   until_ok 'grep -q "claude-peer proj-beta\$" "$FAKE_SHELL_LOG"'
