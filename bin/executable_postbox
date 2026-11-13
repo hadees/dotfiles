@@ -781,10 +781,13 @@ lead_sessions() { lead_rows "$@" | cut -f2-; }
 
 # started_by <worktree>: "; started by <who>" from the claim's by field: the
 # operator when the pane's own picker started it ("pane", or none recorded),
-# else "Lead" or the label that ran `claude-peer start`. Nothing without a claim.
+# else "Lead" or the label that ran `claude-peer start`. A "Lead" start with no
+# lead-pid came from a plain shell in the leader directory: the operator.
+# Nothing without a claim.
 started_by() {
   sb_c=$("$PEERCMD" claim "$1" 2>/dev/null) && [ -n "$sb_c" ] || return 0
-  sb_by=$(printf '%s\n' "$sb_c" | awk -F'\t' '$1 == "by" { print $2; exit }')
+  sb_by=$(printf '%s\n' "$sb_c" | awk -F'\t' '$1 == "by" { b = $2 } $1 == "lead-pid" { p = $2 }
+    END { print (b == "Lead" && (p == "" || p == "-")) ? "pane" : b }')
   case $sb_by in
     ''|-|pane) printf '; started by the operator' ;;
     *) printf '; started by %s' "$sb_by" ;;

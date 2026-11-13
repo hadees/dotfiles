@@ -644,9 +644,12 @@ claim_line() { printf '%s\t%s\t%s\t%s\n' "$1" "${2:-4242}" "$WORK" "${1##*/}"; }
   export FAKE_CLAIMS="$(claim_line "$wt")"
   FAKE_CLAIM="by\tpane" run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
   [ "$output" = "postbox: Claude Peers: PeerA (alpha; started by the operator) is up; SendMessage reaches it." ]
-  FAKE_CLAIM="by\tLead" run payload '{"cwd":"'"$WORK"'","session_id":"s2"}' hook prompt
+  FAKE_CLAIM="by\tLead\nlead-pid\t4243" run payload '{"cwd":"'"$WORK"'","session_id":"s2"}' hook prompt
   [ "$output" = "postbox: Claude Peers: PeerA (alpha; started by Lead) is up; SendMessage reaches it." ]
   FAKE_CLAIM="by\t-" run payload '{"cwd":"'"$WORK"'","session_id":"s3"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha; started by the operator) is up; SendMessage reaches it." ]
+  # `claude-peer start` typed in a plain shell there: by Lead, but no Lead pid
+  FAKE_CLAIM="by\tLead\nlead-pid\t-" run payload '{"cwd":"'"$WORK"'","session_id":"s4"}' hook prompt
   [ "$output" = "postbox: Claude Peers: PeerA (alpha; started by the operator) is up; SendMessage reaches it." ]
 }
 
