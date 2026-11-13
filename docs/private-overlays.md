@@ -584,7 +584,7 @@ name an owner, a repository or a private skill, at lower levels:
 
 A machine with overlays gets one more pane in the peer bar of every `claude` tab
 opened in the public chezmoi source (the repository `chezmoi source-path` names,
-or a worktree of it), after Lead, Alpha, Beta and Gamma (and Hermes, where it
+or a worktree of it), after Lead and Alpha to Epsilon (and Hermes, where it
 routes). Each pane belongs to one overlay: Return starts a Claude in
 `<overlay>/.claude/worktrees/overlay`, a worktree of the overlay's own clone, so the
 `claude()` wrapper picks the profile from that overlay's own origin and pin. Tabs

@@ -76,9 +76,10 @@ STUB
   # courier's relay, which hands the prompt over stdin) what it was told.
   cat > "$BIN/claude" <<'STUB'
 #!/bin/sh
-printf '%s\t%s\n' "${CLAUDE_CONFIG_DIR:-unset}" "$*" >> "$CLAUDE_LOG"
+# stdin first: a line in $CLAUDE_LOG is what wait_relays counts, so it must mean done
 [ -t 0 ] || cat >> "$CLAUDE_LOG.stdin"
 printf '\n' >> "$CLAUDE_LOG.stdin"
+printf '%s\t%s\n' "${CLAUDE_CONFIG_DIR:-unset}" "$*" >> "$CLAUDE_LOG"
 exit 0
 STUB
   cat > "$BIN/uname" <<'STUB'
@@ -620,6 +621,7 @@ case $1 in
     [ -z "$c" ] || printf '%s\n' "$c" ;;
   log) [ ! -f "${FAKE_LOG:-/nonexistent}" ] || cat "$FAKE_LOG" ;;
   name) [ "$2" = lead ] && echo proj-lead ;;
+  claim) [ -z "${FAKE_CLAIM:-}" ] || printf '%b\n' "$FAKE_CLAIM" ;;
 esac
 STUB
   chmod +x "$BIN/claude-peer"
@@ -635,6 +637,22 @@ leader_profile() {
 
 # One `claude-peer peers` row: worktree, pid ($2, default 4242), leader, label.
 claim_line() { printf '%s\t%s\t%s\t%s\n' "$1" "${2:-4242}" "$WORK" "${1##*/}"; }
+
+@test "hook prompt: the up line says who started the peer, from its claim's by field" {
+  leader_profile; peer_stub
+  wt="$HOME/code/alpha"; mkdir -p "$wt"
+  reg "$CLAUDE_CONFIG_DIR" "$wt" PeerA "$(mksock a.sock)"
+  export FAKE_CLAIMS="$(claim_line "$wt")"
+  FAKE_CLAIM="by\tpane" run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha; started by the operator) is up; SendMessage reaches it." ]
+  FAKE_CLAIM="by\tLead\nlead-pid\t4243" run payload '{"cwd":"'"$WORK"'","session_id":"s2"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha; started by Lead) is up; SendMessage reaches it." ]
+  FAKE_CLAIM="by\t-" run payload '{"cwd":"'"$WORK"'","session_id":"s3"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha; started by the operator) is up; SendMessage reaches it." ]
+  # `claude-peer start` typed in a plain shell there: by Lead, but no Lead pid
+  FAKE_CLAIM="by\tLead\nlead-pid\t-" run payload '{"cwd":"'"$WORK"'","session_id":"s4"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha; started by the operator) is up; SendMessage reaches it." ]
+}
 
 @test "hook start: a non-peer without a native inbox socket is told, and told to tell the operator" {
   leader_profile
@@ -1223,6 +1241,10 @@ STOP='{"cwd":"'"$HOME/code/some-project"'","session_id":"s1","stop_hook_active":
   [ "$status" -eq 0 ]
   [ "$output" = "proj-7"$'\t'".claude-a"$'\t'"idle" ]
   run "$PB" lead "$wt"
+  [ "$output" = "proj-7"$'\t'".claude-a"$'\t'"idle" ]
+  # a slot's own claim naming its leader, with no Lead pid or session id
+  # (the awk that reads it must parse under BSD awk too)
+  FAKE_LIVE= FAKE_CLAIM="leader\t$WORK" run "$PB" lead "$wt"
   [ "$output" = "proj-7"$'\t'".claude-a"$'\t'"idle" ]
   rm "$CLAUDE_CONFIG_DIR/sessions/$LPID.json"
   run "$PB" lead "$wt"
