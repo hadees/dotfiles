@@ -78,7 +78,7 @@ profile's config lacks the server, then "Tell the operator before starting
 work"; a healthy start adds nothing. On a leader's `prompt`, before the mail
 lookup, a roll-call joins the claims its peers wrote (`claude-peer peers
 --leader <dir>`) against this profile's `sessions/*.json` registry: a live
-record with a socket is `native` (the line names it for `SendMessage` and says who started it, from the claim's `by` field: `started by the operator` for a pane's own picker, else `started by Lead` or the starting label), one
+record with a socket is `native` (the line names it for `SendMessage` and says who started it, from the claim's `by` field: `started by the operator` for a pane's own picker or a `claude-peer start` typed in a plain shell (`by` Lead with no `lead-pid`), else `started by Lead` or the starting label), one
 without a socket is `noinbox`, one only under another mapped profile is
 `other` (use postbox mail, the line gives the name), none is `starting`. The
 roll-call is per peer, on every prompt: the state
