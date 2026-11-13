@@ -80,6 +80,13 @@ the `/run-dotfiles` skill (`.claude/skills/run-dotfiles/driver.sh`); each
 overlay carries a matching `run-<overlay>` skill that stacks itself on it.
 Skill directories are dot-prefixed, so chezmoi never deploys them.
 
+CI runs the suite with `bats --jobs`: files side by side through GNU parallel
+(the workflow installs it; macOS still runs serially, WSL with no terminal), tests within a file in
+order, bats v1.14.0 built from its tag on the Linux jobs. A local `bats tests`
+stays serial; on a Mac from this Brewfile `parallel` is moreutils', so `--jobs`
+there needs rush and `--parallel-binary-name rush` (untested). A new test keeps
+its state under `BATS_TEST_TMPDIR` and polls its waits, since files run side by side.
+
 CI (`.github/workflows/tests.yml`) runs the suite on `ubuntu-latest`,
 `macos-latest`, Rocky Linux 9 (container), and WSL Ubuntu (windows runner), plus a container
 job that runs the one-shot install end to end.
@@ -248,11 +255,13 @@ rule first.
 | `claude-profiles` | `claude()`, per-repo pins, the second-session question, agent stubs |
 | `browser-routing` | `open-as`, `chrome-pairing`, the iTerm2 browser tab, Finicky |
 | `denyguard` | the Bash deny hook, what it cannot see, why it fails closed |
+| `memoryguard` | the memory-write hook, the placement decision and its seat, stopgaps, the audit |
 | `loginguard` | the org pin per profile, the prompt hook, the removal after a wrong login, why it fails closed |
 | `worktabs` | the iTerm2 tab launcher, `workspace.*` config, the Alfred workflow |
 | `claude-peer` | Workgroup peers, named slot worktrees, claims, the Hermes peer, overlay peers |
 | `claude-peer-handoff` | Lead and its name, `start --handoff`, `log idle`, the stop mark |
 | `claude-peer-look` | the sleeper that moves while looked at: `look`, its trigger, its lock |
+| `claude-peer-caduceus` | the Hermes pane's figure and glint, read from the installed Hermes |
 | `claude-tab` | `claude-tab` list, focus, save, restore; `tabname` |
 | `branchname` | the branch label a prompt or status line shows, the detached-slot base record |
 | `postbox` | cross-profile session mail, its hooks, the courier, the roll-call |
@@ -264,6 +273,7 @@ rule first.
 | `routes` | the fleet routing table |
 | `workset` | working sets, the profile rule, the guard hooks |
 | `iterm2-skill` | the iTerm2 skill's stamp and `verify.sh`, the tracked plist |
+| `iterm2-prefs` | iTerm2's composed preferences: fragments, compose, capture, install |
 | `cc-status-shim` | Session Status rows, seat colours, row names, terminal titles |
 | `dot-functions` | what else lives in `dot_functions`, and `emulate -L zsh` |
 

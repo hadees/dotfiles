@@ -225,6 +225,11 @@ function dotfiles() {
 	# fragments (git has no include for it), so it can only be composed once
 	# every overlay above has deployed its own. Same reason as the touch.
 	(( $+commands[git-allowed-signers] )) && git-allowed-signers;
+	# iTerm2's preferences are merged from per-owner fragments in the same
+	# way, so they too compose only once every overlay has deployed its own.
+	# --auto says nothing where iTerm2 does not load the composed folder and
+	# writes nothing while iTerm2 runs (iTerm2 rewrites the store at quit).
+	(( $+commands[iterm2-prefs] )) && iterm2-prefs compose --auto;
 	return 0;
 }
 
@@ -958,6 +963,31 @@ function claude-doctor() {
 	deny_log="${XDG_STATE_HOME:-$HOME/.local/state}/denyguard/denied.log";
 	deny_hits="$(command wc -l < "$deny_log" 2>/dev/null | tr -d ' ')"; deny_hits="${deny_hits:-0}";
 	print -r -- "deny:    $deny_n in $settings; Bash guard: $deny_wired; ~/bin/denyguard: $deny_bin; denies logged: $deny_hits";
+	# The memory-write hook: wired (the settings file's own text), the binary
+	# and the decide-haiku seat it needs (without the seat every note is
+	# allowed unplaced and the line would look healthy), and its own log's
+	# counts. See .claude/rules/memoryguard.md. Labelled memguard because
+	# memory: above is the default directory's memory leaking in.
+	local mg_wired='not wired' mg_bin=missing mg_seat=missing mg_counts='? (no memoryguard)';
+	[[ -r $settings ]] && command grep -q 'memoryguard hook pre' "$settings" 2>/dev/null && mg_wired=wired;
+	[[ -x $HOME/bin/memoryguard ]] && mg_bin=present;
+	[[ -e $dir/agents/decide-haiku.md ]] && mg_seat=deployed;
+	if (( $+commands[memoryguard] )); then
+		# The exit status is kept: without python3 the script prints nothing
+		# and exits 2, which the awk alone would turn into a healthy "0".
+		local mg_log;
+		if mg_log="$(command memoryguard log 2>/dev/null)"; then
+			mg_counts="$(print -r -- "$mg_log" | command awk -F'\t' '
+				$1 == "blocks later kept" { k = $2; next }
+				{ n += $2 }
+				$1 == "block" || $1 == "block-cached" { b += $2 }
+				$1 == "allow-error" || $1 == "allow-nobackend" { e += $2 }
+				END { printf "%d (%d refused, %d errors, %d refusals later kept)", n, b, e, k }')";
+		else
+			mg_counts='? (memoryguard log failed)';
+		fi;
+	fi;
+	print -r -- "memguard: hook: $mg_wired in $settings; ~/bin/memoryguard: $mg_bin; seat: $mg_seat; decisions logged: $mg_counts";
 	# Session Status wiring, read by tabstatus_wiring: how many of the eleven
 	# events run the cc-status shim (the one this repo deploys), on how many the
 	# handler runs first, how many still run iTerm2's own hook (a Reinstall puts
@@ -1498,8 +1528,10 @@ function hermes() {
 # would put one account's profile in another account's repo. So run hermes()
 # only where hermes_profile routes this directory; otherwise say so and leave
 # the pane as a plain shell. With CLAUDE_PEER_HERMES_WAIT=1 (`claude-peer
-# hermes --wait`) a routed directory first asks for Return. Everything else — the pin, the refusal of an
-# uncreated profile, hermes.worktree, the ollama start — is the wrapper's.
+# hermes --wait`) a routed directory first asks for Return: on a terminal under
+# Hermes's caduceus (`claude-peer art --hermes --wait`), else in words. Everything
+# else — the pin, the refusal of an uncreated profile, hermes.worktree, the ollama
+# start — is the wrapper's.
 function hermes_peer() {
 	emulate -L zsh;
 	local prof ans;
@@ -1509,6 +1541,14 @@ function hermes_peer() {
 	};
 	if [[ ${CLAUDE_PEER_HERMES_WAIT-} == 1 ]]; then
 		while true; do
+			if [[ -t 0 && -t 1 ]] && (( $+commands[claude-peer] )); then
+				claude-peer art --hermes --wait;
+				case $? in
+					0) hermes "$@"; continue;;
+					3) ;;
+					*) return 0;;
+				esac;
+			fi;
 			print -r -- "Hermes ($prof): Return starts hermes here, q leaves a shell";
 			read -r ans || return 0;
 			[[ $ans == q ]] && return 0;
@@ -3055,6 +3095,8 @@ function iterm2-doctor() {
 	done;
 	print -r -- "plugins: ${${(j:, :)plugs}:-none installed (no iTermAI.app / iTermBrowserPlugin.app)}";
 	print -r -- "prefs:   $(iterm2_pref LoadPrefsFromCustomFolder), $(iterm2_pref PrefsCustomFolder)";
+	# Report-only: status --line reads the domain, ps and the fragment files.
+	print -r -- "store:   $( (( $+commands[iterm2-prefs] )) && iterm2-prefs status --line || print -r -- 'iterm2-prefs not deployed' )";
 	print -r -- "api:     $(iterm2_pref EnableAPIServer)";
 	print -r -- "startup: $(iterm2_pref OpenNoWindowsAtStartup), $(iterm2_pref OpenArrangementAtStartup), $(iterm2_pref AlwaysOpenWindowAtStartup)";
 	# Counts, never names: a dynamic profile or an autolaunch script is

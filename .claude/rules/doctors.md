@@ -67,3 +67,10 @@ with the `skill:` line. `shim:` is `can paint`, `cannot paint: <reason>` or
 `MISSING`, decided from the shim's `explain after` (which calls nothing; the
 doctor still runs nothing of iTerm2's). `tabstatus_wiring` and
 `claude_profile_dirs` are in its `defined:` list.
+
+`store:`, directly after `prefs:`, is `iterm2-prefs status --line`: whether
+iTerm2 loads the composed preferences folder, how many source changes wait and
+how many keys changed in iTerm2 are kept, or that the store is a folder inside
+a git repository. It is `iterm2-prefs not deployed` when the command is absent.
+The command reads the domain, `ps` and the fragment files and writes nothing, so
+the doctor stays report-only.

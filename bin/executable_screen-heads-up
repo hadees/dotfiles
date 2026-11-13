@@ -1,0 +1,186 @@
+#!/bin/sh
+# screen-heads-up — warn the operator before something takes the screen.
+#
+# Usage:
+#   screen-heads-up "<what>" <seconds>        ask; exit 0 go, 1 not now, 3 could not ask
+#   screen-heads-up --not-now                 tell the waiting one "not now"
+#   screen-heads-up --free ["<what>"] [--no-restore]
+#   screen-heads-up --status
+#
+# Exit codes of the ask: 0 go, 1 not now, 2 usage, 3 could not ask (not macOS,
+# no notifier), 4 another heads-up is waiting.
+#
+# A countdown that proceeds unless "Not now" is chosen: a macOS notification
+# carries a "Not now" button, and the helper counts <seconds> ticks on its own
+# clock. Only the exact answer "Not now", or `screen-heads-up --not-now` from
+# anywhere else, ends it early. A closed or clicked notice, a notifier that
+# exits, an empty answer are all "keep counting". When the count ends it says go.
+#
+# State, ${XDG_STATE_HOME:-$HOME/.local/state}/screen-heads-up/ (0700):
+#   waiting  pid, deadline epoch, what      not-now  marker for --not-now
+#   answer   the notifier's stdout          log      one tab-separated row per event
+#   held     what, the bundle id in front at the ask, epoch (written on go)
+#
+# Seams (tests): SCREEN_HEADS_UP_NOTIFIER, SCREEN_HEADS_UP_LSAPPINFO,
+# SCREEN_HEADS_UP_OPEN, SCREEN_HEADS_UP_TICK (seconds between polls, default 1).
+# It never talks to iTerm2 and never runs osascript.
+
+usage() { sed -n '/^# Usage:/,/^#$/{ /^#$/d; s/^# \{0,1\}//p; }' "$0" >&2; exit 2; }
+say() { printf 'screen-heads-up: %s\n' "$*" >&2; }
+
+st=${XDG_STATE_HOME:-$HOME/.local/state}/screen-heads-up
+tick=${SCREEN_HEADS_UP_TICK:-1}
+lsapp=${SCREEN_HEADS_UP_LSAPPINFO:-lsappinfo}
+opener=${SCREEN_HEADS_UP_OPEN:-open}
+
+utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+alive() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null; }
+state() { umask 077; mkdir -p "$st" && chmod 700 "$st"; }
+# log <event> <seconds> <what>
+log() { state 2>/dev/null; printf '%s\t%s\t%s\t%s\n' "$(utc)" "$1" "$2" "$3" >> "$st/log" 2>/dev/null; }
+clean() { printf '%s' "$1" | tr -d '"\\\000-\037\177' | cut -c1-200; }
+
+# The notifier: the seam is authoritative when set (a detached runner or Alfred
+# may not have Homebrew on PATH, hence the fixed fallbacks).
+notifier() {
+  if [ -n "${SCREEN_HEADS_UP_NOTIFIER+set}" ]; then
+    [ -x "$SCREEN_HEADS_UP_NOTIFIER" ] && printf '%s\n' "$SCREEN_HEADS_UP_NOTIFIER"
+    return
+  fi
+  command -v terminal-notifier 2>/dev/null && return
+  for n in /opt/homebrew/bin/terminal-notifier /usr/local/bin/terminal-notifier; do
+    [ -x "$n" ] && { printf '%s\n' "$n"; return; }
+  done
+  return 1
+}
+
+# The bundle id of the app in front; "-" when it cannot be read.
+front() {
+  f=$("$lsapp" info -only bundleid "$("$lsapp" front 2>/dev/null)" 2>/dev/null | sed -n 's/.*="\(.*\)"$/\1/p' | head -n 1)
+  printf '%s\n' "${f:--}"
+}
+
+drop_notice() { "$tn" -remove screen-heads-up </dev/null >/dev/null 2>&1 3>&-; }
+# Leave nothing behind: the notifier, the notice, the waiting file.
+finish() {
+  [ -n "$nid" ] && kill "$nid" 2>/dev/null
+  drop_notice
+  rm -f "$st/waiting"
+}
+
+case ${1-} in
+  --not-now)
+    [ $# -eq 1 ] || usage
+    wp=$(sed -n 1p "$st/waiting" 2>/dev/null)
+    if alive "$wp"; then
+      : > "$st/not-now"
+      printf 'screen-heads-up: told pid %s not now\n' "$wp"
+      exit 0
+    fi
+    say "no heads-up is waiting"
+    exit 1
+    ;;
+  --free)
+    shift
+    restore=1; what=
+    for a in "$@"; do
+      case $a in
+        --no-restore) restore=0 ;;
+        -*) usage ;;
+        *) [ -z "$what" ] || usage; what=$(clean "$a") ;;
+      esac
+    done
+    h_what=$(sed -n 1p "$st/held" 2>/dev/null)
+    h_app=$(sed -n 2p "$st/held" 2>/dev/null)
+    [ -n "$what" ] || what=$h_what
+    tn=$(notifier)
+    [ -n "$tn" ] && "$tn" -title "Screen is free" -message "${what:-The screen is free}" -group screen-heads-up \
+      </dev/null >/dev/null 2>&1 3>&-
+    if [ "$restore" = 1 ] && [ -n "$h_app" ] && [ "$h_app" != - ] && [ "$h_app" != "$(front)" ]; then
+      "$opener" -b "$h_app" </dev/null >/dev/null 2>&1 3>&-
+    fi
+    rm -f "$st/held"
+    log free 0 "$what"
+    exit 0
+    ;;
+  --status)
+    [ $# -eq 1 ] || usage
+    wp=$(sed -n 1p "$st/waiting" 2>/dev/null)
+    if alive "$wp"; then
+      left=$(( $(sed -n 2p "$st/waiting") - $(date +%s) ))
+      [ "$left" -ge 0 ] || left=0
+      printf 'waiting: pid %s, %ss left, %s\n' "$wp" "$left" "$(sed -n 3p "$st/waiting")"
+    else
+      echo 'waiting: none'
+    fi
+    if [ -s "$st/held" ]; then
+      he=$(sed -n 3p "$st/held")
+      since=$(date -u -r "$he" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$he" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
+      printf 'held: %s since %s\n' "$(sed -n 1p "$st/held")" "$since"
+    else
+      echo 'held: none'
+    fi
+    if tn=$(notifier); then echo "notifier: $tn"; else echo 'notifier: MISSING'; fi
+    awk -F'\t' '$2 == "asked" { a++ } $2 == "go" { g++ } $2 ~ /^not-now:/ { n++ } $2 ~ /^could-not-ask:/ { c++ }
+      END { printf "log: %d asked, %d go, %d not now, %d could not ask\n", a, g, n, c }' "$st/log" 2>/dev/null \
+      || echo 'log: 0 asked, 0 go, 0 not now, 0 could not ask'
+    exit 0
+    ;;
+esac
+
+# The ask: exactly two arguments, the second all digits, the first not a flag.
+[ $# -eq 2 ] || usage
+case $1 in -*) usage ;; esac
+case $2 in '' | *[!0-9]*) usage ;; esac
+what=$(clean "$1")
+secs=$2
+
+[ "$(uname -s 2>/dev/null)" = Darwin ] || { log could-not-ask:not-macos "$secs" "$what"; say "needs macOS"; exit 3; }
+tn=$(notifier) || tn=
+[ -n "$tn" ] || { log could-not-ask:no-notifier "$secs" "$what"; say "terminal-notifier not found"; exit 3; }
+
+state || { say "cannot create $st"; exit 3; }
+busy() { log busy "$secs" "$what"; say "another heads-up is waiting"; exit 4; }
+if [ -e "$st/waiting" ]; then
+  alive "$(sed -n 1p "$st/waiting")" && busy
+  rm -f "$st/waiting"
+fi
+rm -f "$st/not-now" "$st/answer"
+# Traps first: whoever sees `waiting` may signal us at once.
+nid=
+trap 'finish; log ended:TERM "$secs" "$what"; exit 1' TERM
+trap 'finish; log ended:HUP "$secs" "$what"; exit 1' HUP
+trap 'finish; log ended:INT "$secs" "$what"; exit 1' INT
+# noclobber: of two asks that race, exactly one creates the file.
+( set -C; printf '%s\n%s\n%s\n' "$$" "$(( $(date +%s) + secs ))" "$what" > "$st/waiting" ) 2>/dev/null || busy
+app=$(front)
+
+log asked "$secs" "$what"
+say "$what; going ahead in ${secs}s unless Not now (or: screen-heads-up --not-now)"
+# The notifier is never waited for: it only fills `answer`, and the count below
+# is the helper's own.
+"$tn" -title "Screen needed in ${secs}s" -message "$what" -action "Not now" -timeout "$secs" \
+  -group screen-heads-up -sound default </dev/null >"$st/answer" 2>/dev/null 3>&- &
+nid=$!
+
+i=0
+while [ "$i" -lt "$secs" ]; do
+  sleep "$tick"
+  if [ -e "$st/not-now" ]; then why=command
+  elif [ "$(cat "$st/answer" 2>/dev/null)" = "Not now" ]; then why=click
+  else why=
+  fi
+  if [ -n "$why" ]; then
+    finish
+    log "not-now:$why" "$secs" "$what"
+    say "not now"
+    exit 1
+  fi
+  i=$((i + 1))
+done
+
+printf '%s\n%s\n%s\n' "$what" "$app" "$(date +%s)" > "$st/held"
+finish
+log go "$secs" "$what"
+say "go"
+exit 0
