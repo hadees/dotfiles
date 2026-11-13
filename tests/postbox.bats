@@ -620,6 +620,7 @@ case $1 in
     [ -z "$c" ] || printf '%s\n' "$c" ;;
   log) [ ! -f "${FAKE_LOG:-/nonexistent}" ] || cat "$FAKE_LOG" ;;
   name) [ "$2" = lead ] && echo proj-lead ;;
+  claim) [ -z "${FAKE_CLAIM:-}" ] || printf '%b\n' "$FAKE_CLAIM" ;;
 esac
 STUB
   chmod +x "$BIN/claude-peer"
@@ -1223,6 +1224,10 @@ STOP='{"cwd":"'"$HOME/code/some-project"'","session_id":"s1","stop_hook_active":
   [ "$status" -eq 0 ]
   [ "$output" = "proj-7"$'\t'".claude-a"$'\t'"idle" ]
   run "$PB" lead "$wt"
+  [ "$output" = "proj-7"$'\t'".claude-a"$'\t'"idle" ]
+  # a slot's own claim naming its leader, with no Lead pid or session id
+  # (the awk that reads it must parse under BSD awk too)
+  FAKE_LIVE= FAKE_CLAIM="leader\t$WORK" run "$PB" lead "$wt"
   [ "$output" = "proj-7"$'\t'".claude-a"$'\t'"idle" ]
   rm "$CLAUDE_CONFIG_DIR/sessions/$LPID.json"
   run "$PB" lead "$wt"
