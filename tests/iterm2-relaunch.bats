@@ -40,6 +40,11 @@ setup() {
   export BREW_LOG="$BATS_TEST_TMPDIR/brew.log" FAKE_BREW_DIR="$BATS_TEST_TMPDIR/casks"
   export GIT_CONFIG_GLOBAL="$HOME/.gitconfig"
   mkdir -p "$FAKE_BREW_DIR"
+  export CT_ENV="$BATS_TEST_TMPDIR/ct.env"
+  # The front starts the runner under env -i; these are what its stubs read, as a
+  # production runner would be given its seams.
+  export ITERM2_RELAUNCH_PASS="$(grep -ohE 'FAKE_[A-Z0-9_]+' "$BATS_TEST_FILENAME" | sort -u | tr '\n' ' ') \
+SEQ OSA_LOG PREFS_LOG CT_LOG CT_ENV PEER_LOG OPEN_LOG OPEN_ENV HU_LOG BREW_LOG BATS_TEST_TMPDIR GIT_CONFIG_GLOBAL"
   stubs
 }
 
@@ -154,6 +159,7 @@ if [ "$1" = restore ] && [ "${2-}" = --dry-run ]; then
   exit "${FAKE_RESTORE_DRY:-0}"
 fi
 printf '%s\n' "$@" >>"$CT_LOG"
+[ "$1" != restore ] || env >"$CT_ENV"
 if [ "$1" = restore ] && [ "${FAKE_RESTORE_CRASH:-0}" = 1 ]; then
   for p in $(cut -d' ' -f1 "$FAKE_PROCS_FILE"); do kill "$p" 2>/dev/null; done
   : >"$FAKE_PROCS_FILE"
@@ -567,6 +573,25 @@ compose" ]
   run sh "$BIN" --yes --grace 1 prefs
   [ "$status" -eq 0 ]
   grep -q "caller=- " "$LOG"
+}
+
+@test "the runner, and what it starts, get none of the caller's Claude environment, only the allowlist and the seams" {
+  export FAKE_PREFS_LINE="composed, 1 waiting, 0 kept" LC_ALL=C LANG=C
+  export CLAUDE_PID=123 CLAUDE_CODE_SESSION_ID=abc CLAUDECODE=1 BROWSER=x OPEN_AS_ALIAS=x CLAUDE_PROFILE=x ITERM_SESSION_ID=x
+  fake_iterm >/dev/null
+  run sh "$BIN" --yes --grace 1 prefs
+  [ "$status" -eq 0 ]
+  for _ in $(seq 1 150); do grep -q " done: " "$LOG" && break; sleep 0.1; done
+  grep -q "done: 1 items, 0 failed, restore ok" "$LOG"
+  grep -q "caller=abc " "$LOG"
+  [ -s "$CT_ENV" ]
+  for v in CLAUDE_PID CLAUDE_CODE_SESSION_ID CLAUDECODE BROWSER OPEN_AS_ALIAS CLAUDE_PROFILE ITERM_SESSION_ID; do
+    no grep -q "^$v=" "$CT_ENV"
+  done
+  grep -q "^HOME=" "$CT_ENV"
+  grep -q "^LC_ALL=C" "$CT_ENV"
+  grep -q "^ITERM2_RELAUNCH_TICK=" "$CT_ENV"
+  grep -q "^ITERM2_RELAUNCH_CLAUDE_TAB=" "$CT_ENV"
 }
 
 @test "detached: it returns only after the runner is alive and has logged start, and prints the runner's pid and the log path" {

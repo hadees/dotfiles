@@ -79,6 +79,12 @@
 # started is still the one running, starts it once more if not, and restores
 # nothing further.
 #
+# The runner is started under `env -i` with an allowlist (HOME, PATH, LANG, LC_*,
+# XDG_STATE_HOME, every ITERM2_RELAUNCH_* seam, and what clean_open passes on): what
+# it starts, `claude-tab restore` and so `claude-peer start`, would otherwise record
+# the caller's Claude session (CLAUDE_PID, CLAUDE_CODE_SESSION_ID) as its own.
+# The caller's id reaches the runner as an argument.
+#
 # The Alfred front (keyword `irelaunch`, alfred/iterm2-relaunch): the Script Filter runs
 # `alfred`, which turns the rows of `items` (no `brew update`, so it is quick) into
 # JSON, and Return runs `iterm2-relaunch --yes <item>`, outside any Claude session
@@ -98,7 +104,8 @@
 # (else brew on PATH, else /opt/homebrew/bin or /usr/local/bin; Alfred's PATH has
 # neither), ITERM2_RELAUNCH_ITEM_TIMEOUT (polls a brew: item may take, default 600),
 # ITERM2_RELAUNCH_TICK (seconds per poll, default 1), ITERM2_RELAUNCH_DETACH (0: run
-# the runner in the foreground).
+# the runner in the foreground), ITERM2_RELAUNCH_PASS (more variable names the runner
+# keeps; the tests' stubs read some).
 set -u
 
 warn() { printf 'iterm2-relaunch: %s\n' "$*" >&2; }
@@ -182,6 +189,16 @@ brew=$(brew_bin 2>/dev/null) || brew=''
 # fail at once instead of waiting.
 brew_sh='cd "$HOME" && env -u SUDO_ASKPASS HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ASK=1 "$@"'
 brew_cmd() { sh -c "$brew_sh" sh "$brew" "$@"; }
+
+# runner_env_names: the variables the runner keeps, one per line (plain names only):
+# the ones it needs to find its way and its state, every seam, and what clean_open
+# hands iTerm2. ITERM2_RELAUNCH_PASS names more, for the tests' stubs.
+runner_env_names() {
+  printf '%s\n' HOME PATH LANG XDG_STATE_HOME USER LOGNAME SHELL TMPDIR SSH_AUTH_SOCK DISPLAY \
+    COMMAND_MODE __CF_USER_TEXT_ENCODING
+  env | sed -nE 's/^((LC_|ITERM2_RELAUNCH_)[A-Za-z0-9_]*)=.*/\1/p'
+  printf '%s\n' ${ITERM2_RELAUNCH_PASS-}
+}
 
 # The stdlib only, and Python 3.9 clean: /usr/bin/python3 is all a fresh mac has.
 relaunch_py() {
@@ -833,13 +850,21 @@ cmd_front() {
   [ ! -e "$log" ] || mv -f "$log" "$log.prev"
   list=$(printf '%s' "$items" | tr ' ' ',')
 
+  # The runner gets an environment of its own, not the caller's: whatever it starts
+  # (claude-tab restore, claude-peer start) would otherwise record the caller's
+  # Claude session as its own. The caller's id goes as an argument instead.
+  # shellcheck disable=SC2086
+  set -- /bin/sh "$(self)" _run "$wait" "$grace" "$restore" "$prompt" "$caller" $items
+  for _v in $(runner_env_names); do
+    case $_v in ''|*[!A-Za-z0-9_]*) continue;; esac
+    eval "[ -z \"\${$_v+x}\" ] || set -- \"$_v=\${$_v}\" \"\$@\""
+  done
+  set -- /usr/bin/env -i "$@"
   if [ "${ITERM2_RELAUNCH_DETACH:-1}" = 0 ]; then
-    # shellcheck disable=SC2086
-    /bin/sh "$(self)" _run "$wait" "$grace" "$restore" "$prompt" "$caller" $items
+    "$@"
     exit $?
   fi
-  # shellcheck disable=SC2086
-  relaunch_py _detach "$log" /bin/sh "$(self)" _run "$wait" "$grace" "$restore" "$prompt" "$caller" $items
+  relaunch_py _detach "$log" "$@"
   n=0
   while [ "$n" -lt 50 ]; do
     if pid=$(runner_pid) && grep -q ' start: ' "$log" 2>/dev/null; then
