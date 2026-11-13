@@ -25,3 +25,4 @@ the rule before changing them:
 - `onepassword-doctor`: `onepassword.md`
 - `iterm2-doctor` and its `stamp`: `iterm2-skill.md`
 - `dotfiles()` composing `allowed_signers`: `composed-identity-files.md`
+- `dotfiles()` composing iTerm2's preferences: `iterm2-prefs.md`

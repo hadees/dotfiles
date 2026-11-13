@@ -71,6 +71,7 @@ teardown() {
   [ ! -e "$TMPHOME/.gitconfig.local" ]
   [ ! -e "$TMPHOME/.claude" ]
   [ ! -e "$TMPHOME/.config/claude-peer" ]
+  [ ! -e "$TMPHOME/.config/iterm2" ]
   # Repo-level files never deploy
   [ ! -e "$TMPHOME/CLAUDE.md" ]
   [ ! -e "$TMPHOME/com.googlecode.iterm2.plist" ]
@@ -111,10 +112,14 @@ teardown() {
     [ -f "$TMPHOME/.mackup.cfg" ]
     [ -f "$TMPHOME/.finicky.ts" ]
     [ -f "$TMPHOME/.config/finicky/lib.ts" ]
+    [ -f "$TMPHOME/.config/iterm2/prefs.d/10-base.plist" ]
+    [ -x "$TMPHOME/bin/iterm2-prefs" ]
   else
     [ ! -e "$TMPHOME/.mackup.cfg" ]
     [ ! -e "$TMPHOME/.finicky.ts" ]
     [ ! -e "$TMPHOME/.config/finicky" ]
+    [ ! -e "$TMPHOME/.config/iterm2" ]
+    [ ! -e "$TMPHOME/bin/iterm2-prefs" ]
   fi
   # Repo-level, on every OS: iTerm2 reads the clone (PrefsCustomFolder), so a
   # copy in $HOME is read by nothing, and CLAUDE.md is guidance for this repo

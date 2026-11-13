@@ -154,7 +154,7 @@ claim_of() { echo "$(git -C "$1" rev-parse --absolute-git-dir)/claude-peer.claim
 # wait_claim <worktree>: until a backgrounded run has written its claim
 wait_claim() {
   local i
-  for i in $(seq 1 100); do
+  for i in $(seq 1 $((100 * ${TESTS_WAIT_SCALE:-1}))); do
     [ -f "$(claim_of "$1" 2>/dev/null)" ] && return 0
     sleep 0.1
   done
@@ -456,10 +456,11 @@ remote_head() {
 # into it. The stub shell logs to $FAKE_SHELL_LOG and sleeps FAKE_SHELL_SLEEP, so a
 # session lasts long enough for `start` to see its claim.
 
-# until_ok '<command>': retry for ten seconds
+# until_ok '<command>': retry for ten seconds (times TESTS_WAIT_SCALE, which the
+# parallel CI jobs set: a loaded runner starts processes late)
 until_ok() {
   local i
-  for i in $(seq 1 100); do
+  for i in $(seq 1 $((100 * ${TESTS_WAIT_SCALE:-1}))); do
     eval "$1" && return 0
     sleep 0.1
   done

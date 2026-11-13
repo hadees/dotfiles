@@ -80,6 +80,13 @@ the `/run-dotfiles` skill (`.claude/skills/run-dotfiles/driver.sh`); each
 overlay carries a matching `run-<overlay>` skill that stacks itself on it.
 Skill directories are dot-prefixed, so chezmoi never deploys them.
 
+CI runs the suite with `bats --jobs`: files side by side through GNU parallel
+(the workflow installs it; macOS and WSL still run serially), tests within a file in
+order, bats v1.14.0 built from its tag on the Linux jobs. A local `bats tests`
+stays serial; on a Mac from this Brewfile `parallel` is moreutils', so `--jobs`
+there needs rush and `--parallel-binary-name rush` (untested). A new test keeps
+its state under `BATS_TEST_TMPDIR` and polls its waits, since files run side by side.
+
 CI (`.github/workflows/tests.yml`) runs the suite on `ubuntu-latest`,
 `macos-latest`, Rocky Linux 9 (container), and WSL Ubuntu (windows runner), plus a container
 job that runs the one-shot install end to end.
@@ -265,6 +272,7 @@ rule first.
 | `routes` | the fleet routing table |
 | `workset` | working sets, the profile rule, the guard hooks |
 | `iterm2-skill` | the iTerm2 skill's stamp and `verify.sh`, the tracked plist |
+| `iterm2-prefs` | iTerm2's composed preferences: fragments, compose, capture, install |
 | `cc-status-shim` | Session Status rows, seat colours, row names, terminal titles |
 | `dot-functions` | what else lives in `dot_functions`, and `emulate -L zsh` |
 

@@ -194,6 +194,27 @@ EOF
   [[ "$output" == *"startup: OpenNoWindowsAtStartup=1, OpenArrangementAtStartup=<unset>, AlwaysOpenWindowAtStartup=<unset>"* ]]
 }
 
+@test "iterm2-doctor: store comes from iterm2-prefs status --line" {
+  make_app "$(doctor_stamp)"
+  cat > "$STUB/iterm2-prefs" <<STUBEOF
+#!/bin/sh
+printf '%s\n' "\$*" > "$BATS_TEST_TMPDIR/prefs-args"
+echo "composed, 2 waiting, 1 kept"
+STUBEOF
+  chmod +x "$STUB/iterm2-prefs"
+  doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *$'\n'"store:   composed, 2 waiting, 1 kept"$'\n'* ]]
+  [ "$(cat "$BATS_TEST_TMPDIR/prefs-args")" = "status --line" ]
+}
+
+@test "iterm2-doctor: says so when iterm2-prefs is not deployed" {
+  make_app "$(doctor_stamp)"
+  run zsh -c "source '$DOTFUNCTIONS'; unset 'commands[iterm2-prefs]'; iterm2-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"store:   iterm2-prefs not deployed"* ]]
+}
+
 @test "iterm2-doctor: counts dynamic profiles and autolaunch scripts, never names them" {
   make_app "$(doctor_stamp)"
   support="$HOME/Library/Application Support/iTerm2"
