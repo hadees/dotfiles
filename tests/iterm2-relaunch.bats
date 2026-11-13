@@ -54,7 +54,10 @@ STUB
 #!/bin/sh
 echo "$*" >>"$OSA_LOG"
 case $* in
-  *"get version"*) echo "osa-probe" >>"$SEQ"; exit "${FAKE_PROBE:-0}";;
+  *"get version"*)
+    echo "osa-probe" >>"$SEQ"
+    [ "${FAKE_PROBE:-0}" = 0 ] || echo "not allowed" >&2
+    exit "${FAKE_PROBE:-0}";;
   *quit*)
     echo "osa-quit" >>"$SEQ"
     [ "${FAKE_QUIT:-}" != ignore ] || exit 0
@@ -84,6 +87,10 @@ printf '%s iTerm2\n' "\$(cat "\$f")" >>"$FAKE_PROCS_FILE"
 STUB
   cat >"$b/iterm2-prefs" <<'STUB'
 #!/bin/sh
+case "$1 ${2-}" in
+  "status --line") printf '%s\n' "${FAKE_PREFS_LINE-not composed (folder /x)}"; exit 0;;
+  "install --dry-run") [ -z "${FAKE_DRY_MSG-}" ] || echo "$FAKE_DRY_MSG" >&2; exit "${FAKE_DRY:-0}";;
+esac
 echo "$*" >>"$PREFS_LOG"
 echo "prefs $*" >>"$SEQ"
 case $1 in
@@ -334,4 +341,223 @@ compose" ]
   for _ in $(seq 1 50); do grep -q detached "$STATE/d.log" 2>/dev/null && break; sleep 0.1; done
   grep -Fxq detached "$STATE/d.log"
   [ "$(ls -l "$STATE/d.log" | cut -c1-10)" = "-rw-------" ]
+}
+
+# The front. ITERM2_RELAUNCH_DETACH=0 runs the runner in the foreground, so the log
+# is complete when the call returns.
+
+@test "items: prefs-install when not composed, prefs when composed, with their states" {
+  run sh "$BIN" items
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'prefs-install\tready\tone-time switch to the composed preferences folder')" ]
+  FAKE_DRY=1 FAKE_DRY_MSG="iterm2-prefs: no fragments" run sh "$BIN" items
+  [ "$output" = "$(printf 'prefs-install\trefused\titerm2-prefs: no fragments')" ]
+  FAKE_PREFS_LINE="composed, 3 waiting, 0 kept" run sh "$BIN" items
+  [ "$output" = "$(printf 'prefs\tready\t3 waiting')" ]
+  FAKE_PREFS_LINE="composed, in sync" run sh "$BIN" items
+  [ "$output" = "$(printf 'prefs\tnothing\tin sync')" ]
+  FAKE_PREFS_LINE="composed, 0 waiting, 2 kept" run sh "$BIN" items
+  [ "$output" = "$(printf 'prefs\tnothing\tin sync')" ]
+  [ ! -s "$PREFS_LOG" ]
+}
+
+@test "a refused item stops everything before iTerm2 is asked anything" {
+  pid=$(fake_iterm)
+  FAKE_DRY=1 FAKE_DRY_MSG="boom" run sh "$BIN" --yes prefs-install 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"iterm2-relaunch: prefs-install: boom"* ]]
+  [ ! -s "$OSA_LOG" ]
+  [ ! -s "$CT_LOG" ]
+  [ ! -s "$PREFS_LOG" ]
+  [ ! -s "$OPEN_LOG" ]
+  kill -0 "$pid"
+}
+
+@test "items with nothing to do are dropped, and with none left iTerm2 is left running, exit 0" {
+  pid=$(fake_iterm)
+  FAKE_PREFS_LINE="composed, in sync" run sh "$BIN" --yes prefs
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"prefs: nothing to do"* ]]
+  [[ "$output" == *"nothing to do; iTerm2 left running"* ]]
+  [ ! -s "$OSA_LOG" ]
+  [ ! -s "$CT_LOG" ]
+  [ ! -s "$PREFS_LOG" ]
+  kill -0 "$pid"
+}
+
+@test "unknown items, unknown options and a bad number are usage errors, exit 2" {
+  run sh "$BIN" bogus 2>&1
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"unknown item: bogus"* ]]
+  run sh "$BIN" --nope prefs 2>&1
+  [ "$status" -eq 2 ]
+  run sh "$BIN" --grace x prefs 2>&1
+  [ "$status" -eq 2 ]
+  run sh "$BIN" --yes 2>&1
+  [ "$status" -eq 2 ]
+  FAKE_OS=Linux run sh "$BIN" prefs 2>&1
+  [ "$status" -eq 2 ]
+}
+
+@test "without --yes and without a terminal it refuses, and nothing was saved or asked" {
+  pid=$(fake_iterm)
+  run sh "$BIN" prefs-install 2>&1 </dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"this quits iTerm2 and ends every session in it; pass --yes once the operator has agreed"* ]]
+  [ ! -s "$OSA_LOG" ]
+  [ ! -s "$CT_LOG" ]
+  [ ! -s "$PREFS_LOG" ]
+  kill -0 "$pid"
+}
+
+@test "--dry-run prints the would: lines in order and touches nothing" {
+  pid=$(fake_iterm)
+  run sh "$BIN" --dry-run prefs-install,prefs-install
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 5 ]
+  [ "${lines[0]}" = "would: prefs-install: one-time switch to the composed preferences folder" ]
+  [ "${lines[1]}" = "would: save Claude tabs (claude-tab save)" ]
+  [ "${lines[2]}" = "would: quit iTerm2 after 5s and wait up to 120s for it" ]
+  [ "${lines[3]}" = "would: start iTerm2" ]
+  [ "${lines[4]}" = "would: restore Claude tabs and peers (claude-tab restore)" ]
+  [ ! -s "$OSA_LOG" ]
+  [ ! -s "$CT_LOG" ]
+  [ ! -s "$PREFS_LOG" ]
+  [ ! -s "$OPEN_LOG" ]
+  [ ! -e "$STATE" ]
+  kill -0 "$pid"
+}
+
+@test "--dry-run with --no-restore, and without iTerm2 running, leaves those lines out" {
+  run sh "$BIN" --dry-run --no-restore --grace 2 prefs-install
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 2 ]
+  [ "${lines[1]}" = "would: start iTerm2" ]
+}
+
+@test "Apple events refused in the foreground: the reason is printed, exit 1, nothing saved" {
+  pid=$(fake_iterm)
+  FAKE_PROBE=1 run sh "$BIN" --yes prefs-install 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"cannot send Apple events to iTerm2: not allowed"* ]]
+  no grep -q quit "$OSA_LOG"
+  [ ! -s "$CT_LOG" ]
+  [ ! -s "$PREFS_LOG" ]
+  kill -0 "$pid"
+}
+
+@test "--yes: the tabs are saved, then the runner does the work" {
+  fake_iterm >/dev/null
+  FAKE_PREFS_LINE="composed, 1 waiting, 0 kept" ITERM2_RELAUNCH_DETACH=0 run sh "$BIN" --yes --grace 1 prefs
+  [ "$status" -eq 0 ]
+  [ "$(head -n 1 "$CT_LOG")" = save ]
+  [ "$(cat "$PREFS_LOG")" = compose ]
+  in_order "start: items=prefs restore=1 prompt=1 caller=" "quit: asked" "prefs: exit 0" "done: 1 items, 0 failed, restore ok"
+}
+
+@test "a save that fails, or no claude-tab, means restore 0; --no-restore never calls claude-tab; --no-prompt passes prompt 0" {
+  export ITERM2_RELAUNCH_DETACH=0 FAKE_PREFS_LINE="composed, 1 waiting, 0 kept"
+  fake_iterm >/dev/null
+  FAKE_SAVE=1 run sh "$BIN" --yes --grace 1 prefs 2>&1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no tabs were saved"* ]]
+  grep -q "restore=0 " "$LOG"
+  no grep -Fxq restore "$CT_LOG"
+  fake_iterm >/dev/null
+  ITERM2_RELAUNCH_CLAUDE_TAB="$BATS_TEST_TMPDIR/none" run sh "$BIN" --yes --grace 1 prefs 2>&1
+  [ "$status" -eq 0 ]
+  grep -q "restore=0 " "$LOG"
+  : >"$CT_LOG"
+  fake_iterm >/dev/null
+  run sh "$BIN" --yes --grace 1 --no-restore prefs
+  [ "$status" -eq 0 ]
+  [ ! -s "$CT_LOG" ]
+  grep -q "restore=0 " "$LOG"
+  fake_iterm >/dev/null
+  run sh "$BIN" --yes --grace 1 --no-prompt prefs
+  [ "$status" -eq 0 ]
+  grep -q "restore=1 prompt=0 " "$LOG"
+  no grep -q -- "--prompt" "$CT_LOG"
+}
+
+@test "the caller's session id reaches the runner" {
+  export ITERM2_RELAUNCH_DETACH=0 FAKE_PREFS_LINE="composed, 1 waiting, 0 kept"
+  fake_iterm >/dev/null
+  CLAUDE_CODE_SESSION_ID=abc run sh "$BIN" --yes --grace 1 prefs
+  [ "$status" -eq 0 ]
+  grep -q "caller=abc " "$LOG"
+  unset CLAUDE_CODE_SESSION_ID
+  fake_iterm >/dev/null
+  run sh "$BIN" --yes --grace 1 prefs
+  [ "$status" -eq 0 ]
+  grep -q "caller=- " "$LOG"
+}
+
+@test "detached: it returns only after the runner is alive and has logged start, and prints the runner's pid and the log path" {
+  export FAKE_PREFS_LINE="composed, 1 waiting, 0 kept"
+  fake_iterm >/dev/null
+  run sh "$BIN" --yes --grace 2 prefs
+  [ "$status" -eq 0 ]
+  pid=$(cat "$STATE/run.pid")
+  kill -0 "$pid"
+  [ "${lines[0]}" = "iterm2-relaunch: runner $pid has the work (prefs) and asks iTerm2 to quit in 2s" ]
+  [ "${lines[1]}" = "iterm2-relaunch: log: $LOG" ]
+  grep -q " start: items=prefs " "$LOG"
+  no grep -q "quit: asked" "$LOG"
+  for _ in $(seq 1 150); do grep -q " done: " "$LOG" && break; sleep 0.1; done
+  grep -q "done: 1 items, 0 failed" "$LOG"
+}
+
+@test "a runner that never comes up is reported and iTerm2 is asked nothing" {
+  export FAKE_PREFS_LINE="composed, 1 waiting, 0 kept"
+  pid=$(fake_iterm)
+  copy="$BATS_TEST_TMPDIR/relaunch-copy"
+  sed 's/^  _run) /  _gone) /' "$BIN" >"$copy"
+  grep -q '^  _gone) ' "$copy"
+  run sh "$copy" --yes --grace 1 prefs 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"the runner did not start; iTerm2 is not asked to quit"* ]]
+  no grep -q quit "$OSA_LOG"
+  [ ! -s "$PREFS_LOG" ]
+  kill -0 "$pid"
+}
+
+@test "a second relaunch while a runner lives is refused" {
+  export FAKE_PREFS_LINE="composed, 1 waiting, 0 kept"
+  fake_iterm >/dev/null
+  /bin/sleep 300 3>&- >/dev/null 2>&1 &
+  other=$!
+  mkdir -p "$STATE"
+  echo "$other" >"$STATE/run.pid"
+  run sh "$BIN" --yes prefs 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"a relaunch is already under way (pid $other)"* ]]
+  [ ! -s "$OSA_LOG" ]
+  [ ! -s "$CT_LOG" ]
+  [ ! -s "$PREFS_LOG" ]
+}
+
+@test "iTerm2 not running: the items run at once, iTerm2 is started, nothing is asked" {
+  FAKE_PREFS_LINE="composed, 1 waiting, 0 kept" run sh "$BIN" prefs </dev/null
+  [ "$status" -eq 0 ]
+  [ "$output" = "iterm2-relaunch: iTerm2 was not running; 1 items done, 0 failed; started it" ]
+  [ "$(cat "$PREFS_LOG")" = compose ]
+  grep -Fxq -- "-b com.googlecode.iterm2" "$OPEN_LOG"
+  [ ! -s "$OSA_LOG" ]
+  [ ! -s "$CT_LOG" ]
+  kill "$(cut -d' ' -f1 "$FAKE_PROCS_FILE")"
+  : >"$FAKE_PROCS_FILE"
+  FAKE_PREFS_RC=1 FAKE_PREFS_LINE="composed, 1 waiting, 0 kept" run sh "$BIN" prefs </dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"1 items done, 1 failed; started it" ]]
+}
+
+@test "a refusal is appended to run.log, and --dry-run writes none" {
+  FAKE_DRY=1 FAKE_DRY_MSG="boom" run sh "$BIN" --dry-run prefs-install
+  [ "$status" -eq 1 ]
+  [ ! -e "$STATE" ]
+  FAKE_DRY=1 FAKE_DRY_MSG="boom" run sh "$BIN" --yes prefs-install
+  FAKE_DRY=1 FAKE_DRY_MSG="boom" run sh "$BIN" --yes prefs-install
+  [ "$(grep -c " refused: prefs-install: boom" "$LOG")" -eq 2 ]
+  [ "$(stat -f %Lp "$STATE/run.log" 2>/dev/null || stat -c %a "$STATE/run.log")" = 600 ]
 }
