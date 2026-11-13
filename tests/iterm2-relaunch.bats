@@ -2,7 +2,7 @@
 
 # ~/bin/iterm2-relaunch: quit iTerm2, do work while it is down, start it again,
 # bring the Claude sessions back. Everything runs in a sandboxed HOME against stubs
-# (uname, ps, osascript, defaults, open, brew, iterm2-prefs, claude-tab, screen-heads-up): no test can
+# (uname, ps, osascript, defaults, open, brew, iterm2-prefs, claude-peer, claude-tab, screen-heads-up): no test can
 # quit, start or script the developer's real iTerm2, and nothing is shown on screen.
 # The ps stub reads a procs file and nothing else, so a CI container that reaps no
 # orphans cannot make a dead process look alive. There is deliberately no sleep stub.
@@ -30,6 +30,8 @@ setup() {
   export ITERM2_RELAUNCH_TICK=0.1
   export ITERM2_RELAUNCH_PREFS="$BATS_TEST_TMPDIR/bin/iterm2-prefs"
   export ITERM2_RELAUNCH_CLAUDE_TAB="$BATS_TEST_TMPDIR/bin/claude-tab"
+  export ITERM2_RELAUNCH_CLAUDE_PEER="$BATS_TEST_TMPDIR/bin/claude-peer"
+  export PEER_LOG="$BATS_TEST_TMPDIR/peer.log"
   # named but not created: a test that wants the helper calls heads_up_stub
   export ITERM2_RELAUNCH_HEADS_UP="$BATS_TEST_TMPDIR/bin/screen-heads-up"
   export HU_LOG="$BATS_TEST_TMPDIR/hu.log"
@@ -129,6 +131,20 @@ case $1 in
     exit "${FAKE_UPGRADE:-0}";;
 esac
 STUB
+  # claude-peer: status prints $FAKE_PEER_STATUS; install and default log, then exit
+  # $FAKE_PEER_INSTALL / $FAKE_PEER_DEFAULT
+  cat >"$b/claude-peer" <<'STUB'
+#!/bin/sh
+case $1 in
+  status) [ -z "${FAKE_PEER_STATUS-}" ] || printf '%s\n' "$FAKE_PEER_STATUS"; exit 0;;
+esac
+echo "$*" >>"$PEER_LOG"
+echo "peer $*" >>"$SEQ"
+case $1 in
+  install) exit "${FAKE_PEER_INSTALL:-0}";;
+  default) exit "${FAKE_PEER_DEFAULT:-0}";;
+esac
+STUB
   cat >"$b/claude-tab" <<'STUB'
 #!/bin/sh
 [ "$1" != list ] || { [ -z "${FAKE_LIST-}" ] || printf '%s\n' "$FAKE_LIST"; exit 0; }
@@ -144,7 +160,7 @@ if [ "$1" = restore ] && [ "${FAKE_RESTORE_CRASH:-0}" = 1 ]; then
 fi
 case $1 in save) exit "${FAKE_SAVE:-0}";; restore) exit "${FAKE_RESTORE:-0}";; esac
 STUB
-  chmod +x "$b"/uname "$b"/ps "$b"/osascript "$b"/defaults "$b"/open "$b"/brew "$b"/iterm2-prefs "$b"/claude-tab
+  chmod +x "$b"/uname "$b"/ps "$b"/osascript "$b"/defaults "$b"/open "$b"/brew "$b"/iterm2-prefs "$b"/claude-peer "$b"/claude-tab
   export PATH="$b:$PATH"
 }
 
@@ -409,15 +425,15 @@ compose" ]
 @test "items: prefs-install when not composed, prefs when composed, with their states" {
   run sh "$BIN" items
   [ "$status" -eq 0 ]
-  [ "$output" = "$(printf 'prefs-install\tready\tone-time switch to the composed preferences folder')" ]
+  [ "${lines[0]}" = "$(printf 'prefs-install\tready\tone-time switch to the composed preferences folder')" ]
   FAKE_DRY=1 FAKE_DRY_MSG="iterm2-prefs: no fragments" run sh "$BIN" items
-  [ "$output" = "$(printf 'prefs-install\trefused\titerm2-prefs: no fragments')" ]
+  [ "${lines[0]}" = "$(printf 'prefs-install\trefused\titerm2-prefs: no fragments')" ]
   FAKE_PREFS_LINE="composed, 3 waiting, 0 kept" run sh "$BIN" items
-  [ "$output" = "$(printf 'prefs\tready\t3 waiting')" ]
+  [ "${lines[0]}" = "$(printf 'prefs\tready\t3 waiting')" ]
   FAKE_PREFS_LINE="composed, in sync" run sh "$BIN" items
-  [ "$output" = "$(printf 'prefs\tnothing\tin sync')" ]
+  [ "${lines[0]}" = "$(printf 'prefs\tnothing\tin sync')" ]
   FAKE_PREFS_LINE="composed, 0 waiting, 2 kept" run sh "$BIN" items
-  [ "$output" = "$(printf 'prefs\tnothing\tin sync')" ]
+  [ "${lines[0]}" = "$(printf 'prefs\tnothing\tin sync')" ]
   [ ! -s "$PREFS_LOG" ]
 }
 
@@ -774,9 +790,9 @@ cask() {
   printf '[iterm2-relaunch]\n\tbrew = notinstalled\n\tbrew = nosuchcask\n' >"$HOME/.gitconfig"
   run sh "$BIN" items
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 3 ]
-  [ "${lines[1]}" = "$(printf 'brew:claude-code@latest\tready\t2.1.322 -> 2.1.323')" ]
-  [ "${lines[2]}" = "$(printf 'brew:claude-code\tnothing\t2.1.0 is current')" ]
+  [ "${#lines[@]}" -eq 4 ]
+  [ "${lines[2]}" = "$(printf 'brew:claude-code@latest\tready\t2.1.322 -> 2.1.323')" ]
+  [ "${lines[3]}" = "$(printf 'brew:claude-code\tnothing\t2.1.0 is current')" ]
 }
 
 @test "items: a cask that updates itself, and one with a pkg artifact, are refused with the reason" {
@@ -786,10 +802,10 @@ cask() {
   printf '[iterm2-relaunch]\n\tbrew = selfupdating\n\tbrew = withpkg\n\tbrew = withinstaller\n' >"$HOME/.gitconfig"
   run sh "$BIN" items
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 4 ]
-  [ "${lines[1]}" = "$(printf 'brew:selfupdating\trefused\tupdates itself; its Homebrew record only looks stale')" ]
-  [ "${lines[2]}" = "$(printf 'brew:withpkg\trefused\tits installer may ask for a password; upgrade it from a terminal')" ]
-  [ "${lines[3]}" = "$(printf 'brew:withinstaller\trefused\tits installer may ask for a password; upgrade it from a terminal')" ]
+  [ "${#lines[@]}" -eq 5 ]
+  [ "${lines[2]}" = "$(printf 'brew:selfupdating\trefused\tupdates itself; its Homebrew record only looks stale')" ]
+  [ "${lines[3]}" = "$(printf 'brew:withpkg\trefused\tits installer may ask for a password; upgrade it from a terminal')" ]
+  [ "${lines[4]}" = "$(printf 'brew:withinstaller\trefused\tits installer may ask for a password; upgrade it from a terminal')" ]
   pid=$(fake_iterm)
   run sh "$BIN" --yes brew:selfupdating 2>&1
   [ "$status" -eq 1 ]
@@ -804,7 +820,7 @@ cask() {
   printf '[iterm2-relaunch]\n\tbrew = zeta\n\tbrew = claude-code\n\tbrew = alpha\n\tbrew = "bad touch"\n' >"$HOME/.gitconfig"
   run sh "$BIN" items
   [ "$status" -eq 0 ]
-  [ "$(printf '%s\n' "${lines[@]:1}" | cut -f1 | tr '\n' ' ')" = "brew:claude-code@latest brew:claude-code brew:zeta brew:alpha " ]
+  [ "$(printf '%s\n' "${lines[@]:2}" | cut -f1 | tr '\n' ' ')" = "brew:claude-code@latest brew:claude-code brew:zeta brew:alpha " ]
   no grep -q "bad" "$BREW_LOG"
 }
 
@@ -935,9 +951,105 @@ cask() {
   [[ "$output" == *"iterm2-relaunch: brew:claude-code@latest: Homebrew not found"* ]]
   [ ! -s "$OSA_LOG" ]
   run sh "$BIN" items
-  [ "${#lines[@]}" -eq 1 ]
+  [ "${#lines[@]}" -eq 2 ]
   [ ! -s "$BREW_LOG" ]
   FAKE_PREFS_LINE="composed, 1 waiting, 0 kept" ITERM2_RELAUNCH_DETACH=0 run sh "$BIN" --yes --grace 1 prefs
   [ "$status" -eq 0 ]
   [ "$(cat "$PREFS_LOG")" = compose ]
+}
+
+# The claude-peer item.
+
+@test "items: claude-peer is ready when status asks for install, ready when its default line asks for default peers, nothing otherwise, refused when it is not deployed" {
+  FAKE_PREFS_LINE="composed, in sync" run sh "$BIN" items
+  [ "${lines[1]}" = "$(printf 'claude-peer\tnothing\tinstalled and current')" ]
+  long=$(printf 'x%.0s' $(seq 1 150))
+  FAKE_PEER_STATUS="main: not installed - $long claude-peer install (with iTerm2 quit)" FAKE_PREFS_LINE="composed, in sync" run sh "$BIN" items
+  [ "${lines[1]}" = "$(printf 'claude-peer\tready\t%s' "$(printf 'main: not installed - %s claude-peer install' "$long" | cut -c1-120)")" ]
+  FAKE_PEER_STATUS="$(printf 'main: installed\ndefault: the enter file says peers but the triggers do not - claude-peer default peers')" \
+    FAKE_PREFS_LINE="composed, in sync" run sh "$BIN" items
+  [ "${lines[1]}" = "$(printf 'claude-peer\tready\tdefault: the enter file says peers but the triggers do not - claude-peer default peers')" ]
+  FAKE_PEER_STATUS="default: mixed (1 of 3 profiles enter by variable) - claude-peer default peers|builtin" \
+    FAKE_PREFS_LINE="composed, in sync" run sh "$BIN" items
+  [ "${lines[1]}" = "$(printf 'claude-peer\tnothing\tinstalled and current')" ]
+  ITERM2_RELAUNCH_CLAUDE_PEER="$BATS_TEST_TMPDIR/no-such-peer" FAKE_PREFS_LINE="composed, in sync" run sh "$BIN" items
+  [ "${lines[1]}" = "$(printf 'claude-peer\trefused\tclaude-peer is not deployed')" ]
+  [ ! -s "$PEER_LOG" ]
+}
+
+@test "front: with prefs-install in the same run claude-peer is ready whatever status says; a refused claude-peer stops everything" {
+  pid=$(fake_iterm)
+  run sh "$BIN" --dry-run --no-restore prefs-install,claude-peer
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "would: prefs-install: one-time switch to the composed preferences folder" ]
+  [ "${lines[1]}" = "would: claude-peer: rewritten into the composed store after the switch" ]
+  # prefs-install that has nothing to do (already composed) leaves claude-peer to status
+  FAKE_PREFS_LINE="composed, in sync" run sh "$BIN" --dry-run --no-restore prefs-install,claude-peer
+  [ "$output" = "$(printf 'prefs-install: nothing to do\nclaude-peer: nothing to do\nnothing to do; iTerm2 left running' | sed 's/^/iterm2-relaunch: /')" ]
+  ITERM2_RELAUNCH_CLAUDE_PEER="$BATS_TEST_TMPDIR/no-such-peer" run sh "$BIN" --yes claude-peer 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"iterm2-relaunch: claude-peer: claude-peer is not deployed"* ]]
+  [ ! -s "$OSA_LOG" ]
+  [ ! -s "$PEER_LOG" ]
+  kill -0 "$pid"
+}
+
+@test "_run prefs-install,claude-peer,brew:x given in any order: install of the preferences, then claude-peer install, then the upgrade" {
+  cask claude-code@latest 2.1.322 2.1.323 true false binary "2.1.322"
+  fake_iterm >/dev/null
+  runner 0 0 - brew:claude-code@latest claude-peer prefs-install
+  [ "$status" -eq 0 ]
+  [ "$(grep -E '^(prefs|peer|brew upgrade)' "$SEQ" | tr '\n' ',')" = "prefs install,peer install,brew upgrade," ]
+  in_order "prefs-install: exit 0" "claude-peer: exit 0" "brew:claude-code@latest: exit 0" "launch: started" "done: 3 items, 0 failed"
+}
+
+@test "_run claude-peer: default peers runs only when status ends its default line with exactly that, and not for the mixed line" {
+  fake_iterm >/dev/null
+  FAKE_PEER_STATUS="default: the triggers say peers but the enter file is missing - claude-peer default peers" runner 0 0 - claude-peer
+  [ "$status" -eq 0 ]
+  [ "$(cat "$PEER_LOG")" = "install
+default peers" ]
+  in_order "claude-peer: exit 0" "done: 1 items, 0 failed"
+  : >"$PEER_LOG"
+  fake_iterm >/dev/null
+  FAKE_PEER_STATUS="default: mixed (1 of 3 profiles enter by variable) - claude-peer default peers|builtin" runner 0 0 - claude-peer
+  [ "$(cat "$PEER_LOG")" = install ]
+  : >"$PEER_LOG"
+  fake_iterm >/dev/null
+  runner 0 0 - claude-peer
+  [ "$(cat "$PEER_LOG")" = install ]
+  : >"$PEER_LOG"
+  fake_iterm >/dev/null
+  FAKE_PEER_DEFAULT=1 FAKE_PEER_STATUS="default: x - claude-peer default peers" runner 0 0 - claude-peer
+  [ "$status" -eq 1 ]
+  in_order "claude-peer: exit 1" "launch: started" "done: 1 items, 1 failed"
+}
+
+@test "_run claude-peer: an install that fails is logged, default is not run, iTerm2 still starts, exit 1" {
+  fake_iterm >/dev/null
+  FAKE_PEER_INSTALL=1 FAKE_PEER_STATUS="default: x - claude-peer default peers" runner 0 0 - claude-peer
+  [ "$status" -eq 1 ]
+  [ "$(cat "$PEER_LOG")" = install ]
+  in_order "claude-peer: exit 1" "launch: started" "done: 1 items, 1 failed"
+}
+
+@test "_run claude-peer: it waits for a live compose-at-quit waiter before it writes" {
+  fake_iterm >/dev/null
+  mkdir -p "$XDG_STATE_HOME/iterm2"
+  # a live process that is the child of a shell that waits for it, as fake_iterm does
+  f="$BATS_TEST_TMPDIR/waiter.pid"
+  ( /bin/sh -c '/bin/sleep 300 & echo $! >"$1"; wait' sh "$f" >/dev/null 2>&1 3>&- & )
+  while [ ! -s "$f" ]; do /bin/sleep 0.05; done
+  waiter=$(cat "$f")
+  echo "$waiter 4242" >"$XDG_STATE_HOME/iterm2/compose-at-quit.pid"
+  ( /bin/sleep 2; echo "waiter-ended" >>"$SEQ"; kill "$waiter" ) 3>&- >/dev/null 2>&1 &
+  runner 0 0 - claude-peer
+  [ "$status" -eq 0 ]
+  [ "$(grep -E '^(waiter-ended|peer)' "$SEQ" | tr '\n' ',')" = "waiter-ended,peer install," ]
+  in_order "claude-peer: waited for the compose at quit" "claude-peer: exit 0"
+  # no waiter file: no wait, no line
+  : >"$LOG"; rm "$XDG_STATE_HOME/iterm2/compose-at-quit.pid"
+  fake_iterm >/dev/null
+  runner 0 0 - claude-peer
+  no grep -q "waited for the compose" "$LOG"
 }

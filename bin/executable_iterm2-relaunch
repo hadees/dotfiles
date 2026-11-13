@@ -15,10 +15,17 @@
 # (nothing was done).
 #
 # Items, run in this order while iTerm2 is down: prefs-install (iterm2-prefs
-# install), prefs (iterm2-prefs compose), then brew:<cask> as given (brew upgrade
-# --cask, for a cask that wants the terminal and its Claude sessions down, such as
-# claude-code@latest). Others the runner does not know are logged as `<item>: exit
-# 2`. A failed item never stops the next one.
+# install), prefs (iterm2-prefs compose), claude-peer (claude-peer install, then
+# claude-peer default peers when its status asks for exactly that), then brew:<cask>
+# as given (brew upgrade --cask, for a cask that wants the terminal and its Claude
+# sessions down, such as claude-code@latest). Others the runner does not know are
+# logged as `<item>: exit 2`. A failed item never stops the next one.
+#
+# claude-peer comes after the two prefs items because its Workgroups and Triggers
+# are reserved keys no preferences fragment may carry: `claude-peer install` writes
+# them straight into the store iTerm2 loads, which `iterm2-prefs install` repoints.
+# It first waits for a live compose-at-quit waiter (compose-at-quit.pid): the waiter
+# and `claude-peer install` read, change and write the same file.
 #
 # A brew: item is judged before anything quits: a cask that updates itself (iTerm2
 # included) or installs with a pkg or installer, which may ask for a password, is
@@ -70,6 +77,7 @@
 # Siblings are named by absolute path because Alfred's PATH excludes ~/bin.
 #
 # Test seams: ITERM2_RELAUNCH_PREFS, ITERM2_RELAUNCH_CLAUDE_TAB,
+# ITERM2_RELAUNCH_CLAUDE_PEER (default ~/bin/claude-peer),
 # ITERM2_RELAUNCH_HEADS_UP (default ~/bin/screen-heads-up), ITERM2_RELAUNCH_BREW
 # (else brew on PATH, else /opt/homebrew/bin or /usr/local/bin; Alfred's PATH has
 # neither), ITERM2_RELAUNCH_ITEM_TIMEOUT (polls a brew: item may take, default 600),
@@ -100,6 +108,7 @@ log=$state/run.log
 prefs=${ITERM2_RELAUNCH_PREFS:-$HOME/bin/iterm2-prefs}
 ct=${ITERM2_RELAUNCH_CLAUDE_TAB:-$HOME/bin/claude-tab}
 hu=${ITERM2_RELAUNCH_HEADS_UP:-$HOME/bin/screen-heads-up}
+cpeer=${ITERM2_RELAUNCH_CLAUDE_PEER:-$HOME/bin/claude-peer}
 tick=${ITERM2_RELAUNCH_TICK:-1}
 item_timeout=${ITERM2_RELAUNCH_ITEM_TIMEOUT:-600}
 TAB=$(printf '\t')
@@ -236,15 +245,40 @@ cmd_status() {
   echo "log: $log"
 }
 
-# order_items <item>...: sets `ordered`, prefs-install, prefs, then the rest as given.
+# order_items <item>...: sets `ordered`, prefs-install, prefs, claude-peer, then the rest as given.
 order_items() {
   ordered=''
-  for want in prefs-install prefs; do
+  for want in prefs-install prefs claude-peer; do
     for i in "$@"; do [ "$i" != "$want" ] || ordered="$ordered $i"; done
   done
   for i in "$@"; do
-    case $i in prefs-install|prefs) ;; *) ordered="$ordered $i";; esac
+    case $i in prefs-install|prefs|claude-peer) ;; *) ordered="$ordered $i";; esac
   done
+}
+
+# peer_default_line: the `default:` line of `claude-peer status` when it ends with
+# exactly `claude-peer default peers` (the mixed state ends `default peers|builtin`,
+# which is the operator's to choose), else nothing.
+peer_default_line() {
+  "$cpeer" status 2>/dev/null | awk '/^default:/ { s = $0; sub(/[ \t]+$/, "", s)
+    if (s ~ /claude-peer default peers$/) { print s; exit } }'
+}
+
+# peer_item: claude-peer install, then claude-peer default peers when status asks
+# for it. A live compose-at-quit waiter is waited for first; it and the install
+# write the same file. Output is this function's own stdout and stderr.
+peer_item() {
+  _pw=${XDG_STATE_HOME:-$HOME/.local/state}/iterm2/compose-at-quit.pid
+  pn=0
+  while [ "$pn" -lt 30 ]; do
+    pp=$(awk 'NR == 1 { print $1 }' "$_pw" 2>/dev/null)
+    case $pp in ''|*[!0-9]*) break;; esac
+    kill -0 "$pp" 2>/dev/null || break
+    sleep "$tick"; pn=$((pn + 1))
+  done
+  [ "$pn" -eq 0 ] || log_line "claude-peer: waited for the compose at quit"
+  "$cpeer" install || return $?
+  [ -z "$(peer_default_line)" ] || "$cpeer" default peers
 }
 
 # brew_upgrade <brew:cask>: the upgrade while iTerm2 is down, with the versions
@@ -291,6 +325,7 @@ run_items() {
     case $i in
       prefs-install) "$prefs" install;;
       prefs) "$prefs" compose;;
+      claude-peer) peer_item;;
       brew:*) brew_upgrade "$i";;
       *) (exit 2);;
     esac
@@ -466,7 +501,7 @@ cmd_cancel() {
 # known_item <item>: whether the runner has work of that name.
 known_item() {
   case $1 in
-    prefs-install|prefs) return 0;;
+    prefs-install|prefs|claude-peer) return 0;;
     brew:[!a-zA-Z0-9]*|brew:*[!a-zA-Z0-9@._+/-]*) return 1;;
     brew:?*) return 0;;
   esac
@@ -494,6 +529,19 @@ item_state() {
         'not composed'*) printf 'refused\tnot composed; use prefs-install\n';;
         *) printf 'refused\tcannot read the preferences state\n';;
       esac;;
+    claude-peer)
+      if [ ! -x "$cpeer" ]; then printf 'refused\tclaude-peer is not deployed\n'; return 0; fi
+      # prefs-install in this run: the install lands in the composed store after the switch.
+      case " ${items-} " in
+        *" prefs-install "*)
+          case $(item_state prefs-install) in
+            ready*) printf 'ready\trewritten into the composed store after the switch\n'; return 0;;
+          esac;;
+      esac
+      pst=$("$cpeer" status 2>/dev/null)
+      line=$(printf '%s\n' "$pst" | grep -F 'claude-peer install' | head -n 1 | cut -c1-120)
+      [ -n "$line" ] || line=$(peer_default_line)
+      if [ -n "$line" ]; then printf 'ready\t%s\n' "$line"; else printf 'nothing\tinstalled and current\n'; fi;;
     brew:*)
       if [ -z "$brew" ]; then printf 'refused\tHomebrew not found\n'; return 0; fi
       row=''
@@ -518,6 +566,7 @@ EOF_ROW
 cmd_items() {
   case $("$prefs" status --line 2>/dev/null) in composed*) t=prefs;; *) t=prefs-install;; esac
   printf '%s\t%s\n' "$t" "$(item_state "$t")"
+  printf 'claude-peer\t%s\n' "$(item_state claude-peer)"
   [ -z "$brew" ] || { printf 'claude-code@latest\nclaude-code\n'; git config --get-all iterm2-relaunch.brew 2>/dev/null; } |
     awk '!seen[$0]++' | while IFS= read -r c; do
       known_item "brew:$c" || continue
