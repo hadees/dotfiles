@@ -782,6 +782,18 @@ lead_sessions() { lead_rows "$@" | cut -f2-; }
 # leader-dir, pid, session id for <dir>: from `claude-peer claim` when it
 # answers, else column 3 of the `peers` row whose worktree is <dir> or holds
 # it, else <dir> itself with no pid or session id. Needs PEERCMD.
+# started_by <worktree>: "; started by <who>" from the claim's by field: the
+# operator when the pane's own picker started it ("pane", or none recorded),
+# else "Lead" or the label that ran `claude-peer start`. Nothing without a claim.
+started_by() {
+  sb_c=$("$PEERCMD" claim "$1" 2>/dev/null) && [ -n "$sb_c" ] || return 0
+  sb_by=$(printf '%s\n' "$sb_c" | awk -F'\t' '$1 == "by" { print $2; exit }')
+  case $sb_by in
+    ''|-|pane) printf '; started by the operator' ;;
+    *) printf '; started by %s' "$sb_by" ;;
+  esac
+}
+
 lead_of() { # dir
   lo_t=$(printf '\t')
   if [ -x "$PEERCMD" ] && lo_c=$("$PEERCMD" claim "$1" 2>/dev/null) && [ -n "$lo_c" ]; then
@@ -916,7 +928,7 @@ for line in (l.rstrip("\n") for l in sys.stdin):
       rc_state="${rc_state:+$rc_state$rc_nl}${rc_line}told"
       rc_total=$((rc_total + 1))
       case $k in
-        native) rc_native=$((rc_native + 1)); rc_ok="${rc_ok:+$rc_ok, }$extra ($label)" ;;
+        native) rc_native=$((rc_native + 1)); rc_ok="${rc_ok:+$rc_ok, }$extra ($label$(started_by "$wt"))" ;;
         starting) rc_bad="${rc_bad:+$rc_bad; }$label — its shell is up but no Claude session is registered (look at that peer's pane)" ;;
         noinbox) rc_bad="${rc_bad:+$rc_bad; }$label — its Claude session has no inbox socket (/status there)" ;;
         other) rc_bad="${rc_bad:+$rc_bad; }$label — it runs under another profile ($extra): reach it by postbox mail as $(name_of "$wt")" ;;
@@ -930,7 +942,7 @@ EOF
   elif [ -n "$rc_ok" ]; then
     case $rc_ok in
       *", "*) printf 'postbox: Claude Peers: %s are up; SendMessage reaches them.\n' "$rc_ok" ;;
-      *) printf 'postbox: Claude Peers: %s is up; SendMessage reaches it. Lead did not start it? Then the operator did: ask it, not them, what it is on.\n' "$rc_ok" ;;
+      *) printf 'postbox: Claude Peers: %s is up; SendMessage reaches it.\n' "$rc_ok" ;;
     esac
   fi
   peer_news "$sdir"

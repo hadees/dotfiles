@@ -620,6 +620,7 @@ case $1 in
     [ -z "$c" ] || printf '%s\n' "$c" ;;
   log) [ ! -f "${FAKE_LOG:-/nonexistent}" ] || cat "$FAKE_LOG" ;;
   name) [ "$2" = lead ] && echo proj-lead ;;
+  claim) [ -z "${FAKE_CLAIM:-}" ] || printf '%b\n' "$FAKE_CLAIM" ;;
 esac
 STUB
   chmod +x "$BIN/claude-peer"
@@ -635,6 +636,19 @@ leader_profile() {
 
 # One `claude-peer peers` row: worktree, pid ($2, default 4242), leader, label.
 claim_line() { printf '%s\t%s\t%s\t%s\n' "$1" "${2:-4242}" "$WORK" "${1##*/}"; }
+
+@test "hook prompt: the up line says who started the peer, from its claim's by field" {
+  leader_profile; peer_stub
+  wt="$HOME/code/alpha"; mkdir -p "$wt"
+  reg "$CLAUDE_CONFIG_DIR" "$wt" PeerA "$(mksock a.sock)"
+  export FAKE_CLAIMS="$(claim_line "$wt")"
+  FAKE_CLAIM="by\tpane" run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha; started by the operator) is up; SendMessage reaches it." ]
+  FAKE_CLAIM="by\tLead" run payload '{"cwd":"'"$WORK"'","session_id":"s2"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha; started by Lead) is up; SendMessage reaches it." ]
+  FAKE_CLAIM="by\t-" run payload '{"cwd":"'"$WORK"'","session_id":"s3"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha; started by the operator) is up; SendMessage reaches it." ]
+}
 
 @test "hook start: a non-peer without a native inbox socket is told, and told to tell the operator" {
   leader_profile
@@ -718,7 +732,7 @@ claim_line() { printf '%s\t%s\t%s\t%s\n' "$1" "${2:-4242}" "$WORK" "${1##*/}"; }
   [ ! -e "$BATS_TEST_TMPDIR/py.log" ]
   export FAKE_CLAIMS="$(claim_line "$wt")"
   run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
-  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it. Lead did not start it? Then the operator did: ask it, not them, what it is on." ]
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it." ]
   run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
   [ -z "$output" ]
   [ "$(wc -l < "$BATS_TEST_TMPDIR/py.log" | tr -d ' ')" -eq 1 ]
@@ -748,7 +762,7 @@ claim_line() { printf '%s\t%s\t%s\t%s\n' "$1" "${2:-4242}" "$WORK" "${1##*/}"; }
   [[ "$output" == *"PeerA (alpha) is up"* ]]
   export FAKE_CLAIMS="$(claim_line "$wt" 4343)"
   run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
-  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it. Lead did not start it? Then the operator did: ask it, not them, what it is on." ]
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it." ]
   run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
   [ -z "$output" ]
 }
@@ -798,7 +812,7 @@ claim_line() { printf '%s\t%s\t%s\t%s\n' "$1" "${2:-4242}" "$WORK" "${1##*/}"; }
   printf 'done\n' > "$POSTBOX_STATE/rollcall/s1"
   export FAKE_CLAIMS="$(claim_line "$wt")" POSTBOX_NOW=1000
   run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
-  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it. Lead did not start it? Then the operator did: ask it, not them, what it is on." ]
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it." ]
 }
 
 @test "hook prompt: a peer never runs the roll-call" {
@@ -837,7 +851,7 @@ claim_line() { printf '%s\t%s\t%s\t%s\n' "$1" "${2:-4242}" "$WORK" "${1##*/}"; }
   reg "$CLAUDE_CONFIG_DIR" "$wt" PeerA "$(mksock a.sock)"
   export FAKE_CLAIMS="$(claim_line "$wt")" FAKE_LEADER="$WORK" POSTBOX_NOW=1000 CLAUDE_PROJECT_DIR="$WORK"
   run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
-  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it. Lead did not start it? Then the operator did: ask it, not them, what it is on." ]
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha) is up; SendMessage reaches it." ]
   run payload '{"cwd":"'"$WORK"'/sub","session_id":"s1"}' hook prompt
   [ -z "$output" ]
   grep -q -- "peers --leader $WORK\$" "$PEER_LOG"
