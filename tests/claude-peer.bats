@@ -2557,16 +2557,32 @@ lookfix() {
 }
 
 # lookcurl: a curl that logs its arguments and exits FAKE_CURL_RC; looksock <id>: a socket
-# file that nothing listens on; looklog: the curl calls as `<id> <action>` lines
+# file that nothing listens on; looklog: the curl calls as `<id> <action>` lines; with
+# FAKE_CURL_SLOW set, a call whose arguments contain it sleeps FAKE_CURL_SLEEP seconds first
 lookcurl() {
   mkdir -p "$BATS_TEST_TMPDIR/curlbin"
-  printf '#!/bin/sh\necho "$*" >>"$FAKE_CURL_LOG"\nexit "${FAKE_CURL_RC:-0}"\n' >"$BATS_TEST_TMPDIR/curlbin/curl"
+  printf '#!/bin/sh\n[ -z "$FAKE_CURL_SLOW" ] || case "$*" in *"$FAKE_CURL_SLOW"*) sleep "${FAKE_CURL_SLEEP:-1}";; esac\necho "$*" >>"$FAKE_CURL_LOG"\nexit "${FAKE_CURL_RC:-0}"\n' >"$BATS_TEST_TMPDIR/curlbin/curl"
   chmod +x "$BATS_TEST_TMPDIR/curlbin/curl"
   export PATH="$BATS_TEST_TMPDIR/curlbin:$PATH" FAKE_CURL_LOG="$BATS_TEST_TMPDIR/curl.log"
 }
 looksock() { python3 -I -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])' "$CLAUDE_PEER_LOOK/$1.sock"; }
 looklog() { [ ! -f "$FAKE_CURL_LOG" ] || sed -E 's/.*--unix-socket [^ ]*\/([^/ ]*)\.sock .* -d ([^ ]*) .*/\1 \2/' "$FAKE_CURL_LOG"; }
 LOOKID2=22222222-3333-4444-5555-666666666666
+LOOKID3=33333333-4444-5555-6666-777777777777
+LOOKID4=44444444-5555-6666-7777-888888888888
+# lookbound: how many ids in looklog end on a rebind
+lookbound() { looklog | awk '{ a[$1] = $2 } END { n = 0; for (i in a) if (a[i] ~ /^rebind/) n++; print n }'; }
+# lookhold: hold the look lock from a background process (the one lock tool this machine has)
+lookhold() {
+  (
+    exec 9>>"$CLAUDE_PEER_LOOK/lock" 3>&-
+    if command -v flock >/dev/null 2>&1; then flock 9; else lockf -s -t 0 9; fi
+    : >"$BATS_TEST_TMPDIR/held"
+    exec sleep 30
+  ) &
+  LOOKHOLD=$!
+  until_ok '[ -f "$BATS_TEST_TMPDIR/held" ]'
+}
 
 @test "look gained: the first one writes focus and binds that pane; a repeat does nothing" {
   lookfix; lookcurl; looksock "$LOOKID"
@@ -2651,6 +2667,82 @@ $LOOKID unbind(every(1))" ]
   [ "$status" -eq 2 ]
   run sh "$BIN" look on
   [ "$status" -eq 2 ]
+}
+
+@test "look gained: calls that overlap leave one pane bound, the one in focus" {
+  lookfix; lookcurl; looksock "$LOOKID"; looksock "$LOOKID2"; looksock "$LOOKID3"; looksock "$LOOKID4"
+  sh "$BIN" look gained "$LOOKID"
+  FAKE_CURL_SLOW="$LOOKID.sock" FAKE_CURL_SLEEP=1 sh "$BIN" look gained "$LOOKID2" 3>&- &
+  until_ok '[ "$(head -n 1 "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID2" ]'
+  sh "$BIN" look gained "$LOOKID3" 3>&- &
+  sh "$BIN" look gained "$LOOKID4" 3>&- &
+  wait
+  [ "$(looklog | wc -l | tr -d ' ')" -eq 7 ]
+  [ "$(looklog | head -n 4)" = "$LOOKID rebind(every(1))
+$LOOKID unbind(every(1))
+$LOOKID2 rebind(every(1))
+$LOOKID2 unbind(every(1))" ]
+  local f
+  f=$(cat "$CLAUDE_PEER_LOOK/focus")
+  [ "$f" = "$LOOKID3" ] || [ "$f" = "$LOOKID4" ]
+  [ "$(looklog | tail -n 1)" = "$f rebind(every(1))" ]
+  [ "$(lookbound)" -eq 1 ]
+  [ ! -e "$CLAUDE_PEER_LOOK/unlocked" ]
+}
+
+@test "look: a call killed while it holds the lock leaves nothing to break" {
+  lookfix; lookcurl; looksock "$LOOKID"; looksock "$LOOKID2"; looksock "$LOOKID3"
+  sh "$BIN" look gained "$LOOKID"
+  FAKE_CURL_SLOW="$LOOKID.sock" FAKE_CURL_SLEEP=2 sh "$BIN" look gained "$LOOKID2" 3>&- &
+  local pid=$!
+  until_ok '[ "$(head -n 1 "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID2" ]'
+  kill -9 "$pid"
+  run --separate-stderr sh "$BIN" look gained "$LOOKID3"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  [ "$(cat "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID3" ]
+  CLAUDE_PEER_LOOK_WAIT=0 sh "$BIN" look gained "$LOOKID"
+  [ "$(cat "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID" ]
+  [ ! -e "$CLAUDE_PEER_LOOK/unlocked" ]
+}
+
+@test "look: a holder that outlives the wait is passed, and counted" {
+  lookfix; lookcurl; looksock "$LOOKID"; looksock "$LOOKID2"
+  lookhold
+  CLAUDE_PEER_LOOK_WAIT=1 run --separate-stderr sh "$BIN" look gained "$LOOKID"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  [ "$(cat "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID" ]
+  [ "$(cat "$CLAUDE_PEER_LOOK/unlocked")" = timeout ]
+  CLAUDE_PEER_LOOK_WAIT=1 sh "$BIN" look gained "$LOOKID2"
+  [ "$(cat "$CLAUDE_PEER_LOOK/unlocked")" = "timeout
+timeout" ]
+  kill "$LOOKHOLD"
+}
+
+@test "look: with no tool that locks a descriptor it goes ahead and says so once" {
+  lookfix; lookcurl; looksock "$LOOKID"; looksock "$LOOKID2"
+  local t
+  for t in flock lockf; do
+    printf '#!/bin/sh\nexit 64\n' >"$BATS_TEST_TMPDIR/curlbin/$t"
+    chmod +x "$BATS_TEST_TMPDIR/curlbin/$t"
+  done
+  run --separate-stderr sh "$BIN" look gained "$LOOKID"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  run --separate-stderr sh "$BIN" look gained "$LOOKID2"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  [ "$(cat "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID2" ]
+  [ "$(looklog)" = "$LOOKID rebind(every(1))
+$LOOKID unbind(every(1))
+$LOOKID2 rebind(every(1))" ]
+  [ "$(cat "$CLAUDE_PEER_LOOK/unlocked")" = notool ]
+}
+
+@test "look: a look directory that cannot be written is still exit 0 with no output" {
+  lookfix; lookcurl; looksock "$LOOKID"
+  chmod 500 "$CLAUDE_PEER_LOOK"
+  run --separate-stderr sh "$BIN" look gained "$LOOKID"
+  chmod 700 "$CLAUDE_PEER_LOOK"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  [ "$(looklog)" = "$LOOKID rebind(every(1))" ]
 }
 
 @test "sleeper: a repository name too long for the block is cut, the label never" {

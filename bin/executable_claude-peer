@@ -2689,26 +2689,60 @@ look_post() {
   curl -s -o /dev/null -m 1 --unix-socket "$lk_d/$1.sock" -X POST -d "$2" http://localhost/ || :
 }
 
+# Hold the look lock: descriptor 9 is open on <look directory>/lock. 0 held, 1 a live
+# holder kept it past CLAUDE_PEER_LOOK_WAIT seconds (default 5), 2 no tool here locks a
+# descriptor. flock (util-linux) and lockf (macOS) take the same flock(2) lock, which the
+# kernel drops when the descriptor closes: a killed holder leaves nothing to break.
+look_lock() {
+  lk_w=${CLAUDE_PEER_LOOK_WAIT-}
+  case $lk_w in '' | *[!0-9]*) lk_w=5;; esac
+  if command -v flock >/dev/null 2>&1; then
+    if [ "$lk_w" -eq 0 ]; then flock -n 9; else flock -w "$lk_w" 9; fi
+    case $? in 0) return 0;; 1) return 1;; esac
+  fi
+  if command -v lockf >/dev/null 2>&1; then
+    lockf -s -t "$lk_w" 9
+    case $? in 0) return 0;; 75) return 1;; esac
+  fi
+  return 2
+}
+
+# One look event, with $lk_d and $lk_id set; the caller holds the lock.
+look_turn() {
+  lk_old=
+  [ ! -r "$lk_d/focus" ] || read -r lk_old <"$lk_d/focus" || :
+  case $1 in
+    gained)
+      [ "$lk_old" != "$lk_id" ] || return 0
+      printf '%s\n' "$lk_id" >"$lk_d/focus.$$" && mv -f "$lk_d/focus.$$" "$lk_d/focus"
+      look_post "$lk_old" 'unbind(every(1))'
+      look_post "$lk_id" 'rebind(every(1))';;
+    lost)
+      [ "$lk_old" != "$lk_id" ] || { : >"$lk_d/focus.$$" && mv -f "$lk_d/focus.$$" "$lk_d/focus"; }
+      look_post "$lk_id" 'unbind(every(1))';;
+  esac
+  return 0
+}
+
 # gained|lost <session id>: what iTerm2's trigger calls when the session now looked
 # at changes. Always exit 0 and print nothing, whatever happens: iTerm2 posts a
 # notification for a failed command and logs its output. A burst of calls (one tab
-# switch fires 1-4, a stale id may come between) ends with the last id bound.
+# switch fires 1-4, a stale id may come between) ends with the last id bound. iTerm2
+# starts a burst's commands together and in no fixed order, so one call runs at a time
+# (look_lock); with no lock tool, or a holder past the wait, the call goes ahead and
+# `unlocked` says so.
 cmd_look() {
   case ${1-} in gained|lost) ;; *) usage;; esac
   {
-    lk_d=$(look_dir) lk_id=${2-} lk_old=
+    lk_d=$(look_dir) lk_id=${2-}
     [ -d "$lk_d" ] && look_ok "$lk_id" || return 0
-    [ ! -r "$lk_d/focus" ] || read -r lk_old <"$lk_d/focus" || :
-    case $1 in
-      gained)
-        [ "$lk_old" != "$lk_id" ] || return 0
-        printf '%s\n' "$lk_id" >"$lk_d/focus.$$" && mv -f "$lk_d/focus.$$" "$lk_d/focus"
-        look_post "$lk_old" 'unbind(every(1))'
-        look_post "$lk_id" 'rebind(every(1))';;
-      lost)
-        [ "$lk_old" != "$lk_id" ] || { : >"$lk_d/focus.$$" && mv -f "$lk_d/focus.$$" "$lk_d/focus"; }
-        look_post "$lk_id" 'unbind(every(1))';;
-    esac
+    { look_lock
+      case $? in
+        1) echo timeout >>"$lk_d/unlocked";;
+        2) echo notool >"$lk_d/unlocked";;
+      esac
+      look_turn "$1"
+    } 9>>"$lk_d/lock" || look_turn "$1"
   } >/dev/null 2>&1
   return 0
 }

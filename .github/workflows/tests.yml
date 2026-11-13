@@ -132,7 +132,8 @@ jobs:
         # status 127 rather than a failed comparison, which reads as a broken
         # assertion instead of a missing package. procps-ng is missing too
         # (no ps), which claude-peer needs to find the sessions it stops.
-        run: dnf install -y git zsh rsync diffutils procps-ng
+        # util-linux brings flock, which claude-peer look locks with.
+        run: dnf install -y git zsh rsync diffutils procps-ng util-linux
       - uses: actions/checkout@v7
       - name: Install tmux for the screen tests
         run: dnf install -y tmux
