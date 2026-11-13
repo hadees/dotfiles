@@ -59,19 +59,9 @@ trial() {
   if [ "$rc" != 0 ] && [ "$rc" != hang ]; then cat "$log"; fi
 }
 
-trial serial 1 1800 --timing
+# Round 3: the confirmation. Three runs with no controlling terminal, the
+# shape WSL would use if it joins (serial was measured at 1066 s in round 2).
 for n in 1 2 3; do
-  if [ "$hung" -eq 1 ]; then
-    printf 'TRIAL-SKIP\tacross\t%s\tafter a hang\n' "$n"
-  else
-    trial across "$n" 900 --jobs "$jobs" --no-parallelize-within-files
-  fi
+  trial across-notty "$n" 900 --jobs "$jobs" --no-parallelize-within-files
 done
-# Evidence only, never a verdict: after a hang, the same run with no terminal.
-if [ "$hung" -eq 1 ]; then
-  trial across-notty 1 900 --jobs "$jobs" --no-parallelize-within-files
-fi
-
-echo '--- serial --timing log'
-cat "$dir/serial-1.log"
 exit 0
