@@ -798,8 +798,8 @@ $b|start Beta --continue -- pick up" ]
   run --separate-stderr sh "$CT" restore --prompt "carry on" "$SAVED"
   [ "$status" -eq 0 ]
   [ "$stderr" = "claude-tab: restored 0 into empty tabs, 0 in new tabs, 2 skipped; 1 empty tabs in other windows left alone" ]
-  ! grep -q 'write text' "$OSA_ALL"
-  ! grep -q 'create tab' "$OSA_ALL"
+  ! grep -q 'write text' "$OSA_ALL" || { echo "unexpected: write text"; false; }
+  ! grep -q 'create tab' "$OSA_ALL" || { echo "unexpected: create tab"; false; }
 }
 
 @test "restore --prompt-for: a live session is told in its own tab, in whichever window, and nothing is resumed" {
@@ -814,8 +814,8 @@ $b|start Beta --continue -- pick up" ]
   [ "$(grep -c 'write text' "$OSA_ALL")" -eq 1 ]
   grep -qF 'write text "the run is over"' "$OSA_ALL"
   grep -qF 'is "/dev/ttys020"' "$OSA_ALL"
-  ! grep -q 'whose id is' "$OSA_ALL"
-  ! grep -q 'create tab' "$OSA_ALL"
+  ! grep -q 'whose id is' "$OSA_ALL" || { echo "unexpected: whose id is"; false; }
+  ! grep -q 'create tab' "$OSA_ALL" || { echo "unexpected: create tab"; false; }
   [[ "$stderr" == *"claude-tab: told the live session alpha in its tab"* ]]
   [[ "$stderr" == *"2 skipped"* ]]
 }
