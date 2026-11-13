@@ -7,6 +7,8 @@
 #   iterm2-relaunch items            one row per item: item<TAB>ready|nothing|refused<TAB>detail
 #   iterm2-relaunch status           runner:, last:, log: lines
 #   iterm2-relaunch cancel           call a relaunch off before iTerm2 has been asked to quit
+#   iterm2-relaunch alfred           Alfred Script Filter JSON, one row per item
+#   iterm2-relaunch alfred-install [<dir>]   zip the Alfred workflow and hand it to Alfred
 #   iterm2-relaunch _run <wait> <grace> <restore 0|1> <prompt 0|1> <caller id|-> <item>...
 #                    (internal: the runner, started in a session of its own)
 #
@@ -70,6 +72,14 @@
 # scripted session changes, so after it the runner checks that the iTerm2 it
 # started is still the one running, starts it once more if not, and restores
 # nothing further.
+#
+# The Alfred front (keyword `irelaunch`, alfred/iterm2-relaunch): the Script Filter runs
+# `alfred`, which turns the rows of `items` (no `brew update`, so it is quick) into
+# JSON, and Return runs `iterm2-relaunch --yes <item>`, outside any Claude session
+# and with Alfred's minimal environment; the only thing here that starts an app,
+# the runner's `open`, goes through `clean_open`, so none of that environment
+# reaches iTerm2. The workflow is not a chezmoi target (Alfred rewrites its
+# info.plist), so `alfred-install` zips it and `open`s it for Alfred's import sheet.
 #
 # State, in ${XDG_STATE_HOME:-$HOME/.local/state}/iterm2-relaunch: run.log,
 # run.pid, domain-before-quit.plist (the preferences domain saved before the
@@ -213,8 +223,56 @@ def brew_rows(doc):
     return 0
 
 
+DOWN = "Quits iTerm2 (every session ends), "
+BACK = ", reopens it and resumes the Claude tabs"
+READY = {
+    "prefs-install": ("Switch iTerm2 to composed preferences",
+                      "One time. " + DOWN + "installs" + BACK),
+    "prefs": ("Apply iTerm2 preference changes ({d})", DOWN + "composes" + BACK),
+    "claude-peer": ("Install the Claude Peers workgroups", "{d}. " + DOWN + "installs" + BACK),
+}
+NOTHING = {
+    "prefs": ("iTerm2 preferences are in sync", "Nothing waits"),
+    "claude-peer": ("Claude Peers workgroups are installed and current", "Nothing to do"),
+}
+
+
+def alfred(rows):
+    """The rows of `items` in, one line of Alfred Script Filter JSON out."""
+    out, ready = [], []
+    for row in rows.splitlines():
+        name, state, detail = (row.split("\t", 2) + ["", ""])[:3]
+        arg = name
+        if state == "refused":
+            title, sub, arg = name + " cannot run", detail, None
+        elif name.startswith("brew:") and state == "ready":
+            title, sub = "Upgrade %s (%s)" % (name[5:], detail), DOWN + "upgrades" + BACK
+        elif name.startswith("brew:"):
+            # only the front looks upstream, so a current cask stays actionable
+            title = "Upgrade " + name[5:]
+            sub = detail + "; looks for a newer one first and quits nothing if there is none"
+        elif state == "ready" and name in READY:
+            title, sub = [t.format(d=detail) for t in READY[name]]
+        else:
+            title, sub = NOTHING.get(name, (name, detail))
+            arg = None
+        if state == "ready":
+            ready.append(name)
+        item = {"title": title, "subtitle": sub, "valid": arg is not None}
+        if arg is not None:
+            item["arg"] = arg
+        out.append(item)
+    if len(ready) >= 2:
+        out.insert(0, {"title": "Everything that is ready (%d items)" % len(ready),
+                       "subtitle": ", ".join(ready), "arg": ",".join(ready), "valid": True})
+    print(json.dumps({"skipknowledge": True, "items": out}))
+    return 0
+
+
 def main():
     verb, args = sys.argv[1], sys.argv[2:]
+    if verb == "alfred" and len(args) == 1:
+        return alfred(args[0])
     if verb == "brew-rows" and len(args) == 1:
         return brew_rows(args[0])
     if verb == "_detach" and len(args) >= 2:
@@ -578,6 +636,40 @@ cmd_items() {
 
 say() { printf 'iterm2-relaunch: %s\n' "$*"; }
 
+# alfred: the Script Filter JSON, always one line.
+cmd_alfred() { relaunch_py alfred "$(cmd_items)"; }
+
+# The workflow source lives in the repo, not in a deployed location: Alfred rewrites
+# info.plist whenever the workflow is edited in its GUI, so a chezmoi-managed copy
+# would show permanent drift. Ask chezmoi where the source is, or take a path.
+workflow_source() {
+  [ -n "${1-}" ] && { printf '%s\n' "$1"; return 0; }
+  command -v chezmoi >/dev/null 2>&1 || return 1
+  _src=$(chezmoi source-path 2>/dev/null) || return 1
+  [ -n "$_src" ] || return 1
+  printf '%s\n' "$_src/alfred/iterm2-relaunch"
+}
+
+# alfred-install [<dir>]: an .alfredworkflow is a zip of the directory's contents;
+# Alfred shows its own import sheet. Handed over with clean_open, because Alfred may
+# not be running and would keep the caller's environment for its whole run.
+cmd_alfred_install() {
+  dir=$(workflow_source "${1-}") ||
+    die "cannot locate the workflow source (chezmoi not installed?); pass the path: iterm2-relaunch alfred-install <dir>"
+  [ -f "$dir/info.plist" ] || die "no info.plist in $dir"
+  found=
+  for app in "${ITERM2_RELAUNCH_APPLICATIONS:-/Applications}"/Alfred*.app "$HOME"/Applications/Alfred*.app; do
+    [ -d "$app" ] && found=1
+  done
+  [ -n "$found" ] || warn "Alfred does not appear to be installed"
+  tmp=$(mktemp -d) || die "cannot create a temp directory"
+  out=$tmp/iTerm2-Relaunch.alfredworkflow
+  ( cd "$dir" && zip -q -r "$out" . -x '.*' ) || die "could not build $out"
+  clean_open "$out" || die "could not hand $out to Alfred"
+  say "handed $(basename "$out") to Alfred; confirm the import in its window"
+  say 'then the keyword is "irelaunch"'
+}
+
 # Every refusal after the flag parse is also a `refused:` line of run.log, except
 # under --dry-run, which touches nothing.
 refuse_msg() {
@@ -720,6 +812,8 @@ case ${1:-} in
   status) need_macos status; cmd_status;;
   items) need_macos items; cmd_items;;
   cancel) need_macos cancel; cmd_cancel;;
+  alfred) need_macos alfred; cmd_alfred;;
+  alfred-install) need_macos alfred-install; shift; cmd_alfred_install "$@";;
   _run) shift; cmd_run "$@";;
   _detach) shift; relaunch_py _detach "$@";;
   -h|--help|help) usage;;

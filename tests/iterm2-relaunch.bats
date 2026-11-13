@@ -1053,3 +1053,125 @@ default peers" ]
   runner 0 0 - claude-peer
   no grep -q "waited for the compose" "$LOG"
 }
+
+# The Alfred front.
+
+# alfred_json: asserts `alfred` printed exactly one line of JSON and leaves it in $output.
+alfred_json() {
+  run sh "$BIN" alfred
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 1 ]
+  python3 -I -c 'import json, sys; json.loads(sys.argv[1])' "$output"
+}
+
+@test "alfred: one item per row, ready rows carry the item as arg, a nothing prefs row and a refused row are not valid" {
+  FAKE_PREFS_LINE="composed, 2 waiting, x" ITERM2_RELAUNCH_CLAUDE_PEER="$BATS_TEST_TMPDIR/no-such-peer" alfred_json
+  python3 -I -c '
+import json, sys
+d = json.loads(sys.argv[1])
+assert d["skipknowledge"] is True
+a, b = d["items"]
+assert a["title"] == "Apply iTerm2 preference changes (2 waiting)" and a["arg"] == "prefs" and a["valid"], a
+assert a["subtitle"].startswith("Quits iTerm2 (every session ends), composes"), a
+assert b["title"] == "claude-peer cannot run" and b["subtitle"] == "claude-peer is not deployed", b
+assert b["valid"] is False and "arg" not in b, b
+' "$output"
+  FAKE_PREFS_LINE="composed, in sync" alfred_json
+  python3 -I -c '
+import json, sys
+a, b = json.loads(sys.argv[1])["items"]
+assert a == {"title": "iTerm2 preferences are in sync", "subtitle": "Nothing waits", "valid": False}, a
+assert b["title"] == "Claude Peers workgroups are installed and current" and b["valid"] is False, b
+' "$output"
+  FAKE_PREFS_LINE="not composed (folder /x)" alfred_json
+  python3 -I -c '
+import json, sys
+a = json.loads(sys.argv[1])["items"][0]
+assert a["title"] == "Switch iTerm2 to composed preferences" and a["arg"] == "prefs-install" and a["valid"], a
+' "$output"
+}
+
+@test "alfred: two ready rows add Everything that is ready first, its arg the comma list" {
+  cask claude-code@latest 2.1.322 2.1.323 true false binary none
+  FAKE_PREFS_LINE="composed, 1 waiting, x" alfred_json
+  python3 -I -c '
+import json, sys
+items = json.loads(sys.argv[1])["items"]
+e = items[0]
+assert e["title"] == "Everything that is ready (2 items)", e
+assert e["arg"] == "prefs,brew:claude-code@latest" and e["subtitle"] == "prefs, brew:claude-code@latest" and e["valid"], e
+assert [i.get("arg") for i in items[1:]] == ["prefs", None, "brew:claude-code@latest"], items
+assert items[3]["title"] == "Upgrade claude-code@latest (2.1.322 -> 2.1.323)", items[3]
+' "$output"
+}
+
+@test "alfred: a current cask stays actionable, since only the front looks upstream" {
+  cask claude-code 2.1.0 2.1.0 false false binary none
+  FAKE_PREFS_LINE="composed, in sync" alfred_json
+  python3 -I -c '
+import json, sys
+c = json.loads(sys.argv[1])["items"][2]
+assert c["title"] == "Upgrade claude-code" and c["arg"] == "brew:claude-code" and c["valid"], c
+assert c["subtitle"] == "2.1.0 is current; looks for a newer one first and quits nothing if there is none", c
+' "$output"
+}
+
+@test "alfred: every form is one line of ASCII JSON, and brew update is never run" {
+  cask claude-code@latest 1.0 2.0 true false binary none
+  cask selfupdating 3.7.3 3.7.7 true true app none
+  printf '[iterm2-relaunch]\n\tbrew = selfupdating\n' >"$HOME/.gitconfig"
+  for line in "composed, in sync" "composed, 3 waiting, x" "not composed (folder /x)" "garbled"; do
+    FAKE_PREFS_LINE=$line alfred_json
+    [ -z "$(printf '%s' "$output" | LC_ALL=C tr -d '\0-\177')" ]
+  done
+  grep -q '^info' "$BREW_LOG"
+  no grep -q '^update' "$BREW_LOG"
+  FAKE_OS=Linux run sh "$BIN" alfred
+  [ "$status" -eq 2 ]
+}
+
+@test "the Alfred workflow calls ~/bin/iterm2-relaunch by absolute path and passes the selection as argv" {
+  run python3 -I - "$BATS_TEST_DIRNAME/../alfred/iterm2-relaunch/info.plist" <<'PY'
+import plistlib, sys
+p = plistlib.load(open(sys.argv[1], "rb"))
+assert p["bundleid"] == "local.iterm2-relaunch.alfred", p["bundleid"]
+by_type = {o["type"]: o for o in p["objects"]}
+sf = by_type["alfred.workflow.input.scriptfilter"]["config"]
+act = by_type["alfred.workflow.action.script"]["config"]
+assert sf["script"] == '"$HOME/bin/iterm2-relaunch" alfred\n', sf["script"]
+assert act["script"] == '"$HOME/bin/iterm2-relaunch" --yes "$1"\n', act["script"]
+assert sf["keyword"] == "irelaunch" and sf["scriptargtype"] == 1 and act["scriptargtype"] == 1
+uids = {o["uid"] for o in p["objects"]}
+assert len(uids) == 2
+assert set(p["connections"]) <= uids and set(p["uidata"]) == uids
+assert all(c["destinationuid"] in uids for v in p["connections"].values() for c in v)
+PY
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+}
+
+@test "alfred-install: hands the zipped workflow to Alfred with a clean environment, and warns when no Alfred app is installed" {
+  export TMPDIR="$BATS_TEST_TMPDIR"
+  export CLAUDE_CONFIG_DIR=x CLAUDE_PROFILE=x CLAUDE_CODE_SESSION_ID=x CLAUDECODE=x alfred_workflow_uid=x
+  export ITERM2_RELAUNCH_APPLICATIONS="$BATS_TEST_TMPDIR/Applications"
+  mkdir -p "$ITERM2_RELAUNCH_APPLICATIONS"
+  run sh "$BIN" alfred-install "$BATS_TEST_DIRNAME/../alfred/iterm2-relaunch" 2>&1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Alfred does not appear to be installed"* ]]
+  [[ "$output" == *'iterm2-relaunch: handed iTerm2-Relaunch.alfredworkflow to Alfred; confirm the import in its window'* ]]
+  [[ "$output" == *'iterm2-relaunch: then the keyword is "irelaunch"'* ]]
+  [ "$(wc -l <"$OPEN_LOG" | tr -d ' ')" -eq 1 ]
+  zipfile=$(cat "$OPEN_LOG")
+  [ "${zipfile##*/}" = iTerm2-Relaunch.alfredworkflow ]
+  python3 -I -c 'import sys, zipfile; assert zipfile.ZipFile(sys.argv[1]).namelist() == ["info.plist"]' "$zipfile"
+  for v in CLAUDE_CONFIG_DIR CLAUDE_PROFILE CLAUDE_CODE_SESSION_ID CLAUDECODE alfred_workflow_uid; do
+    no grep -q "^$v=" "$OPEN_ENV"
+  done
+  grep -Fxq "PATH=/usr/bin:/bin:/usr/sbin:/sbin" "$OPEN_ENV"
+  mkdir "$ITERM2_RELAUNCH_APPLICATIONS/Alfred 5.app"
+  run sh "$BIN" alfred-install "$BATS_TEST_DIRNAME/../alfred/iterm2-relaunch" 2>&1
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Alfred does not appear to be installed"* ]]
+  run sh "$BIN" alfred-install "$BATS_TEST_TMPDIR/nowhere" 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no info.plist in $BATS_TEST_TMPDIR/nowhere"* ]]
+}
