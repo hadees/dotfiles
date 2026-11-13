@@ -50,6 +50,7 @@ printf '%s\n' "${FAKE_OS:-Darwin}"
 STUB
   cat > "$BIN/defaults" <<'STUB'
 #!/bin/sh
+printf '%s\n' "$*" >> "${DEFAULTS_LOG:-/dev/null}"
 printf '%s\n' "${FAKE_API:-1}"
 STUB
   # ps: from the table file, "pid TAB tty TAB command" per line
@@ -81,6 +82,25 @@ if [ "$1" = --role ]; then shift; printf 'peer\t%s\n' "$(basename "$1")"; exit 0
 basename "$1"
 STUB
   chmod +x "$BIN/uname" "$BIN/defaults" "$BIN/ps" "$BIN/python3" "$HOME/bin/claude-peer" "$HOME/bin/tabname"
+  # it2: logs its arguments, the suite and the cookie it was given; any verb but
+  # `session read` and `session get-var tty|path` is exit 97 and is recorded
+  export IT2_LOG="$BATS_TEST_TMPDIR/it2-log" IT2_BAD="$BATS_TEST_TMPDIR/it2-bad" DEFAULTS_LOG="$BATS_TEST_TMPDIR/defaults-log"
+  export FAKE_SCREEN="$BATS_TEST_TMPDIR/screen"
+  : > "$IT2_LOG"; : > "$IT2_BAD"; : > "$FAKE_SCREEN"
+  export FAKE_TTY='"\/dev\/ttys010"' FAKE_PATH="Variable 'path' not set"
+  cat > "$BATS_TEST_TMPDIR/it2" <<'STUB'
+#!/bin/sh
+printf '%s\tsuite=%s\tcookie=%s\n' "$*" "${IT2_SUITE-}" "${ITERM2_COOKIE-}" >> "$IT2_LOG"
+[ -z "${FAKE_IT2_SLEEP-}" ] || sleep "$FAKE_IT2_SLEEP"
+case "$1 $2 $3" in
+  "session read --session") cat "$FAKE_SCREEN" ;;
+  "session get-var tty") printf '%s\n' "$FAKE_TTY" ;;
+  "session get-var path") printf '%s\n' "$FAKE_PATH" ;;
+  *) printf '%s\n' "$*" >> "$IT2_BAD"; exit 97 ;;
+esac
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/it2"
+  export PANE_SIGHT_IT2="$BATS_TEST_TMPDIR/it2"
   export PANE_SIGHT_PEER="$HOME/bin/claude-peer" PANE_SIGHT_TABNAME="$HOME/bin/tabname"
   export PANE_SIGHT_DENYGUARD="$BATS_TEST_DIRNAME/../bin/executable_denyguard"
   export PANE_SIGHT_FUNCTIONS="$BATS_TEST_DIRNAME/../dot_functions"
@@ -93,7 +113,8 @@ teardown() {
   if [ -f "$BATS_TEST_TMPDIR/sleepers" ]; then
     while read -r p; do kill "$p" 2>/dev/null; done < "$BATS_TEST_TMPDIR/sleepers"
   fi
-  return 0
+  # nothing but `session read` and `session get-var` ever reached it2
+  [ ! -s "$IT2_BAD" ]
 }
 
 # mk_repo <name> [<owner/repo>]: a repository under $HOME/code; its path.
@@ -406,7 +427,7 @@ U5=55555555-5555-5555-5555-555555555555
   [ "$(val verdict)" = readable ]
 }
 
-@test "usage, and not macOS: exit 2; read and shot are not built yet" {
+@test "usage, and not macOS: exit 2; shot is not built yet" {
   run pane-sight
   [ "$status" -eq 2 ]
   [[ "$output" == *"Usage:"* ]]
@@ -414,12 +435,6 @@ U5=55555555-5555-5555-5555-555555555555
   [ "$status" -eq 2 ]
   run pane-sight why
   [ "$status" -eq 2 ]
-  run pane-sight why "$U1"
-  [ "$status" -eq 2 ]
-  [[ "$output" == *"not built yet"* ]]
-  run pane-sight read alpha
-  [ "$status" -eq 2 ]
-  [[ "$output" == *"not built yet"* ]]
   run pane-sight shot alpha
   [ "$status" -eq 2 ]
   [[ "$output" == *"not built yet"* ]]
@@ -430,10 +445,336 @@ U5=55555555-5555-5555-5555-555555555555
 
 @test "pane-read and pane-shot are the same script" {
   run pane-read alpha
-  [ "$status" -eq 2 ]
-  [[ "$output" == *"read: not built yet"* ]]
+  [ "$status" -eq 4 ]
+  [[ "$output" == *"no pane named alpha"* ]]
   run pane-shot alpha
   [ "$status" -eq 2 ]
   [[ "$output" == *"shot: not built yet"* ]]
   [ "$(readlink "$BIN/pane-read")" = pane-sight ]
+}
+
+# --- read ----------------------------------------------------------------------------
+
+# peer_alpha: a running peer on ttys010, the terminal FAKE_TTY names.
+peer_alpha() {
+  wt="$MAIN/.claude/worktrees/alpha"; mkdir -p "$wt"
+  ps_row 90001 ttys010
+  pane_row alpha running 90001 "$MAIN" "$wt" "$U1" -
+}
+
+# lines <from> <to>: "line<n>" per row
+lines() { seq "$1" "$2" | sed 's/^/line/'; }
+
+# rd <args>: read with the summary line dropped
+rd() { pane-sight read "$@" 2>/dev/null; }
+
+# audit_rows: the audit log
+audit_rows() { cat "$HOME/.local/state/pane-sight/audit.log"; }
+
+@test "read prints the last 60 lines by default and --lines n of them; 0 and 501 are usage" {
+  peer_alpha
+  lines 1 100 > "$FAKE_SCREEN"
+  run --separate-stderr pane-sight read alpha
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 60 ]
+  [ "${lines[0]}" = line41 ]
+  [ "${lines[59]}" = line100 ]
+  [[ "$stderr" == *"pane-sight: alpha (peer-running): 60 of 100 lines, 0 masked"* ]]
+  run rd alpha --lines 5
+  [ "$output" = "$(lines 96 100)" ]
+  run rd --lines 2 alpha
+  [ "$output" = "$(lines 99 100)" ]
+  for bad in 0 501 abc -3 ''; do
+    run pane-sight read alpha --lines "$bad"
+    [ "$status" -eq 2 ]
+  done
+  run rd alpha --lines
+  [ "$status" -eq 2 ]
+  run pane-sight read
+  [ "$status" -eq 2 ]
+}
+
+@test "the blank rows under the last line of the screen are not counted" {
+  peer_alpha
+  printf 'one   \ntwo \t\n\n\n   \n' > "$FAKE_SCREEN"
+  run --separate-stderr pane-sight read alpha
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'one\ntwo')" ]
+  [[ "$stderr" == *"2 of 2 lines"* ]]
+  : > "$FAKE_SCREEN"
+  run --separate-stderr pane-sight read alpha
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"0 of 0 lines"* ]]
+  # it2 was asked to read the whole screen, never for a number of lines
+  ! grep -q -- '--lines' "$IT2_LOG" || { echo "it2 was given --lines"; false; }
+}
+
+@test "each mask: one positive and one near miss" {
+  peer_alpha
+  # secret-shaped fixtures are built in pieces so this file never trips tests/no-secrets.bats
+  gh1="gh""p_""abcdefghij0123456789abcd"
+  gh2="github""_pat_""abcdefghij0123456789abcd"
+  sk="sk-""abcdefghij0123456789abcd"
+  sl="xox""b-""1234567890-abcdef"
+  aws="AKI""A""ABCDEFGHIJKLMNOP"
+  jwt="eyJ""hbGciOiJI.eyJzdWIiOiIx.c2lnbmF0dXJl1"
+  {
+    echo "a $gh1 b"
+    echo "$gh2"
+    echo "k $sk"
+    echo "$sl"
+    echo "id $aws ok"
+    echo "t $jwt"
+    echo "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123"
+    echo "export API_TOKEN=abcd1234efgh5678ijkl"
+  } > "$FAKE_SCREEN"
+  run --separate-stderr pane-sight read alpha
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf '%s\n' 'a [masked:github] b' '[masked:github]' 'k [masked:key]' '[masked:slack]' \
+    'id [masked:aws] ok' 't [masked:jwt]' 'Authorization: Bearer [masked:bearer]' 'export API_TOKEN=[masked:value]')" ]
+  [[ "$stderr" == *"8 of 8 lines, 8 masked"* ]]
+  # near misses stay exactly as they were
+  {
+    echo "gh""p_short and github""_pat_short"
+    echo "sk-short"
+    echo "xox""b-12"
+    echo "AKI""A1234 and AKI""A""ABCDEFGHIJKLMNOPQ"
+    echo "eyJabc.def.ghi"
+    echo "the bearer of bad news"
+    echo "password: short"
+    echo "the token is mentioned in a sentence"
+    echo "secret=abcdefghijklmnopqrstuvwxyz"
+    echo "token = 12345678901234567890"
+    echo "-----BEGIN CERTIFICATE-----"
+  } > "$BATS_TEST_TMPDIR/near"
+  cp "$BATS_TEST_TMPDIR/near" "$FAKE_SCREEN"
+  run --separate-stderr pane-sight read alpha
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(cat "$BATS_TEST_TMPDIR/near")" ]
+  [[ "$stderr" == *"11 of 11 lines, 0 masked"* ]]
+}
+
+@test "a key block that runs off the screen is masked to the last line" {
+  peer_alpha
+  {
+    echo before
+    echo "-----BEGIN"" RSA PRIVATE"" KEY-----"
+    echo MIIEowIBAAKCAQEAxxxxxxxx
+    echo yyyyyyyyyyyyyyyyyyyyyyyy
+  } > "$FAKE_SCREEN"
+  run --separate-stderr pane-sight read alpha
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'before\n[masked:pem]')" ]
+  [[ "$stderr" == *", 1 masked"* ]]
+  # a block with its end is masked through it; a block that began above the window stays masked
+  {
+    echo "-----BEGIN"" PRIVATE"" KEY-----"
+    echo MIIEowIBAAKCAQEAxxxxxxxx
+    echo "-----END"" PRIVATE"" KEY-----"
+    echo after
+  } > "$FAKE_SCREEN"
+  run rd alpha --lines 1
+  [ "$output" = after ]
+  run rd alpha --lines 2
+  [ "$output" = "$(printf '[masked:pem]\nafter')" ]
+}
+
+@test "a refused pane: it2 is never run, exit 3, one refused row in the audit log" {
+  mk_session "$WORK" ledger "$MAIN" ttys016 "$U1"
+  echo "ledger secrets" > "$FAKE_SCREEN"
+  run --separate-stderr pane-sight read ledger
+  [ "$status" -eq 3 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"pane-sight: refused: octo-personal-main: its pane runs a Claude session of the work profile"* ]]
+  [ ! -s "$IT2_LOG" ]
+  [ ! -s "$DEFAULTS_LOG" ]
+  [ "$(audit_rows | wc -l)" -eq 1 ]
+  [ "$(audit_rows | cut -f2-5)" = "$(printf 'read\trefused:other-profile\tsession\toctopus-nothing' | sed 's/octopus-nothing/octo-personal-main/')" ]
+}
+
+@test "the audit row is written before the text; an audit log that cannot be written prints nothing and exits 1" {
+  peer_alpha
+  echo visible > "$FAKE_SCREEN"
+  CLAUDE_CODE_SESSION_ID=sess-1 run --separate-stderr pane-sight read alpha
+  [ "$status" -eq 0 ]
+  [ "$output" = visible ]
+  row=$(audit_rows)
+  [ "$(printf '%s\n' "$row" | awk -F'\t' '{ print NF }')" -eq 7 ]
+  [ "$(printf '%s\n' "$row" | cut -f2-7)" = "$(printf 'read\tok\tpeer-running\talpha\tsess-1\tlines=1 masked=0 noted=1')" ]
+  [[ "$(printf '%s\n' "$row" | cut -f1)" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+  [[ "$(ls -ld "$HOME/.local/state/pane-sight" | cut -c1-10)" == "drwx------" ]]
+  [[ "$(ls -l "$HOME/.local/state/pane-sight/audit.log" | cut -c1-10)" == "-rw-------" ]]
+  # a state directory that cannot be made: the text is never shown
+  : > "$BATS_TEST_TMPDIR/blocker"
+  XDG_STATE_HOME="$BATS_TEST_TMPDIR/blocker" run --separate-stderr pane-sight read alpha
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"cannot write $BATS_TEST_TMPDIR/blocker/pane-sight/audit.log; nothing was shown"* ]]
+}
+
+@test "the session id and the terminal must agree, or nothing is read" {
+  peer_alpha
+  echo secrets > "$FAKE_SCREEN"
+  FAKE_TTY='"\/dev\/ttys099"' run --separate-stderr pane-sight read alpha
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"iTerm2 says session $U1 is on /dev/ttys099, not /dev/ttys010; nothing was read"* ]]
+  ! grep -q 'session read' "$IT2_LOG" || { echo "it2 read the screen"; false; }
+  [[ "$(audit_rows)" == *$'\tread\tfailed:binding\t'* ]]
+  # a session iTerm2 no longer has answers nothing
+  FAKE_TTY='' run --separate-stderr pane-sight read alpha
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+@test "a pane under a suite is read with IT2_SUITE set and its own API switch; the default suite runs with IT2_SUITE unset even when the caller has one" {
+  mk_session "$PERSONAL" scribe "$MAIN" ttys010 "$U1" bench
+  echo hello > "$FAKE_SCREEN"
+  run rd scribe
+  [ "$status" -eq 0 ]
+  [ "$output" = hello ]
+  grep -q $'session read --session '"$U1"$'\tsuite=bench\t' "$IT2_LOG"
+  [ "$(grep -c 'suite=bench' "$IT2_LOG")" -eq "$(wc -l < "$IT2_LOG")" ]
+  grep -qx 'read bench EnableAPIServer' "$DEFAULTS_LOG"
+  # the default suite, with the caller itself in a suite
+  : > "$IT2_LOG"; : > "$DEFAULTS_LOG"
+  mk_session "$PERSONAL" plain "$MAIN" ttys010 "$U2"
+  kill "$(sed -n 1p "$BATS_TEST_TMPDIR/sleepers")"
+  rm "$PERSONAL/sessions/$(sed -n 1p "$BATS_TEST_TMPDIR/sleepers").json"
+  IT2_SUITE=other run pane-sight read plain
+  [ "$status" -eq 0 ]
+  [ -s "$IT2_LOG" ]
+  [ "$(grep -c $'\tsuite=\t' "$IT2_LOG")" -eq "$(wc -l < "$IT2_LOG")" ]
+  grep -qx 'read com.googlecode.iterm2 EnableAPIServer' "$DEFAULTS_LOG"
+}
+
+@test "the cookie: a fresh one is exported, a stale one is not, one already in the environment is kept" {
+  peer_alpha
+  echo hello > "$FAKE_SCREEN"
+  mkdir -p "$HOME/.local/state/iterm2" "$HOME/Library/Application Support/iTerm2/private"
+  ck="$HOME/.local/state/iterm2/api-cookie"
+  sock="$HOME/Library/Application Support/iTerm2/private/socket"
+  printf 'cookieword keyword\n' > "$ck"
+  touch -t 202001010000 "$sock"
+  run rd alpha
+  [ "$status" -eq 0 ]
+  grep -q $'cookie=cookieword$' "$IT2_LOG"
+  # stale: older than the socket
+  : > "$IT2_LOG"
+  touch -t 202001010000 "$ck"; touch "$sock"
+  run rd alpha
+  [ "$status" -eq 0 ]
+  [ -s "$IT2_LOG" ]
+  ! grep -q 'cookieword' "$IT2_LOG" || { echo "a stale cookie was exported"; false; }
+  # one already in the environment is kept, fresh file or not
+  : > "$IT2_LOG"
+  touch "$ck"; touch -t 202001010000 "$sock"
+  ITERM2_COOKIE=mine run pane-sight read alpha
+  [ "$status" -eq 0 ]
+  grep -q $'cookie=mine$' "$IT2_LOG"
+  ! grep -q 'cookieword' "$IT2_LOG" || { echo "the environment's cookie was replaced"; false; }
+}
+
+@test "the API is off: exit 1 naming the setting, it2 not run" {
+  peer_alpha
+  FAKE_API=0 run --separate-stderr pane-sight read alpha
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"iTerm2's API is off (Settings > General > Magic > Enable Python API)"* ]]
+  [ ! -s "$IT2_LOG" ]
+  [[ "$(audit_rows)" == *$'\tread\tfailed:it2\t'* ]]
+}
+
+@test "it2 does not answer: exit 1 after the limit" {
+  peer_alpha
+  PANE_SIGHT_TIMEOUT=1 FAKE_IT2_SLEEP=5 run --separate-stderr pane-sight read alpha
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"iTerm2 did not answer within 1s (an API permission prompt may be waiting in iTerm2)"* ]]
+}
+
+@test "a session id: readable when its terminal carries this profile's session; refused other-profile when it carries another's; refused no-directory when it carries none" {
+  export FAKE_TTY='"\/dev\/ttys050"'
+  echo idtext > "$FAKE_SCREEN"
+  # no session on the terminal, and path answers "Variable 'path' not set"
+  ps_row 90040 ttys050
+  run --separate-stderr pane-sight read "$U1"
+  [ "$status" -eq 3 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"refused: ${U1:0:8}: cannot tell which directory its pane is in"* ]]
+  ! grep -q 'session read' "$IT2_LOG" || { echo "a refused id was read"; false; }
+  # a session of this profile on that terminal
+  mk_session "$PERSONAL" scribe "$MAIN" ttys050 "$U2"
+  run pane-sight why "w3t1p0:$U1"
+  [ "$status" -eq 0 ]
+  [ "$(val kind)" = id ]
+  [ "$(val session)" = "$U1" ]
+  [ "$(val pid)" = - ]
+  [ "$(val tty)" = /dev/ttys050 ]
+  [ "$(val verdict)" = readable ]
+  run rd "$U1"
+  [ "$status" -eq 0 ]
+  [ "$output" = idtext ]
+  # a session of another profile on it
+  mk_session "$WORK" ledger "$MAIN" ttys050 "$U3"
+  run --separate-stderr pane-sight read "$U1"
+  [ "$status" -eq 3 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"its pane runs a Claude session of the work profile"* ]]
+  # a path iTerm2 does answer is used when it is a directory that exists
+  ps_row 90041 ttys051
+  FAKE_TTY='"\/dev\/ttys051"' FAKE_PATH="$MAIN" run pane-sight why "$U1"
+  [ "$status" -eq 0 ]
+  [ "$(val dir)" = "$MAIN" ]
+  FAKE_TTY='"\/dev\/ttys051"' FAKE_PATH="$MAIN/not-a-dir" run pane-sight why "$U1"
+  [ "$status" -eq 3 ]
+  [ "$(val dir)" = - ]
+  # iTerm2 has no such session
+  FAKE_TTY='' run pane-sight why "$U1"
+  [ "$status" -eq 4 ]
+  [[ "$output" == *"iTerm2 has no session $U1"* ]]
+}
+
+@test "a get-var answer as iTerm2 prints it, in quotes with escaped slashes, is decoded; an unquoted one is taken as printed; one that does not parse is empty" {
+  peer_alpha
+  echo hello > "$FAKE_SCREEN"
+  FAKE_TTY='"\/dev\/ttys010"' run pane-sight read alpha
+  [ "$status" -eq 0 ]
+  FAKE_TTY='/dev/ttys010' run pane-sight read alpha
+  [ "$status" -eq 0 ]
+  FAKE_TTY='"/dev/ttys010' run --separate-stderr pane-sight read alpha
+  [ "$status" -eq 1 ]
+  [[ "$stderr" == *"is on an unknown terminal, not /dev/ttys010"* ]]
+  FAKE_TTY='"\/dev\/ttys010"x' run --separate-stderr pane-sight read alpha
+  [ "$status" -eq 1 ]
+  FAKE_TTY='["\/dev\/ttys010"]' run --separate-stderr pane-sight read alpha
+  [ "$status" -eq 1 ]
+}
+
+@test "a peer read leaves one claude-peer log note, and no second one within ten minutes" {
+  peer_alpha
+  echo hello > "$FAKE_SCREEN"
+  export CLAUDE_CODE_SESSION_ID=sess-1
+  notes() { grep -c '^log note read of alpha' "$PEER_LOG" || true; }
+  run rd alpha
+  [ "$status" -eq 0 ]
+  [ "$(notes)" -eq 1 ]
+  grep -qx "log note read of alpha's pane" "$PEER_LOG"
+  run rd alpha
+  [ "$status" -eq 0 ]
+  [ "$(notes)" -eq 1 ]
+  [ "$(audit_rows | grep -c 'noted=1')" -eq 1 ]
+  # another caller is noted on its own
+  CLAUDE_CODE_SESSION_ID=sess-2 run pane-sight read alpha
+  [ "$(notes)" -eq 2 ]
+  # once the noted row is older than ten minutes the next read notes again
+  sed -i.bak '1s/^[^\t]*/2020-01-01T00:00:00Z/' "$HOME/.local/state/pane-sight/audit.log"
+  run rd alpha
+  [ "$(notes)" -eq 3 ]
+  # a session is not a peer: no note
+  mk_session "$PERSONAL" scribe "$MAIN" ttys010 "$U2"
+  run rd scribe
+  [ "$status" -eq 0 ]
+  [ "$(notes)" -eq 3 ]
 }

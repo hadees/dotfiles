@@ -20,7 +20,12 @@
 # and profile labels, never what a pane shows.
 #
 # The registry is every profile's `sessions/<pid>.json`, an observed layout as
-# in claude-tab. `read` and `shot` are not built yet.
+# in claude-tab. `shot` is not built yet.
+#
+# `read` prints one screen of text, never scrollback. Secret-shaped strings on it
+# are replaced and counted, never refused: the count (stderr, audit log) is what
+# tells the operator one is sitting on a terminal. Only two `it2` verbs are ever
+# run: `session read` and `session get-var`.
 #
 # Seams (tests): PANE_SIGHT_PEER, PANE_SIGHT_DENYGUARD, PANE_SIGHT_TABNAME,
 # PANE_SIGHT_FUNCTIONS, PANE_SIGHT_ZSH, PANE_SIGHT_IT2, PANE_SIGHT_PYTHON,
@@ -131,6 +136,24 @@ sessions_on() {
 # --- resolution --------------------------------------------------------------------
 
 t_kind= t_label= t_sid= t_suite=- t_tty= t_dir= t_pid=-
+UUID_RE='[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}'
+UUID_PREFIX='w[0-9]+t[0-9]+p[0-9]+[:.]'
+
+# A bare iTerm2 session id: its terminal and directory come from iTerm2, the
+# only calls made before scope. `path` is unset on this machine, so the
+# directory is usually empty and scope refuses it unless a session of this
+# profile is on the terminal.
+id_target() { # <name>
+  i_sid=$(printf '%s' "$1" | sed -E 's/^w[0-9]+t[0-9]+p[0-9]+[:.]//')
+  i_ans=$(it2_call session get-var tty --session "$i_sid"); it2_dead $?
+  i_tty=$(var_value "$i_ans")
+  case $i_tty in /dev/?*) ;; *) fail4 "iTerm2 has no session $i_sid" ;; esac
+  i_ans=$(it2_call session get-var path --session "$i_sid"); it2_dead $?
+  i_dir=$(var_value "$i_ans")
+  case $i_dir in /*) [ -d "$i_dir" ] || i_dir= ;; *) i_dir= ;; esac
+  t_kind=id t_label=$(printf '%s' "$i_sid" | cut -c1-8) t_sid=$i_sid t_suite=${IT2_SUITE:--}
+  t_tty=$i_tty t_dir=$i_dir t_pid=-
+}
 
 # A session row (pid, profile dir, cwd, name) becomes the target.
 session_target() { # <arg> <pid> <pdir> <cwd> <name>
@@ -179,6 +202,10 @@ EOF_REG
 # resolve <name>: sets t_*; otherwise prints the exit-4 line and exits 4.
 resolve() {
   name=$1
+  if printf '%s' "$name" | grep -Eiq "^($UUID_PREFIX)?$UUID_RE\$"; then
+    id_target "$name"
+    return 0
+  fi
   case $name in
     *[!0-9]*|'') ;;
     *)
@@ -302,16 +329,199 @@ EOF_D
 
 # --- audit ---------------------------------------------------------------------------
 
+clean_label() { printf '%s' "$t_label" | tr '\t\n\r' '   '; }
+
 # audit <verb> <result> <detail>: one row; non-zero when it could not be written.
 audit() {
-  c=$(printf '%s' "$t_label" | tr '\t\n\r' '   ')
+  c=$(clean_label)
   ( umask 077
     mkdir -p "$AUDIT_DIR" && chmod 700 "$AUDIT_DIR" &&
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$t_kind" "$c" \
       "${CLAUDE_CODE_SESSION_ID:--}" "$3" >> "$AUDIT" ) 2>/dev/null
 }
 
+# --- talking to iTerm2 -----------------------------------------------------------------
+# Only `it2 session read` and `it2 session get-var tty|path` are ever run.
+
+find_it2() {
+  f=${PANE_SIGHT_IT2:-}
+  [ -n "$f" ] || { f=$HOME/.config/iterm2/it2; [ -x "$f" ] || f=/Applications/iTerm.app/Contents/Resources/utilities/it2; }
+  [ -x "$f" ] && printf '%s\n' "$f"
+}
+
+# it2 under a time limit, in a process group of its own so the limit can kill all of it.
+RUN_PY='import os, signal, subprocess, sys
+it2, limit, args = sys.argv[1], int(sys.argv[2]), sys.argv[3:]
+p = subprocess.Popen([it2] + args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+try:
+    out, _ = p.communicate(timeout=limit)
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid, signal.SIGKILL)
+    p.communicate()
+    sys.exit(124)
+sys.stdout.buffer.write(out)
+sys.exit(p.returncode)'
+
+# it2_call <it2 args>: prints it2's stdout, returns its status. 124 is the time
+# limit, 125 is "cannot ask" (it2 missing, API off); both have said why.
+it2_call() {
+  ic_it2=$(find_it2)
+  [ -n "$ic_it2" ] || { say "it2 is missing (iTerm2 ships it in its Resources/utilities)"; return 125; }
+  ic_dom=com.googlecode.iterm2
+  [ "$t_suite" = - ] || ic_dom=$t_suite
+  [ "$(defaults read "$ic_dom" EnableAPIServer 2>/dev/null </dev/null)" = 1 ] ||
+    { say "iTerm2's API is off (Settings > General > Magic > Enable Python API)"; return 125; }
+  ic_lim=${PANE_SIGHT_TIMEOUT:-10}
+  case $ic_lim in ''|*[!0-9]*|0) ic_lim=10 ;; esac
+  (
+    if [ "$t_suite" = - ]; then
+      unset IT2_SUITE
+      # the shim's cookie clause: a cookie older than the socket is stale, never exported
+      ck=$HOME/.local/state/iterm2/api-cookie
+      if [ -z "${ITERM2_COOKIE-}" ] && [ -r "$ck" ] && [ "$ck" -nt "$SUPPORT/iTerm2/private/socket" ]; then
+        read -r c k < "$ck"
+        [ -z "$k" ] || { ITERM2_COOKIE=$c ITERM2_KEY=$k; export ITERM2_COOKIE ITERM2_KEY; }
+      fi
+    else
+      IT2_SUITE=$t_suite; export IT2_SUITE
+    fi
+    exec python3 -c "$RUN_PY" "$ic_it2" "$ic_lim" "$@"
+  )
+  ic_rc=$?
+  [ "$ic_rc" -ne 124 ] || say "iTerm2 did not answer within ${ic_lim}s (an API permission prompt may be waiting in iTerm2)"
+  return "$ic_rc"
+}
+
+# it2_dead <status of it2_call>: exits 1 when it could not ask or ran out of time.
+it2_dead() {
+  case $1 in 124|125) ;; *) return 0 ;; esac
+  case $verb in read|shot) audit "$verb" failed:it2 "" ;; esac
+  exit 1
+}
+
+# What `it2 session get-var` printed, as a value: a leading double quote means a
+# JSON string ("\/dev\/ttys010"); anything else is taken as printed. An answer
+# that does not parse is empty.
+VAR_PY='import json, sys
+s = sys.stdin.read().strip()
+if s.startswith(chr(34)):
+    try:
+        s = json.loads(s)
+    except ValueError:
+        s = ""
+    if not isinstance(s, str):
+        s = ""
+print(s)'
+var_value() { printf '%s' "$1" | python3 -c "$VAR_PY"; }
+
+# The scope was judged on the terminal and content is fetched by id: the two
+# must be the same pane.
+bind_check() {
+  b_ans=$(it2_call session get-var tty --session "$t_sid"); it2_dead $?
+  b_got=$(var_value "$b_ans")
+  [ "$b_got" = "$t_tty" ] && return 0
+  audit "$verb" failed:binding ""
+  say "iTerm2 says session $t_sid is on ${b_got:-an unknown terminal}, not $t_tty; nothing was read"
+  exit 1
+}
+
+# --- masking ---------------------------------------------------------------------------
+
+# stdin: the screen. stdout: "total TAB kept TAB masked", then the last <n> lines
+# with secret-shaped strings replaced. The key block goes first, on the whole
+# screen, so a block that starts above the window is masked too. A net that
+# counts and replaces; it never refuses. Patterns are built in pieces so this
+# file does not trip tests/no-secrets.bats.
+MASK_PY='import re, sys
+text = sys.stdin.buffer.read().decode("utf-8", "replace")
+n = int(sys.argv[1])
+lines = [l.rstrip() for l in text.split("\n")]
+while lines and not lines[-1]:
+    lines.pop()
+total = len(lines)
+count = 0
+def mask(rx, tag, s, group=0, keep=None):
+    def rep(m):
+        global count
+        if keep and not keep(m.group(group)):
+            return m.group(0)
+        count += 1
+        a, b = m.start(group) - m.start(0), m.end(group) - m.start(0)
+        return m.group(0)[:a] + "[masked:" + tag + "]" + m.group(0)[b:]
+    return rx.sub(rep, s)
+pem = re.compile("-----BEGIN" + "[A-Z0-9 ]*PRIVATE" + " KEY-----" + ".*?" + "(?:-----END" + "[A-Z0-9 ]*PRIVATE" + " KEY-----|\\Z)", re.S)
+both = lambda v: re.search("[A-Za-z]", v) and re.search("[0-9]", v)
+pats = [
+    (re.compile("\\b(?:gh[pousr]" + "_[A-Za-z0-9]{20,})"), "github", 0, None),
+    (re.compile("\\bgithub" + "_pat_[A-Za-z0-9_]{20,}"), "github", 0, None),
+    (re.compile("\\bsk-[A-Za-z0-9_-]{20,}"), "key", 0, None),
+    (re.compile("\\bxox[abprs]-[A-Za-z0-9-]{10,}"), "slack", 0, None),
+    (re.compile("\\b(?:AKIA|ASIA)[0-9A-Z]{16}\\b"), "aws", 0, None),
+    (re.compile("\\beyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}"), "jwt", 0, None),
+    (re.compile("\\bbearer\\s+([A-Za-z0-9._~+/=-]{20,})", re.I), "bearer", 1, None),
+    (re.compile("\\b[A-Za-z0-9_]*(?:password|passwd|secret|token|api[_-]?key)[A-Za-z0-9_]*\\s*[=:]\\s*[\"\\x27]?([A-Za-z0-9+/_.=-]{16,})", re.I), "value", 1, both),
+]
+lines = mask(pem, "pem", "\n".join(lines)).split("\n")
+while lines and not lines[-1]:
+    lines.pop()
+for i, l in enumerate(lines):
+    for rx, tag, group, keep in pats:
+        l = mask(rx, tag, l, group, keep)
+    lines[i] = l
+kept = lines[-n:]
+sys.stdout.buffer.write(("%d\t%d\t%d\n" % (total, len(kept), count) + "".join(l + "\n" for l in kept)).encode("utf-8", "replace"))'
+
+# note_due <verb>: 0 unless a row with noted=1 for this caller, label and verb is under 600 s old.
+note_due() {
+  nd_cut=$(python3 -c 'import time; print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 600)))') || return 0
+  nd_lab=$(clean_label)
+  ! awk -F'\t' -v v="$1" -v l="$nd_lab" -v c="${CLAUDE_CODE_SESSION_ID:--}" -v cut="$nd_cut" \
+    '$2 == v && $5 == l && $6 == c && $7 ~ /noted=1/ && $1 >= cut { f = 1 } END { exit !f }' "$AUDIT" 2>/dev/null
+}
+
 # --- verbs ---------------------------------------------------------------------------
+
+cmd_read() {
+  r_n=60 r_name=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --lines) [ $# -ge 2 ] || usage; r_n=$2; shift 2 ;;
+      -?*) usage ;;
+      *) [ -z "$r_name" ] || usage; r_name=$1; shift ;;
+    esac
+  done
+  [ -n "$r_name" ] || usage
+  case $r_n in ''|*[!0-9]*) usage ;; esac
+  { [ "$r_n" -ge 1 ] && [ "$r_n" -le 500 ]; } || usage
+  init
+  resolve "$r_name"
+  # scope is decided before iTerm2 is asked for any content
+  if ! scope; then
+    audit read "refused:$s_code" ""
+    say "$s_text"
+    exit 3
+  fi
+  [ "$t_kind" = id ] || bind_check
+  r_txt=$(it2_call session read --session "$t_sid"); r_rc=$?
+  it2_dead "$r_rc"
+  [ "$r_rc" -eq 0 ] || { audit read failed:read ""; say "it2 could not read $t_label's pane"; exit 1; }
+  r_res=$(printf '%s\n' "$r_txt" | python3 -c "$MASK_PY" "$r_n")
+  r_stats=$(printf '%s\n' "$r_res" | sed -n 1p)
+  [ -n "$r_stats" ] || { audit read failed:mask ""; say "could not mask the text; nothing was shown"; exit 1; }
+  r_total=$(printf '%s' "$r_stats" | cut -f1)
+  r_kept=$(printf '%s' "$r_stats" | cut -f2)
+  r_masked=$(printf '%s' "$r_stats" | cut -f3)
+  r_det="lines=$r_kept masked=$r_masked"
+  r_note=
+  case $t_kind in peer-*) note_due read && { r_note=1; r_det="$r_det noted=1"; } ;; esac
+  # the row first: a read that cannot be recorded shows nothing
+  audit read ok "$r_det" || { say "cannot write $AUDIT; nothing was shown"; exit 1; }
+  say "$t_label ($t_kind): $r_kept of $r_total lines, $r_masked masked"
+  [ "$r_kept" -eq 0 ] || printf '%s\n' "$r_res" | sed 1d
+  [ -z "$r_note" ] || [ ! -x "$PEER" ] || "$PEER" log note "read of $t_label's pane" >/dev/null 2>&1 </dev/null || true
+  exit 0
+}
 
 # init: the caller, its repository's panes, and the registry.
 init() {
@@ -325,9 +535,6 @@ init() {
 
 cmd_why() {
   [ $# -eq 1 ] || usage
-  if printf '%s' "$1" | grep -Eiq '^(w[0-9]+t[0-9]+p[0-9]+[:.])?[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$'; then
-    say "session ids are not built yet"; exit 2
-  fi
   init
   resolve "$1"
   scope; rc=$?
@@ -380,9 +587,7 @@ cmd_status() {
   line=
   case ${1-} in --line) line=1; shift ;; esac
   [ $# -eq 0 ] || usage
-  it2=${PANE_SIGHT_IT2:-}
-  [ -n "$it2" ] || { it2=$HOME/.config/iterm2/it2; [ -x "$it2" ] || it2=/Applications/iTerm.app/Contents/Resources/utilities/it2; }
-  [ -x "$it2" ] || it2=
+  it2=$(find_it2)
   py=${PANE_SIGHT_PYTHON:-}
   [ -n "$py" ] || py=$(first_exe "$SUPPORT"/iTerm2/iterm2env/versions/*/bin/python3 "$SUPPORT"/iTerm2/uv/venvs/*/bin/python3)
   [ -x "$py" ] || py=
@@ -425,7 +630,8 @@ case $verb in
 esac
 need_macos
 case $verb in
-  read|shot) say "$verb: not built yet"; exit 2 ;;
+  read) cmd_read "$@" ;;
+  shot) say "$verb: not built yet"; exit 2 ;;
   why) cmd_why "$@" ;;
   list) cmd_list "$@" ;;
   status) cmd_status "$@" ;;
