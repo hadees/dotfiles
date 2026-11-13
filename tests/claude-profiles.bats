@@ -217,7 +217,13 @@ JSON
   # memoryguard itself needs a real python3 (see setup).
   [ -n "$REAL_PYTHON3" ] || skip "python3 not installed"
   mkdir -p "$HOME/bin" "$HOME/.claude-personal"
-  doctor() { run zsh -c "export PATH='$HOME/bin':\$PATH; source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"; }
+  # A memoryguard already deployed on this machine would answer for the fake
+  # HOME's log: keep only PATH entries that hold none.
+  local d dirs clean=
+  IFS=: read -ra dirs <<< "$PATH"
+  for d in "${dirs[@]}"; do [ -x "$d/memoryguard" ] || clean="$clean:$d"; done
+  export MG_PATH="$HOME/bin$clean"
+  doctor() { run zsh -c "export PATH=\"\$MG_PATH\"; source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"; }
 
   # Nothing deployed, nothing wired.
   doctor
