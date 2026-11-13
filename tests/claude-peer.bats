@@ -18,6 +18,9 @@ setup() {
   fi
   # Run inside a peer slot or a Claude session, the suite must not inherit either.
   unset CLAUDE_PEER_WORKTREE CLAUDE_PEER_SELF CLAUDE_PID CLAUDE_CODE_SESSION_ID
+  # Run from an iTerm2 tab, a real session id would put sockets under the real look
+  # directory.
+  unset ITERM_SESSION_ID CLAUDE_PEER_LOOK
   export HOME="$BATS_TEST_TMPDIR/home"
   # a runner or a shell that exports XDG_CONFIG_HOME would put the script's
   # config root outside the sandbox
@@ -61,6 +64,7 @@ STUB
 teardown() {
   local p
   for p in $PANES; do kill "$p" 2>/dev/null || true; done
+  case ${CLAUDE_PEER_LOOK-} in /tmp/cpl.*) rm -rf "$CLAUDE_PEER_LOOK";; esac
 }
 
 @test "run: creates the worktree, cd's into it, execs an interactive shell" {
@@ -2449,6 +2453,107 @@ before() {
   until_ok '! kill -0 $pp 2>/dev/null'
   for k in $kids; do until_ok "! kill -0 $k 2>/dev/null"; done
   [ -z "$(ls "$REPO/.git/claude-peer.wait")" ]
+}
+
+# lookfix: a look directory of its own (a socket path is at most 104 bytes: the sandbox
+# HOME is too long), the marker in it, and a session id; removed by teardown
+LOOKID=11111111-2222-3333-4444-555555555555
+lookfix() {
+  CLAUDE_PEER_LOOK=$(mktemp -d /tmp/cpl.XXXXXX)
+  export CLAUDE_PEER_LOOK ITERM_SESSION_ID=w0t0p0:$LOOKID
+  echo variable >"$CLAUDE_PEER_LOOK/kind"
+}
+
+@test "sleeper look: with the marker and a session id fzf listens, starts unbound, and rotates by itself" {
+  hellofix
+  fzfstub
+  lookfix
+  git config --global claude-peer.picker fzf
+  CLAUDE_PEER_SIZE='40 120' FAKE_FZF_SLEEP=30 pane alpha
+  until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+  w=$REPO/.git/claude-peer.wait/alpha.$LAST_PANE
+  [ "$(tail -n 1 "$FAKE_FZF_LOG")" = '--bind=every(1):change-with-nth(2|3|4|5)' ]
+  local a
+  for a in "--listen=$CLAUDE_PEER_LOOK/$LOOKID.sock" '--bind=start:unbind(every(1))' --ansi --header-lines=11 --with-nth=2; do
+    [ "$(grep -cxF -- "$a" "$FAKE_FZF_LOG")" -eq 1 ]
+  done
+  [ "$(grep -c -- '^--header=\|--with-shell\|bg-transform\|rebind' "$FAKE_FZF_LOG")" -eq 0 ]
+  local r=$FAKE_FZF_LOG.rows k n=2
+  [ "$(awk -F'\t' 'NR <= 11 && (NF != 6 || $1 != "-")' "$r" | wc -l | tr -d ' ')" -eq 0 ]
+  for k in 0 1 2 3 still; do
+    [ "$(sed -n 1,11p "$r" | cut -f$n)" = "$(cat "$w.frame.$k")" ]
+    n=$((n + 1))
+  done
+  [ "$(sed -n '12,$p' "$r" | cut -f1)" = "$(cut -f1 "$w.rows")" ]
+  for n in 2 3 4 5 6; do
+    [ "$(sed -n '12,$p' "$r" | cut -f$n)" = "$(cut -f2 "$w.rows")" ]
+  done
+}
+
+@test "sleeper look: a pane that opens while it is the one looked at starts bound" {
+  hellofix
+  fzfstub
+  lookfix
+  git config --global claude-peer.picker fzf
+  echo "$LOOKID" >"$CLAUDE_PEER_LOOK/focus"
+  fzfsize '40 120'
+  [ "$(grep -c 'start:unbind' "$FAKE_FZF_LOG")" -eq 0 ]
+  [ "$(grep -cxF -- "--listen=$CLAUDE_PEER_LOOK/$LOOKID.sock" "$FAKE_FZF_LOG")" -eq 1 ]
+  [ "$(tail -n 1 "$FAKE_FZF_LOG")" = '--bind=every(1):change-with-nth(2|3|4|5)' ]
+}
+
+@test "sleeper look: without the marker, without a session id, with a malformed one, with art-seconds set, or with a path over 100 bytes it is today's timer" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  local how
+  for how in marker id malformed seconds long; do
+    lookfix
+    case $how in
+      marker) rm "$CLAUDE_PEER_LOOK/kind";;
+      id) unset ITERM_SESSION_ID;;
+      malformed) export ITERM_SESSION_ID=w0t0p0:not-a-session-id;;
+      seconds) git config --global claude-peer.art-seconds 5;;
+      long) mkdir "$CLAUDE_PEER_LOOK/$(printf 'a%.0s' $(seq 1 60))"
+            echo variable >"$CLAUDE_PEER_LOOK/$(printf 'a%.0s' $(seq 1 60))/kind"
+            CLAUDE_PEER_LOOK=$CLAUDE_PEER_LOOK/$(printf 'a%.0s' $(seq 1 60));;
+    esac
+    fzfsize '40 120'
+    [ "$(grep -c '^--bind=every(1):bg-transform:' "$FAKE_FZF_LOG")" -eq 1 ] || { echo "$how: no timer"; return 1; }
+    [ "$(grep -c '^--header=' "$FAKE_FZF_LOG")" -eq 1 ] || { echo "$how: no header"; return 1; }
+    [ "$(grep -c -- '--listen' "$FAKE_FZF_LOG")" -eq 0 ] || { echo "$how: listens"; return 1; }
+    git config --global --unset claude-peer.art-seconds || true
+    case $CLAUDE_PEER_LOOK in /tmp/cpl.*/*) CLAUDE_PEER_LOOK=${CLAUDE_PEER_LOOK%/*};; esac
+    rm -rf "$CLAUDE_PEER_LOOK"
+  done
+}
+
+@test "sleeper look: art-seconds 0 or the art off holds still and listens to nothing" {
+  hellofix
+  fzfstub
+  lookfix
+  git config --global claude-peer.picker fzf
+  local how
+  for how in seconds off; do
+    case $how in seconds) git config --global claude-peer.art-seconds 0;; off) git config --global --unset claude-peer.art-seconds; git config --global claude-peer.art false;; esac
+    fzfsize '40 120'
+    [ "$(grep -c -- '--listen\|every(1)' "$FAKE_FZF_LOG")" -eq 0 ]
+  done
+}
+
+@test "sleeper look: a killed pane takes its socket path with it" {
+  hellofix
+  fzfstub
+  lookfix
+  git config --global claude-peer.picker fzf
+  CLAUDE_PEER_SIZE='40 120' FAKE_FZF_SLEEP=30 pane alpha
+  pp=$LAST_PANE
+  until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+  : >"$CLAUDE_PEER_LOOK/$LOOKID.sock"
+  [ -f "$REPO/.git/claude-peer.wait/alpha.$pp.frame.feed" ]
+  kill "$pp"
+  until_ok '[ ! -e "$CLAUDE_PEER_LOOK/$LOOKID.sock" ]'
+  until_ok '[ ! -e "$REPO/.git/claude-peer.wait/alpha.$pp.frame.feed" ]'
 }
 
 @test "sleeper: a repository name too long for the block is cut, the label never" {
