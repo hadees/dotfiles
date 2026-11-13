@@ -169,7 +169,13 @@ Ctrl-C) removes its wait file and leaves a plain shell, anything else asks
 again; when the session ends for any reason the claim goes
 and the pane waits again, so a pane never ends. A waiting pane owns
 `<git common dir>/claude-peer.wait/<slot>.<pid>` (line 1 the leader's
-directory); the next pane to register deletes the files of dead pids. Outside a
+directory); the next pane to register deletes the files of dead pids. Right after
+it, a pane writes `<slot>.<pid>.term`, a sidecar of that file: line 1 is
+`ITERM_SESSION_ID` with its leading `w<n>t<n>p<n>:` removed, line 2 `IT2_SUITE`, each `-` when
+unset or empty. It stays while a session runs and goes with the pane, and `waiters`
+skips it. `claude-peer panes [<dir>]` prints
+`slot<TAB>running|waiting<TAB>pid<TAB>leader<TAB>worktree<TAB>session id<TAB>suite` per live
+pane of the repository, and `-` and `-` for a pane opened before the file existed. Outside a
 repository the pane prints one line and leaves a plain shell. `git config
 claude-peer.start auto` (read in the starting directory; the public repo sets it
 nowhere) makes a pane settle `CLAUDE_PEER_SETTLE` seconds (default 2, 0
