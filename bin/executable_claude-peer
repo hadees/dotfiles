@@ -194,6 +194,10 @@
 #   art --screen [--slot <slot>]
 #                            the quiet waiting screen, padded as a pane pads it,
 #                            for this terminal or CLAUDE_PEER_SIZE
+#   look gained|lost <session id>
+#                            the pane of that iTerm2 session is now looked at /
+#                            no longer is: its picker starts or stops moving;
+#                            always exits 0, silent
 #
 # Exit codes of start and stop: 0 done; 1 failed; 2 usage; 3 already in
 # the requested state; 4 nothing to act on; 5 refused because busy.
@@ -2677,6 +2681,38 @@ cmd_art() {
   rm -rf "$ar_d"
 }
 
+# Tell a waiting pane's fzf (socket of session <id> in the look directory) to run
+# <action>. A socket that does not answer is left alone: removing it here could
+# unlink the socket of an fzf that is just starting.
+look_post() {
+  look_ok "$1" && [ -S "$lk_d/$1.sock" ] || return 0
+  curl -s -o /dev/null -m 1 --unix-socket "$lk_d/$1.sock" -X POST -d "$2" http://localhost/ || :
+}
+
+# gained|lost <session id>: what iTerm2's trigger calls when the session now looked
+# at changes. Always exit 0 and print nothing, whatever happens: iTerm2 posts a
+# notification for a failed command and logs its output. A burst of calls (one tab
+# switch fires 1-4, a stale id may come between) ends with the last id bound.
+cmd_look() {
+  case ${1-} in gained|lost) ;; *) usage;; esac
+  {
+    lk_d=$(look_dir) lk_id=${2-} lk_old=
+    [ -d "$lk_d" ] && look_ok "$lk_id" || return 0
+    [ ! -r "$lk_d/focus" ] || read -r lk_old <"$lk_d/focus" || :
+    case $1 in
+      gained)
+        [ "$lk_old" != "$lk_id" ] || return 0
+        printf '%s\n' "$lk_id" >"$lk_d/focus.$$" && mv -f "$lk_d/focus.$$" "$lk_d/focus"
+        look_post "$lk_old" 'unbind(every(1))'
+        look_post "$lk_id" 'rebind(every(1))';;
+      lost)
+        [ "$lk_old" != "$lk_id" ] || { : >"$lk_d/focus.$$" && mv -f "$lk_d/focus.$$" "$lk_d/focus"; }
+        look_post "$lk_id" 'unbind(every(1))';;
+    esac
+  } >/dev/null 2>&1
+  return 0
+}
+
 [ $# -ge 1 ] || usage
 cmd=$1; shift
 case $cmd in
@@ -2700,6 +2736,7 @@ case $cmd in
   status) cmd_status "$@";;
   context) cmd_context "$@";;
   art) cmd_art "$@";;
+  look) cmd_look "$@";;
   -h|--help|help) usage;;
   *) warn "unknown command '$cmd'"; usage;;
 esac

@@ -2556,6 +2556,103 @@ lookfix() {
   until_ok '[ ! -e "$REPO/.git/claude-peer.wait/alpha.$pp.frame.feed" ]'
 }
 
+# lookcurl: a curl that logs its arguments and exits FAKE_CURL_RC; looksock <id>: a socket
+# file that nothing listens on; looklog: the curl calls as `<id> <action>` lines
+lookcurl() {
+  mkdir -p "$BATS_TEST_TMPDIR/curlbin"
+  printf '#!/bin/sh\necho "$*" >>"$FAKE_CURL_LOG"\nexit "${FAKE_CURL_RC:-0}"\n' >"$BATS_TEST_TMPDIR/curlbin/curl"
+  chmod +x "$BATS_TEST_TMPDIR/curlbin/curl"
+  export PATH="$BATS_TEST_TMPDIR/curlbin:$PATH" FAKE_CURL_LOG="$BATS_TEST_TMPDIR/curl.log"
+}
+looksock() { python3 -I -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])' "$CLAUDE_PEER_LOOK/$1.sock"; }
+looklog() { [ ! -f "$FAKE_CURL_LOG" ] || sed -E 's/.*--unix-socket [^ ]*\/([^/ ]*)\.sock .* -d ([^ ]*) .*/\1 \2/' "$FAKE_CURL_LOG"; }
+LOOKID2=22222222-3333-4444-5555-666666666666
+
+@test "look gained: the first one writes focus and binds that pane; a repeat does nothing" {
+  lookfix; lookcurl; looksock "$LOOKID"
+  run --separate-stderr sh "$BIN" look gained "$LOOKID"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  [ "$(cat "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID" ]
+  [ "$(looklog)" = "$LOOKID rebind(every(1))" ]
+  sh "$BIN" look gained "$LOOKID"
+  [ "$(looklog | wc -l | tr -d ' ')" -eq 1 ]
+}
+
+@test "look gained: the pane looked at before is unbound first, then the new one bound" {
+  lookfix; lookcurl; looksock "$LOOKID"; looksock "$LOOKID2"
+  sh "$BIN" look gained "$LOOKID"
+  sh "$BIN" look gained "$LOOKID2"
+  [ "$(cat "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID2" ]
+  [ "$(looklog)" = "$LOOKID rebind(every(1))
+$LOOKID unbind(every(1))
+$LOOKID2 rebind(every(1))" ]
+}
+
+@test "look gained: a burst A, B, A, B, stale and repeated ids included, ends with only B bound" {
+  lookfix; lookcurl; looksock "$LOOKID"; looksock "$LOOKID2"
+  local i
+  for i in "$LOOKID" "$LOOKID2" "$LOOKID" "$LOOKID2" "$LOOKID2"; do sh "$BIN" look gained "$i"; done
+  [ "$(cat "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID2" ]
+  [ "$(looklog)" = "$LOOKID rebind(every(1))
+$LOOKID unbind(every(1))
+$LOOKID2 rebind(every(1))
+$LOOKID2 unbind(every(1))
+$LOOKID rebind(every(1))
+$LOOKID unbind(every(1))
+$LOOKID2 rebind(every(1))" ]
+}
+
+@test "look gained: a session that is not a waiting pane still takes the focus, and the old pane stops" {
+  lookfix; lookcurl; looksock "$LOOKID"
+  sh "$BIN" look gained "$LOOKID"
+  sh "$BIN" look gained "$LOOKID2"
+  [ "$(cat "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID2" ]
+  [ "$(looklog | tail -n 1)" = "$LOOKID unbind(every(1))" ]
+  [ "$(looklog | wc -l | tr -d ' ')" -eq 2 ]
+}
+
+@test "look lost: the focused session empties focus and is unbound; another session's lost leaves focus alone" {
+  lookfix; lookcurl; looksock "$LOOKID"; looksock "$LOOKID2"
+  sh "$BIN" look gained "$LOOKID"
+  sh "$BIN" look lost "$LOOKID2"
+  [ "$(cat "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID" ]
+  sh "$BIN" look lost "$LOOKID"
+  [ -z "$(cat "$CLAUDE_PEER_LOOK/focus")" ]
+  [ "$(looklog | tail -n 2)" = "$LOOKID2 unbind(every(1))
+$LOOKID unbind(every(1))" ]
+  [ ! -e "$CLAUDE_PEER_LOOK/focus.$$" ]
+}
+
+@test "look: an empty id, a malformed id, a damaged focus file, a missing directory and a failing curl are all exit 0 with no output, and a socket that did not answer is still there" {
+  lookfix; lookcurl; looksock "$LOOKID"
+  local v args
+  for args in "gained" "gained ''" "gained not-an-id" "lost not-an-id" "gained ../../etc/passwd"; do
+    run --separate-stderr eval "sh '$BIN' look $args"
+    [ "$status" -eq 0 ] && [ -z "$output" ] && [ -z "$stderr" ] || { echo "$args: $status $output $stderr"; return 1; }
+  done
+  [ ! -e "$CLAUDE_PEER_LOOK/focus" ]
+  [ -z "$(looklog)" ]
+  # a damaged focus file must not name a path
+  echo ../../x >"$CLAUDE_PEER_LOOK/focus"
+  run --separate-stderr sh "$BIN" look gained "$LOOKID"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  [ "$(looklog)" = "$LOOKID rebind(every(1))" ]
+  # a curl that fails, a socket that does not answer
+  FAKE_CURL_RC=7 run --separate-stderr sh "$BIN" look gained "$LOOKID2"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  [ -S "$CLAUDE_PEER_LOOK/$LOOKID.sock" ]
+  # a missing directory
+  CLAUDE_PEER_LOOK=$BATS_TEST_TMPDIR/nodir run --separate-stderr sh "$BIN" look gained "$LOOKID"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+}
+
+@test "look: an unknown word is a usage error" {
+  run sh "$BIN" look
+  [ "$status" -eq 2 ]
+  run sh "$BIN" look on
+  [ "$status" -eq 2 ]
+}
+
 @test "sleeper: a repository name too long for the block is cut, the label never" {
   local long=a-repository-name-of-forty-characters-x
   long=${long}y
