@@ -219,9 +219,11 @@ JSON
   mkdir -p "$HOME/bin" "$HOME/.claude-personal"
   # A memoryguard already deployed on this machine would answer for the fake
   # HOME's log: keep only PATH entries that hold none.
-  local clean
-  clean=$(IFS=:; for d in $PATH; do [ -x "$d/memoryguard" ] || printf ':%s' "$d"; done)
-  doctor() { run zsh -c "export PATH='$HOME/bin'$clean; source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"; }
+  local d dirs clean=
+  IFS=: read -ra dirs <<< "$PATH"
+  for d in "${dirs[@]}"; do [ -x "$d/memoryguard" ] || clean="$clean:$d"; done
+  export MG_PATH="$HOME/bin$clean"
+  doctor() { run zsh -c "export PATH=\"\$MG_PATH\"; source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"; }
 
   # Nothing deployed, nothing wired.
   doctor
