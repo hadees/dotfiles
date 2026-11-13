@@ -637,6 +637,22 @@ leader_profile() {
 # One `claude-peer peers` row: worktree, pid ($2, default 4242), leader, label.
 claim_line() { printf '%s\t%s\t%s\t%s\n' "$1" "${2:-4242}" "$WORK" "${1##*/}"; }
 
+@test "hook prompt: the up line says who started the peer, from its claim's by field" {
+  leader_profile; peer_stub
+  wt="$HOME/code/alpha"; mkdir -p "$wt"
+  reg "$CLAUDE_CONFIG_DIR" "$wt" PeerA "$(mksock a.sock)"
+  export FAKE_CLAIMS="$(claim_line "$wt")"
+  FAKE_CLAIM="by\tpane" run payload '{"cwd":"'"$WORK"'","session_id":"s1"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha; started by the operator) is up; SendMessage reaches it." ]
+  FAKE_CLAIM="by\tLead\nlead-pid\t4243" run payload '{"cwd":"'"$WORK"'","session_id":"s2"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha; started by Lead) is up; SendMessage reaches it." ]
+  FAKE_CLAIM="by\t-" run payload '{"cwd":"'"$WORK"'","session_id":"s3"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha; started by the operator) is up; SendMessage reaches it." ]
+  # `claude-peer start` typed in a plain shell there: by Lead, but no Lead pid
+  FAKE_CLAIM="by\tLead\nlead-pid\t-" run payload '{"cwd":"'"$WORK"'","session_id":"s4"}' hook prompt
+  [ "$output" = "postbox: Claude Peers: PeerA (alpha; started by the operator) is up; SendMessage reaches it." ]
+}
+
 @test "hook start: a non-peer without a native inbox socket is told, and told to tell the operator" {
   leader_profile
   unset CLAUDE_CODE_MESSAGING_SOCKET
