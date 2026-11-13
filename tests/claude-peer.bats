@@ -2427,6 +2427,9 @@ before() {
   COLORTERM=truecolor FAKE_FZF_OUT=$'\n\n@fresh\tfresh     A new session, no prompt\n' FAKE_SHELL_SLEEP=1 pane beta
   until_ok 'grep -qx "Beta" "$BATS_TEST_TMPDIR/pane-beta.out"'
   [ "$(grep -c '48;2;15;15;15' "$BATS_TEST_TMPDIR/pane-beta.out")" -eq 0 ]
+  # that pane opens its picker again when its session ends, a second from now: it
+  # goes first, or its fzf call can be the stub's first below and take the canned pick
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
   # one slot in the pool, held by another leader: the pick is refused and nothing wakes
   git config --global claude-peer.slots gamma
   hold gamma
