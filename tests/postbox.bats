@@ -76,9 +76,10 @@ STUB
   # courier's relay, which hands the prompt over stdin) what it was told.
   cat > "$BIN/claude" <<'STUB'
 #!/bin/sh
-printf '%s\t%s\n' "${CLAUDE_CONFIG_DIR:-unset}" "$*" >> "$CLAUDE_LOG"
+# stdin first: a line in $CLAUDE_LOG is what wait_relays counts, so it must mean done
 [ -t 0 ] || cat >> "$CLAUDE_LOG.stdin"
 printf '\n' >> "$CLAUDE_LOG.stdin"
+printf '%s\t%s\n' "${CLAUDE_CONFIG_DIR:-unset}" "$*" >> "$CLAUDE_LOG"
 exit 0
 STUB
   cat > "$BIN/uname" <<'STUB'
