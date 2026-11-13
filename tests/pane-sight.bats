@@ -53,16 +53,19 @@ STUB
 printf '%s\n' "$*" >> "${DEFAULTS_LOG:-/dev/null}"
 printf '%s\n' "${FAKE_API:-1}"
 STUB
-  # ps: from the table file, "pid TAB tty TAB command" per line
-  export PS_TABLE="$BATS_TEST_TMPDIR/ps-table"
-  : > "$PS_TABLE"
+  # ps: from the table file, "pid TAB tty TAB ucomm TAB command" per line; every
+  # call is logged
+  export PS_TABLE="$BATS_TEST_TMPDIR/ps-table" PS_LOG="$BATS_TEST_TMPDIR/ps-log"
+  : > "$PS_TABLE"; : > "$PS_LOG"
   cat > "$BIN/ps" <<'STUB'
 #!/bin/sh
+printf '%s\n' "$*" >> "$PS_LOG"
 for last; do :; done
 case "$*" in
   *"-o tty= -p "*) awk -F'\t' -v p="$last" '$1 == p { print $2; exit }' "$PS_TABLE" ;;
-  *"-o pid= -t "*) awk -F'\t' -v t="$last" '$2 == t { printf "%5s\n", $1 }' "$PS_TABLE" ;;
-  *"-Eww -o command= -p "*) awk -F'\t' -v p="$last" '$1 == p { print $3; exit }' "$PS_TABLE" ;;
+  *"-o pid=,ucomm= -t "*) awk -F'\t' -v t="$last" '$2 == t { printf "%5s %s\n", $1, $3 }' "$PS_TABLE" ;;
+  *"-Eww -o pid=,command= -t "*) awk -F'\t' -v t="$last" '$2 == t { printf "%5s %s\n", $1, $4 }' "$PS_TABLE" ;;
+  *"-Eww -o command= -p "*) awk -F'\t' -v p="$last" '$1 == p { print $4; exit }' "$PS_TABLE" ;;
 esac
 exit 0
 STUB
@@ -167,11 +170,19 @@ mk_session() {
   local env=''
   [ -z "${5-}" ] || env="ITERM_SESSION_ID=w0t0p0:$5"
   [ -z "${6-}" ] || env="$env IT2_SUITE=$6"
-  printf '%s\t%s\tclaude --resume %s\n' "$SPID" "$4" "$env" >> "$PS_TABLE"
+  printf '%s\t%s\tclaude\tclaude --resume %s\n' "$SPID" "$4" "$env" >> "$PS_TABLE"
 }
 
-# ps_row <pid> <tty>: a process with a terminal and nothing to show in its environment.
-ps_row() { printf '%s\t%s\tsh\n' "$1" "$2" >> "$PS_TABLE"; }
+# end_session <profile dir> <pid>: the session ends, its process leaves the terminal.
+end_session() {
+  kill "$2"; rm "$1/sessions/$2.json"
+  grep -v "^$2"$'\t' "$PS_TABLE" > "$PS_TABLE.new" || true
+  mv "$PS_TABLE.new" "$PS_TABLE"
+}
+
+# ps_row <pid> <tty> [<ucomm> [<command with its environment>]]: a process with a
+# terminal; by default a shell with nothing to show in its environment.
+ps_row() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "${3:-sh}" "${4:-sh}" >> "$PS_TABLE"; }
 
 # pane_row <slot> <running|waiting> <pid> <leader> <worktree> <session id> <suite>
 pane_row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@" >> "$PANES_FILE"; }
@@ -670,8 +681,7 @@ audit_rows() { cat "$HOME/.local/state/pane-sight/audit.log"; }
   # the default suite, with the caller itself in a suite
   : > "$IT2_LOG"; : > "$DEFAULTS_LOG"
   mk_session "$PERSONAL" plain "$MAIN" ttys010 "$U2"
-  kill "$(sed -n 1p "$BATS_TEST_TMPDIR/sleepers")"
-  rm "$PERSONAL/sessions/$(sed -n 1p "$BATS_TEST_TMPDIR/sleepers").json"
+  end_session "$PERSONAL" "$(sed -n 1p "$BATS_TEST_TMPDIR/sleepers")"
   IT2_SUITE=other run pane-sight read plain
   [ "$status" -eq 0 ]
   [ -s "$IT2_LOG" ]
@@ -961,7 +971,7 @@ sh_() { pane-sight shot "$@" 2>/dev/null; }
   [ "$(cat "$RT_LOG")" = "$(printf '%s\tsuite=bench' "$U1")" ]
   [ "$(grep -c 'suite=bench' "$IT2_LOG")" -eq "$(wc -l < "$IT2_LOG")" ]
   : > "$RT_LOG"
-  kill "$SPID"; rm "$PERSONAL/sessions/$SPID.json"
+  end_session "$PERSONAL" "$SPID"
   mk_session "$PERSONAL" plain "$MAIN" ttys010 "$U2"
   IT2_SUITE=other run sh_ plain
   [ "$status" -eq 0 ]
@@ -991,4 +1001,162 @@ sh_() { pane-sight shot "$@" 2>/dev/null; }
   run pane-sight shot alpha --out
   [ "$status" -eq 2 ]
   [ ! -s "$RT_LOG" ]
+}
+
+# --- who is on the terminal -------------------------------------------------------------
+
+# pin_dir <name>: a profile directory outside every claude.profile.* pin, named only
+# by a per-repo pin (a profile started by directory); its path.
+pin_dir() {
+  local d="$HOME/profiles/$1"
+  mkdir -p "$d/sessions"
+  git config --file "$GIT_CONFIG_GLOBAL" "claude.octo-personal/$1.profile" "$d"
+  printf '%s\n' "$d"
+}
+
+# no_it2_read: nothing was read from iTerm2.
+no_it2_read() { ! grep -q 'session read' "$IT2_LOG" || { echo "a refused pane was read"; false; }; }
+
+@test "a session of a profile directory named only by a per-repo pin is refused other-profile, with that directory's label" {
+  d="$(pin_dir pinned-dir)"
+  mk_session "$d" ledger "$MAIN" ttys060 "$U1"
+  run pane-sight why ledger
+  [ "$status" -eq 3 ]
+  [ "$(val verdict)" = "refused: other-profile" ]
+  [[ "$output" == *"its pane runs a Claude session of the pinned-dir profile; this session is personal"* ]]
+  run --separate-stderr pane-read ledger
+  [ "$status" -eq 3 ]
+  [ -z "$output" ]
+  no_it2_read
+}
+
+@test "a Claude process under a directory no config names is refused other-profile from its environment alone" {
+  ps_row 91001 ttys061 claude "claude CLAUDE_CONFIG_DIR=$HOME/elsewhere/prof ITERM_SESSION_ID=w0t0p0:$U1"
+  pane_row alpha waiting 91001 "$MAIN" "$MAIN/.claude/worktrees/alpha" "$U1" -
+  run pane-sight why alpha
+  [ "$status" -eq 3 ]
+  [ "$(val verdict)" = "refused: other-profile" ]
+  [[ "$output" == *"its pane runs a Claude session of the prof profile; this session is personal"* ]]
+  run --separate-stderr pane-read alpha
+  [ "$status" -eq 3 ]
+  no_it2_read
+}
+
+@test "a child of such a session is enough: the claude process's own environment hidden, the variable on a child refuses" {
+  ps_row 91002 ttys062 claude "claude --resume"
+  ps_row 91003 ttys062 node "node server.js CLAUDE_CONFIG_DIR=$HOME/elsewhere/prof"
+  pane_row alpha waiting 91002 "$MAIN" "$MAIN/.claude/worktrees/alpha" "$U1" -
+  run pane-sight why alpha
+  [ "$status" -eq 3 ]
+  [ "$(val verdict)" = "refused: other-profile" ]
+  [[ "$output" == *"of the prof profile"* ]]
+}
+
+@test "a process named claude that this profile's registry does not hold, with no environment shown, is refused unknown-session and the line names its pid" {
+  ps_row 91004 ttys063 claude "claude --resume"
+  pane_row alpha waiting 91004 "$MAIN" "$MAIN/.claude/worktrees/alpha" "$U1" -
+  run pane-sight why alpha
+  [ "$status" -eq 3 ]
+  [ "$(val verdict)" = "refused: unknown-session" ]
+  [[ "$output" == *"pane-sight: refused: Alpha: its pane runs a Claude process (pid 91004) that is not a session of this profile (personal)"* ]]
+  run --separate-stderr pane-read alpha
+  [ "$status" -eq 3 ]
+  no_it2_read
+  # a process that only has claude in its name is not one
+  ps_row 91008 ttys067 claudette "claudette --resume"
+  pane_row beta waiting 91008 "$MAIN" "$MAIN/.claude/worktrees/beta" "$U2" -
+  run pane-sight why beta
+  [ "$status" -eq 0 ]
+}
+
+@test "this profile's own session with its children (the same directory in their environment, helpers named node) is readable, and the deny check runs on the session's cwd" {
+  mk_session "$PERSONAL" scribe "$MAIN" ttys064 "$U1"
+  ps_row 91005 ttys064 node "node mcp.js CLAUDE_CONFIG_DIR=$PERSONAL"
+  ps_row 91006 ttys064 'Google Chrome He' "Google Chrome Helper CLAUDE_CONFIG_DIR=$PERSONAL"
+  run pane-sight why scribe
+  [ "$status" -eq 0 ]
+  [ "$(val verdict)" = readable ]
+  secret="$(mk_repo octo-secret octo-personal/secret)"
+  printf '{"permissions": {"deny": ["Read(~/code/octo-secret/**)"]}}\n' > "$PERSONAL/settings.json"
+  mk_session "$PERSONAL" vault "$secret" ttys065 "$U2"
+  ps_row 91009 ttys065 node "node mcp.js CLAUDE_CONFIG_DIR=$PERSONAL"
+  run pane-sight why vault
+  [ "$status" -eq 3 ]
+  [ "$(val verdict)" = "refused: denied" ]
+}
+
+@test "the default profile as caller: its own session, with no variable anywhere, is readable; a terminal whose processes carry another directory is refused" {
+  unset CLAUDE_CONFIG_DIR CLAUDE_PROFILE
+  mkdir -p "$HOME/.claude/sessions"
+  mk_session "$HOME/.claude" scribe "$MAIN" ttys066 "$U1"
+  run pane-sight why scribe
+  [ "$status" -eq 0 ]
+  [ "$(val verdict)" = readable ]
+  ps_row 91010 ttys066 node "node mcp.js CLAUDE_CONFIG_DIR=$PERSONAL"
+  run pane-sight why scribe
+  [ "$status" -eq 3 ]
+  [ "$(val verdict)" = "refused: other-profile" ]
+  [[ "$output" == *"of the personal profile; this session is default"* ]]
+}
+
+@test "a trailing slash or a dot-dot in the variable is not a difference" {
+  mk_session "$PERSONAL" scribe "$MAIN" ttys067 "$U1"
+  ps_row 91011 ttys067 node "node a.js CLAUDE_CONFIG_DIR=$PERSONAL/"
+  ps_row 91012 ttys067 node "node b.js CLAUDE_CONFIG_DIR=$PERSONAL/sessions/.."
+  run pane-sight why scribe
+  [ "$status" -eq 0 ]
+  [ "$(val verdict)" = readable ]
+  CLAUDE_CONFIG_DIR="$PERSONAL/sessions/../" run pane-sight why scribe
+  [ "$status" -eq 0 ]
+  [ "$(val verdict)" = readable ]
+}
+
+@test "a terminal with no Claude process and no variable goes to the deny list and the route exactly as before" {
+  secret="$(mk_repo octo-secret octo-personal/secret)"
+  printf '{"permissions": {"deny": ["Read(~/code/octo-secret/**)"]}}\n' > "$PERSONAL/settings.json"
+  pinned="$(mk_repo octo-personal-pinned octo-personal/pinned)"
+  git config --file "$GIT_CONFIG_GLOBAL" claude.octo-personal/pinned.profile work-account
+  ps_row 91013 ttys068; ps_row 91014 ttys069; ps_row 91015 ttys070
+  pane_row alpha waiting 91013 "$MAIN" "$MAIN/.claude/worktrees/alpha" "$U1" -
+  pane_row beta waiting 91014 "$secret" "$secret/.claude/worktrees/beta" "$U2" -
+  pane_row gamma waiting 91015 "$pinned" "$pinned/.claude/worktrees/gamma" "$U3" -
+  run pane-sight why alpha
+  [ "$status" -eq 0 ]
+  run pane-sight why beta
+  [ "$(val verdict)" = "refused: denied" ]
+  run pane-sight why gamma
+  [ "$(val verdict)" = "refused: other-route" ]
+}
+
+@test "list names the pin-directory session with its profile and refused: other-profile" {
+  d="$(pin_dir pinned-dir)"
+  mk_session "$d" ledger "$MAIN" ttys071 "$U1"
+  run pane-sight list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ledger"$'\t'"session"$'\t'"$SPID"$'\t'"pinned-dir"$'\t'"refused: other-profile"* ]]
+}
+
+@test "a pin naming a mapped account adds nothing; a pin naming a directory that does not exist is skipped; a tilde pin is read" {
+  # a directory called work-account sits in the current directory; the pin that
+  # names the account must not turn it into a profile
+  mk_session "$MAIN/work-account" bystander "$MAIN" ttys072 "$U1"
+  git config --file "$GIT_CONFIG_GLOBAL" claude.octo-personal/x.profile work-account
+  git config --file "$GIT_CONFIG_GLOBAL" claude.octo-personal/y.profile "$HOME/not-there"
+  mkdir -p "$HOME/profiles/tilde-dir/sessions"
+  git config --file "$GIT_CONFIG_GLOBAL" claude.octo-personal/z.profile '~/profiles/tilde-dir'
+  mk_session "$HOME/profiles/tilde-dir" ledger "$MAIN" ttys073 "$U2"
+  run pane-sight list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ledger"$'\t'"session"$'\t'"$SPID"$'\t'"tilde-dir"$'\t'"refused: other-profile"* ]]
+  [[ "$output" != *"bystander"* ]]
+}
+
+@test "scope asks ps about the terminal twice and no more" {
+  mk_session "$PERSONAL" scribe "$MAIN" ttys074 "$U1"
+  : > "$PS_LOG"
+  run pane-sight why scribe
+  [ "$status" -eq 0 ]
+  [ "$(grep -c ' -t ' "$PS_LOG")" -eq 2 ]
+  grep -qx -- '-o pid=,ucomm= -t ttys074' "$PS_LOG"
+  grep -qx -- '-Eww -o pid=,command= -t ttys074' "$PS_LOG"
 }

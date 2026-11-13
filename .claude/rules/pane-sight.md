@@ -82,15 +82,37 @@ with no session behind it has no directory and is refused `no-directory`. A
 Scope is decided on the pane's terminal before iTerm2 is asked for any content
 (for a bare id the two `get-var` calls are the only ones before it):
 
-1. any live session on the terminal in another profile directory is refused
-   `other-profile`;
-2. the directories of those sessions, or the target's own with none, must pass
-   `denyguard check --profile <caller>` (one definition of that boundary);
-   exit 1 is `denied`, any other status or no executable is `deny-unknown`;
-3. with no session on the terminal, the profile `claude` would use in that
-   directory is asked of the wrapper's own `claude_profile_dir` in a zsh of its
-   own: another profile is `other-route`, no answer is `route-unknown`;
+1. **evidence of somebody else's Claude on the terminal** refuses, any one of
+   three kinds, from the registry of every profile directory (the caller's,
+   the default one, each `claude.profile.*` value and each per-repo
+   `claude.<owner>/<repo>.profile` pin whose value is a directory: a profile
+   started by `CLAUDE_PROFILE=<dir>` or `claude-as <dir>` is in none of the
+   others) and from two `ps` calls on the terminal (`-o pid=,ucomm=` and
+   `-Eww -o pid=,command=`):
+   - a registry row of another directory whose pid is on the terminal is
+     `other-profile`, with that directory's label;
+   - a process on the terminal whose environment shows a `CLAUDE_CONFIG_DIR`
+     (the last such word, normalised) that is not the caller's is
+     `other-profile` too. A session's children carry the variable, so this
+     holds even where `ps` hides the `claude` process's own environment, and
+     it finds a profile directory no config names;
+   - a process whose `ucomm` is exactly `claude` and that is not one of this
+     profile's own registry rows is `unknown-session`, whose line names its
+     pid. A session that is still starting is refused for a moment;
+2. the directories of this profile's own sessions on the terminal, or the
+   target's own with none, must pass `denyguard check --profile <caller>` (one
+   definition of that boundary); exit 1 is `denied`, any other status or no
+   executable is `deny-unknown`;
+3. with none of this profile's sessions on the terminal, the profile `claude`
+   would use in that directory is asked of the wrapper's own
+   `claude_profile_dir` in a zsh of its own: another profile is `other-route`,
+   no answer is `route-unknown`;
 4. an empty directory is `no-directory`.
+
+**Left open by design, for rule 1:** a Claude Code whose process is not named
+`claude`, under a profile directory nothing names, where `ps` shows no
+environment; and a `CLAUDE_CONFIG_DIR` whose value holds a space, which `ps`
+splits into words, so it is read cut at the space.
 
 **Every doubt refuses**, for `denyguard`'s reason: a check that could not run
 and was read as a pass is the failure that matters. There is no bypass flag; a

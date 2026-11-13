@@ -13,7 +13,9 @@
 #
 # A name is a claude-peer slot, a session name, a tabname label or a pid.
 # Scope is decided on the pane's terminal before iTerm2 is asked for anything:
-# a terminal that carries a Claude session of another profile is refused, a
+# a terminal that carries a Claude session of another profile (by a registry
+# row, by a CLAUDE_CONFIG_DIR in any process's environment, or by a process named
+# claude that this profile's registry does not hold) is refused, a
 # directory this profile's deny list covers is refused (denyguard), and a
 # terminal with no session in a directory that routes to another profile is
 # refused. Every doubt refuses. `why` and `list` print names, pids, directories
@@ -59,16 +61,29 @@ need_macos() {
 
 norm() { python3 -c 'import os,sys; print(os.path.normpath(os.path.expanduser(sys.argv[1])))' "$1"; }
 
-# Every Claude profile directory that exists, one per line (as claude-tab).
+# Every Claude profile directory that exists, one per line, normalised and
+# de-duplicated: the caller's, the default one, each `claude.profile.*` value (as
+# claude-tab), each per-repo pin whose value is itself a directory (a profile
+# started by directory: `claude.<owner>/<repo>.profile` may name one), and the
+# lines of $EXTRA_DIRS.
+PD_PY='import os, sys
+seen = set()
+for d in sys.stdin.read().split("\n"):
+    if d.startswith("~/"):
+        d = os.environ["HOME"] + d[1:]
+    if not d or not os.path.isdir(d):
+        continue
+    d = os.path.normpath(d)
+    if d not in seen:
+        seen.add(d)
+        print(d)'
 profile_dirs() {
   { printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
     printf '%s\n' "$HOME/.claude"
     git config --get-regexp '^claude\.profile\.' 2>/dev/null | cut -d' ' -f2-
-  } | while IFS= read -r d; do
-        [ -n "$d" ] || continue
-        case $d in "~/"*) d="$HOME/${d#\~/}" ;; esac
-        [ -d "$d" ] && printf '%s\n' "$d"
-      done
+    git config --get-regexp '^claude\..+\.profile$' 2>/dev/null | cut -d' ' -f2- | grep -E '^(/|~/)'
+    printf '%s\n' "${EXTRA_DIRS-}"
+  } | python3 -c "$PD_PY"
 }
 
 profile_label() {
@@ -133,10 +148,31 @@ dir_label() { [ -x "$TABNAME" ] && "$TABNAME" "$1" 2>/dev/null </dev/null | sed 
 # <slot> with its first letter upper-cased.
 cap() { printf '%s' "$1" | awk '{ print toupper(substr($0, 1, 1)) substr($0, 2) }'; }
 
-# Rows of $REG for the pids that own <tty>.
-sessions_on() {
-  p=$(ps -o pid= -t "${1#/dev/}" 2>/dev/null | awk '{ printf " %s", $1 } END { print " " }')
-  printf '%s\n' "$REG" | awk -F'\t' -v p="$p" 'NF && index(p, " " $1 " ")'
+# The processes of a terminal, from two ps calls: pid TAB ucomm TAB the directory
+# its environment names in CLAUDE_CONFIG_DIR (the last such word; "-" for none).
+# The ucomm column can hold spaces. ps hides some environments, so scope does not
+# rest on this alone.
+TTYP_PY='import os, re, sys
+names, envs = {}, {}
+for l in os.environ.get("PS_NAMES", "").split("\n"):
+    m = re.match(r"\s*(\d+)\s+(.*?)\s*$", l)
+    if m:
+        names[m.group(1)] = m.group(2)
+for l in os.environ.get("PS_ENVS", "").split("\n"):
+    m = re.match(r"\s*(\d+)\s+(.*)$", l)
+    if not m:
+        continue
+    words = [w for w in m.group(2).split() if w.startswith("CLAUDE_CONFIG_DIR=")]
+    v = words[-1][len("CLAUDE_CONFIG_DIR="):] if words else None
+    if v is not None and not v:
+        v = os.path.join(os.environ["HOME"], ".claude")
+    envs[m.group(1)] = os.path.normpath(os.path.expanduser(v)) if v is not None else "-"
+for pid in list(names) + [p for p in envs if p not in names]:
+    print("%s\t%s\t%s" % (pid, names.get(pid, "-"), envs.get(pid, "-")))'
+tty_procs() { # <tty>
+  PS_NAMES=$(ps -o pid=,ucomm= -t "${1#/dev/}" 2>/dev/null </dev/null) \
+  PS_ENVS=$(ps -Eww -o pid=,command= -t "${1#/dev/}" 2>/dev/null </dev/null) \
+    python3 -c "$TTYP_PY"
 }
 
 # --- resolution --------------------------------------------------------------------
@@ -292,19 +328,33 @@ route_of() { # <dir>
 refuse() { s_code=$1 s_text="refused: $t_label: $2"; return 3; }
 
 # scope: reads t_*; returns 0, or sets s_code and s_text and returns 3.
-# Nothing here asks iTerm2 anything.
+# Nothing here asks iTerm2 anything. P is the terminal's processes and M this
+# profile's own registry rows among them. Evidence of somebody else's Claude, any
+# one of which refuses: a registry row of another directory; an environment naming
+# another CLAUDE_CONFIG_DIR (a session's children carry it even where ps hides the
+# claude process's own); a process named exactly claude that M does not hold.
 scope() {
   s_code= s_text= s_prof=-
-  S=$(sessions_on "$t_tty")
-  if [ -n "$S" ]; then
-    s_prof=$(profile_label "$(printf '%s\n' "$S" | sed -n 1p | cut -f2)")
-    other=$(printf '%s\n' "$S" | awk -F'\t' -v c="$CALLER" '$2 != c { print $2; exit }')
-    if [ -n "$other" ]; then
-      s_prof=$(profile_label "$other")
-      refuse other-profile "its pane runs a Claude session of the $s_prof profile; this session is $OWN"
-      return 3
-    fi
-    D=$(printf '%s\n' "$S" | cut -f3)
+  PROCS=$(tty_procs "$t_tty")
+  p_pids=$(printf '%s\n' "$PROCS" | awk -F'\t' 'NF { printf " %s", $1 } END { print " " }')
+  ON=$(printf '%s\n' "$REG" | awk -F'\t' -v p="$p_pids" 'NF && index(p, " " $1 " ")')
+  M=$(printf '%s\n' "$ON" | awk -F'\t' -v c="$CALLER" 'NF && $2 == c')
+  other=$(printf '%s\n' "$ON" | awk -F'\t' -v c="$CALLER" 'NF && $2 != c { print $2; exit }')
+  [ -n "$other" ] || other=$(printf '%s\n' "$PROCS" | awk -F'\t' -v c="$CALLER" 'NF && $3 != "-" && $3 != c { print $3; exit }')
+  if [ -n "$other" ]; then
+    s_prof=$(profile_label "$other")
+    refuse other-profile "its pane runs a Claude session of the $s_prof profile; this session is $OWN"
+    return 3
+  fi
+  m_pids=$(printf '%s\n' "$M" | awk -F'\t' 'NF { printf " %s", $1 } END { print " " }')
+  unknown=$(printf '%s\n' "$PROCS" | awk -F'\t' -v m="$m_pids" 'NF && $2 == "claude" && !index(m, " " $1 " ") { print $1; exit }')
+  if [ -n "$unknown" ]; then
+    refuse unknown-session "its pane runs a Claude process (pid $unknown) that is not a session of this profile ($OWN)"
+    return 3
+  fi
+  if [ -n "$M" ]; then
+    s_prof=$OWN
+    D=$(printf '%s\n' "$M" | cut -f3)
   else
     D=$t_dir
   fi
@@ -320,7 +370,7 @@ scope() {
   done <<EOF_D
 $D
 EOF_D
-  if [ -z "$S" ]; then
+  if [ -z "$M" ]; then
     ans=$(route_of "$t_dir") || ans=
     case $ans in
       same) ;;
