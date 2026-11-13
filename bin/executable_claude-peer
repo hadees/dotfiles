@@ -14,9 +14,9 @@
 #
 # Two more Workgroups, not extra peers on the builtin Claude Code one: peers
 # spawn eagerly when a workgroup is entered, and the builtin is entered on
-# every claude job. `Claude Peers` is Lead and the panes Alpha, Beta, Gamma; a
-# pane waits (below), so entering it on every claude job costs three blocked
-# shells, not three Claudes. `Claude Peers + Hermes` is the same plus a Hermes
+# every claude job. `Claude Peers` is Lead and the panes Alpha, Beta, Gamma, Delta, Epsilon; a
+# pane waits (below), so entering it on every claude job costs five blocked
+# shells, not five Claudes. `Claude Peers + Hermes` is the same plus a Hermes
 # pane, a twin because a pane cannot remove itself from a workgroup: where no
 # Hermes profile routes the directory the other definition must be the one
 # entered. There is no Diff peer. Which one a tab enters is the claude()
@@ -149,7 +149,7 @@
 #   plan <branch>...         branch<TAB>worktree<TAB>create|reuse|conflict:<why>
 #                            per branch, exit 1 on any conflict
 #   workgroup                print the "Claude Peers" Workgroup definition JSON
-#                            (Lead, Alpha, Beta, Gamma) that install would write
+#                            (Lead, Alpha … Epsilon) that install would write
 #   install                  write that and "Claude Peers + Hermes" (the same
 #                            plus a Hermes pane) into iTerm2's preferences;
 #                            iTerm2 must be quit. With private overlays on this
@@ -430,7 +430,7 @@ rname_of() { printf '%s' "${1##*/}" | tr -c 'A-Za-z0-9._-' '-'; }
 settle() { st=${CLAUDE_PEER_SETTLE:-2}; [ "$st" -gt 0 ] && sleep "$st"; return 0; }
 
 # The words of claude-peer.slots (read where the caller stands), else the default
-# pool. Its first three are the bar's names. Dies on a word that is not a slot.
+# pool. Its first five are the bar's names. Dies on a word that is not a slot.
 pool_words() {
   pw=$(git config --get claude-peer.slots 2>/dev/null) || pw=
   [ -n "$pw" ] || pw=$POOL_DEFAULT
@@ -439,7 +439,7 @@ pool_words() {
 }
 
 # repo own pool -> the slot line of the first slot that can be taken, claimed:
-# own, then the pool from its fourth name on, then its first three. A slot with a
+# own, then the pool from its sixth name on, then its first five. A slot with a
 # live claim is skipped; one that cannot be made says why (stderr) and is skipped.
 # Exit 3 and one line when none can. Under the repo lock, taken once.
 pool_checkout() {
@@ -455,7 +455,7 @@ pool_pick() {
   pk_order=$pk_own pk_i=0 pk_n=0 pk_first=
   for s in $3; do
     pk_n=$((pk_n + 1)); pk_i=$((pk_i + 1))
-    if [ "$pk_i" -le 3 ]; then pk_first="$pk_first $s"
+    if [ "$pk_i" -le 5 ]; then pk_first="$pk_first $s"
     elif [ "$s" != "$pk_own" ]; then pk_order="$pk_order $s"; fi
   done
   for s in $pk_first; do [ "$s" = "$pk_own" ] || pk_order="$pk_order $s"; done
@@ -2152,13 +2152,13 @@ def session(ident, name, kind, command="", items=None, parent=None):
     return s
 
 def build_base(prefix):
-    """Lead and the three slot panes, ids under prefix. A pane waits (--wait):
+    """Lead and the five slot panes, ids under prefix. A pane waits (--wait):
     nothing starts in it until Return or `claude-peer start`."""
     root = prefix + ".main"
     return [session(root, "Lead", "root", items=[{"kind": "modeSwitcher"}, {"kind": "gitStatus"}])] + [
         session("%s.%s" % (prefix, slot), slot.capitalize(), "peer",
                 "claude-peer run --as %s --wait" % slot, parent=root)
-        for slot in ("alpha", "beta", "gamma")]
+        for slot in ("alpha", "beta", "gamma", "delta", "epsilon")]
 
 def with_hermes(group):
     """The twin of a definition with a Hermes pane: id <id>.h (claudePeer.h for
@@ -2469,7 +2469,7 @@ cmd_default() {
   f=$(enter_file)
   if [ "$1" = peers ]; then
     mkdir -p "${f%/*}" && printf 'peers\n' >"$f" || die "cannot write $f"
-    printf 'claude-peer: claude() now picks the workgroup of each tab (Claude Peers: Alpha, Beta and Gamma wait until started); the claude job trigger is disabled; %s\n' "$r"
+    printf 'claude-peer: claude() now picks the workgroup of each tab (Claude Peers: Alpha to Epsilon wait until started); the claude job trigger is disabled; %s\n' "$r"
   else
     rm -f "$f"
     printf 'claude-peer: a claude job now enters Claude Code; the variable triggers are gone; %s\n' "$r"

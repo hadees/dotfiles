@@ -719,12 +719,12 @@ hold() {
   [ "$(shell_runs)" -eq 1 ]
 }
 
-@test "the pool: a taken name sends the pane to the pool's fourth, and says so" {
+@test "the pool: a taken name sends the pane to the pool's sixth, and says so" {
   hold alpha
   pane alpha
   press alpha ''
-  until_ok 'grep -q "claude-peer proj-delta\$" "$FAKE_SHELL_LOG"'
-  grep -qF "Delta (this pane's Alpha is in use by the peers of $REPO/sub)" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  until_ok 'grep -q "claude-peer proj-zeta\$" "$FAKE_SHELL_LOG"'
+  grep -qF "Zeta (this pane's Alpha is in use by the peers of $REPO/sub)" "$BATS_TEST_TMPDIR/pane-alpha.out"
   [ ! -e "$REPO/.claude/worktrees/beta" ]
 }
 
@@ -1071,41 +1071,41 @@ groups() {
 # pyget <json> <python expression over g>
 pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(eval(sys.argv[2]))' "$1" "$2"; }
 
-@test "workgroup: Claude Peers is four sessions in order, Lead the root, no Diff, no Hermes" {
+@test "workgroup: Claude Peers is six sessions in order, Lead the root, no Diff, no Hermes" {
   mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist" run sh "$BIN" workgroup
   [ "$status" -eq 0 ]
   [ "$(pyget "$output" '[g["uniqueIdentifier"], g["name"]]')" = "['claudePeer.workgroup', 'Claude Peers']" ]
-  [ "$(pyget "$output" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.main', 'claudePeer.alpha', 'claudePeer.beta', 'claudePeer.gamma']" ]
-  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma']" ]
+  [ "$(pyget "$output" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.main', 'claudePeer.alpha', 'claudePeer.beta', 'claudePeer.gamma', 'claudePeer.delta', 'claudePeer.epsilon']" ]
+  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon']" ]
   [ "$(pyget "$output" 'g["sessions"][0]["kind"]')" = "{'kind': 'root'}" ]
-  [ "$(pyget "$output" '[s["command"] for s in g["sessions"]]')" = "['', 'claude-peer run --as alpha --wait', 'claude-peer run --as beta --wait', 'claude-peer run --as gamma --wait']" ]
+  [ "$(pyget "$output" '[s["command"] for s in g["sessions"]]')" = "['', 'claude-peer run --as alpha --wait', 'claude-peer run --as beta --wait', 'claude-peer run --as gamma --wait', 'claude-peer run --as delta --wait', 'claude-peer run --as epsilon --wait']" ]
   # the fixture builtin's root has a third item; nothing is copied from it
   [ "$(pyget "$output" '[i["kind"] for i in g["sessions"][0]["toolbarItems"]]')" = "['modeSwitcher', 'gitStatus']" ]
-  [ "$(pyget "$output" '[s["toolbarItems"] for s in g["sessions"][1:]]')" = "[[{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}]]" ]
-  [ "$(pyget "$output" '[s["kind"]["kind"] for s in g["sessions"][1:]]')" = "['peer', 'peer', 'peer']" ]
-  [ "$(pyget "$output" '[s["parentID"] for s in g["sessions"][1:]]')" = "['claudePeer.main', 'claudePeer.main', 'claudePeer.main']" ]
+  [ "$(pyget "$output" '[s["toolbarItems"] for s in g["sessions"][1:]]')" = "[[{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}]]" ]
+  [ "$(pyget "$output" '[s["kind"]["kind"] for s in g["sessions"][1:]]')" = "['peer', 'peer', 'peer', 'peer', 'peer']" ]
+  [ "$(pyget "$output" '[s["parentID"] for s in g["sessions"][1:]]')" = "['claudePeer.main', 'claudePeer.main', 'claudePeer.main', 'claudePeer.main', 'claudePeer.main']" ]
   [ "$(pyget "$output" 'any(s["mode"] != "regular" or "profileGUID" in s or s["urlString"] or s["perFileCommand"] or "hermes" in s["command"] for s in g["sessions"])')" = False ]
 }
 
 @test "workgroup: reads no store, so none needs to exist" {
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/absent.plist" run sh "$BIN" workgroup
   [ "$status" -eq 0 ]
-  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma']" ]
+  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon']" ]
 }
 
-@test "install: Claude Peers + Hermes is the same four under claudePeer.h plus Hermes last" {
+@test "install: Claude Peers + Hermes is the same six under claudePeer.h plus Hermes last" {
   stubs
   mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist" sh "$BIN" install >/dev/null
   g=$(groups "$BATS_TEST_TMPDIR/prefs.plist")
   h=$(python3 -I -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1])[2]))' "$g")
   [ "$(pyget "$h" '[g["uniqueIdentifier"], g["name"]]')" = "['claudePeer.h', 'Claude Peers + Hermes']" ]
-  [ "$(pyget "$h" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.h.main', 'claudePeer.h.alpha', 'claudePeer.h.beta', 'claudePeer.h.gamma', 'claudePeer.h.hermes']" ]
-  [ "$(pyget "$h" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Hermes']" ]
+  [ "$(pyget "$h" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.h.main', 'claudePeer.h.alpha', 'claudePeer.h.beta', 'claudePeer.h.gamma', 'claudePeer.h.delta', 'claudePeer.h.epsilon', 'claudePeer.h.hermes']" ]
+  [ "$(pyget "$h" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Hermes']" ]
   [ "$(pyget "$h" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.h.main'}" ]
   [ "$(pyget "$h" 'g["sessions"][-1]["command"]')" = "claude-peer hermes --wait" ]
-  [ "$(pyget "$h" '[s["command"] for s in g["sessions"][1:4]]')" = "['claude-peer run --as alpha --wait', 'claude-peer run --as beta --wait', 'claude-peer run --as gamma --wait']" ]
+  [ "$(pyget "$h" '[s["command"] for s in g["sessions"][1:6]]')" = "['claude-peer run --as alpha --wait', 'claude-peer run --as beta --wait', 'claude-peer run --as gamma --wait', 'claude-peer run --as delta --wait', 'claude-peer run --as epsilon --wait']" ]
   [ "$(pyget "$h" 'g["sessions"][0]["kind"]')" = "{'kind': 'root'}" ]
 }
 
@@ -1180,8 +1180,8 @@ pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(ev
   [[ "$output" == *"iterm2: running"* ]]
   sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (4 sessions: Lead, Alpha, Beta, Gamma)"* ]]
-  [[ "$output" == *"hermes: installed (5 sessions: Lead, Alpha, Beta, Gamma, Hermes)"* ]]
+  [[ "$output" == *"workgroup: installed (6 sessions: Lead, Alpha, Beta, Gamma, Delta, Epsilon)"* ]]
+  [[ "$output" == *"hermes: installed (7 sessions: Lead, Alpha, Beta, Gamma, Delta, Epsilon, Hermes)"* ]]
   FAKE_OS=Linux run sh "$BIN" status
   [[ "$output" == *"status needs macOS"* ]]
   FAKE_OS=Linux run sh "$BIN" install
@@ -1204,12 +1204,12 @@ pl["Workgroups"] = json.dumps(groups).encode()
 plistlib.dump(pl, open(sys.argv[1], "wb"))
 PY
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed, out of date (6 sessions: Chat, Diff, Chat 2, Chat 3, Chat 4, Hermes); this version defines 4 (Lead, Alpha, Beta, Gamma)"* ]]
+  [[ "$output" == *"workgroup: installed, out of date (6 sessions: Chat, Diff, Chat 2, Chat 3, Chat 4, Hermes); this version defines 6 (Lead, Alpha, Beta, Gamma, Delta, Epsilon)"* ]]
   [[ "$output" == *"hermes: not installed"* ]]
   CLAUDE_PEER_PREFS="$FAKE_DOMAIN" sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (4 sessions: "* ]]
-  [[ "$output" == *"hermes: installed (5 sessions: "* ]]
+  [[ "$output" == *"workgroup: installed (6 sessions: "* ]]
+  [[ "$output" == *"hermes: installed (7 sessions: "* ]]
   [[ "$output" != *"out of date"* ]]
 }
 
@@ -1222,7 +1222,7 @@ PY
   # install into the folder with iTerm2 quit; the domain stays as it was
   sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (4 sessions: Lead, Alpha, Beta, Gamma)"* ]]
+  [[ "$output" == *"workgroup: installed (6 sessions: Lead, Alpha, Beta, Gamma, Delta, Epsilon)"* ]]
   FAKE_PROCS=iTerm2 run sh "$BIN" status
   [[ "$output" == *"workgroup: not installed"* ]]
   [[ "$output" == *"hermes: not installed"* ]]
@@ -3112,8 +3112,8 @@ obg() {
   until_ok 'grep -q "claude-peer ov1-overlay\$" "$FAKE_SHELL_LOG"'
   FAKE_SHELL_SLEEP=2 opane fake1 "$OV1" "$REPO/sub" b
   press b ''
-  until_ok 'grep -q "claude-peer ov1-delta\$" "$FAKE_SHELL_LOG"'
-  grep -qF "Delta (this pane's Fake1 is in use by the peers of $REPO)" "$BATS_TEST_TMPDIR/pane-b.out"
+  until_ok 'grep -q "claude-peer ov1-zeta\$" "$FAKE_SHELL_LOG"'
+  grep -qF "Zeta (this pane's Fake1 is in use by the peers of $REPO)" "$BATS_TEST_TMPDIR/pane-b.out"
 }
 
 @test "overlay: an unknown name, and an overlay deleted after listing, are one line and a plain shell" {
@@ -3231,16 +3231,16 @@ ov_prefs() {
   o=$(pyget "$g" 'json.dumps(g[3])'); oh=$(pyget "$g" 'json.dumps(g[4])'); h=$(pyget "$g" 'json.dumps(g[2])')
   [ "$(pyget "$o" 'g["name"]')" = "Claude Peers + Overlays" ]
   [ "$(pyget "$oh" 'g["name"]')" = "Claude Peers + Hermes + Overlays" ]
-  [ "$(pyget "$o" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Overlay 1', 'Overlay 2']" ]
-  [ "$(pyget "$oh" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Hermes', 'Overlay 1', 'Overlay 2']" ]
+  [ "$(pyget "$o" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Overlay 1', 'Overlay 2']" ]
+  [ "$(pyget "$oh" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Hermes', 'Overlay 1', 'Overlay 2']" ]
   [ "$(pyget "$o" 'all(s["uniqueIdentifier"].startswith(g["uniqueIdentifier"] + ".") for s in g["sessions"])')" = True ]
   [ "$(pyget "$oh" 'all(s["uniqueIdentifier"].startswith(g["uniqueIdentifier"] + ".") for s in g["sessions"])')" = True ]
   [ "$(pyget "$o" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.v.overlays.main'}" ]
   [ "$(pyget "$oh" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.v.overlays.h.main'}" ]
-  [ "$(pyget "$oh" '[s["uniqueIdentifier"] for s in g["sessions"]][4:]')" = "['claudePeer.v.overlays.h.hermes', 'claudePeer.v.overlays.h.o.1', 'claudePeer.v.overlays.h.o.2']" ]
-  [ "$(pyget "$oh" '[s["command"] for s in g["sessions"]][:5]')" = "$(pyget "$h" '[s["command"] for s in g["sessions"]]')" ]
-  [ "$(pyget "$o" '[s["command"] for s in g["sessions"]][4:]')" = "['claude-peer overlay 1', 'claude-peer overlay 2']" ]
-  [ "$(pyget "$oh" '[s["command"] for s in g["sessions"]][5:]')" = "['claude-peer overlay 1', 'claude-peer overlay 2']" ]
+  [ "$(pyget "$oh" '[s["uniqueIdentifier"] for s in g["sessions"]][6:]')" = "['claudePeer.v.overlays.h.hermes', 'claudePeer.v.overlays.h.o.1', 'claudePeer.v.overlays.h.o.2']" ]
+  [ "$(pyget "$oh" '[s["command"] for s in g["sessions"]][:7]')" = "$(pyget "$h" '[s["command"] for s in g["sessions"]]')" ]
+  [ "$(pyget "$o" '[s["command"] for s in g["sessions"]][6:]')" = "['claude-peer overlay 1', 'claude-peer overlay 2']" ]
+  [ "$(pyget "$oh" '[s["command"] for s in g["sessions"]][7:]')" = "['claude-peer overlay 1', 'claude-peer overlay 2']" ]
   [ "$(pyget "$o" 'set(s["kind"]["kind"] for s in g["sessions"][1:])')" = "{'peer'}" ]
   [ "$(pyget "$o" 'g["sessions"][-1]["toolbarItems"]')" = "[{'kind': 'modeSwitcher'}]" ]
   [ "$(cat "$OV_STATE")" = "fake1 fake2" ]
@@ -3251,7 +3251,7 @@ ov_prefs() {
   [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" 'len(g)')" = 5 ]
   # the plain definitions are what they were
   run sh "$BIN" workgroup
-  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma']" ]
+  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon']" ]
 }
 
 @test "install overlays: a smaller set rebuilds the pair, none removes it and the state file" {
@@ -3265,7 +3265,7 @@ ov_prefs() {
   [ "$status" -eq 0 ]
   [[ "$output" == *'"Claude Peers + Overlays" replaced'* ]]
   g=$(groups "$CLAUDE_PEER_PREFS")
-  [ "$(pyget "$g" '[s["displayName"] for s in g[3]["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Overlay 1']" ]
+  [ "$(pyget "$g" '[s["displayName"] for s in g[3]["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Overlay 1']" ]
   [ "$(cat "$OV_STATE")" = fake2 ]
   rm "$HOME/.config/chezmoi/fake2.toml"
   run sh "$BIN" install

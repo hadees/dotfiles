@@ -36,15 +36,15 @@ iTerm2 verbs refuse off macOS.
 The definitions are **two more** Workgroups, never extra peers on the builtin:
 peers spawn at entry and the builtin is entered on every `claude` job.
 `Claude Peers` (`claudePeer.workgroup`) is Lead, the root, and the peers Alpha,
-Beta and Gamma, whose commands are `claude-peer run --as <slot> --wait`.
+Beta, Gamma, Delta and Epsilon, whose commands are `claude-peer run --as <slot> --wait`.
 `Claude Peers + Hermes` (`claudePeer.h`, session ids under `claudePeer.h.`) is
-the same four plus a Hermes peer running `claude-peer hermes --wait`. There are
+the same six plus a Hermes peer running `claude-peer hermes --wait`. There are
 two because a pane cannot remove itself: a member whose program exits stays as
 an ended pane with a restart offer, and closing a member exits the whole group,
 so a repo where no Hermes profile routes must be given the definition without
 the pane, chosen before entry. There is no Diff peer, and nothing is copied
 from `builtin.claudeCode`; the builtin is never edited. In code `build_base`
-returns the four sessions for an id prefix and `with_hermes` the twin of a
+returns the six sessions for an id prefix and `with_hermes` the twin of a
 definition. A machine with private overlays gets two more, `Claude Peers +
 Overlays` (`claudePeer.v.overlays`) and `Claude Peers + Hermes + Overlays`
 (`claudePeer.v.overlays.h`), four in all: `build_overlays` returns them from the
@@ -111,7 +111,7 @@ ever asked to type one. A trigger it did not write is never touched. The cost
 of disabling the job trigger: a `claude` not started through the wrapper
 (`command claude`, an editor terminal) enters no workgroup, and `claude
 --version` no longer does either. Because a slot pane waits, entering costs
-three blocked `sh` processes per tab and no Claude, row, registry record or
+five blocked `sh` processes per tab and no Claude, row, registry record or
 worktree until a peer is started; where Hermes routes, one idle shell more.
 `status` prints `default:` as `peers (<n> profiles, <k> workgroups by
 variable)`, `builtin` or `mixed`, and a second line when the enter file and the
@@ -189,11 +189,11 @@ back. TERM and HUP kill the reader and delete the wait file.
 
 **The pool.** A pane's slot is a preference. The pool is the words of `git
 config claude-peer.slots` (default `alpha beta gamma delta epsilon zeta eta theta
-iota kappa lambda mu`); its first three are the bar's names. A pane takes its
+iota kappa lambda mu`); its first five are the bar's names. A pane takes its
 own slot when no Claude runs in it, else the first free name from the pool's
-fourth on, and only then a free one of the first three, so one tab is always
-Alpha, Beta, Gamma under their labels and a second tab gets Delta, Epsilon,
-Zeta, never a name from under the first. It prints the name it took, and `(this
+sixth on, and only then a free one of the first five, so one tab is always
+Alpha to Epsilon under their labels and a second tab gets Zeta, Eta, Theta,
+Iota, Kappa, never a name from under the first. It prints the name it took, and `(this
 pane's Alpha is in use by the peers of <leader>)` when that differs. With every
 name taken it prints `all <n> slots are in use in <repo>` and `Return tries
 again`, and waits. `next` is not a slot name.
@@ -456,9 +456,11 @@ entered, prints one line and leaves a plain shell, never iTerm2's restart banner
 The two definitions are separate from the others because peers spawn at entry: panes added to
 `Claude Peers` would appear in every repository's tab. The bar is the root plus the peers in
 session order and ⌥⇧⌘1…8 pick by position, so the Hermes twin of the overlay group is built from
-`claudePeer.h` plus the overlays, not by `with_hermes` of the first: Lead, Alpha, Beta, Gamma, then the
-overlays, or Lead, Alpha, Beta, Gamma, Hermes, then the overlays. Hermes keeps ⌥⇧⌘5; ⌥⇧⌘9 is
-"last", so it becomes the last overlay (iTerm2 3.7.7 source; not yet seen on a real tab). One
+`claudePeer.h` plus the overlays, not by `with_hermes` of the first: Lead, Alpha, Beta, Gamma, Delta,
+Epsilon, then the overlays, or the same and Hermes, then the overlays. Hermes is ⌥⇧⌘7 (the
+operator's order, 2026-11-13: Hermes after Epsilon in both bars); ⌥⇧⌘9 is "last", so it becomes
+the last overlay, and with Hermes and two overlays the bar is exactly nine: a third overlay
+has no number (iTerm2 3.7.7 source; not yet seen on a real tab). One
 pair is built at `install` time for the overlays the machine has then (none: neither, and a stale
 pair is removed with the state file); `install` needs iTerm2 quit, the one part of this that does.
 Between a change of the overlay set and the next `install` things degrade visibly: a pane whose
