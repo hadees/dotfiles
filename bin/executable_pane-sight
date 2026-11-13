@@ -20,12 +20,18 @@
 # and profile labels, never what a pane shows.
 #
 # The registry is every profile's `sessions/<pid>.json`, an observed layout as
-# in claude-tab. `shot` is not built yet.
+# in claude-tab.
 #
 # `read` prints one screen of text, never scrollback. Secret-shaped strings on it
 # are replaced and counted, never refused: the count (stderr, audit log) is what
 # tells the operator one is sitting on a terminal. Only two `it2` verbs are ever
 # run: `session read` and `session get-var`.
+#
+# `shot` is iTerm2's own render of ONE session by its id (rpc.async_screenshot):
+# that terminal pane's cells and nothing else, no panel, no window furniture, no
+# other pane, no other application. It is not scanned and not refused for what
+# the pane shows. This script has no other way to make an image: it never runs
+# screencapture or osascript, and tests/pane-sight.bats fails if it does.
 #
 # Seams (tests): PANE_SIGHT_PEER, PANE_SIGHT_DENYGUARD, PANE_SIGHT_TABNAME,
 # PANE_SIGHT_FUNCTIONS, PANE_SIGHT_ZSH, PANE_SIGHT_IT2, PANE_SIGHT_PYTHON,
@@ -363,6 +369,21 @@ except subprocess.TimeoutExpired:
 sys.stdout.buffer.write(out)
 sys.exit(p.returncode)'
 
+# The environment iTerm2's API wants, for a subshell about to talk to it.
+api_env() {
+  if [ "$t_suite" = - ]; then
+    unset IT2_SUITE
+    # the shim's cookie clause: a cookie older than the socket is stale, never exported
+    ck=$HOME/.local/state/iterm2/api-cookie
+    if [ -z "${ITERM2_COOKIE-}" ] && [ -r "$ck" ] && [ "$ck" -nt "$SUPPORT/iTerm2/private/socket" ]; then
+      read -r c k < "$ck"
+      [ -z "$k" ] || { ITERM2_COOKIE=$c ITERM2_KEY=$k; export ITERM2_COOKIE ITERM2_KEY; }
+    fi
+  else
+    IT2_SUITE=$t_suite; export IT2_SUITE
+  fi
+}
+
 # it2_call <it2 args>: prints it2's stdout, returns its status. 124 is the time
 # limit, 125 is "cannot ask" (it2 missing, API off); both have said why.
 it2_call() {
@@ -375,17 +396,7 @@ it2_call() {
   ic_lim=${PANE_SIGHT_TIMEOUT:-10}
   case $ic_lim in ''|*[!0-9]*|0) ic_lim=10 ;; esac
   (
-    if [ "$t_suite" = - ]; then
-      unset IT2_SUITE
-      # the shim's cookie clause: a cookie older than the socket is stale, never exported
-      ck=$HOME/.local/state/iterm2/api-cookie
-      if [ -z "${ITERM2_COOKIE-}" ] && [ -r "$ck" ] && [ "$ck" -nt "$SUPPORT/iTerm2/private/socket" ]; then
-        read -r c k < "$ck"
-        [ -z "$k" ] || { ITERM2_COOKIE=$c ITERM2_KEY=$k; export ITERM2_COOKIE ITERM2_KEY; }
-      fi
-    else
-      IT2_SUITE=$t_suite; export IT2_SUITE
-    fi
+    api_env
     exec python3 -c "$RUN_PY" "$ic_it2" "$ic_lim" "$@"
   )
   ic_rc=$?
@@ -523,6 +534,99 @@ cmd_read() {
   exit 0
 }
 
+# The one render: iTerm2's picture of the session whose id is argv[1], written to
+# argv[2] (which must not exist) under an alarm of argv[3] seconds. Exit 10+status
+# when iTerm2 says no (11 no such session, 12 malformed, 13 not drawn). The
+# library's App is built from the session list, which holds no hidden peer, so the
+# RPC is called directly.
+SHOT_PY='import os, signal, sys
+import iterm2
+from iterm2 import rpc
+
+sid, out, limit = sys.argv[1], sys.argv[2], int(sys.argv[3])
+signal.alarm(limit)
+
+async def main(connection):
+    r = await rpc.async_screenshot(connection, sid)
+    s = r.screenshot_response
+    if s.status != 0:
+        sys.exit(10 + s.status)
+    png = bytes(s.png)
+    if not png.startswith(b"\x89PNG\r\n\x1a\n") or len(png) < 33:
+        sys.exit(13)
+    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(png)
+    print("%d\t%d\t%d" % (int.from_bytes(png[16:20], "big"), int.from_bytes(png[20:24], "big"), len(png)))
+
+iterm2.run_until_complete(main)'
+
+cmd_shot() {
+  h_out= h_name=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --out) [ $# -ge 2 ] || usage; h_out=$2; shift 2 ;;
+      -?*) usage ;;
+      *) [ -z "$h_name" ] || usage; h_name=$1; shift ;;
+    esac
+  done
+  [ -n "$h_name" ] || usage
+  if [ -n "$h_out" ]; then
+    case $h_out in /*) ;; *) h_out=$PWD/$h_out ;; esac
+    [ ! -e "$h_out" ] || { say "$h_out exists; shot will not overwrite it"; exit 2; }
+    [ -d "$(dirname "$h_out")" ] || { say "no directory for $h_out"; exit 2; }
+  fi
+  # the runtime before iTerm2 is asked anything: asking without one offers a dialog
+  h_py=$(find_py) || {
+    say "no Python runtime with the iterm2 library (iTerm2 > Scripts > Manage > Install Python Runtime, or set PANE_SIGHT_PYTHON)"
+    exit 1
+  }
+  init
+  resolve "$h_name"
+  if ! scope; then
+    audit shot "refused:$s_code" ""
+    say "$s_text"
+    exit 3
+  fi
+  [ "$t_kind" = id ] || bind_check
+  h_default=
+  if [ -z "$h_out" ]; then
+    h_dir=${TMPDIR:-/tmp}/pane-sight
+    ( umask 077; mkdir -p "$h_dir" ) && chmod 700 "$h_dir" || { say "cannot make $h_dir"; exit 1; }
+    h_out=$h_dir/$(clean_label | tr -c 'A-Za-z0-9._-' '-')-$(date -u +%Y%m%dT%H%M%SZ).png
+    h_default=1
+    # a second shot of the pane within the same second
+    [ ! -e "$h_out" ] || h_out=${h_out%.png}-$$.png
+  fi
+  h_lim=${PANE_SIGHT_TIMEOUT:-10}
+  case $h_lim in ''|*[!0-9]*|0) h_lim=10 ;; esac
+  h_res=$( ( api_env; exec "$h_py" -c "$SHOT_PY" "$t_sid" "$h_out" "$h_lim" ) ); h_rc=$?
+  case $h_rc in
+    0) ;;
+    142) audit shot failed:it2 ""
+         say "iTerm2 did not answer within ${h_lim}s (an API permission prompt may be waiting in iTerm2)"; exit 1 ;;
+    11) audit shot failed:no-session ""; say "iTerm2 has no session $t_sid"; exit 1 ;;
+    13) audit shot failed:not-drawn ""
+        say "not drawn: iTerm2 returned no image for $t_label"
+        case $t_kind in peer-*) say "a peer that has never been shown may have nothing to draw: click its Session Status row once and try again" ;; esac
+        exit 1 ;;
+    *) audit shot failed:render ""; say "the render failed (status $h_rc)"; exit 1 ;;
+  esac
+  h_w=$(printf '%s' "$h_res" | cut -f1); h_h=$(printf '%s' "$h_res" | cut -f2); h_b=$(printf '%s' "$h_res" | cut -f3)
+  h_det="bytes=$h_b file=$h_out"
+  h_note=
+  case $t_kind in peer-*) note_due shot && { h_note=1; h_det="$h_det noted=1"; } ;; esac
+  # the row first: a shot that cannot be recorded leaves no file
+  audit shot ok "$h_det" || { rm -f "$h_out"; say "cannot write $AUDIT; nothing was shown"; exit 1; }
+  say "$t_label ($t_kind): ${h_w}x${h_h} px, $h_b bytes"
+  printf '%s\n' "$h_out"
+  [ -z "$h_note" ] || [ ! -x "$PEER" ] || "$PEER" log note "shot of $t_label's pane" >/dev/null 2>&1 </dev/null || true
+  if [ -n "$h_default" ]; then
+    ls -t "$h_dir" 2>/dev/null | grep '\.png$' | tail -n +21 | while IFS= read -r f; do rm -f "$h_dir/$f"; done
+  fi
+  exit 0
+}
+
 # init: the caller, its repository's panes, and the registry.
 init() {
   CALLER=$(norm "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
@@ -583,14 +687,19 @@ cmd_list() {
 
 first_exe() { for f in "$@"; do [ -x "$f" ] && r=$f; done; printf '%s\n' "${r:-}"; }
 
+# The Python runtime that carries the iterm2 library (as open-as finds it); fails when none.
+find_py() {
+  fp=${PANE_SIGHT_PYTHON:-}
+  [ -n "$fp" ] || fp=$(first_exe "$SUPPORT"/iTerm2/iterm2env/versions/*/bin/python3 "$SUPPORT"/iTerm2/uv/venvs/*/bin/python3)
+  [ -x "$fp" ] && printf '%s\n' "$fp"
+}
+
 cmd_status() {
   line=
   case ${1-} in --line) line=1; shift ;; esac
   [ $# -eq 0 ] || usage
   it2=$(find_it2)
-  py=${PANE_SIGHT_PYTHON:-}
-  [ -n "$py" ] || py=$(first_exe "$SUPPORT"/iTerm2/iterm2env/versions/*/bin/python3 "$SUPPORT"/iTerm2/uv/venvs/*/bin/python3)
-  [ -x "$py" ] || py=
+  py=$(find_py)
   api=off
   [ "$(defaults read com.googlecode.iterm2 EnableAPIServer 2>/dev/null)" = 1 ] && api=on
   dg=; [ -x "$DENY" ] && dg=$DENY
@@ -631,7 +740,7 @@ esac
 need_macos
 case $verb in
   read) cmd_read "$@" ;;
-  shot) say "$verb: not built yet"; exit 2 ;;
+  shot) cmd_shot "$@" ;;
   why) cmd_why "$@" ;;
   list) cmd_list "$@" ;;
   status) cmd_status "$@" ;;

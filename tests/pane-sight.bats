@@ -101,6 +101,34 @@ esac
 STUB
   chmod +x "$BATS_TEST_TMPDIR/it2"
   export PANE_SIGHT_IT2="$BATS_TEST_TMPDIR/it2"
+  # the runtime: a fake iterm2 package, so no real iTerm2 is ever asked. A shot
+  # may only come from rpc.async_screenshot; screencapture and osascript are
+  # stubs that record that they ran.
+  export RT_LOG="$BATS_TEST_TMPDIR/rt-log" FORBIDDEN_LOG="$BATS_TEST_TMPDIR/forbidden-log" FAKE_PNG="$BATS_TEST_TMPDIR/fake.png"
+  : > "$RT_LOG"; : > "$FORBIDDEN_LOG"
+  export FAKE_SHOT_STATUS=0
+  "$REAL_PYTHON3" -c 'import sys; sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"IHDR" + (640).to_bytes(4, "big") + (480).to_bytes(4, "big") + b"\x08\x06\x00\x00\x00" + b"pixels")' > "$FAKE_PNG"
+  mkdir -p "$BATS_TEST_TMPDIR/rtpy/iterm2"
+  cat > "$BATS_TEST_TMPDIR/rtpy/iterm2/__init__.py" <<'PY'
+import asyncio
+def run_until_complete(main): asyncio.run(main(object()))
+PY
+  cat > "$BATS_TEST_TMPDIR/rtpy/iterm2/rpc.py" <<'PY'
+import asyncio, os, types
+async def async_screenshot(connection, session):
+    open(os.environ["RT_LOG"], "a").write("%s\tsuite=%s\n" % (session, os.environ.get("IT2_SUITE", "")))
+    if os.environ.get("FAKE_RT_SLEEP"): await asyncio.sleep(float(os.environ["FAKE_RT_SLEEP"]))
+    png = open(os.environ["FAKE_PNG"], "rb").read() if int(os.environ["FAKE_SHOT_STATUS"]) == 0 else b""
+    return types.SimpleNamespace(screenshot_response=types.SimpleNamespace(status=int(os.environ["FAKE_SHOT_STATUS"]), png=png))
+PY
+  printf '#!/bin/sh\nPYTHONPATH="%s" exec "%s" "$@"\n' "$BATS_TEST_TMPDIR/rtpy" "$REAL_PYTHON3" > "$BIN/fakepy"
+  for f in screencapture osascript; do
+    printf '#!/bin/sh\nprintf "%%s %%s\\n" "${0##*/}" "$*" >> "$FORBIDDEN_LOG"\n' > "$BIN/$f"
+    chmod +x "$BIN/$f"
+  done
+  chmod +x "$BIN/fakepy"
+  export PANE_SIGHT_PYTHON="$BIN/fakepy" TMPDIR="$BATS_TEST_TMPDIR/tmp"
+  mkdir -p "$TMPDIR"
   export PANE_SIGHT_PEER="$HOME/bin/claude-peer" PANE_SIGHT_TABNAME="$HOME/bin/tabname"
   export PANE_SIGHT_DENYGUARD="$BATS_TEST_DIRNAME/../bin/executable_denyguard"
   export PANE_SIGHT_FUNCTIONS="$BATS_TEST_DIRNAME/../dot_functions"
@@ -113,8 +141,10 @@ teardown() {
   if [ -f "$BATS_TEST_TMPDIR/sleepers" ]; then
     while read -r p; do kill "$p" 2>/dev/null; done < "$BATS_TEST_TMPDIR/sleepers"
   fi
-  # nothing but `session read` and `session get-var` ever reached it2
+  # nothing but `session read` and `session get-var` ever reached it2, and no
+  # second way to make an image was ever used
   [ ! -s "$IT2_BAD" ]
+  [ ! -s "$FORBIDDEN_LOG" ]
 }
 
 # mk_repo <name> [<owner/repo>]: a repository under $HOME/code; its path.
@@ -427,7 +457,7 @@ U5=55555555-5555-5555-5555-555555555555
   [ "$(val verdict)" = readable ]
 }
 
-@test "usage, and not macOS: exit 2; shot is not built yet" {
+@test "usage, and not macOS: exit 2" {
   run pane-sight
   [ "$status" -eq 2 ]
   [[ "$output" == *"Usage:"* ]]
@@ -435,9 +465,9 @@ U5=55555555-5555-5555-5555-555555555555
   [ "$status" -eq 2 ]
   run pane-sight why
   [ "$status" -eq 2 ]
-  run pane-sight shot alpha
+  run pane-sight shot
   [ "$status" -eq 2 ]
-  [[ "$output" == *"not built yet"* ]]
+  [[ "$output" == *"Usage:"* ]]
   FAKE_OS=Linux run pane-sight status
   [ "$status" -eq 2 ]
   [[ "$output" == *"needs macOS"* ]]
@@ -448,8 +478,8 @@ U5=55555555-5555-5555-5555-555555555555
   [ "$status" -eq 4 ]
   [[ "$output" == *"no pane named alpha"* ]]
   run pane-shot alpha
-  [ "$status" -eq 2 ]
-  [[ "$output" == *"shot: not built yet"* ]]
+  [ "$status" -eq 4 ]
+  [[ "$output" == *"no pane named alpha"* ]]
   [ "$(readlink "$BIN/pane-read")" = pane-sight ]
 }
 
@@ -777,4 +807,188 @@ audit_rows() { cat "$HOME/.local/state/pane-sight/audit.log"; }
   run rd scribe
   [ "$status" -eq 0 ]
   [ "$(notes)" -eq 3 ]
+}
+
+# --- shot ----------------------------------------------------------------------------
+
+# sh_ <args>: shot with stdout only (the summary line dropped)
+sh_() { pane-sight shot "$@" 2>/dev/null; }
+
+@test "shot writes a PNG, mode 0600, in a 0700 directory under TMPDIR, and prints its absolute path and nothing else on stdout" {
+  peer_alpha
+  run --separate-stderr pane-sight shot alpha
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | wc -l)" -eq 1 ]
+  [[ "$output" == "$TMPDIR/pane-sight/alpha-"*.png ]]
+  [[ "$output" =~ -[0-9]{8}T[0-9]{6}Z\.png$ ]]
+  cmp "$output" "$FAKE_PNG"
+  [[ "$(ls -l "$output" | cut -c1-10)" == "-rw-------" ]]
+  [[ "$(ls -ld "$TMPDIR/pane-sight" | cut -c1-10)" == "drwx------" ]]
+  [[ "$stderr" == *"pane-sight: alpha (peer-running): 640x480 px, $(wc -c < "$FAKE_PNG" | tr -d ' ') bytes"* ]]
+  row=$(audit_rows)
+  [ "$(printf '%s\n' "$row" | cut -f2-5)" = "$(printf 'shot\tok\tpeer-running\talpha')" ]
+  [[ "$(printf '%s\n' "$row" | cut -f7)" == "bytes="*" file=$output noted=1" ]]
+  grep -qx "log note shot of alpha's pane" "$PEER_LOG"
+  # a second shot within ten minutes leaves no second note
+  : > "$PEER_LOG"
+  run sh_ alpha
+  [ "$status" -eq 0 ]
+  ! grep -q 'log note' "$PEER_LOG" || { echo "second note"; false; }
+}
+
+@test "shot --out writes there and refuses a file that exists" {
+  peer_alpha
+  run sh_ alpha --out "$BATS_TEST_TMPDIR/mine.png"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$BATS_TEST_TMPDIR/mine.png" ]
+  cmp "$BATS_TEST_TMPDIR/mine.png" "$FAKE_PNG"
+  run --separate-stderr pane-sight shot alpha --out "$BATS_TEST_TMPDIR/mine.png"
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == *"exists; shot will not overwrite it"* ]]
+  run --separate-stderr pane-sight shot alpha --out "$BATS_TEST_TMPDIR/nodir/x.png"
+  [ "$status" -eq 2 ]
+  # --out leaves the default directory alone
+  [ ! -e "$TMPDIR/pane-sight" ]
+}
+
+@test "shot of a refused pane: the runtime is never started and it2 is never run" {
+  mk_session "$WORK" ledger "$MAIN" ttys016 "$U1"
+  run --separate-stderr pane-sight shot ledger
+  [ "$status" -eq 3 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"pane-sight: refused: octo-personal-main: its pane runs a Claude session of the work profile"* ]]
+  [ ! -s "$RT_LOG" ]
+  [ ! -s "$IT2_LOG" ]
+  [ ! -e "$TMPDIR/pane-sight" ]
+  [ "$(audit_rows | cut -f2-3)" = "$(printf 'shot\trefused:other-profile')" ]
+}
+
+@test "the picture comes from the one render and from nowhere else" {
+  peer_alpha
+  run sh_ alpha
+  [ "$status" -eq 0 ]
+  # it2 saw the binding check and nothing that reads the screen
+  [ "$(wc -l < "$IT2_LOG")" -eq 1 ]
+  grep -q '^session get-var tty --session' "$IT2_LOG"
+  ! grep -q 'session read' "$IT2_LOG" || { echo "shot read the pane's text"; false; }
+  # the runtime saw one session id, and screencapture and osascript never ran (teardown asserts it too)
+  [ "$(cat "$RT_LOG")" = "$(printf '%s\tsuite=' "$U1")" ]
+  [ ! -s "$FORBIDDEN_LOG" ]
+  # the script itself has no second way to make an image
+  ! grep -v '^ *#' "$BATS_TEST_DIRNAME/../bin/executable_pane-sight" | grep -Eq 'screencapture|osascript' ||
+    { echo "pane-sight runs screencapture or osascript"; false; }
+}
+
+@test "iTerm2 returns no image: exit 1, not drawn, no file; a peer gets the second line" {
+  peer_alpha
+  FAKE_SHOT_STATUS=3 run --separate-stderr pane-sight shot alpha
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"not drawn: iTerm2 returned no image for alpha"* ]]
+  [[ "$stderr" == *"a peer that has never been shown may have nothing to draw"* ]]
+  [ -z "$(ls "$TMPDIR/pane-sight")" ]
+  [[ "$(audit_rows)" == *$'\tshot\tfailed:not-drawn\t'* ]]
+  mk_session "$PERSONAL" scribe "$MAIN" ttys010 "$U2"
+  FAKE_SHOT_STATUS=3 run --separate-stderr pane-sight shot scribe
+  [ "$status" -eq 1 ]
+  [[ "$stderr" == *"not drawn: iTerm2 returned no image for"* ]]
+  [[ "$stderr" != *"never been shown"* ]]
+}
+
+@test "iTerm2 has no such session: exit 1" {
+  peer_alpha
+  FAKE_SHOT_STATUS=1 run --separate-stderr pane-sight shot alpha
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"iTerm2 has no session $U1"* ]]
+  [ -z "$(ls "$TMPDIR/pane-sight")" ]
+}
+
+@test "bytes that are not a PNG: exit 1 and no file" {
+  peer_alpha
+  echo "not a picture at all, but long enough to pass a size check" > "$FAKE_PNG"
+  run --separate-stderr pane-sight shot alpha
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"not drawn"* ]]
+  [ -z "$(ls "$TMPDIR/pane-sight")" ]
+}
+
+@test "no runtime: exit 1 with the fix, and iTerm2 was asked nothing" {
+  peer_alpha
+  PANE_SIGHT_PYTHON= PANE_SIGHT_SUPPORT="$BATS_TEST_TMPDIR/nosupport" run --separate-stderr pane-sight shot alpha
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"no Python runtime with the iterm2 library (iTerm2 > Scripts > Manage > Install Python Runtime, or set PANE_SIGHT_PYTHON)"* ]]
+  [ ! -s "$IT2_LOG" ]
+  [ ! -s "$DEFAULTS_LOG" ]
+}
+
+@test "the runtime does not answer: exit 1 after the limit, no file" {
+  peer_alpha
+  PANE_SIGHT_TIMEOUT=1 FAKE_RT_SLEEP=5 run --separate-stderr pane-sight shot alpha
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"iTerm2 did not answer within 1s"* ]]
+  [ -z "$(ls "$TMPDIR/pane-sight")" ]
+}
+
+@test "the default directory keeps its 20 newest shots" {
+  peer_alpha
+  mkdir -p "$TMPDIR/pane-sight"
+  for i in $(seq -w 1 25); do
+    : > "$TMPDIR/pane-sight/old$i.png"
+    touch -t "20200101$(printf '%02d' "$i")00" "$TMPDIR/pane-sight/old$i.png"
+  done
+  : > "$TMPDIR/pane-sight/notes.txt"
+  run sh_ alpha
+  [ "$status" -eq 0 ]
+  [ "$(ls "$TMPDIR/pane-sight" | grep -c '\.png$')" -eq 20 ]
+  [ -e "$output" ]
+  [ ! -e "$TMPDIR/pane-sight/old01.png" ]
+  [ -e "$TMPDIR/pane-sight/old25.png" ]
+  [ -e "$TMPDIR/pane-sight/notes.txt" ]
+  # a --out path is never pruned
+  run sh_ alpha --out "$BATS_TEST_TMPDIR/keep.png"
+  [ -e "$BATS_TEST_TMPDIR/keep.png" ]
+  [ "$(ls "$TMPDIR/pane-sight" | grep -c '\.png$')" -eq 20 ]
+}
+
+@test "a pane under a suite is rendered with IT2_SUITE set" {
+  mk_session "$PERSONAL" scribe "$MAIN" ttys010 "$U1" bench
+  run sh_ scribe
+  [ "$status" -eq 0 ]
+  [ "$(cat "$RT_LOG")" = "$(printf '%s\tsuite=bench' "$U1")" ]
+  [ "$(grep -c 'suite=bench' "$IT2_LOG")" -eq "$(wc -l < "$IT2_LOG")" ]
+  : > "$RT_LOG"
+  kill "$SPID"; rm "$PERSONAL/sessions/$SPID.json"
+  mk_session "$PERSONAL" plain "$MAIN" ttys010 "$U2"
+  IT2_SUITE=other run sh_ plain
+  [ "$status" -eq 0 ]
+  [ "$(cat "$RT_LOG")" = "$(printf '%s\tsuite=' "$U2")" ]
+}
+
+@test "the shot's audit row holds the size and the path; when it cannot be written the file is removed and the exit is 1" {
+  peer_alpha
+  run --separate-stderr pane-sight shot alpha --out "$BATS_TEST_TMPDIR/a.png"
+  [ "$(audit_rows | cut -f7)" = "bytes=$(wc -c < "$FAKE_PNG" | tr -d ' ') file=$BATS_TEST_TMPDIR/a.png noted=1" ]
+  : > "$BATS_TEST_TMPDIR/blocker"
+  XDG_STATE_HOME="$BATS_TEST_TMPDIR/blocker" run --separate-stderr pane-sight shot alpha --out "$BATS_TEST_TMPDIR/b.png"
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"cannot write $BATS_TEST_TMPDIR/blocker/pane-sight/audit.log; nothing was shown"* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/b.png" ]
+}
+
+@test "an option shot does not know (--window) is usage" {
+  peer_alpha
+  run pane-sight shot alpha --window
+  [ "$status" -eq 2 ]
+  run pane-sight shot --window alpha
+  [ "$status" -eq 2 ]
+  run pane-sight shot alpha beta
+  [ "$status" -eq 2 ]
+  run pane-sight shot alpha --out
+  [ "$status" -eq 2 ]
+  [ ! -s "$RT_LOG" ]
 }
