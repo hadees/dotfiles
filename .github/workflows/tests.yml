@@ -76,9 +76,10 @@ jobs:
         # wake, remote-mcp's forwarder start), so the scale does not rescue it.
         timeout-minutes: 30
         run: |
-          jobs=$(getconf _NPROCESSORS_ONLN)
-          [ "$RUNNER_OS" = macOS ] && jobs=1
-          TESTS_WAIT_SCALE=3 NODE_TESTS_REQUIRED=1 SCREEN_TESTS_REQUIRE='tmux fzf' bats --timing --jobs "$jobs" --no-parallelize-within-files tests
+          # bats refuses --no-parallelize-within-files below --jobs 2
+          par="--jobs $(getconf _NPROCESSORS_ONLN) --no-parallelize-within-files"
+          [ "$RUNNER_OS" = macOS ] && par=
+          TESTS_WAIT_SCALE=3 NODE_TESTS_REQUIRED=1 SCREEN_TESTS_REQUIRE='tmux fzf' bats --timing $par tests
 
   # .macos applied for real and read back (tests/macos-apply.bats). Its own job
   # so its ~5 minutes run beside the suite instead of after it on the macOS job.
