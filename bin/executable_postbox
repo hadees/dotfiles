@@ -779,9 +779,6 @@ for n, test in rungs:
 }
 lead_sessions() { lead_rows "$@" | cut -f2-; }
 
-# leader-dir, pid, session id for <dir>: from `claude-peer claim` when it
-# answers, else column 3 of the `peers` row whose worktree is <dir> or holds
-# it, else <dir> itself with no pid or session id. Needs PEERCMD.
 # started_by <worktree>: "; started by <who>" from the claim's by field: the
 # operator when the pane's own picker started it ("pane", or none recorded),
 # else "Lead" or the label that ran `claude-peer start`. Nothing without a claim.
@@ -794,6 +791,9 @@ started_by() {
   esac
 }
 
+# leader-dir, pid, session id for <dir>: from `claude-peer claim` when it
+# answers, else column 3 of the `peers` row whose worktree is <dir> or holds
+# it, else <dir> itself with no pid or session id. Needs PEERCMD.
 lead_of() { # dir
   lo_t=$(printf '\t')
   if [ -x "$PEERCMD" ] && lo_c=$("$PEERCMD" claim "$1" 2>/dev/null) && [ -n "$lo_c" ]; then
