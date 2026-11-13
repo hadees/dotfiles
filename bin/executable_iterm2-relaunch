@@ -1,0 +1,274 @@
+#!/bin/sh
+# iterm2-relaunch — quit iTerm2, do work that needs it down, start it again, bring
+# the Claude sessions back.
+#
+# Usage:
+#   iterm2-relaunch status
+#   iterm2-relaunch _run <wait> <grace> <restore 0|1> <prompt 0|1> <caller id|-> <item>...
+#                    (internal: the runner, started in a session of its own)
+#
+# Exit codes: 0 done, 1 failed or refused, 2 usage or not macOS. `_run`: 0 every
+# item succeeded, 1 an item failed (iTerm2 was still started), 3 iTerm2 did not quit
+# (nothing was done).
+#
+# Items, run in this order while iTerm2 is down: prefs-install (iterm2-prefs
+# install), prefs (iterm2-prefs compose). Others the runner does not know are
+# logged as `<item>: exit 2`. A failed item never stops the next one.
+#
+# Why a quit at all: iTerm2 reads its preferences folder once per launch and
+# writes it back at quit, so a store written under it is overwritten or raises
+# "changed since iTerm2 started". Why a runner of its own: iTerm2 ends a job with
+# killpg on the job's group, so a process that called setsid, forked again and
+# ignores SIGHUP outlives it. That is `detach`, standard-library Python, no launchd.
+#
+# Why the Apple-event probe comes first: a runner that cannot send Apple events
+# must find out before it has asked for anything. The quit itself runs in the
+# background, because a synchronous one blocks for as long as iTerm2's own "Quit
+# iTerm2?" alert is open; the runner polls for the process to go instead.
+#
+# iTerm2 is always started again, whatever failed, with the environment a Dock
+# launch gives an app (`clean_open`): `open` hands its own environment to the app,
+# and the app keeps it for its whole run, so every tab would inherit a Claude
+# session's variables. The restore is watched: iTerm2 3.7.7 has crashed on
+# scripted session changes, so after it the runner checks that the iTerm2 it
+# started is still the one running, starts it once more if not, and restores
+# nothing further.
+#
+# State, in ${XDG_STATE_HOME:-$HOME/.local/state}/iterm2-relaunch: run.log,
+# run.pid, domain-before-quit.plist (the preferences domain saved before the
+# quit; `iterm2-prefs capture --from <it> --all` lists what an unclean exit lost).
+# Siblings are named by absolute path because Alfred's PATH excludes ~/bin.
+#
+# Test seams: ITERM2_RELAUNCH_PREFS, ITERM2_RELAUNCH_CLAUDE_TAB,
+# ITERM2_RELAUNCH_TICK (seconds per poll, default 1).
+set -u
+
+warn() { printf 'iterm2-relaunch: %s\n' "$*" >&2; }
+die() { warn "$*"; exit 1; }
+
+usage() { sed -n '/^# Usage:/,/^# Exit codes/p' "$0" | sed 's/^# \{0,1\}//'; }
+
+os() { uname -s 2>/dev/null; }
+# Exit 2 as for usage: the verb cannot be used here at all, nothing was refused.
+need_macos() { [ "$(os)" = Darwin ] || { warn "$1 needs macOS"; exit 2; }; }
+
+# The script's absolute path, for the runner it starts.
+self() {
+  case $0 in
+    /*) printf '%s\n' "$0";;
+    *) printf '%s/%s\n' "$PWD" "$0";;
+  esac
+}
+
+state_dir() { printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/iterm2-relaunch"; }
+state=$(state_dir)
+log=$state/run.log
+
+# log_line <text>: one line of run.log, stamped.
+log_line() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$log"; }
+
+# pid of the running iTerm2, or nothing and exit 1. ps, not pgrep: pgrep cannot see
+# processes of the caller's own session under some sandboxes.
+iterm_pid() {
+  ps -Ao pid=,ucomm= 2>/dev/null |
+    awk '{ p = $1; $1 = ""; sub(/^[ \t]+/, ""); sub(/[ \t]+$/, "")
+           if ($0 == "iTerm2") { print p; f = 1; exit } } END { exit !f }'
+}
+
+# open(1) with the environment a Dock launch gives an app, never the caller's:
+# open hands its own environment to the app it starts, and the app keeps it for
+# its whole run, so every tab would inherit it. open is resolved on the caller's
+# PATH first, because env -i resets PATH.
+clean_open() {
+  _open=$(command -v open) || return 127
+  set -- "$_open" "$@"
+  for _v in USER LOGNAME SHELL TMPDIR SSH_AUTH_SOCK DISPLAY COMMAND_MODE __CF_USER_TEXT_ENCODING; do
+    eval "_val=\${$_v-}"
+    [ -z "$_val" ] || set -- "$_v=$_val" "$@"
+  done
+  env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin "$@"
+}
+
+# The stdlib only, and Python 3.9 clean: /usr/bin/python3 is all a fresh mac has.
+relaunch_py() {
+  python3 -I - "$@" <<'PYEOF'
+import os, signal, sys
+
+
+def detach(log, argv):
+    """Run argv in a session of its own, so it outlives iTerm2 and the shell that asked."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.makedirs(os.path.dirname(log), mode=0o700, exist_ok=True)
+    pid = os.fork()
+    if pid:
+        os.waitpid(pid, 0)
+        return
+    try:
+        os.setsid()
+        if os.fork():
+            os._exit(0)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        os.chdir("/")
+        null = os.open(os.devnull, os.O_RDONLY)
+        out = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        os.dup2(null, 0)
+        os.dup2(out, 1)
+        os.dup2(out, 2)
+        os.closerange(3, 256)
+        os.execv(argv[0], argv)
+    finally:
+        os._exit(127)
+
+
+def main():
+    verb, args = sys.argv[1], sys.argv[2:]
+    if verb == "_detach" and len(args) >= 2:
+        detach(args[0], args[1:])
+        return 0
+    return 2
+
+
+sys.exit(main())
+PYEOF
+}
+
+# start_iterm: open iTerm2 by bundle id, else by name; prints nothing, status is open's.
+start_iterm() {
+  clean_open -b com.googlecode.iterm2 >>"$log" 2>&1 || clean_open -a iTerm >>"$log" 2>&1
+}
+
+cmd_status() {
+  pid=$(cat "$state/run.pid" 2>/dev/null)
+  case $pid in ''|*[!0-9]*) pid='';; esac
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then echo "runner: $pid running"; else echo "runner: none"; fi
+  [ ! -s "$log" ] || printf 'last: %s\n' "$(tail -n 1 "$log")"
+  echo "log: $log"
+}
+
+# _run <wait> <grace> <restore 0|1> <prompt 0|1> <caller id|-> <item>...
+cmd_run() {
+  need_macos _run
+  [ $# -ge 6 ] || { usage >&2; exit 2; }
+  wait=$1 grace=$2 restore=$3 prompt=$4 caller=$5
+  shift 5
+  tick=${ITERM2_RELAUNCH_TICK:-1}
+  prefs=${ITERM2_RELAUNCH_PREFS:-$HOME/bin/iterm2-prefs}
+  ct=${ITERM2_RELAUNCH_CLAUDE_TAB:-$HOME/bin/claude-tab}
+  list=$(IFS=,; printf '%s' "$*")
+  # prefs-install, prefs, then the rest as given
+  ordered=''
+  for want in prefs-install prefs; do
+    for i in "$@"; do [ "$i" != "$want" ] || ordered="$ordered $i"; done
+  done
+  for i in "$@"; do
+    case $i in prefs-install|prefs) ;; *) ordered="$ordered $i";; esac
+  done
+
+  mkdir -p "$state" && chmod 700 "$state"
+  [ -e "$log" ] || { : >"$log" && chmod 600 "$log"; }
+  printf '%s\n' "$$" >"$state/run.pid" && chmod 600 "$state/run.pid"
+  log_line "start: items=$list restore=$restore prompt=$prompt caller=$caller pid=$$"
+
+  if iterm_pid >/dev/null; then
+    log_line "quit: in ${grace}s"
+    n=0
+    while [ "$n" -lt "$grace" ]; do sleep "$tick"; n=$((n + 1)); done
+    if ! osascript -e 'tell application id "com.googlecode.iterm2" to get version' >/dev/null 2>>"$log"; then
+      log_line "aborted: cannot send Apple events to iTerm2; nothing done"
+      rm -f "$state/run.pid"
+      exit 3
+    fi
+    ( umask 077; defaults export com.googlecode.iterm2 "$state/domain-before-quit.plist" >>"$log" 2>&1 ) ||
+      log_line "quit: domain not saved (defaults export failed); continuing"
+    osascript -e 'tell application id "com.googlecode.iterm2" to quit' >>"$log" 2>&1 3>&- &
+    qpid=$!
+    log_line "quit: asked"
+    n=0
+    while iterm_pid >/dev/null && [ "$n" -lt "$wait" ]; do sleep "$tick"; n=$((n + 1)); done
+    kill "$qpid" 2>/dev/null
+    if iterm_pid >/dev/null; then
+      log_line "aborted: iTerm2 still running after ${wait}s; nothing done"
+      rm -f "$state/run.pid"
+      exit 3
+    fi
+    log_line "quit: exited after ${n}s"
+    sleep "$tick"
+    if [ "$(defaults read com.googlecode.iterm2 NoSyncLastShutdownWasClean 2>/dev/null)" = 1 ]; then
+      log_line "quit: clean"
+    else
+      log_line "quit: not clean (crash or kill); settings changed since the last save are not in the store; iterm2-prefs capture --from $state/domain-before-quit.plist --all lists them"
+    fi
+  else
+    log_line "quit: iTerm2 was not running"
+  fi
+
+  total=0 failed=0
+  for i in $ordered; do
+    total=$((total + 1))
+    case $i in
+      prefs-install) "$prefs" install >>"$log" 2>&1;;
+      prefs) "$prefs" compose >>"$log" 2>&1;;
+      *) (exit 2);;
+    esac
+    rc=$?
+    log_line "$i: exit $rc"
+    [ "$rc" -eq 0 ] || failed=$((failed + 1))
+  done
+
+  started=''
+  if start_iterm; then
+    n=0
+    while [ "$n" -lt 30 ]; do
+      started=$(iterm_pid) && break
+      sleep "$tick"; n=$((n + 1))
+    done
+    if [ -n "$started" ]; then log_line "launch: started"; else log_line "launch: not seen after 30s"; fi
+  else
+    log_line "launch: failed"
+  fi
+
+  r=skipped alive=''
+  if [ "$restore" = 1 ] && [ -n "$started" ]; then
+    n=0 ready=0
+    while [ "$n" -lt "$wait" ]; do
+      if "$ct" restore --dry-run >/dev/null 2>&1; then ready=1; break; fi
+      sleep "$tick"; n=$((n + 1))
+    done
+    if [ "$ready" = 1 ]; then
+      # Counted before the restore, so only sessions that survived the quit are in it.
+      alive=$("$ct" restore --dry-run 2>/dev/null | awk -F'\t' '$1 == "skip:live" { c++ } END { print c + 0 }')
+      everyone="iTerm2 was relaunched by iterm2-relaunch ($list), which ended this session mid-run. Nothing in your work tree was changed by it. Look at where you left off (your last turn, your task list, git status), restart anything that was running in the background, and carry on. If you were waiting on the operator, say so and wait."
+      callertext="You started this relaunch of iTerm2 (iterm2-relaunch $list) and it has run. Read $log and run iterm2-relaunch status, check that each item did what it should (iterm2-prefs status for prefs, claude --version after an upgrade), report the result to the operator, then carry on with what you were doing."
+      set -- restore
+      if [ "$prompt" = 1 ]; then
+        set -- "$@" --prompt "$everyone"
+        [ "$caller" = - ] || set -- "$@" --prompt-for "$caller" "$callertext"
+      fi
+      if "$ct" "$@" >>"$log" 2>&1; then r=ok; else r=failed; fi
+    else
+      r=failed
+    fi
+    [ "$r" != failed ] || log_line "restore: failed; run: claude-tab restore"
+    if [ "$(iterm_pid)" != "$started" ]; then
+      log_line "restore: iTerm2 exited during the restore (crash?); started it again, restored nothing further"
+      start_iterm
+      r=failed
+    fi
+  fi
+  [ -z "$alive" ] || [ "$alive" -eq 0 ] ||
+    log_line "restore: $alive sessions were still running and were left as they are"
+
+  log_line "done: $total items, $failed failed, restore $r"
+  rm -f "$state/run.pid"
+  [ "$failed" -eq 0 ]
+}
+
+case ${1:-} in
+  status) need_macos status; cmd_status;;
+  _run) shift; cmd_run "$@";;
+  _detach) shift; relaunch_py _detach "$@";;
+  -h|--help|help) usage;;
+  '') usage >&2; exit 2;;
+  *) warn "unknown verb: $1"; usage >&2; exit 2;;
+esac
