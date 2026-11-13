@@ -52,8 +52,11 @@ Status rows, no tab bar, no neighbour pane, no other application. The operator,
 2026-11-13: "we should never really be showing secrets in the terminal at all,
 so really if you don't take a photo of anything but the term it should be
 fine." The script has no second way to make an image: it never runs
-`screencapture` or `osascript`, and `tests/pane-sight.bats` fails on a stub of
-either. A change that adds one breaks the guarantee, not just a test.
+`screencapture` and never runs `osascript` itself, and `tests/pane-sight.bats`
+fails on a stub of either. `it2` and the `iterm2` library (`auth.py`) may run
+`osascript` to ask iTerm2 for an API cookie, which can raise macOS's Automation
+prompt once; that asks for a credential and cannot produce an image. A change
+that adds another way to make an image breaks the guarantee, not just a test.
 
 **The window shot was dropped for that reason.** A window capture always holds
 more than terminal panes (the title bar, every other tab's title, the peer bar,
@@ -125,9 +128,10 @@ running pane wins; several waiting ones are narrowed to the caller's own
 leader); a live registry session by name or `tabname` label. More than one is
 exit 4. A pane whose process has no terminal is never a candidate, and a
 waiting pane opened before `claude-peer` recorded its session id is exit 4
-("reopen its tab"). A session id works only where a session of this profile
-runs on its terminal: `get-var path` is not set on this machine, so a bare id
-with no session behind it has no directory and is refused `no-directory`. A
+("reopen its tab"). `get-var path` is set only where iTerm2's shell
+integration reports the directory; with it, a bare id with no Claude session on
+its terminal goes through the deny and route checks like any plain pane, and
+without it the id has no directory and is refused `no-directory`. A
 `get-var` answer is a JSON string (`"\/dev\/ttys010"`) and is decoded.
 
 Scope is decided on the pane's terminal before iTerm2 is asked for any content

@@ -34,7 +34,10 @@
 # that terminal pane's cells and nothing else, no panel, no window furniture, no
 # other pane, no other application. It is not scanned and not refused for what
 # the pane shows. This script has no other way to make an image: it never runs
-# screencapture or osascript, and tests/pane-sight.bats fails if it does.
+# screencapture and never runs osascript itself, and tests/pane-sight.bats fails
+# if it does. it2 and the iterm2 library (auth.py) may run osascript to ask
+# iTerm2 for an API cookie, which can raise macOS's Automation prompt once; that
+# is a credential request, not an image.
 #
 # Inputs: the judges and helpers come from fixed places under $HOME (bin/claude-peer,
 # bin/denyguard, bin/tabname, .functions, it2 at .config/iterm2/it2, iTerm2's files
@@ -212,9 +215,10 @@ UUID_RE='[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}'
 UUID_PREFIX='w[0-9]+t[0-9]+p[0-9]+[:.]'
 
 # A bare iTerm2 session id: its terminal and directory come from iTerm2, the
-# only calls made before scope. `path` is unset on this machine, so the
-# directory is usually empty and scope refuses it unless a session of this
-# profile is on the terminal.
+# only calls made before scope. `path` is set only where iTerm2's shell
+# integration reports the directory; with it, a bare id goes through the deny
+# and route checks, without it the directory is empty and scope refuses it
+# unless a session of this profile is on the terminal.
 id_target() { # <name>
   i_sid=$(printf '%s' "$1" | sed -E 's/^w[0-9]+t[0-9]+p[0-9]+[:.]//')
   i_ans=$(it2_call session get-var tty --session "$i_sid"); it2_dead $?
