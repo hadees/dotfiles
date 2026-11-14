@@ -655,12 +655,14 @@ cmd_cancel() {
   say "cancelled; iTerm2 was not asked to quit"
 }
 
-# known_item <item>: whether the runner has work of that name.
+# known_item <item>: whether the runner has work of that name. A cask token is
+# Homebrew's own alphabet: lower case, no `/` (a tap path or a file), no `..`.
 known_item() {
   case $1 in
     prefs-install|prefs|claude-peer) return 0;;
-    brew:[!a-zA-Z0-9]*|brew:*[!a-zA-Z0-9@._+/-]*) return 1;;
-    brew:?*) return 0;;
+    brew:*..*) return 1;;
+    # grep in the C locale: a range in a case pattern may match upper case
+    brew:?*) printf '%s\n' "${1#brew:}" | LC_ALL=C grep -Eq '^[a-z0-9][a-z0-9@._+-]*$'; return;;
   esac
   return 1
 }
@@ -701,6 +703,10 @@ item_state() {
       if [ -n "$line" ]; then printf 'ready\t%s\n' "$line"; else printf 'nothing\tinstalled and current\n'; fi;;
     brew:*)
       if [ -z "$brew" ]; then printf 'refused\tHomebrew not found\n'; return 0; fi
+      # installed casks first: `brew info` of anything else may go to the network or a tap
+      if ! brew_cmd list --cask -1 2>/dev/null | grep -Fxq -- "${1#brew:}"; then
+        printf 'refused\tnot an installed cask\n'; return 0
+      fi
       row=''
       if json=$(brew_cmd info --cask --json=v2 "${1#brew:}" 2>/dev/null); then
         row=$(relaunch_py brew-rows "$json" | head -n 1)

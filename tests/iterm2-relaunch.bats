@@ -134,7 +134,12 @@ echo "brew $1" >>"$SEQ"
 d=$FAKE_BREW_DIR
 case $1 in
   info) [ -f "$d/$4.json" ] || exit 1; cat "$d/$4.json";;
-  list) [ ! -f "$d/$4.versions" ] || cat "$d/$4.versions";;
+  list)
+    if [ "$3" = -1 ]; then
+      for f in "$d"/*.json; do [ -f "$f" ] && grep -q '"installed":"' "$f" && basename "$f" .json; done
+      exit 0
+    fi
+    [ ! -f "$d/$4.versions" ] || cat "$d/$4.versions";;
   update) exit "${FAKE_UPDATE:-0}";;
   fetch) exit "${FAKE_FETCH:-0}";;
   upgrade)
@@ -921,7 +926,29 @@ cask() {
   [ "$status" -eq 2 ]
   run sh "$BIN" 'brew:a b' 2>&1
   [ "$status" -eq 2 ]
+  for t in '../x' 'a/b' 'a..b' 'Upper' '.x' 'a/../b'; do
+    run sh "$BIN" "brew:$t" 2>&1
+    [ "$status" -eq 2 ] || { echo "brew:$t: status $status"; false; }
+    [[ "$output" == *"unknown item: brew:$t"* ]]
+  done
   [ ! -s "$BREW_LOG" ]
+}
+
+@test "brew: a cask that is not installed is refused before any brew info, and a name that merely contains an installed one is not it" {
+  cask claude-code@latest 2.1.322 2.1.323 true false binary none
+  cask notinstalled null 1.0 false false binary none
+  pid=$(fake_iterm)
+  run sh "$BIN" --yes brew:notinstalled 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"iterm2-relaunch: brew:notinstalled: not an installed cask"* ]]
+  run sh "$BIN" --yes brew:claude-code 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"iterm2-relaunch: brew:claude-code: not an installed cask"* ]]
+  no grep -q '^info' "$BREW_LOG"
+  [ ! -s "$OSA_LOG" ]
+  kill -0 "$pid"
+  run sh "$BIN" items
+  [ "${#lines[@]}" -eq 3 ]
 }
 
 @test "front: brew update runs before the states, brew fetch before the consent, and a failed fetch quits nothing" {
@@ -930,7 +957,7 @@ cask() {
   fake_iterm >/dev/null
   run sh "$BIN" --yes --grace 1 brew:claude-code@latest
   [ "$status" -eq 0 ]
-  [ "$(head -n 4 "$SEQ" | tr '\n' ' ')" = "brew update brew info brew fetch osa-probe " ]
+  [ "$(head -n 5 "$SEQ" | tr '\n' ' ')" = "brew update brew list brew info brew fetch osa-probe " ]
   grep -Fq "fetch --cask claude-code@latest|" "$BREW_LOG"
   : >"$SEQ"; : >"$BREW_LOG"; : >"$OSA_LOG"; : >"$CT_LOG"
   pid=$(fake_iterm)
