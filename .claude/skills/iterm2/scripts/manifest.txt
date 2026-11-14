@@ -273,3 +273,6 @@ binstr waitingSessionCount
 binstr ToolStatus.HelpMarkdown
 binstr Claude Code Integration Setup
 binstr com.googlecode.iterm2.iTermCompanion
+# The per-session render pane-sight pictures a pane with (references/python-api.md).
+binstr apiServerScreenshot:handler:
+binstr screenshotPNGData
