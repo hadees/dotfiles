@@ -163,11 +163,18 @@ iterm_pid() {
 # open(1) with the environment a Dock launch gives an app, never the caller's:
 # open hands its own environment to the app it starts, and the app keeps it for
 # its whole run, so every tab would inherit it. open is resolved on the caller's
-# PATH first, because env -i resets PATH.
+# PATH first, because env -i resets PATH. TMPDIR and SSH_AUTH_SOCK are what the
+# login session has (`getconf DARWIN_USER_TEMP_DIR`, `launchctl getenv`, both
+# read-only), the caller's own only when that says nothing: a Dock launch gets the
+# system's values, and the caller's may be a Claude session's.
 clean_open() {
   _open=$(command -v open) || return 127
   set -- "$_open" "$@"
-  for _v in USER LOGNAME SHELL TMPDIR SSH_AUTH_SOCK DISPLAY COMMAND_MODE __CF_USER_TEXT_ENCODING; do
+  _tmp=$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null); [ -n "$_tmp" ] || _tmp=${TMPDIR-}
+  _sock=$(launchctl getenv SSH_AUTH_SOCK 2>/dev/null); [ -n "$_sock" ] || _sock=${SSH_AUTH_SOCK-}
+  [ -z "$_tmp" ] || set -- "TMPDIR=$_tmp" "$@"
+  [ -z "$_sock" ] || set -- "SSH_AUTH_SOCK=$_sock" "$@"
+  for _v in USER LOGNAME SHELL DISPLAY COMMAND_MODE __CF_USER_TEXT_ENCODING; do
     eval "_val=\${$_v-}"
     [ -z "$_val" ] || set -- "$_v=$_val" "$@"
   done

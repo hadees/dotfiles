@@ -173,7 +173,18 @@ if [ "$1" = restore ] && [ "${FAKE_RESTORE_CRASH:-0}" = 1 ]; then
 fi
 case $1 in save) exit "${FAKE_SAVE:-0}";; restore) exit "${FAKE_RESTORE:-0}";; esac
 STUB
-  chmod +x "$b"/uname "$b"/ps "$b"/osascript "$b"/defaults "$b"/open "$b"/brew "$b"/iterm2-prefs "$b"/claude-peer "$b"/claude-tab
+  # read-only answers for clean_open: the login session's temp dir and agent socket
+  cat >"$b/getconf" <<'STUB'
+#!/bin/sh
+[ "$1" = DARWIN_USER_TEMP_DIR ] && [ -n "${FAKE_GETCONF-}" ] && printf '%s\n' "$FAKE_GETCONF"
+exit 0
+STUB
+  cat >"$b/launchctl" <<'STUB'
+#!/bin/sh
+[ "$1 ${2-}" = "getenv SSH_AUTH_SOCK" ] || { echo "launchctl $*" >>"$SEQ"; exit 1; }
+[ -z "${FAKE_LAUNCHCTL-}" ] || printf '%s\n' "$FAKE_LAUNCHCTL"
+STUB
+  chmod +x "$b"/getconf "$b"/launchctl "$b"/uname "$b"/ps "$b"/osascript "$b"/defaults "$b"/open "$b"/brew "$b"/iterm2-prefs "$b"/claude-peer "$b"/claude-tab
   export PATH="$b:$PATH"
 }
 
@@ -319,6 +330,23 @@ compose" ]
   grep -q "^HOME=" "$OPEN_ENV"
   grep -Fxq "PATH=/usr/bin:/bin:/usr/sbin:/sbin" "$OPEN_ENV"
   grep -Fxq -- "-b com.googlecode.iterm2" "$OPEN_LOG"
+}
+
+@test "_run: iTerm2 gets TMPDIR and SSH_AUTH_SOCK from the login session, the caller's only when it says nothing" {
+  export TMPDIR=/caller/tmp SSH_AUTH_SOCK=/caller/agent.sock
+  fake_iterm >/dev/null
+  FAKE_GETCONF=/var/folders/x/T/ FAKE_LAUNCHCTL=/private/tmp/launchd/Listeners runner 0 0 - prefs
+  [ "$status" -eq 0 ]
+  grep -Fxq "TMPDIR=/var/folders/x/T/" "$OPEN_ENV"
+  grep -Fxq "SSH_AUTH_SOCK=/private/tmp/launchd/Listeners" "$OPEN_ENV"
+  no grep -q "caller" "$OPEN_ENV"
+  fake_iterm >/dev/null
+  runner 0 0 - prefs
+  [ "$status" -eq 0 ]
+  grep -Fxq "TMPDIR=/caller/tmp" "$OPEN_ENV"
+  grep -Fxq "SSH_AUTH_SOCK=/caller/agent.sock" "$OPEN_ENV"
+  # nothing but the two reads
+  [ ! -e "$SEQ" ] || no grep -q '^launchctl' "$SEQ"
 }
 
 @test "_run: an item that fails does not stop the next, iTerm2 still starts, exit 1" {
