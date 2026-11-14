@@ -20,10 +20,16 @@ So the pane has three modes, chosen per launch in `pane_fzf`. *Look*: the layout
 `pn_look_id`, the session id) is set when no `claude-peer.art-seconds` of the operator's own
 is a number, `<look dir>/kind` is readable, `$ITERM_SESSION_ID` holds a valid id after its
 colon (`look_ok`: 36 characters of hex and `-`), and the socket path fits 100 bytes
-(`sun_path` is 104 on macOS). The look directory is
+(`sun_path` is 104 on macOS; `look_long` is that test: the directory at most 58 bytes, 100
+less `/`, 36 and `.sock`). The look directory is
 `${CLAUDE_PEER_LOOK:-$HOME/.local/state/claude-peer/look}` (`look_dir`), fixed under `$HOME`
 rather than `XDG_STATE_HOME` because the trigger's command runs in iTerm2's environment, not
-the pane's, and both must name one directory. In it: `kind` (`variable`; only `look on`
+the pane's, and both must name one directory. For the same reason `CLAUDE_PEER_LOOK` is a
+test handle only: `LOOK_CMD` hardcodes the default directory, so an operator who sets it
+moves the panes' sockets and nothing moves them, and `status` warns (`warning:
+CLAUDE_PEER_LOOK is set …`) while look is on. A directory over the 58 bytes (a long `$HOME`)
+makes every pane fall back to the limited timer, so `look on` refuses it, writing nothing,
+and the `look:` line of `status` ends `socket path too long`. In the look directory: `kind` (`variable`; only `look on`
 writes it, and its presence means looking is installed), `focus` (line 1 is the session id
 last reported looked at, or empty), `<id>.sock` (the fzf of a waiting pane in look mode),
 `lock` and `unlocked` (below). A look-mode fzf is fed by `pane_feed`: one input line per
@@ -61,8 +67,8 @@ Interpolated Strings".** The parameter holds `\0` only, never `\(` followed by a
 `matches[N])`. On iTerm2 3.7.7 a Variable Changed trigger on a `tab.` path whose parameter
 needs the session's variables crashes the app when a session is made by a split or is
 closed (two crash reports, 2026-11-13; the scope is evaluated through
-`VT100Screen.m:2377-2380` at `v3.7.7`, which hands the evaluator a delegate that is nil while
-a split's new session is half built and during teardown). A parameter with no scope takes
+`VT100Screen.m:2337-2340` (`performBlockWithScope`) at `v3.7.7`, which hands the
+evaluator a delegate that is nil while a split's new session is half built and during teardown). A parameter with no scope takes
 the plain backreference path, which messages that nil delegate and does nothing. The live
 check on 3.7.7 (a second instance under `-suite`, never the operator's own) ran this shape
 through a split, a new tab, pane, tab and window closes, a workgroup's enter, swap and

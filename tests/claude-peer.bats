@@ -2947,6 +2947,40 @@ PY
   [ "$(lookline)" = "look: installed, out of date (this version's trigger differs) — claude-peer look on (with iTerm2 quit)" ]
 }
 
+@test "look on: a look directory too long for a socket path is refused with its length, and nothing is written" {
+  lookprefs
+  cp "$CLAUDE_PEER_PREFS" "$BATS_TEST_TMPDIR/before.plist"
+  long=$CLAUDE_PEER_LOOK/$(printf 'a%.0s' $(seq 1 60))
+  CLAUDE_PEER_LOOK=$long run sh "$BIN" look on
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"is ${#long} bytes"*"at most 58"* ]]
+  cmp "$CLAUDE_PEER_PREFS" "$BATS_TEST_TMPDIR/before.plist"
+  [ ! -e "$long" ]
+  # exactly at the limit still installs
+  CLAUDE_PEER_LOOK=$CLAUDE_PEER_LOOK/$(printf 'a%.0s' $(seq 1 $((58 - ${#CLAUDE_PEER_LOOK} - 1)))) run sh "$BIN" look on
+  [ "$status" -eq 0 ]
+}
+
+@test "status: the look line says when the look directory is too long for a socket path" {
+  lookprefs
+  sh "$BIN" look on >/dev/null
+  long=$CLAUDE_PEER_LOOK/$(printf 'a%.0s' $(seq 1 60))
+  mkdir "$long"; echo variable >"$long/kind"
+  CLAUDE_PEER_LOOK=$long run sh "$BIN" status
+  [[ "$output" == *"look: on "*"; socket path too long (the look directory is ${#long} bytes, the limit 58), so no pane listens"* ]]
+}
+
+@test "status: warns that CLAUDE_PEER_LOOK moves the panes' sockets but not the trigger's, only while look is on" {
+  lookprefs
+  run sh "$BIN" status
+  [[ "$output" != *"CLAUDE_PEER_LOOK"* ]]
+  sh "$BIN" look on >/dev/null
+  run sh "$BIN" status
+  [[ "$output" == *"warning: CLAUDE_PEER_LOOK is set"* ]]
+  run env -u CLAUDE_PEER_LOOK sh "$BIN" status
+  [[ "$output" != *"CLAUDE_PEER_LOOK"* ]]
+}
+
 @test "status: the look line counts events that passed a held lock, and says when nothing can lock" {
   lookprefs
   sh "$BIN" look on >/dev/null

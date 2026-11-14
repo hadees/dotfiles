@@ -73,6 +73,7 @@ https://github.com/junegunn/fzf/blob/master/CHANGELOG.md
 - **What stops us:** fzf has no such event and reads those reports as `alt-[`
   and a typed `I` or `O`.
 - **Revisit when:** its changelog names a terminal focus event.
+
 ## Jev (a "System One" model)
 
 https://typesafe.ai/blog/introducing-system-one-models-and-jev

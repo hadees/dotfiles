@@ -486,6 +486,13 @@ wait_dir() { printf '%s/claude-peer.wait\n' "$(git -C "$1" rev-parse --path-form
 # pane's, and both must name one directory.
 look_dir() { printf '%s\n' "${CLAUDE_PEER_LOOK:-$HOME/.local/state/claude-peer/look}"; }
 
+# Is directory $1 too long for `<it>/<session id>.sock` to fit 100 bytes (sun_path is 104
+# on macOS)? Leaves its length in $lo_n and the most it may be in $lo_max.
+look_long() {
+  lo_n=$(printf %s "$1" | wc -c); lo_n=$((lo_n)); lo_max=58  # 100 less "/", 36 and ".sock"
+  [ "$lo_n" -gt "$lo_max" ]
+}
+
 # A session id: the GUID after the colon of $ITERM_SESSION_ID, 36 of 0-9A-Fa-f-.
 look_ok() {
   [ "${#1}" -eq 36 ] || return 1
@@ -1431,7 +1438,7 @@ pane() {
     ''|*[!0-9]*)
       pk_d=$(look_dir) pk_id=${ITERM_SESSION_ID-}
       case $pk_id in *:*) pk_id=${pk_id#*:};; *) pk_id=;; esac
-      if [ -r "$pk_d/kind" ] && look_ok "$pk_id" && [ $(( $(printf %s "$pk_d" | wc -c) + 42 )) -le 100 ]; then
+      if [ -r "$pk_d/kind" ] && look_ok "$pk_id" && ! look_long "$pk_d"; then
         pn_look=$pk_d/$pk_id.sock pn_look_id=$pk_id
       fi;;
   esac
@@ -2666,7 +2673,13 @@ cmd_status() {
   ovs_filed=$(sed -n 1p "$(overlays_file)" 2>/dev/null)
   ovs_lab=$(overlay_labels "$ovs")
   if proc_running iTerm2; then peer_py status domain "" "$(enter_state)" "$ovs" "$ovs_filed" "$ovs_lab"; else peer_py status "$skind" "$spath" "$(enter_state)" "$ovs" "$ovs_filed" "$ovs_lab"; fi
-  if proc_running iTerm2; then peer_py lookstatus domain "" "$(look_dir)"; else peer_py lookstatus "$skind" "$spath" "$(look_dir)"; fi
+  if proc_running iTerm2; then st_look=$(peer_py lookstatus domain "" "$(look_dir)"); else st_look=$(peer_py lookstatus "$skind" "$spath" "$(look_dir)"); fi
+  if [ "$st_look" != "look: off" ]; then
+    ! look_long "$(look_dir)" || st_look="$st_look; socket path too long (the look directory is $lo_n bytes, the limit $lo_max), so no pane listens"
+    [ -z "${CLAUDE_PEER_LOOK-}" ] || st_warn="CLAUDE_PEER_LOOK is set, but the trigger names the default look directory, so nothing here moves the panes; unset it"
+  fi
+  [ -z "$st_look" ] || printf '%s\n' "$st_look"
+  [ -z "${st_warn-}" ] || printf 'warning: %s\n' "$st_warn"
   peers_summary
   [ -n "$ovs" ] || return 0
   if st_pub=$(public_root); then printf 'overlays: entered from %s\n' "$st_pub"
@@ -2985,6 +2998,8 @@ look_switch() {
   proc_running iTerm2 && die "quit iTerm2 first — it rewrites its preferences at quit and would overwrite this"
   prefs_store
   lk_d=$(look_dir)
+  ! { [ "$1" = on ] && look_long "$lk_d"; } ||
+    die "the look directory $lk_d is $lo_n bytes; at most $lo_max fit a socket path, so no pane could listen (set no CLAUDE_PEER_LOOK, or use a shorter HOME)"
   r=$(peer_py look "$skind" "$spath" "$1" "$lk_d") || exit 1
   if [ "$1" = on ]; then
     mkdir -p "$lk_d" && chmod 700 "$lk_d" && rm -f "$lk_d/focus" "$lk_d/unlocked" &&
