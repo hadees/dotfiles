@@ -1366,14 +1366,28 @@ PY
   [ "$status" -eq 0 ] || { echo "$output"; false; }
 }
 
-@test "alfred-install: hands the zipped workflow to Alfred with a clean environment, and warns when no Alfred app is installed" {
-  export TMPDIR="$BATS_TEST_TMPDIR"
+@test "alfred-install: hands the zipped workflow to Alfred with a clean environment; with no Alfred app it builds nothing and says so" {
+  export TMPDIR="$BATS_TEST_TMPDIR/tmp"
+  mkdir -p "$TMPDIR"
   export CLAUDE_CONFIG_DIR=x CLAUDE_PROFILE=x CLAUDE_CODE_SESSION_ID=x CLAUDECODE=x alfred_workflow_uid=x
   export ITERM2_RELAUNCH_APPLICATIONS="$BATS_TEST_TMPDIR/Applications"
   mkdir -p "$ITERM2_RELAUNCH_APPLICATIONS"
   run sh "$BIN" alfred-install "$BATS_TEST_DIRNAME/../alfred/iterm2-relaunch" 2>&1
+  [ "$status" -eq 1 ]
+  [ "$output" = "iterm2-relaunch: Alfred is not installed; nothing built" ]
+  [ ! -s "$OPEN_LOG" ]
+  [ -z "$(ls -A "$TMPDIR")" ]
+  mkdir "$ITERM2_RELAUNCH_APPLICATIONS/Alfred 5.app"
+  # an open that fails leaves no temp directory behind
+  : >"$BATS_TEST_TMPDIR/open-fails"
+  run sh "$BIN" alfred-install "$BATS_TEST_DIRNAME/../alfred/iterm2-relaunch" 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not hand"* ]]
+  [ -z "$(ls -A "$TMPDIR")" ]
+  rm "$BATS_TEST_TMPDIR/open-fails"; : >"$OPEN_LOG"
+  run sh "$BIN" alfred-install "$BATS_TEST_DIRNAME/../alfred/iterm2-relaunch" 2>&1
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Alfred does not appear to be installed"* ]]
+  [[ "$output" != *"Alfred does not appear to be installed"* ]]
   [[ "$output" == *'iterm2-relaunch: handed iTerm2-Relaunch.alfredworkflow to Alfred; confirm the import in its window'* ]]
   [[ "$output" == *'iterm2-relaunch: then the keyword is "irelaunch"'* ]]
   [ "$(wc -l <"$OPEN_LOG" | tr -d ' ')" -eq 1 ]
@@ -1384,10 +1398,6 @@ PY
     no grep -q "^$v=" "$OPEN_ENV"
   done
   grep -Fxq "PATH=/usr/bin:/bin:/usr/sbin:/sbin" "$OPEN_ENV"
-  mkdir "$ITERM2_RELAUNCH_APPLICATIONS/Alfred 5.app"
-  run sh "$BIN" alfred-install "$BATS_TEST_DIRNAME/../alfred/iterm2-relaunch" 2>&1
-  [ "$status" -eq 0 ]
-  [[ "$output" != *"Alfred does not appear to be installed"* ]]
   run sh "$BIN" alfred-install "$BATS_TEST_TMPDIR/nowhere" 2>&1
   [ "$status" -eq 1 ]
   [[ "$output" == *"no info.plist in $BATS_TEST_TMPDIR/nowhere"* ]]

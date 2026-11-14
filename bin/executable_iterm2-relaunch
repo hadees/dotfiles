@@ -773,11 +773,11 @@ cmd_alfred_install() {
   for app in "${ITERM2_RELAUNCH_APPLICATIONS:-/Applications}"/Alfred*.app "$HOME"/Applications/Alfred*.app; do
     [ -d "$app" ] && found=1
   done
-  [ -n "$found" ] || warn "Alfred does not appear to be installed"
+  [ -n "$found" ] || die "Alfred is not installed; nothing built"
   tmp=$(mktemp -d) || die "cannot create a temp directory"
   out=$tmp/iTerm2-Relaunch.alfredworkflow
-  ( cd "$dir" && zip -q -r "$out" . -x '.*' ) || die "could not build $out"
-  clean_open "$out" || die "could not hand $out to Alfred"
+  ( cd "$dir" && zip -q -r "$out" . -x '.*' ) || { rm -rf "$tmp"; die "could not build $out"; }
+  clean_open "$out" || { rm -rf "$tmp"; die "could not hand $out to Alfred"; }
   say "handed $(basename "$out") to Alfred; confirm the import in its window"
   say 'then the keyword is "irelaunch"'
 }
