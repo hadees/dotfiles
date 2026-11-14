@@ -26,17 +26,22 @@
 # claude-peer comes after the two prefs items because its Workgroups and Triggers
 # are reserved keys no preferences fragment may carry: `claude-peer install` writes
 # them straight into the store iTerm2 loads, which `iterm2-prefs install` repoints.
-# It first waits for a live compose-at-quit waiter (compose-at-quit.pid): the waiter
-# and `claude-peer install` read, change and write the same file.
+# A live compose-at-quit waiter (compose-at-quit.pid) is waited for before the first
+# item and again before iTerm2 starts: the waiter and the items read, change and
+# write the same files.
+#
+# Every item runs under a bound of ITERM2_RELAUNCH_ITEM_TIMEOUT polls: one that
+# outlasts it is killed, logged as `<item>: timed out after <n>s` and counted failed,
+# and the next item still runs, so no item can keep iTerm2 from starting again.
 #
 # A brew: item is judged before anything quits: a cask that updates itself (iTerm2
 # included) or installs with a pkg or installer, which may ask for a password, is
 # refused, because the runner has no terminal and a sudo prompt would only fail.
 # `brew update` runs before the states are read and `brew fetch --cask` before the
 # consent, so iTerm2 is down for seconds, not for a download. The upgrade runs with
-# SUDO_ASKPASS unset and is killed after ITERM2_RELAUNCH_ITEM_TIMEOUT polls. With
-# jobs surviving a quit (KillJobsInServersOnQuit 0) running Claude sessions keep the
-# old binary through the upgrade; the front says so and the log counts them.
+# SUDO_ASKPASS unset. With jobs surviving a
+# quit (KillJobsInServersOnQuit 0) running Claude sessions keep the old binary through
+# the upgrade; the front says so and the log counts them.
 #
 # The front does nothing with a side effect before it is sure: every item is
 # judged first (a refused one stops everything, one with nothing to do is dropped),
@@ -102,7 +107,7 @@
 # ITERM2_RELAUNCH_CLAUDE_PEER (default ~/bin/claude-peer),
 # ITERM2_RELAUNCH_HEADS_UP (default ~/bin/screen-heads-up), ITERM2_RELAUNCH_BREW
 # (else brew on PATH, else /opt/homebrew/bin or /usr/local/bin; Alfred's PATH has
-# neither), ITERM2_RELAUNCH_ITEM_TIMEOUT (polls a brew: item may take, default 600),
+# neither), ITERM2_RELAUNCH_ITEM_TIMEOUT (polls an item may take, default 600),
 # ITERM2_RELAUNCH_TICK (seconds per poll, default 1), ITERM2_RELAUNCH_DETACH (0: run
 # the runner in the foreground), ITERM2_RELAUNCH_PASS (more variable names the runner
 # keeps; the tests' stubs read some).
@@ -345,10 +350,10 @@ peer_default_line() {
     if (s ~ /claude-peer default peers$/) { print s; exit } }'
 }
 
-# peer_item: claude-peer install, then claude-peer default peers when status asks
-# for it. A live compose-at-quit waiter is waited for first; it and the install
-# write the same file. Output is this function's own stdout and stderr.
-peer_item() {
+# wait_compose_waiter: a live compose-at-quit waiter (compose-at-quit.pid) reads,
+# changes and writes the stores the items and iTerm2's own start use, so it is
+# waited for, at most 30 polls, before the first item and again before iTerm2 starts.
+wait_compose_waiter() {
   _pw=${XDG_STATE_HOME:-$HOME/.local/state}/iterm2/compose-at-quit.pid
   pn=0
   while [ "$pn" -lt 30 ]; do
@@ -357,37 +362,60 @@ peer_item() {
     kill -0 "$pp" 2>/dev/null || break
     sleep "$tick"; pn=$((pn + 1))
   done
-  [ "$pn" -eq 0 ] || log_line "claude-peer: waited for the compose at quit"
+  [ "$pn" -eq 0 ] || log_line "compose-at-quit: waited for its waiter"
+  return 0
+}
+
+# peer_item: claude-peer install, then claude-peer default peers when status asks
+# for it. Output is this function's own stdout and stderr.
+peer_item() {
   "$cpeer" install || return $?
   [ -z "$(peer_default_line)" ] || "$cpeer" default peers
 }
 
+# kill_tree <pid>: the pid and its descendants, the children first (a killed parent
+# would hand them to init, out of reach of pgrep -P).
+kill_tree() {
+  for _c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$_c"; done
+  kill "$1" 2>/dev/null
+}
+
+# bounded <item> <command>...: runs the command (a program or a function) in the
+# background and sets `brc` to its exit status. It is polled through an exit-status
+# file, not kill -0: a finished child stays a zombie under dash until it is waited
+# for. One that outlasts ITERM2_RELAUNCH_ITEM_TIMEOUT polls is killed, logged as
+# `<item>: timed out after <n>s` and counts as exit 124, so no item can keep iTerm2
+# from starting again. The output is the caller's own stdout and stderr.
+# ponytail: a timeout kills the command and its descendants as pgrep -P sees them; one that
+# daemonised itself may finish.
+bounded() {
+  bitem=$1; shift
+  rm -f "$state/item.rc"
+  ( "$@"; echo $? >"$state/item.rc" ) 3>&- &
+  bpid=$!
+  bn=0
+  while [ ! -s "$state/item.rc" ] && [ "$bn" -lt "$item_timeout" ]; do sleep "$tick"; bn=$((bn + 1)); done
+  if [ -s "$state/item.rc" ]; then
+    wait "$bpid"
+    brc=$(cat "$state/item.rc")
+    case $brc in ''|*[!0-9]*) brc=1;; esac
+  else
+    kill_tree "$bpid"
+    wait "$bpid" 2>/dev/null
+    log_line "$bitem: timed out after ${bn}s"
+    brc=124
+  fi
+}
+
 # brew_upgrade <brew:cask>: the upgrade while iTerm2 is down, with the versions
-# before and after in the log. The upgrade is polled through an exit-status file,
-# not kill -0: a finished child stays a zombie under dash until it is waited for.
-# ponytail: a timeout kills brew and its direct children only; a grandchild may finish.
+# before and after in the log.
 brew_upgrade() {
   bt=${1#brew:}
   [ -n "$brew" ] || { echo "Homebrew not found"; return 1; }
   blive=$("$ct" list 2>/dev/null | wc -l | tr -d ' ')
   bbefore=$(brew_cmd list --cask --versions "$bt" 2>/dev/null); bbefore=${bbefore#* }
   [ -n "$bbefore" ] || bbefore=-
-  rm -f "$state/brew.rc"
-  sh -c "$brew_sh; echo \$? >\"\$0\"" "$state/brew.rc" "$brew" upgrade --cask "$bt" 3>&- &
-  bpid=$!
-  bn=0
-  while [ ! -s "$state/brew.rc" ] && [ "$bn" -lt "$item_timeout" ]; do sleep "$tick"; bn=$((bn + 1)); done
-  if [ -s "$state/brew.rc" ]; then
-    wait "$bpid"
-    brc=$(cat "$state/brew.rc")
-    case $brc in ''|*[!0-9]*) brc=1;; esac
-  else
-    pkill -P "$bpid" 2>/dev/null
-    kill "$bpid" 2>/dev/null
-    wait "$bpid" 2>/dev/null
-    log_line "$1: timed out after ${bn}s"
-    brc=124
-  fi
+  bounded "$1" sh -c "$brew_sh" sh "$brew" upgrade --cask "$bt"
   bafter=$(brew_cmd list --cask --versions "$bt" 2>/dev/null); bafter=${bafter#* }
   [ -n "$bafter" ] || bafter=-
   log_line "$1: $bbefore -> $bafter"
@@ -401,16 +429,17 @@ brew_upgrade() {
 # function's own stdout and stderr.
 run_items() {
   total=0 failed=0
+  wait_compose_waiter
   for i in $ordered; do
     total=$((total + 1))
     case $i in
-      prefs-install) "$prefs" install;;
-      prefs) "$prefs" compose;;
-      claude-peer) peer_item;;
-      brew:*) brew_upgrade "$i";;
-      *) (exit 2);;
+      prefs-install) bounded "$i" "$prefs" install;;
+      prefs) bounded "$i" "$prefs" compose;;
+      claude-peer) bounded "$i" peer_item;;
+      brew:*) brew_upgrade "$i"; brc=$?;;
+      *) brc=2;;
     esac
-    rc=$?
+    rc=$brc
     log_line "$i: exit $rc"
     [ "$rc" -eq 0 ] || failed=$((failed + 1))
   done
@@ -543,6 +572,7 @@ cmd_run() {
 
   run_items >>"$log" 2>&1
 
+  wait_compose_waiter
   started=''
   if start_iterm; then
     n=0

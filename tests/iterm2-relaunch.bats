@@ -97,6 +97,7 @@ STUB
   cat >"$b/open" <<STUB
 #!/bin/sh
 echo "\$*" >>"$OPEN_LOG"
+echo open >>"$SEQ"
 env >"$OPEN_ENV"
 [ ! -e "$BATS_TEST_TMPDIR/open-fails" ] || exit 1
 f="$BATS_TEST_TMPDIR/openfake.\$\$"
@@ -112,6 +113,12 @@ case "$1 ${2-}" in
 esac
 echo "$*" >>"$PREFS_LOG"
 echo "prefs $*" >>"$SEQ"
+[ "${FAKE_PREFS_HANG:-0}" = 0 ] || exec /bin/sleep 30
+# FAKE_WAITER_FILE: leave a live compose-at-quit waiter behind, alive for a second
+if [ -n "${FAKE_WAITER_FILE-}" ]; then
+  ( /bin/sh -c '( /bin/sleep 1; echo waiter-ended >>"$SEQ" ) & echo $! >"$1"; wait' sh "$FAKE_WAITER_FILE" >/dev/null 2>&1 3>&- & )
+  while [ ! -s "$FAKE_WAITER_FILE" ]; do /bin/sleep 0.05; done
+fi
 case $1 in
   install) exit "${FAKE_INSTALL_RC:-${FAKE_PREFS_RC:-0}}";;
   compose) exit "${FAKE_PREFS_RC:-0}";;
@@ -287,7 +294,7 @@ compose" ]
   [ "$status" -eq 0 ]
   [ -f "$STATE/domain-before-quit.plist" ]
   [ "$(ls -l "$STATE/domain-before-quit.plist" | cut -c1-10)" = "-rw-------" ]
-  [ "$(grep -v '^prefs' "$SEQ" | tr '\n' ' ')" = "osa-probe defaults-export osa-quit " ]
+  [ "$(grep -Ev '^(prefs|open)' "$SEQ" | tr '\n' ' ')" = "osa-probe defaults-export osa-quit " ]
 }
 
 @test "_run: an unclean shutdown is logged with the saved domain's path, and the items still run" {
@@ -1101,12 +1108,38 @@ default peers" ]
   runner 0 0 - claude-peer
   [ "$status" -eq 0 ]
   [ "$(grep -E '^(waiter-ended|peer)' "$SEQ" | tr '\n' ',')" = "waiter-ended,peer install," ]
-  in_order "claude-peer: waited for the compose at quit" "claude-peer: exit 0"
+  in_order "compose-at-quit: waited for its waiter" "claude-peer: exit 0"
   # no waiter file: no wait, no line
   : >"$LOG"; rm "$XDG_STATE_HOME/iterm2/compose-at-quit.pid"
   fake_iterm >/dev/null
   runner 0 0 - claude-peer
-  no grep -q "waited for the compose" "$LOG"
+  no grep -q "compose-at-quit: waited" "$LOG"
+}
+
+@test "_run: a live compose-at-quit waiter is waited for before the first item, and another before iTerm2 starts" {
+  fake_iterm >/dev/null
+  mkdir -p "$XDG_STATE_HOME/iterm2"
+  f="$BATS_TEST_TMPDIR/waiter.pid"
+  ( /bin/sh -c '/bin/sleep 300 & echo $! >"$1"; wait' sh "$f" >/dev/null 2>&1 3>&- & )
+  while [ ! -s "$f" ]; do /bin/sleep 0.05; done
+  waiter=$(cat "$f")
+  echo "$waiter 4242" >"$XDG_STATE_HOME/iterm2/compose-at-quit.pid"
+  # ends a second after the quit was asked, so the runner is already waiting for it
+  ( while ! grep -q osa-quit "$SEQ" 2>/dev/null; do /bin/sleep 0.05; done
+    /bin/sleep 1; echo "waiter-ended" >>"$SEQ"; kill "$waiter" ) 3>&- >/dev/null 2>&1 &
+  # the prefs stub leaves a second waiter behind, so the start has one to wait for
+  FAKE_WAITER_FILE="$XDG_STATE_HOME/iterm2/compose-at-quit.pid" runner 0 0 - prefs
+  [ "$status" -eq 0 ]
+  [ "$(grep -E '^(waiter-ended|prefs|open)' "$SEQ" | tr '\n' ',')" = "waiter-ended,prefs compose,waiter-ended,open," ]
+  [ "$(grep -c "compose-at-quit: waited for its waiter" "$LOG")" -eq 2 ]
+}
+
+@test "_run: an item that hangs is killed at the timeout, logged and counted failed, the next one runs and iTerm2 starts" {
+  fake_iterm >/dev/null
+  FAKE_PREFS_HANG=1 ITERM2_RELAUNCH_ITEM_TIMEOUT=3 runner 0 0 - prefs claude-peer
+  [ "$status" -eq 1 ]
+  in_order "prefs: timed out after 3s" "prefs: exit 124" "claude-peer: exit 0" "launch: started" "done: 2 items, 1 failed"
+  [ "$(cat "$PEER_LOG")" = install ]
 }
 
 # The Alfred front.
