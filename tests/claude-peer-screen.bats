@@ -82,6 +82,8 @@ setup() {
   git config --global user.name octo
   git config --global user.email octo@example.com
   git config --global init.defaultBranch main
+  # the panes here are opened by hand, not by a workgroup entry
+  git config --global claude-peer.restore-check false
   # the sleeper's own tests unset this; the others keep their bare screens
   git config --global claude-peer.art false
   # and a figure that holds still; the tests of its movement set a limit of their own

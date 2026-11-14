@@ -33,6 +33,8 @@ setup() {
   git config --global user.email octo@example.com
   git config --global init.defaultBranch main
   git config --global claude-peer.picker off
+  # the restored-pane tests turn it on; the rest open panes no workgroup entry made
+  git config --global claude-peer.restore-check false
   cat >"$BATS_TEST_TMPDIR/bin/fakeshell" <<'STUB'
 #!/bin/sh
 echo "pwd=$PWD"
@@ -565,6 +567,88 @@ hold() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"not in a git repository, so there is no worktree to give this peer; plain shell"* ]]
   [[ "$output" == *'args=-i' ]]
+}
+
+# The restored-pane check. claude() records each workgroup entry as
+# $XDG_STATE_HOME/claude-peer/entered/<epoch>.<pid>, "<epoch><TAB><directory>"; a
+# pane with no record for its leader in the last minute asks before it serves.
+
+# enter_record <seconds ago> [<dir>]: a record as claude() writes it
+enter_record() {
+  local e=$(( $(date +%s) - $1 ))
+  mkdir -p "$XDG_STATE_HOME/claude-peer/entered"
+  printf '%s\t%s\n' "$e" "${2:-$REPO}" >"$XDG_STATE_HOME/claude-peer/entered/$e.$RANDOM"
+}
+
+# restored_pane: a pane with the check on, no wait for its wait file; its terminal is tty-alpha
+restored_pane() {
+  git config --global --unset claude-peer.restore-check
+  mkfifo "$BATS_TEST_TMPDIR/tty-alpha"
+  ( cd "$REPO" && export CLAUDE_PEER_TTY="$BATS_TEST_TMPDIR/tty-alpha" &&
+    exec sh "$BIN" run --as alpha --wait >"$BATS_TEST_TMPDIR/pane-alpha.out" 2>&1 3>&- ) &
+  PANES="$PANES $!"
+}
+
+no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
+
+@test "restore check: a fresh record for the leader makes a normal waiting pane" {
+  git config --global --unset claude-peer.restore-check
+  enter_record 5
+  pane alpha
+  ! grep -q "restored" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  [ "$(sh "$BIN" slots | cut -f2)" = waiting ]
+}
+
+@test "restore check: no record asks first, writes no wait file, start finds nothing; Return makes a pane" {
+  restored_pane
+  until_ok 'grep -q "Return if this tab is proj" "$BATS_TEST_TMPDIR/pane-alpha.out"'
+  [ "$(sed -n 1p "$BATS_TEST_TMPDIR/pane-alpha.out")" = "Alpha: iTerm2 restored this pane; it would serve proj." ]
+  [ "$(sed -n 2p "$BATS_TEST_TMPDIR/pane-alpha.out")" = "Return if this tab is proj's, q for a shell." ]
+  no_wait_files
+  run sh "$BIN" start alpha
+  [ "$status" -eq 4 ]
+  press alpha 'x'
+  until_ok '[ "$(grep -c "Return if this tab" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 2 ]'
+  no_wait_files
+  press alpha ''
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  [ "$(shell_runs)" -eq 0 ]
+}
+
+@test "restore check: q leaves a plain shell and no wait file" {
+  restored_pane
+  until_ok 'grep -q "restored this pane" "$BATS_TEST_TMPDIR/pane-alpha.out"'
+  press alpha q
+  until_ok '[ "$(tail -n 1 "$FAKE_SHELL_LOG")" = "pwd=$REPO args=-i" ]'
+  no_wait_files
+}
+
+@test "restore check: end of input leaves a plain shell" {
+  restored_pane
+  until_ok 'grep -q "restored this pane" "$BATS_TEST_TMPDIR/pane-alpha.out"'
+  ( : >"$BATS_TEST_TMPDIR/tty-alpha" ) 3>&-   # a writer that closes with nothing written
+  until_ok '[ "$(tail -n 1 "$FAKE_SHELL_LOG")" = "pwd=$REPO args=-i" ]'
+  no_wait_files
+}
+
+@test "restore check: a record for another directory, or older than the window, does not count" {
+  enter_record 5 "$REPO/sub"
+  enter_record 120
+  restored_pane
+  until_ok 'grep -q "restored this pane" "$BATS_TEST_TMPDIR/pane-alpha.out"'
+  no_wait_files
+}
+
+@test "restore check: records more than a day old are deleted, others are left" {
+  enter_record 90000
+  enter_record 5
+  d=$XDG_STATE_HOME/claude-peer/entered
+  echo junk >"$d/junk"
+  [ "$(ls "$d" | wc -l)" -eq 3 ]
+  git config --global --unset claude-peer.restore-check
+  pane alpha
+  [ "$(ls "$d" | wc -l)" -eq 2 ]
+  [ -f "$d/junk" ]
 }
 
 @test "start: wakes the pane; the prompt arrives as one final argument" {

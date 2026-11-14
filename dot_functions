@@ -424,6 +424,9 @@ function claude() {
 	# launches without it.
 	if [[ -n $attended ]] && key="$(claude_peer_key)"; then
 		zmodload zsh/datetime 2>/dev/null;
+		# Record the entry for a pane to check (claude-peer-restore.md); any failure is silent.
+		{ local entered=${XDG_STATE_HOME:-$HOME/.local/state}/claude-peer/entered;
+		command mkdir -p $entered && print -r -- "$EPOCHSECONDS"$'\t'"$(pwd -P)" >$entered/$EPOCHSECONDS.$$; } 2>/dev/null;
 		printf '\033]1337;SetUserVar=%s=%s\007' claudePeerEnter "$(print -rn -- "$key:${EPOCHREALTIME:-$RANDOM}" | command base64 | command tr -d '\n')" >&2;
 		# The tab is Lead's, so its session gets Lead's stable name
 		# (`claude-peer name lead`) unless a name was given or a live session

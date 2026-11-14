@@ -1345,8 +1345,46 @@ pane_pick() {
   pane_list "$@"
 }
 
+# Did a workgroup entry open this pane? claude() records each entry as
+# <state>/claude-peer/entered/<epoch>.<pid>, one line "<epoch><TAB><directory>"; a
+# pane iTerm2 re-created after a crash has none for LEADER within the window
+# (CLAUDE_PEER_ENTRY_WINDOW seconds before now, or at most 5 after). Records over
+# a day old are deleted on the way; unparseable ones are skipped.
+pane_entered() {
+  pe_dir=${XDG_STATE_HOME:-$HOME/.local/state}/claude-peer/entered
+  pe_now=$(date +%s) pe_tab=$(printf '\t') pe_ok=1
+  pe_win=${CLAUDE_PEER_ENTRY_WINDOW:-60}
+  case $pe_win in ''|*[!0-9]*) pe_win=60;; esac
+  for pe_f in "$pe_dir"/*; do
+    [ -f "$pe_f" ] || continue
+    pe_e= pe_d=
+    IFS=$pe_tab read -r pe_e pe_d <"$pe_f" 2>/dev/null || :
+    case $pe_e in ''|*[!0-9]*) continue;; esac
+    if [ "$pe_e" -lt $((pe_now - 86400)) ]; then rm -f "$pe_f"; continue; fi
+    [ "$pe_d" = "$LEADER" ] || continue
+    if [ "$pe_e" -ge $((pe_now - pe_win)) ] && [ "$pe_e" -le $((pe_now + 5)) ]; then pe_ok=0; fi
+  done
+  return $pe_ok
+}
+
+# A restored pane writes no wait file, so `start` finds no pane here; Return
+# carries on as a pane, q, Ctrl-C or the end of input leaves a shell.
+pane_restored() {
+  trap pane_shell INT
+  while :; do
+    printf '%s: iTerm2 restored this pane; it would serve %s.\nReturn if this tab is %s'"'"'s, q for a shell.\n' "$label" "$rname" "$rname"
+    IFS= read -r pr_l 2>/dev/null <"${CLAUDE_PEER_TTY:-/dev/tty}" || pane_shell
+    case $pr_l in
+      '') break;;
+      q) pane_shell;;
+    esac
+  done
+  trap - INT
+}
+
 # "$@": the definition's claude args. Needs repo rname slot label LEADER.
 pane() {
+  [ "$(git config --get claude-peer.restore-check 2>/dev/null)" = false ] || pane_entered || pane_restored
   pn_wd=$(wait_dir "$repo")
   mkdir -p "$pn_wd" || die "cannot create $pn_wd"
   pn_me=$pn_wd/$slot.$$
