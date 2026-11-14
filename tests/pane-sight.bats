@@ -983,7 +983,7 @@ sh_() { pane-sight shot "$@" 2>/dev/null; }
   mkdir -p "$TMPDIR/pane-sight"
   for i in $(seq -w 1 25); do
     : > "$TMPDIR/pane-sight/old$i.png"
-    touch -t "20200101$(printf '%02d' "$i")00" "$TMPDIR/pane-sight/old$i.png"
+    touch -t "2020010100$i" "$TMPDIR/pane-sight/old$i.png"
   done
   : > "$TMPDIR/pane-sight/notes.txt"
   run sh_ alpha

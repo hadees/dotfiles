@@ -638,6 +638,7 @@ import iterm2
 from iterm2 import rpc
 
 sid, out, limit = sys.argv[1], sys.argv[2], int(sys.argv[3])
+signal.signal(signal.SIGALRM, signal.SIG_DFL)  # an inherited SIG_IGN would disarm the limit
 signal.alarm(limit)
 
 async def main(connection):
