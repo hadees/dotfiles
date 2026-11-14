@@ -266,7 +266,8 @@ employer-specific — profile-specific memory belongs in that profile's own
   (red CI, a flaky test, a stale branch, a blocked or silent worker, its own
   mistake); anything this file, the repo's CLAUDE.md or the plan already
   decides; and a technical choice where one option is plainly safer, noted
-  where I can flip it. None of these is a question for me.
+  where I can flip it; none is a question for me. What I assume
+  Lead knows but it does not, it asks peers first.
 - Lead merges the pull requests of the repo it leads, a peer's included; any
   other session merges only when I ask. One at a time, each only when its
   branch contains the base's tip, its checks are green on that head (no CI:
