@@ -1240,6 +1240,46 @@ key_sent() {
   [[ "$(key_sent)" == base:* ]]
 }
 
+@test "workgroup key: a launch that sends the key records the entry once, with the epoch and the real cwd" {
+  peer_setup
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$(key_sent)" == base:* ]]
+  recs=("$HOME"/.local/state/claude-peer/entered/*)
+  [ "${#recs[@]}" -eq 1 ]
+  [ "$(wc -l <"${recs[0]}")" -eq 1 ]
+  IFS=$'\t' read -r epoch dir <"${recs[0]}"
+  [ "$dir" = "$(cd "$repo" && pwd -P)" ]
+  [ "$(( $(date +%s) - epoch ))" -le 30 ]
+  [[ "${recs[0]##*/}" == "$epoch".* ]]
+}
+
+@test "workgroup key: a launch that sends the key deletes entry records over a day old and keeps newer ones" {
+  peer_setup
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  d=$HOME/.local/state/claude-peer/entered
+  mkdir -p "$d"
+  touch -t "$(date -v-2d +%Y%m%d%H%M 2>/dev/null || date -d '2 days ago' +%Y%m%d%H%M)" "$d/1.1"
+  touch "$d/2.2"
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$(key_sent)" == base:* ]]
+  [ ! -e "$d/1.1" ]
+  [ -e "$d/2.2" ]
+  [ "$(ls "$d" | wc -l)" -eq 2 ]
+}
+
+@test "workgroup key: a launch that sends no key records nothing" {
+  peer_setup
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  for args in 'mcp list' '-p hello'; do
+    PTY_DIR=$repo PTY_ANSWER=n pty_claude $args
+  done
+  (unset ITERM_SESSION_ID; PTY_DIR=$repo PTY_ANSWER=n pty_claude)
+  rm "$HOME/.local/state/claude-peer/enter"
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [ ! -e "$HOME/.local/state/claude-peer/entered" ]
+}
+
 @test "workgroup key: nothing is sent without a terminal, under -p or a subcommand, outside iTerm2, inside a peer, or without the state file" {
   peer_setup
   repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
