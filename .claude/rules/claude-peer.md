@@ -386,24 +386,8 @@ line) or the picker opens from it (Return), `pane_unquiet` moves up over the blo
 line and the typed line and erases down (`ESC[11A`, `ESC[J` beside; 13 under), so one sleeper is
 ever on screen; a session started from quiet (`c`, a context name, Return with the picker off)
 leaves it above the session. A pane resized between going quiet and the next key miscounts once.
-**It moves inside fzf, and wakes.** No animator process: before each fzf launch (sleeper
-showing, `git config claude-peer.art-seconds` over 0; default 20, read when the pane starts)
-the pane writes one complete header per pose, `$pn_me.frame.0`…`.3` (z's near, near-mid, all
-with the pom-pom swayed, none swayed) and `.still` (A1's header), exports
-`CLAUDE_PEER_FRAMES` and `CLAUDE_PEER_ART_SECONDS`, and adds `--with-shell='sh -c'`,
-`--bind='change,focus:rebind(every(1))'` and, last, `--bind='every(1):bg-transform:<tick>'`
-(`PANE_TICK`): each second one `sh` and one `cat` pick the pose from `FZF_IDLE_TIME_MS`, and
-once art-seconds pass without a key the header becomes `.still` and the timer unbinds, so an
-idle picker forks nothing; a key or a cursor move binds it again. The once-a-second poll this
-file rejects for the wait is bounded here by that limit. `pane_cleanup` and `pane_reap` take
-the frame files with the wait file. Waking: `PG_WAKE` is set by `pane_fzf` around a pick that
-starts a session and by the request path when the request closed an open fzf; `pane_go`
-reads and clears it and, with the sleeper showing, calls `art_wake` once the slot is taken
-(a refused slot draws nothing): `wake-1` (cap lifted, no z's) where fzf erased itself, 0.25 s,
-up over it (`ESC[9A`, 11 under) and `wake-2` (eyes open) on top, 0.25 s, then the header line
-as before. The list and the quiet state never move and never wake. A context that asks a
-question wakes under its answer. The screen tests hold the figure still from `setup`
-(`art-seconds 0`) and set 3 where they test the movement.
+**It moves, wakes, and moves while looked at.** The pose frames, the `art-seconds` limit,
+waking, and `claude-peer look` with its trigger and lock are in `claude-peer-look.md`.
 `claude-peer art [--slot] [--frame] [--z all|near|near-mid|none] [--truecolor|--256]` prints a
 frame; `art --screen [--slot]` prints the quiet screen as a pane would pad it, for the terminal
 or `CLAUDE_PEER_SIZE`: the operator's preview and the screen tests' reference. The figure is
@@ -500,7 +484,10 @@ never the caller's server) at fixed sizes, captures it with `capture-pane -p`
 list (centred, every row whole, a question under it, a `start` taking it, an older
 fzf falling back to it), the fzf picker, and the sleeper (cell for cell against
 `claude-peer art`, whole while the list scrolls, absent at 15 rows, one after Esc and
-Return, and above the list). The sleeper's tests unset the `claude-peer.art false` that
+Return, and above the list; looked-at mode: still until told, moving while looked at and
+still again after `look lost` or a second session's `look gained`, moving at once when it
+opens under the operator's eyes, and drawn the same looked at or held still; those need
+`curl` with `UnixSockets`). The sleeper's tests unset the `claude-peer.art false` that
 `setup` sets for the rest. Waits are for text and for a still screen, never a bare
 `sleep`. They need a UTF-8 locale and, in a container, an init as process 1
 (`docker run --init`): the harness test and `screen_close` say so by name, and

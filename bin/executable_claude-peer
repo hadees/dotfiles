@@ -191,7 +191,9 @@
 #                            claude-peer.<slot>.cap; claude-peer.art false hides
 #                            it in panes, claude-peer.art-file replaces it,
 #                            claude-peer.art-seconds, default 20, is how long it
-#                            moves in fzf after the last key; 0 holds it still)
+#                            moves in fzf after the last key; 0 holds it still;
+#                            unset, and with `claude-peer look on`, it moves
+#                            while the pane is the one looked at)
 #   art --hermes [--at <n>] [--truecolor|--256] | art --hermes --wait
 #                            the Hermes pane's figure, read from the installed
 #                            Hermes: one frame of its glint (0, the default, is
@@ -199,6 +201,14 @@
 #   art --screen [--slot <slot>]
 #                            the quiet waiting screen, padded as a pane pads it,
 #                            for this terminal or CLAUDE_PEER_SIZE
+#   look on|off              write / remove the iTerm2 trigger that tells a waiting
+#                            pane it is looked at, in every profile that enters
+#                            a workgroup, and the marker panes check; iTerm2
+#                            must be quit
+#   look gained|lost <session id>
+#                            the pane of that iTerm2 session is now looked at /
+#                            no longer is: its picker starts or stops moving;
+#                            always exits 0, silent
 #
 # Exit codes of start and stop: 0 done; 1 failed; 2 usage; 3 already in
 # the requested state; 4 nothing to act on; 5 refused because busy.
@@ -474,6 +484,24 @@ pool_pick() {
 
 wait_dir() { printf '%s/claude-peer.wait\n' "$(git -C "$1" rev-parse --path-format=absolute --git-common-dir)"; }
 
+# Where a waiting pane's fzf listens to be told it is looked at. Fixed under $HOME,
+# not XDG_STATE_HOME: iTerm2's trigger command runs in iTerm2's environment, not the
+# pane's, and both must name one directory.
+look_dir() { printf '%s\n' "${CLAUDE_PEER_LOOK:-$HOME/.local/state/claude-peer/look}"; }
+
+# Is directory $1 too long for `<it>/<session id>.sock` to fit 100 bytes (sun_path is 104
+# on macOS)? Leaves its length in $lo_n and the most it may be in $lo_max.
+look_long() {
+  lo_n=$(printf %s "$1" | wc -c); lo_n=$((lo_n)); lo_max=58  # 100 less "/", 36 and ".sock"
+  [ "$lo_n" -gt "$lo_max" ]
+}
+
+# A session id: the GUID after the colon of $ITERM_SESSION_ID, 36 of 0-9A-Fa-f-.
+look_ok() {
+  [ "${#1}" -eq 36 ] || return 1
+  case $1 in *[!0-9A-Fa-f-]*) return 1;; esac
+}
+
 # repo -> slot<TAB>pid<TAB>leader of every live waiting pane, sorted by slot
 waiters() {
   ww_dir=$(wait_dir "$1")
@@ -525,6 +553,7 @@ pane_cleanup() {
   # shellcheck disable=SC2046
   kill $(cat "$pn_me.jobs" 2>/dev/null) 2>/dev/null
   [ -z "${pn_rpid-}" ] || kill "$pn_rpid" 2>/dev/null
+  [ -z "${pn_look-}" ] || rm -f "$pn_look"
   rm -f "$pn_me" "$pn_me".*
 }
 
@@ -1076,6 +1105,27 @@ pane_head() {
   printf '\033[2m%s\033[0m' "$ph_t"
 }
 
+# fzf's input in look mode: the header lines (a `-` id, then line i of the four poses
+# and the still frame in fields 2-6, so change-with-nth rotates them), then every row
+# with its display in fields 2-6.
+pane_feed() {
+  awk -v n="$pn_head" -v f="$pn_me.frame" -v rows="$pn_me.rows" '
+    BEGIN {
+      split("0 1 2 3 still", k, " ")
+      for (j = 1; j <= 5; j++) {
+        i = 0
+        while ((getline l < (f "." k[j])) > 0) { i++; gsub(/\t/, " ", l); a[j, i] = l }
+        close(f "." k[j])
+      }
+      for (i = 1; i <= n; i++) printf "-\t%s\t%s\t%s\t%s\t%s\n", a[1, i], a[2, i], a[3, i], a[4, i], a[5, i]
+      while ((getline l < rows) > 0) {
+        c = split(l, p, "\t"); d = p[2]
+        for (q = 3; q <= c; q++) d = d " " p[q]
+        printf "%s\t%s\t%s\t%s\t%s\t%s\n", p[1], d, d, d, d, d
+      }
+    }'
+}
+
 # second-line: the sleeper's block in ordinary output, where fzf's header would put
 # it (pn_pad and two), then an empty line; nothing with pn_lay none.
 pane_art() {
@@ -1240,18 +1290,26 @@ pane_fzf() {
     rm -f "$pn_me.pick"
     # the moving sleeper: one header file per pose, which fzf's own timer shows; drawn
     # again only when the layout changed, so a picker reopened at one size renders nothing
-    pn_anim=
-    if [ "$pn_lay" != none ] && [ "$pn_secs" -gt 0 ]; then
-      pn_anim=1 pf_key="$pn_lay $pn_w $pn_cols"
+    # Three modes: look (told by `claude-peer look` when it is looked at; fzf listens on
+    # a socket), limited (today's timer, pn_secs after the last key), still.
+    pn_anim= pn_lk= pn_lku=
+    if [ "$pn_lay" != none ] && [ -n "$pn_look" ] && mkdir -p "$(look_dir)" 2>/dev/null && chmod 700 "$(look_dir)" 2>/dev/null; then
+      pn_lk=1
+      pf_fo=; [ ! -r "$(look_dir)/focus" ] || read -r pf_fo <"$(look_dir)/focus"
+      [ "$pf_fo" = "$pn_look_id" ] || pn_lku=1
+    elif [ "$pn_lay" != none ] && [ "$pn_secs" -gt 0 ]; then pn_anim=1; fi
+    if [ -n "$pn_anim$pn_lk" ]; then
+      pf_key="$pn_lay $pn_w $pn_cols"
       if [ "$(cat "$pn_me.frame.key" 2>/dev/null)" != "$pf_key" ]; then
         pane_head asleep near >"$pn_me.frame.0"; pane_head asleep near-mid >"$pn_me.frame.1"
         pane_head asleep-sway all >"$pn_me.frame.2"; pane_head asleep-sway none >"$pn_me.frame.3"
         pane_head >"$pn_me.frame.still"
         printf '%s\n' "$pf_key" >"$pn_me.frame.key"
       fi
-      pn_header=$(cat "$pn_me.frame.0")
+      pn_header=$(cat "$pn_me.frame.0") pn_in=$pn_me.rows
+      [ -z "$pn_lk" ] || { pn_header= pn_in=$pn_me.frame.feed; pane_feed >"$pn_in"; }
     else
-      pn_header=$(pane_head)
+      pn_header=$(pane_head) pn_in=$pn_me.rows
     fi
     # shellcheck disable=SC2086
     ( trap - TTIN TTOU; unset FZF_DEFAULT_OPTS FZF_DEFAULT_OPTS_FILE
@@ -1262,16 +1320,20 @@ pane_fzf() {
         --height="$pn_h" --info=hidden --no-separator \
         --margin="0,$pn_right,0,$pn_left" --pointer='▸' --gutter=' ' \
         --delimiter='\t' --with-nth=2 --prompt="$label ▸ " \
-        --header="$pn_header" --print-query --expect=ctrl-t,ctrl-s \
+        ${pn_lk:+--ansi} ${pn_lk:+"--header-lines=$pn_head"} ${pn_header:+"--header=$pn_header"} \
+        --print-query --expect=ctrl-t,ctrl-s \
         ${pn_anim:+"--with-shell=sh -c"} ${pn_anim:+"--bind=change,focus:rebind(every(1))"} \
         ${pn_anim:+"--bind=every(1):bg-transform:$PANE_TICK"} \
-        <"$pn_me.rows" >"$pn_me.pick" ) &
+        ${pn_lk:+"--listen=$pn_look"} ${pn_lku:+"--bind=start:unbind(every(1))"} \
+        ${pn_lk:+"--bind=every(1):change-with-nth(2|3|4|5)"} \
+        <"$pn_in" >"$pn_me.pick" ) &
     pn_rpid=$!
     while :; do
       wait "$pn_rpid"; pf_rc=$?
       if [ -f "$pn_me.start" ]; then
         kill "$pn_rpid" 2>/dev/null; wait "$pn_rpid" 2>/dev/null
         pn_rpid= pn_cut=1   # the request closed an open fzf: its session wakes the sleeper
+        [ -z "$pn_lk" ] || rm -f "$pn_look"
         # a FIFO (the tests' terminal) would block the open until a writer comes
         [ ! -c "$pn_tty" ] || stty sane <"$pn_tty" 2>/dev/null
         return 0
@@ -1279,6 +1341,7 @@ pane_fzf() {
       kill -0 "$pn_rpid" 2>/dev/null || break
     done
     pn_rpid=
+    [ -z "$pn_lk" ] || rm -f "$pn_look"
     case $pf_rc in
       0|1) ;;
       130) pn_state=quiet; return 0;;
@@ -1375,6 +1438,17 @@ pane() {
   pn_colors=$(fzf_colors)
   pn_secs=$(git config --get claude-peer.art-seconds 2>/dev/null) || pn_secs=20
   case $pn_secs in ''|*[!0-9]*) pn_secs=20;; esac
+  # look mode needs no limit of the operator's own, the marker, a valid session id
+  # and a socket path short enough (sun_path is 104 bytes on macOS)
+  pn_look= pn_look_id=
+  case $(git config --get claude-peer.art-seconds 2>/dev/null) in
+    ''|*[!0-9]*)
+      pk_d=$(look_dir) pk_id=${ITERM_SESSION_ID-}
+      case $pk_id in *:*) pk_id=${pk_id#*:};; *) pk_id=;; esac
+      if [ -r "$pk_d/kind" ] && look_ok "$pk_id" && ! look_long "$pk_d"; then
+        pn_look=$pk_d/$pk_id.sock pn_look_id=$pk_id
+      fi;;
+  esac
   pn_cut=
   pn_slug=
   [ "$pn_pick" = off ] || pn_slug=$(origin_slug) || pn_slug=
@@ -2144,7 +2218,7 @@ prefs_store() {
 # NSData holding a JSON array), defaults for the domain.
 peer_py() {
   python3 -I - "$@" <<'PYEOF'
-import copy, json, plistlib, subprocess, sys
+import copy, json, os, plistlib, socket, stat, subprocess, sys, time
 
 GROUP, NAME, HGROUP, BUILTIN = "claudePeer.workgroup", "Claude Peers", "claudePeer.h", "builtin.claudeCode"
 mode, kind, path = sys.argv[1:4]
@@ -2287,6 +2361,50 @@ def sync_var_triggers(pl, groups):
             changed.add(id(b))
         b["Triggers"] = keep + mine
     return changed
+
+# The look trigger: when the session now active in the selected tab changes, tell
+# `claude-peer look gained` which one it is. The parameter holds no `\(`, only the
+# `\0` of the changed value, so iTerm2 never evaluates it against a session's
+# variables (the shape that crashed 3.7.7 on a half-built split); the command skips
+# the call when focus already names the session. is_look is how `look off` tells
+# its own trigger from somebody else's Run Command trigger.
+LOOK_VAR = "tab.window.currentTab.currentSession.id"
+LOOK_RE = "^[0-9A-Fa-f-]{36}$"
+LOOK_CMD = ('g=\'\\0\'; p="$HOME/bin/claude-peer"; f="$HOME/.local/state/claude-peer/look/focus"; '
+            '[ -x "$p" ] || exit 0; o=; [ -r "$f" ] && read -r o <"$f"; '
+            '[ "$o" = "$g" ] || exec "$p" look gained "$g"')
+LOOK_TRIGGER = {"action": "ScriptTrigger", "matchType": VAR_ENTER, "parameter": LOOK_CMD,
+                "eventParams": {"variableName": LOOK_VAR, "variableValueRegex": LOOK_RE},
+                "disabled": 0, "regex": "", "contentregex": "", "partial": False}
+
+def is_look(t):
+    p = t.get("parameter")
+    return (t.get("action") == "ScriptTrigger" and isinstance(p, str)
+            and "/bin/claude-peer" in p and " look gained " in p)
+
+def look_of(b):
+    return [t for t in b.get("Triggers") or [] if is_look(t)]
+
+def socks(d):
+    try:
+        return [os.path.join(d, f) for f in sorted(os.listdir(d))
+                if f.endswith(".sock") and stat.S_ISSOCK(os.lstat(os.path.join(d, f)).st_mode)]
+    except OSError:
+        return []
+
+def listening(p):
+    s = socket.socket(socket.AF_UNIX)
+    s.settimeout(1)
+    try:
+        s.connect(p)
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+def dur(n):
+    return "%ds" % n if n < 60 else "%dm" % (n // 60) if n < 3600 else "%dh" % (n // 3600) if n < 86400 else "%dd" % (n // 86400)
 
 def save(pl, was_binary):
     data = plistlib.dumps(pl, fmt=plistlib.FMT_BINARY if was_binary else plistlib.FMT_XML)
@@ -2442,6 +2560,73 @@ elif mode == "default":
     if moved:
         save(pl, was_binary)
     print("%d of %d profiles changed" % (len(moved), len({id(b) for b, _ in found})))
+elif mode == "look":
+    on = sys.argv[4] == "on"
+    try:
+        pl, was_binary = load(kind, path)
+    except Exception as e:
+        fail("cannot read the preferences: %s" % e)
+    profs = list({id(b): b for b, _ in job_triggers(pl)}.values())
+    if not profs:
+        fail("no profile has an Enter Workgroup trigger for Claude Code; set up iTerm2's Claude Code integration first")
+    changed = 0
+    for b in profs:
+        trig = b.get("Triggers") or []
+        new = [t for t in trig if not is_look(t)] + ([copy.deepcopy(LOOK_TRIGGER)] if on else [])
+        if new != trig:
+            b["Triggers"] = new
+            changed += 1
+    if changed:
+        save(pl, was_binary)
+    if on:  # iTerm2 is quit, so a socket that answers nobody is a leftover
+        for p in socks(sys.argv[5]):
+            if not listening(p):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+    print("%d of %d profiles changed" % (changed, len(profs)))
+elif mode == "lookstatus":
+    d = sys.argv[4]
+    try:
+        pl, _ = load(kind, path)
+    except Exception as e:
+        fail("cannot read the iTerm2 preferences (%s): %s" % (kind, e))
+    profs = list({id(b): b for b, _ in job_triggers(pl)}.values())
+    m = len(profs)
+    n = sum(1 for b in profs if look_of(b) == [LOOK_TRIGGER])
+    mine = [look_of(b) for b in pl.get("New Bookmarks", [])]
+    carry = sum(1 for ts in mine if ts)
+    marker = os.access(os.path.join(d, "kind"), os.R_OK)
+    fix = "claude-peer look on (with iTerm2 quit)"
+    if not marker and not carry:
+        print("look: off")
+    elif not marker:
+        print("look: %d profiles carry the trigger but the marker is missing, so no pane listens \u2014 %s" % (carry, fix))
+    elif any(ts and ts != [LOOK_TRIGGER] for ts in mine):
+        print("look: installed, out of date (this version's trigger differs) \u2014 %s" % fix)
+    elif n < m:
+        print("look: the marker says on but %d of %d profiles lack the trigger (iTerm2's Reinstall rewrites triggers) \u2014 %s" % (m - n, m, fix))
+    else:
+        ps = socks(d)
+        k = sum(1 for p in ps if listening(p))
+        try:
+            age = "%s ago" % dur(max(0, int(time.time() - os.stat(os.path.join(d, "focus")).st_mtime)))
+        except OSError:
+            age = "never"
+        try:
+            with open(os.path.join(d, "unlocked")) as f:
+                lines = f.read().splitlines()
+        except OSError:
+            lines = []
+        if not lines:
+            tail = ""
+        elif lines[0] == "notool":
+            tail = "; events are not serialised (no flock, and no lockf that locks a descriptor)"
+        else:
+            tail = "; %d events passed a held lock" % len(lines)
+        print("look: on (variable trigger in %d of %d profiles); %d panes listening, %d stale; last event %s%s"
+              % (n, m, k, len(ps) - k, age, tail))
 PYEOF
 }
 
@@ -2516,6 +2701,13 @@ cmd_status() {
   ovs_filed=$(sed -n 1p "$(overlays_file)" 2>/dev/null)
   ovs_lab=$(overlay_labels "$ovs")
   if proc_running iTerm2; then peer_py status domain "" "$(enter_state)" "$ovs" "$ovs_filed" "$ovs_lab"; else peer_py status "$skind" "$spath" "$(enter_state)" "$ovs" "$ovs_filed" "$ovs_lab"; fi
+  if proc_running iTerm2; then st_look=$(peer_py lookstatus domain "" "$(look_dir)"); else st_look=$(peer_py lookstatus "$skind" "$spath" "$(look_dir)"); fi
+  if [ "$st_look" != "look: off" ]; then
+    ! look_long "$(look_dir)" || st_look="$st_look; socket path too long (the look directory is $lo_n bytes, the limit $lo_max), so no pane listens"
+    [ -z "${CLAUDE_PEER_LOOK-}" ] || st_warn="CLAUDE_PEER_LOOK is set, but the trigger names the default look directory, so nothing here moves the panes; unset it"
+  fi
+  [ -z "$st_look" ] || printf '%s\n' "$st_look"
+  [ -z "${st_warn-}" ] || printf 'warning: %s\n' "$st_warn"
   peers_summary
   [ -n "$ovs" ] || return 0
   if st_pub=$(public_root); then printf 'overlays: entered from %s\n' "$st_pub"
@@ -2780,6 +2972,96 @@ cmd_art() {
   rm -rf "$ar_d"
 }
 
+# Tell a waiting pane's fzf (socket of session <id> in the look directory) to run
+# <action>. A socket that does not answer is left alone: removing it here could
+# unlink the socket of an fzf that is just starting.
+look_post() {
+  look_ok "$1" && [ -S "$lk_d/$1.sock" ] || return 0
+  curl -s -o /dev/null -m 1 --unix-socket "$lk_d/$1.sock" -X POST -d "$2" http://localhost/ || :
+}
+
+# Hold the look lock: descriptor 9 is open on <look directory>/lock. 0 held, 1 a live
+# holder kept it past CLAUDE_PEER_LOOK_WAIT seconds (default 5), 2 no tool here locks a
+# descriptor. flock (util-linux) and lockf (macOS) take the same flock(2) lock, which the
+# kernel drops when the descriptor closes: a killed holder leaves nothing to break.
+look_lock() {
+  lk_w=${CLAUDE_PEER_LOOK_WAIT-}
+  case $lk_w in '' | *[!0-9]*) lk_w=5;; esac
+  if command -v flock >/dev/null 2>&1; then
+    if [ "$lk_w" -eq 0 ]; then flock -n 9; else flock -w "$lk_w" 9; fi
+    case $? in 0) return 0;; 1) return 1;; esac
+  fi
+  if command -v lockf >/dev/null 2>&1; then
+    lockf -s -t "$lk_w" 9
+    case $? in 0) return 0;; 75) return 1;; esac
+  fi
+  return 2
+}
+
+# One look event, with $lk_d and $lk_id set; the caller holds the lock.
+look_turn() {
+  lk_old=
+  [ ! -r "$lk_d/focus" ] || read -r lk_old <"$lk_d/focus" || :
+  case $1 in
+    gained)
+      [ "$lk_old" != "$lk_id" ] || return 0
+      printf '%s\n' "$lk_id" >"$lk_d/focus.$$" && mv -f "$lk_d/focus.$$" "$lk_d/focus"
+      look_post "$lk_old" 'unbind(every(1))'
+      look_post "$lk_id" 'rebind(every(1))';;
+    lost)
+      [ "$lk_old" != "$lk_id" ] || { : >"$lk_d/focus.$$" && mv -f "$lk_d/focus.$$" "$lk_d/focus"; }
+      look_post "$lk_id" 'unbind(every(1))';;
+  esac
+  return 0
+}
+
+# on|off: write (or remove) the trigger that calls `look gained` in every profile that
+# enters a workgroup on a claude job, and the marker that tells panes to listen. The
+# marker goes after the store, so a pane never listens for a trigger that is not there;
+# `lock` stays, because a new file at its path would be a second lock beside a live
+# holder's.
+look_switch() {
+  [ $# -eq 1 ] || usage
+  need_macos "look $1"
+  proc_running iTerm2 && die "quit iTerm2 first — it rewrites its preferences at quit and would overwrite this"
+  prefs_store
+  lk_d=$(look_dir)
+  ! { [ "$1" = on ] && look_long "$lk_d"; } ||
+    die "the look directory $lk_d is $lo_n bytes; at most $lo_max fit a socket path, so no pane could listen (set no CLAUDE_PEER_LOOK, or use a shorter HOME)"
+  r=$(peer_py look "$skind" "$spath" "$1" "$lk_d") || exit 1
+  if [ "$1" = on ]; then
+    mkdir -p "$lk_d" && chmod 700 "$lk_d" && rm -f "$lk_d/focus" "$lk_d/unlocked" &&
+      echo variable >"$lk_d/kind" || die "cannot write $lk_d"
+    printf 'claude-peer: a waiting pane now moves while it is looked at; %s\n' "$r"
+  else
+    rm -f "$lk_d/kind" "$lk_d/focus" "$lk_d/unlocked"
+    printf 'claude-peer: a waiting pane is no longer told when it is looked at; %s\n' "$r"
+  fi
+}
+
+# gained|lost <session id>: what iTerm2's trigger calls when the session now looked
+# at changes. Always exit 0 and print nothing, whatever happens: iTerm2 posts a
+# notification for a failed command and logs its output. A burst of calls (one tab
+# switch fires 1-4, a stale id may come between) ends with the last id bound. iTerm2
+# starts a burst's commands together and in no fixed order, so one call runs at a time
+# (look_lock); with no lock tool, or a holder past the wait, the call goes ahead and
+# `unlocked` says so.
+cmd_look() {
+  case ${1-} in on|off) look_switch "$@"; return;; gained|lost) ;; *) usage;; esac
+  {
+    lk_d=$(look_dir) lk_id=${2-}
+    [ -d "$lk_d" ] && look_ok "$lk_id" || return 0
+    { look_lock
+      case $? in
+        1) echo timeout >>"$lk_d/unlocked";;
+        2) echo notool >"$lk_d/unlocked";;
+      esac
+      look_turn "$1"
+    } 9>>"$lk_d/lock" || look_turn "$1"
+  } >/dev/null 2>&1
+  return 0
+}
+
 [ $# -ge 1 ] || usage
 cmd=$1; shift
 case $cmd in
@@ -2804,6 +3086,7 @@ case $cmd in
   status) cmd_status "$@";;
   context) cmd_context "$@";;
   art) cmd_art "$@";;
+  look) cmd_look "$@";;
   -h|--help|help) usage;;
   *) warn "unknown command '$cmd'"; usage;;
 esac

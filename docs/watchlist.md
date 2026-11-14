@@ -40,6 +40,40 @@ https://github.com/JeanExtreme002/pymacos
   exact version, run `settings.export()` on a configured Mac, and diff
   it against `.macos`.
 
+## iTerm2 focus-changed event trigger
+
+https://iterm2.com/downloads.html
+
+- **Evaluated:** 2026-11-13, at 3.7.7 (source read to nightly `b4e21eb62`).
+- **What:** an event trigger that fires when a session gains or loses keyboard
+  focus.
+- **Why it matters here:** it would start the sleeper on a return from another
+  app or window and stop it on leaving, make "one mover" exact with several
+  windows, and fire in two sessions per change rather than every session of
+  the window.
+- **What stops us:** no such event exists (the trigger types end at 115). It
+  has been proposed upstream in an issue
+  (https://gitlab.com/gnachman/iterm2/-/work_items/13211) and nothing is built
+  until the maintainer answers. The crash that makes the variable trigger
+  fragile is a separate pull request (https://github.com/gnachman/iTerm2/pull/822,
+  issue https://gitlab.com/gnachman/iterm2/-/work_items/13210).
+- **Revisit when:** the release notes name it. Then: `claude-peer look on`
+  writes that trigger instead, calling `look gained|lost`.
+
+## fzf terminal-focus events
+
+https://github.com/junegunn/fzf/blob/master/CHANGELOG.md
+
+- **Evaluated:** 2026-11-12, at fzf 0.75.0 (changelog read to 0.75.1).
+- **What:** fzf learning that its terminal gained or lost focus.
+- **Why it matters here:** it is the route that would need no iTerm2 trigger
+  at all: iTerm2 already reports focus to the pty on tab, pane, window and app
+  changes (DECSET 1004), so a waiting pane's fzf could start and stop its own
+  timer.
+- **What stops us:** fzf has no such event and reads those reports as `alt-[`
+  and a typed `I` or `O`.
+- **Revisit when:** its changelog names a terminal focus event.
+
 ## Jev (a "System One" model)
 
 https://typesafe.ai/blog/introducing-system-one-models-and-jev

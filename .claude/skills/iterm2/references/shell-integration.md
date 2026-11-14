@@ -259,6 +259,21 @@ changes what a trigger can be:
 - **Event triggers** fire on an event rather than on output — session end, a
   hostname change, Job Started / Job Ended, a session variable changing to a
   value matching a regex.
+- On 3.7.7 a Variable Changed trigger that watches a path through `tab.` and
+  whose parameter is an interpolated string needing session variables crashes
+  the app when a session carrying it is created by a split or is closed. A
+  parameter using only `\0`...`\9` does not take that code path (source, and
+  run: on 3.7.7 it went through a split, a new tab, pane, tab and window
+  closes, a workgroup's enter, swap and exit, and quit with no crash,
+  2026-11-13).
+- The commands of Run Command triggers are started together, up to 16 at
+  once, and in no fixed order (each waits for its own `PATH` lookup before it
+  starts; `ScriptTrigger.m:21-28`, `iTermCommandRunnerPool.m:56-75`,
+  `iTermBackgroundCommandRunner.m:118-172` at `v3.7.7`). A Variable Changed
+  trigger on a path through `tab.window` fires in every session of the
+  window, buried workgroup peers included (one to four commands per change,
+  seen 2026-11-13). A command that reads and then writes shared state has to
+  lock it.
 - A trigger can be given a **job**, and is then active only while that job
   runs.
 - Triggers export and import as `.it2triggers` files.

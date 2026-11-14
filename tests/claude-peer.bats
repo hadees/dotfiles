@@ -18,6 +18,9 @@ setup() {
   fi
   # Run inside a peer slot or a Claude session, the suite must not inherit either.
   unset CLAUDE_PEER_WORKTREE CLAUDE_PEER_SELF CLAUDE_PID CLAUDE_CODE_SESSION_ID
+  # Run from an iTerm2 tab, a real session id would put sockets under the real look
+  # directory.
+  unset ITERM_SESSION_ID CLAUDE_PEER_LOOK
   export HOME="$BATS_TEST_TMPDIR/home"
   # a runner or a shell that exports XDG_CONFIG_HOME would put the script's
   # config root outside the sandbox
@@ -61,6 +64,7 @@ STUB
 teardown() {
   local p
   for p in $PANES; do kill "$p" 2>/dev/null || true; done
+  case ${CLAUDE_PEER_LOOK-} in /tmp/cpl.*) rm -rf "$CLAUDE_PEER_LOOK";; esac
 }
 
 @test "run: creates the worktree, cd's into it, execs an interactive shell" {
@@ -474,7 +478,7 @@ pane() {
   local tty=$BATS_TEST_TMPDIR/tty-$t
   [ -p "$tty" ] || mkfifo "$tty"
   ( cd "$d" && export CLAUDE_PEER_TTY="${PANE_TTY:-$tty}" &&
-    exec sh "$BIN" run --as "$s" --wait >"$BATS_TEST_TMPDIR/pane-$t.out" 2>&1 3>&- ) &
+    exec ${PANE_SH:-sh} "$BIN" run --as "$s" --wait >"$BATS_TEST_TMPDIR/pane-$t.out" 2>&1 3>&- ) &
   LAST_PANE=$!
   PANES="$PANES $LAST_PANE"
   until_ok "[ -f '$(git -C "$d" rev-parse --path-format=absolute --git-common-dir)/claude-peer.wait/$s.$LAST_PANE' ]"
@@ -2536,6 +2540,541 @@ before() {
   until_ok '! kill -0 $pp 2>/dev/null'
   for k in $kids; do until_ok "! kill -0 $k 2>/dev/null"; done
   [ -z "$(ls "$REPO/.git/claude-peer.wait")" ]
+}
+
+# lookfix: a look directory of its own (a socket path is at most 104 bytes: the sandbox
+# HOME is too long), the marker in it, and a session id; removed by teardown
+LOOKID=11111111-2222-3333-4444-555555555555
+lookfix() {
+  CLAUDE_PEER_LOOK=$(mktemp -d /tmp/cpl.XXXXXX)
+  export CLAUDE_PEER_LOOK ITERM_SESSION_ID=w0t0p0:$LOOKID
+  echo variable >"$CLAUDE_PEER_LOOK/kind"
+}
+
+@test "sleeper look: with the marker and a session id fzf listens, starts unbound, and rotates by itself" {
+  hellofix
+  fzfstub
+  lookfix
+  git config --global claude-peer.picker fzf
+  CLAUDE_PEER_SIZE='40 120' FAKE_FZF_SLEEP=30 pane alpha
+  until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+  w=$REPO/.git/claude-peer.wait/alpha.$LAST_PANE
+  [ "$(tail -n 1 "$FAKE_FZF_LOG")" = '--bind=every(1):change-with-nth(2|3|4|5)' ]
+  local a
+  for a in "--listen=$CLAUDE_PEER_LOOK/$LOOKID.sock" '--bind=start:unbind(every(1))' --ansi --header-lines=11 --with-nth=2; do
+    [ "$(grep -cxF -- "$a" "$FAKE_FZF_LOG")" -eq 1 ]
+  done
+  [ "$(grep -c -- '^--header=\|--with-shell\|bg-transform\|rebind' "$FAKE_FZF_LOG")" -eq 0 ]
+  local r=$FAKE_FZF_LOG.rows k n=2
+  [ "$(awk -F'\t' 'NR <= 11 && (NF != 6 || $1 != "-")' "$r" | wc -l | tr -d ' ')" -eq 0 ]
+  for k in 0 1 2 3 still; do
+    [ "$(sed -n 1,11p "$r" | cut -f$n)" = "$(cat "$w.frame.$k")" ]
+    n=$((n + 1))
+  done
+  [ "$(sed -n '12,$p' "$r" | cut -f1)" = "$(cut -f1 "$w.rows")" ]
+  for n in 2 3 4 5 6; do
+    [ "$(sed -n '12,$p' "$r" | cut -f$n)" = "$(cut -f2 "$w.rows")" ]
+  done
+}
+
+@test "sleeper look: a pane that opens while it is the one looked at starts bound" {
+  hellofix
+  fzfstub
+  lookfix
+  git config --global claude-peer.picker fzf
+  echo "$LOOKID" >"$CLAUDE_PEER_LOOK/focus"
+  fzfsize '40 120'
+  [ "$(grep -c 'start:unbind' "$FAKE_FZF_LOG")" -eq 0 ]
+  [ "$(grep -cxF -- "--listen=$CLAUDE_PEER_LOOK/$LOOKID.sock" "$FAKE_FZF_LOG")" -eq 1 ]
+  [ "$(tail -n 1 "$FAKE_FZF_LOG")" = '--bind=every(1):change-with-nth(2|3|4|5)' ]
+}
+
+@test "sleeper look: without the marker, without a session id, with a malformed one, with art-seconds set, or with a path over 100 bytes it is today's timer" {
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  local how
+  for how in marker id malformed seconds long; do
+    lookfix
+    case $how in
+      marker) rm "$CLAUDE_PEER_LOOK/kind";;
+      id) unset ITERM_SESSION_ID;;
+      malformed) export ITERM_SESSION_ID=w0t0p0:not-a-session-id;;
+      seconds) git config --global claude-peer.art-seconds 5;;
+      long) mkdir "$CLAUDE_PEER_LOOK/$(printf 'a%.0s' $(seq 1 60))"
+            echo variable >"$CLAUDE_PEER_LOOK/$(printf 'a%.0s' $(seq 1 60))/kind"
+            CLAUDE_PEER_LOOK=$CLAUDE_PEER_LOOK/$(printf 'a%.0s' $(seq 1 60));;
+    esac
+    fzfsize '40 120'
+    [ "$(grep -c '^--bind=every(1):bg-transform:' "$FAKE_FZF_LOG")" -eq 1 ] || { echo "$how: no timer"; return 1; }
+    [ "$(grep -c '^--header=' "$FAKE_FZF_LOG")" -eq 1 ] || { echo "$how: no header"; return 1; }
+    [ "$(grep -c -- '--listen' "$FAKE_FZF_LOG")" -eq 0 ] || { echo "$how: listens"; return 1; }
+    git config --global --unset claude-peer.art-seconds || true
+    case $CLAUDE_PEER_LOOK in /tmp/cpl.*/*) CLAUDE_PEER_LOOK=${CLAUDE_PEER_LOOK%/*};; esac
+    rm -rf "$CLAUDE_PEER_LOOK"
+  done
+}
+
+@test "sleeper look: under dash, with no ITERM_SESSION_ID and no art-seconds, the pane still opens its fzf" {
+  command -v dash >/dev/null || skip "dash is not installed"
+  hellofix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  unset ITERM_SESSION_ID
+  PANE_SH=$(command -v dash) CLAUDE_PEER_SIZE='40 120' FAKE_FZF_SLEEP=30 pane alpha
+  until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  [ "$(grep -c 'not set' "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 0 ]
+  [ "$(grep -c -- '--listen' "$FAKE_FZF_LOG")" -eq 0 ]
+}
+
+@test "sleeper look: art-seconds 0 or the art off holds still and listens to nothing" {
+  hellofix
+  fzfstub
+  lookfix
+  git config --global claude-peer.picker fzf
+  local how
+  for how in seconds off; do
+    case $how in seconds) git config --global claude-peer.art-seconds 0;; off) git config --global --unset claude-peer.art-seconds; git config --global claude-peer.art false;; esac
+    fzfsize '40 120'
+    [ "$(grep -c -- '--listen\|every(1)' "$FAKE_FZF_LOG")" -eq 0 ]
+  done
+}
+
+@test "sleeper look: a killed pane takes its socket path with it" {
+  hellofix
+  fzfstub
+  lookfix
+  git config --global claude-peer.picker fzf
+  CLAUDE_PEER_SIZE='40 120' FAKE_FZF_SLEEP=30 pane alpha
+  pp=$LAST_PANE
+  until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
+  : >"$CLAUDE_PEER_LOOK/$LOOKID.sock"
+  [ -f "$REPO/.git/claude-peer.wait/alpha.$pp.frame.feed" ]
+  kill "$pp"
+  until_ok '[ ! -e "$CLAUDE_PEER_LOOK/$LOOKID.sock" ]'
+  until_ok '[ ! -e "$REPO/.git/claude-peer.wait/alpha.$pp.frame.feed" ]'
+}
+
+# lookcurl: a curl that logs its arguments and exits FAKE_CURL_RC; looksock <id>: a socket
+# file that nothing listens on; looklog: the curl calls as `<id> <action>` lines; with
+# FAKE_CURL_SLOW set, a call whose arguments contain it sleeps FAKE_CURL_SLEEP seconds first
+lookcurl() {
+  mkdir -p "$BATS_TEST_TMPDIR/curlbin"
+  printf '#!/bin/sh\n[ -z "$FAKE_CURL_SLOW" ] || case "$*" in *"$FAKE_CURL_SLOW"*) sleep "${FAKE_CURL_SLEEP:-1}";; esac\necho "$*" >>"$FAKE_CURL_LOG"\nexit "${FAKE_CURL_RC:-0}"\n' >"$BATS_TEST_TMPDIR/curlbin/curl"
+  chmod +x "$BATS_TEST_TMPDIR/curlbin/curl"
+  export PATH="$BATS_TEST_TMPDIR/curlbin:$PATH" FAKE_CURL_LOG="$BATS_TEST_TMPDIR/curl.log"
+}
+looksock() { python3 -I -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])' "$CLAUDE_PEER_LOOK/$1.sock"; }
+looklog() { [ ! -f "$FAKE_CURL_LOG" ] || sed -E 's/.*--unix-socket [^ ]*\/([^/ ]*)\.sock .* -d ([^ ]*) .*/\1 \2/' "$FAKE_CURL_LOG"; }
+LOOKID2=22222222-3333-4444-5555-666666666666
+LOOKID3=33333333-4444-5555-6666-777777777777
+LOOKID4=44444444-5555-6666-7777-888888888888
+# lookbound: how many ids in looklog end on a rebind
+lookbound() { looklog | awk '{ a[$1] = $2 } END { n = 0; for (i in a) if (a[i] ~ /^rebind/) n++; print n }'; }
+# lookhold: hold the look lock from a background process (the one lock tool this machine has)
+lookhold() {
+  (
+    exec 9>>"$CLAUDE_PEER_LOOK/lock" 3>&-
+    if command -v flock >/dev/null 2>&1; then flock 9; else lockf -s -t 0 9; fi
+    : >"$BATS_TEST_TMPDIR/held"
+    exec sleep 30
+  ) &
+  LOOKHOLD=$!
+  until_ok '[ -f "$BATS_TEST_TMPDIR/held" ]'
+}
+
+# locktool: skip unless a tool here locks a descriptor, tried as look_lock tries them
+locktool() {
+  local rc=0
+  if command -v flock >/dev/null 2>&1; then
+    (exec 9>>"$BATS_TEST_TMPDIR/locktool"; flock -n 9) 2>/dev/null || rc=$?
+    [ "$rc" -gt 1 ] || return 0
+  fi
+  if command -v lockf >/dev/null 2>&1; then
+    rc=0
+    (exec 9>>"$BATS_TEST_TMPDIR/locktool"; lockf -s -t 0 9) 2>/dev/null || rc=$?
+    case $rc in 0|75) return 0;; esac
+  fi
+  skip "no tool here locks a descriptor"
+}
+
+@test "look gained: the first one writes focus and binds that pane; a repeat does nothing" {
+  lookfix; lookcurl; looksock "$LOOKID"
+  run --separate-stderr sh "$BIN" look gained "$LOOKID"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  [ "$(cat "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID" ]
+  [ "$(looklog)" = "$LOOKID rebind(every(1))" ]
+  sh "$BIN" look gained "$LOOKID"
+  [ "$(looklog | wc -l | tr -d ' ')" -eq 1 ]
+}
+
+@test "look gained: the pane looked at before is unbound first, then the new one bound" {
+  lookfix; lookcurl; looksock "$LOOKID"; looksock "$LOOKID2"
+  sh "$BIN" look gained "$LOOKID"
+  sh "$BIN" look gained "$LOOKID2"
+  [ "$(cat "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID2" ]
+  [ "$(looklog)" = "$LOOKID rebind(every(1))
+$LOOKID unbind(every(1))
+$LOOKID2 rebind(every(1))" ]
+}
+
+@test "look gained: a burst A, B, A, B, stale and repeated ids included, ends with only B bound" {
+  lookfix; lookcurl; looksock "$LOOKID"; looksock "$LOOKID2"
+  local i
+  for i in "$LOOKID" "$LOOKID2" "$LOOKID" "$LOOKID2" "$LOOKID2"; do sh "$BIN" look gained "$i"; done
+  [ "$(cat "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID2" ]
+  [ "$(looklog)" = "$LOOKID rebind(every(1))
+$LOOKID unbind(every(1))
+$LOOKID2 rebind(every(1))
+$LOOKID2 unbind(every(1))
+$LOOKID rebind(every(1))
+$LOOKID unbind(every(1))
+$LOOKID2 rebind(every(1))" ]
+}
+
+@test "look gained: a session that is not a waiting pane still takes the focus, and the old pane stops" {
+  lookfix; lookcurl; looksock "$LOOKID"
+  sh "$BIN" look gained "$LOOKID"
+  sh "$BIN" look gained "$LOOKID2"
+  [ "$(cat "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID2" ]
+  [ "$(looklog | tail -n 1)" = "$LOOKID unbind(every(1))" ]
+  [ "$(looklog | wc -l | tr -d ' ')" -eq 2 ]
+}
+
+@test "look lost: the focused session empties focus and is unbound; another session's lost leaves focus alone" {
+  lookfix; lookcurl; looksock "$LOOKID"; looksock "$LOOKID2"
+  sh "$BIN" look gained "$LOOKID"
+  sh "$BIN" look lost "$LOOKID2"
+  [ "$(cat "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID" ]
+  sh "$BIN" look lost "$LOOKID"
+  [ -z "$(cat "$CLAUDE_PEER_LOOK/focus")" ]
+  [ "$(looklog | tail -n 2)" = "$LOOKID2 unbind(every(1))
+$LOOKID unbind(every(1))" ]
+  [ ! -e "$CLAUDE_PEER_LOOK/focus.$$" ]
+}
+
+@test "look: an empty id, a malformed id, a damaged focus file, a missing directory and a failing curl are all exit 0 with no output, and a socket that did not answer is still there" {
+  lookfix; lookcurl; looksock "$LOOKID"
+  local v args
+  for args in "gained" "gained ''" "gained not-an-id" "lost not-an-id" "gained ../../etc/passwd"; do
+    run --separate-stderr eval "sh '$BIN' look $args"
+    [ "$status" -eq 0 ] && [ -z "$output" ] && [ -z "$stderr" ] || { echo "$args: $status $output $stderr"; return 1; }
+  done
+  [ ! -e "$CLAUDE_PEER_LOOK/focus" ]
+  [ -z "$(looklog)" ]
+  # a damaged focus file must not name a path
+  echo ../../x >"$CLAUDE_PEER_LOOK/focus"
+  run --separate-stderr sh "$BIN" look gained "$LOOKID"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  [ "$(looklog)" = "$LOOKID rebind(every(1))" ]
+  # a curl that fails, a socket that does not answer
+  FAKE_CURL_RC=7 run --separate-stderr sh "$BIN" look gained "$LOOKID2"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  [ -S "$CLAUDE_PEER_LOOK/$LOOKID.sock" ]
+  # a missing directory
+  CLAUDE_PEER_LOOK=$BATS_TEST_TMPDIR/nodir run --separate-stderr sh "$BIN" look gained "$LOOKID"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+}
+
+@test "look: an unknown word is a usage error" {
+  run sh "$BIN" look
+  [ "$status" -eq 2 ]
+  run sh "$BIN" look sideways
+  [ "$status" -eq 2 ]
+  # on and off take no argument; this stops at the usage error before any store is read
+  run sh "$BIN" look on extra
+  [ "$status" -eq 2 ]
+}
+
+@test "look gained: calls that overlap leave one pane bound, the one in focus" {
+  locktool
+  lookfix; lookcurl; looksock "$LOOKID"; looksock "$LOOKID2"; looksock "$LOOKID3"; looksock "$LOOKID4"
+  sh "$BIN" look gained "$LOOKID"
+  FAKE_CURL_SLOW="$LOOKID.sock" FAKE_CURL_SLEEP=1 sh "$BIN" look gained "$LOOKID2" 3>&- &
+  until_ok '[ "$(head -n 1 "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID2" ]'
+  sh "$BIN" look gained "$LOOKID3" 3>&- &
+  sh "$BIN" look gained "$LOOKID4" 3>&- &
+  wait
+  [ "$(looklog | wc -l | tr -d ' ')" -eq 7 ]
+  [ "$(looklog | head -n 4)" = "$LOOKID rebind(every(1))
+$LOOKID unbind(every(1))
+$LOOKID2 rebind(every(1))
+$LOOKID2 unbind(every(1))" ]
+  local f
+  f=$(cat "$CLAUDE_PEER_LOOK/focus")
+  [ "$f" = "$LOOKID3" ] || [ "$f" = "$LOOKID4" ]
+  [ "$(looklog | tail -n 1)" = "$f rebind(every(1))" ]
+  [ "$(lookbound)" -eq 1 ]
+  [ ! -e "$CLAUDE_PEER_LOOK/unlocked" ]
+}
+
+@test "look: a call killed while it holds the lock leaves nothing to break" {
+  locktool
+  lookfix; lookcurl; looksock "$LOOKID"; looksock "$LOOKID2"; looksock "$LOOKID3"
+  sh "$BIN" look gained "$LOOKID"
+  FAKE_CURL_SLOW="$LOOKID.sock" FAKE_CURL_SLEEP=2 sh "$BIN" look gained "$LOOKID2" 3>&- &
+  local pid=$!
+  until_ok '[ "$(head -n 1 "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID2" ]'
+  kill -9 "$pid"
+  run --separate-stderr sh "$BIN" look gained "$LOOKID3"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  [ "$(cat "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID3" ]
+  CLAUDE_PEER_LOOK_WAIT=0 sh "$BIN" look gained "$LOOKID"
+  [ "$(cat "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID" ]
+  [ ! -e "$CLAUDE_PEER_LOOK/unlocked" ]
+}
+
+@test "look: a holder that outlives the wait is passed, and counted" {
+  locktool
+  lookfix; lookcurl; looksock "$LOOKID"; looksock "$LOOKID2"
+  lookhold
+  CLAUDE_PEER_LOOK_WAIT=1 run --separate-stderr sh "$BIN" look gained "$LOOKID"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  [ "$(cat "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID" ]
+  [ "$(cat "$CLAUDE_PEER_LOOK/unlocked")" = timeout ]
+  CLAUDE_PEER_LOOK_WAIT=1 sh "$BIN" look gained "$LOOKID2"
+  [ "$(cat "$CLAUDE_PEER_LOOK/unlocked")" = "timeout
+timeout" ]
+  kill "$LOOKHOLD"
+}
+
+@test "look: with no tool that locks a descriptor it goes ahead and says so once" {
+  lookfix; lookcurl; looksock "$LOOKID"; looksock "$LOOKID2"
+  local t
+  for t in flock lockf; do
+    printf '#!/bin/sh\nexit 64\n' >"$BATS_TEST_TMPDIR/curlbin/$t"
+    chmod +x "$BATS_TEST_TMPDIR/curlbin/$t"
+  done
+  run --separate-stderr sh "$BIN" look gained "$LOOKID"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  run --separate-stderr sh "$BIN" look gained "$LOOKID2"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  [ "$(cat "$CLAUDE_PEER_LOOK/focus")" = "$LOOKID2" ]
+  [ "$(looklog)" = "$LOOKID rebind(every(1))
+$LOOKID unbind(every(1))
+$LOOKID2 rebind(every(1))" ]
+  [ "$(cat "$CLAUDE_PEER_LOOK/unlocked")" = notool ]
+}
+
+@test "look: a look directory that cannot be written is still exit 0 with no output" {
+  lookfix; lookcurl; looksock "$LOOKID"
+  chmod 500 "$CLAUDE_PEER_LOOK"
+  run --separate-stderr sh "$BIN" look gained "$LOOKID"
+  chmod 700 "$CLAUDE_PEER_LOOK"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  [ "$(looklog)" = "$LOOKID rebind(every(1))" ]
+}
+
+# --- look on / off, and the look line of status ---------------------------------
+# Every test below points CLAUDE_PEER_PREFS at a fixture plist and CLAUDE_PEER_LOOK at a
+# directory of its own: nothing here reads or writes iTerm2's preferences or the real
+# look directory. lookprefs also gives profile One a Run Command trigger that is not ours.
+
+lookprefs() {
+  stubs
+  mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
+  addprofiles "$BATS_TEST_TMPDIR/prefs.plist"
+  python3 -I - "$BATS_TEST_TMPDIR/prefs.plist" <<'PY'
+import plistlib, sys
+p = sys.argv[1]
+pl = plistlib.load(open(p, "rb"))
+pl["New Bookmarks"][0]["Triggers"].append({"action": "ScriptTrigger", "regex": "", "parameter": "echo hi"})
+plistlib.dump(pl, open(p, "wb"), fmt=plistlib.FMT_XML)
+PY
+  export CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist"
+  CLAUDE_PEER_LOOK=$(mktemp -d /tmp/cpl.XXXXXX)
+  export CLAUDE_PEER_LOOK
+}
+lookline() { sh "$BIN" status | grep '^look:'; }
+# lookage <seconds>: make focus that old
+lookage() { python3 -I -c 'import os, sys, time; t = time.time() - int(sys.argv[2]); os.utime(sys.argv[1], (t, t))' "$CLAUDE_PEER_LOOK/focus" "$1"; }
+# looklisten <id>: a socket something accepts (and drops) connections on, until teardown
+looklisten() {
+  python3 -I -c 'import socket, sys
+s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(1)
+open(sys.argv[2], "w").close()
+while True: s.accept()[0].close()' "$CLAUDE_PEER_LOOK/$1.sock" "$BATS_TEST_TMPDIR/listening" &
+  PANES="$PANES $!"
+  until_ok '[ -f "$BATS_TEST_TMPDIR/listening" ]'
+}
+
+@test "look on: one trigger, exactly this one, in each profile that enters a workgroup, and nowhere else; a second run changes nothing" {
+  lookprefs
+  echo timeout >"$CLAUDE_PEER_LOOK/unlocked"; : >"$CLAUDE_PEER_LOOK/lock"; echo "$LOOKID" >"$CLAUDE_PEER_LOOK/focus"
+  run sh "$BIN" look on
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 1 ]
+  [[ "$output" == *"2 of 2 profiles changed" ]]
+  # the stored parameter: one line whose only backslash is the \0 of the changed value
+  cat >"$BATS_TEST_TMPDIR/look.cmd" <<'LINE'
+g='\0'; p="$HOME/bin/claude-peer"; f="$HOME/.local/state/claude-peer/look/focus"; [ -x "$p" ] || exit 0; o=; [ -r "$f" ] && read -r o <"$f"; [ "$o" = "$g" ] || exec "$p" look gained "$g"
+LINE
+  python3 -I - "$CLAUDE_PEER_PREFS" "$BATS_TEST_TMPDIR/look.cmd" <<'PY'
+import plistlib, sys
+pl = plistlib.load(open(sys.argv[1], "rb"))
+LINE = open(sys.argv[2]).read().rstrip("\n")
+want = {"action": "ScriptTrigger", "matchType": 115, "parameter": LINE,
+        "eventParams": {"variableName": "tab.window.currentTab.currentSession.id",
+                        "variableValueRegex": "^[0-9A-Fa-f-]{36}$"},
+        "disabled": 0, "regex": "", "contentregex": "", "partial": False}
+assert LINE.count("\\") == 1, LINE
+by = {b["Name"]: b for b in pl["New Bookmarks"]}
+for n in ("One", "Two"):
+    ours = [t for t in by[n]["Triggers"] if t["action"] == "ScriptTrigger" and "look gained" in t["parameter"]]
+    assert ours == [want], ours
+assert {"action": "ScriptTrigger", "regex": "", "parameter": "echo hi"} in by["One"]["Triggers"]
+assert by["Other"]["Triggers"] == [
+    {"action": "iTermEnterWorkgroupTrigger", "regex": "", "parameter": "someone.else"},
+    {"action": "iTermExitWorkgroupTrigger", "regex": "", "parameter": ""}], by["Other"]
+assert pl["Ponies"] == "sentinel"
+PY
+  [ "$(cat "$CLAUDE_PEER_LOOK/kind")" = variable ]
+  # the files of an earlier run: focus and unlocked start again, lock is never removed
+  [ ! -e "$CLAUDE_PEER_LOOK/focus" ]; [ ! -e "$CLAUDE_PEER_LOOK/unlocked" ]; [ -e "$CLAUDE_PEER_LOOK/lock" ]
+  cp "$CLAUDE_PEER_PREFS" "$BATS_TEST_TMPDIR/after.plist"
+  run sh "$BIN" look on
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"0 of 2 profiles changed" ]]
+  cmp "$CLAUDE_PEER_PREFS" "$BATS_TEST_TMPDIR/after.plist"
+}
+
+@test "look on: the parameter has no interpolation, the profile's flag is not written, and the store names \$HOME, never the home directory" {
+  lookprefs
+  sh "$BIN" look on >/dev/null
+  python3 -I - "$CLAUDE_PEER_PREFS" "$HOME" <<'PY'
+import plistlib, sys
+raw = open(sys.argv[1], "rb").read()
+assert sys.argv[2].encode() not in raw
+pl = plistlib.loads(raw)
+for b in pl["New Bookmarks"]:
+    assert "Triggers Use Interpolated Strings" not in b, b["Name"]
+    for t in b["Triggers"]:
+        assert "\\(" not in t["parameter"], t
+PY
+}
+
+@test "look off: only its own trigger goes, with the marker; default peers, default builtin and install leave it where it is" {
+  lookprefs
+  sh "$BIN" look on >/dev/null
+  sh "$BIN" install >/dev/null
+  sh "$BIN" default peers >/dev/null
+  sh "$BIN" default builtin >/dev/null
+  [ "$(grep -c 'look gained' "$CLAUDE_PEER_PREFS")" -eq 2 ]
+  echo timeout >"$CLAUDE_PEER_LOOK/unlocked"; echo "$LOOKID" >"$CLAUDE_PEER_LOOK/focus"; : >"$CLAUDE_PEER_LOOK/lock"
+  run sh "$BIN" look off
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"2 of 2 profiles changed" ]]
+  ! grep -q 'look gained' "$CLAUDE_PEER_PREFS"
+  grep -q 'echo hi' "$CLAUDE_PEER_PREFS"
+  [ ! -e "$CLAUDE_PEER_LOOK/kind" ]; [ ! -e "$CLAUDE_PEER_LOOK/focus" ]; [ ! -e "$CLAUDE_PEER_LOOK/unlocked" ]
+  [ -e "$CLAUDE_PEER_LOOK/lock" ]
+  run sh "$BIN" look off
+  [[ "$output" == *"0 of 2 profiles changed" ]]
+}
+
+@test "look on: sockets nobody answers on go with it, one that answers stays" {
+  lookprefs
+  looksock "$LOOKID"; looklisten "$LOOKID2"
+  sh "$BIN" look on >/dev/null
+  [ ! -e "$CLAUDE_PEER_LOOK/$LOOKID.sock" ]; [ -S "$CLAUDE_PEER_LOOK/$LOOKID2.sock" ]
+}
+
+@test "look on: refused while iTerm2 runs, with no such profile, or off macOS; nothing written, no marker" {
+  lookprefs
+  cp "$CLAUDE_PEER_PREFS" "$BATS_TEST_TMPDIR/before.plist"
+  FAKE_PROCS=iTerm2 run sh "$BIN" look on
+  [ "$status" -eq 1 ]; [[ "$output" == *"quit iTerm2 first"* ]]
+  FAKE_OS=Linux run sh "$BIN" look on
+  [ "$status" -eq 2 ]; [[ "$output" == *"needs macOS"* ]]
+  cmp "$CLAUDE_PEER_PREFS" "$BATS_TEST_TMPDIR/before.plist"
+  [ ! -e "$CLAUDE_PEER_LOOK/kind" ]
+  mkprefs "$BATS_TEST_TMPDIR/bare.plist"
+  CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/bare.plist" run sh "$BIN" look on
+  [ "$status" -eq 1 ]; [[ "$output" == *"no profile has an Enter Workgroup trigger"* ]]
+  [ ! -e "$CLAUDE_PEER_LOOK/kind" ]
+}
+
+@test "status: the look line reads off, on, marker without trigger, trigger without marker, and out of date" {
+  lookprefs
+  [ "$(lookline)" = "look: off" ]
+  # marker without any trigger, then without one profile's
+  echo variable >"$CLAUDE_PEER_LOOK/kind"
+  [ "$(lookline)" = "look: the marker says on but 2 of 2 profiles lack the trigger (iTerm2's Reinstall rewrites triggers) — claude-peer look on (with iTerm2 quit)" ]
+  sh "$BIN" look on >/dev/null
+  looksock "$LOOKID"; looklisten "$LOOKID2"
+  [ "$(lookline)" = "look: on (variable trigger in 2 of 2 profiles); 1 panes listening, 1 stale; last event never" ]
+  echo "$LOOKID" >"$CLAUDE_PEER_LOOK/focus"; lookage 10800
+  [ "$(lookline)" = "look: on (variable trigger in 2 of 2 profiles); 1 panes listening, 1 stale; last event 3h ago" ]
+  python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
+import plistlib, sys
+p = sys.argv[1]
+pl = plistlib.load(open(p, "rb"))
+pl["New Bookmarks"][1]["Triggers"] = [t for t in pl["New Bookmarks"][1]["Triggers"] if t["action"] != "ScriptTrigger"]
+plistlib.dump(pl, open(p, "wb"), fmt=plistlib.FMT_XML)
+PY
+  [ "$(lookline)" = "look: the marker says on but 1 of 2 profiles lack the trigger (iTerm2's Reinstall rewrites triggers) — claude-peer look on (with iTerm2 quit)" ]
+  sh "$BIN" look on >/dev/null
+  rm "$CLAUDE_PEER_LOOK/kind"
+  [ "$(lookline)" = "look: 2 profiles carry the trigger but the marker is missing, so no pane listens — claude-peer look on (with iTerm2 quit)" ]
+  echo variable >"$CLAUDE_PEER_LOOK/kind"
+  python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
+import plistlib, sys
+p = sys.argv[1]
+pl = plistlib.load(open(p, "rb"))
+for t in pl["New Bookmarks"][0]["Triggers"]:
+    if "look gained" in t["parameter"]:
+        t["parameter"] += " # older"
+plistlib.dump(pl, open(p, "wb"), fmt=plistlib.FMT_XML)
+PY
+  [ "$(lookline)" = "look: installed, out of date (this version's trigger differs) — claude-peer look on (with iTerm2 quit)" ]
+}
+
+@test "look on: a look directory too long for a socket path is refused with its length, and nothing is written" {
+  lookprefs
+  cp "$CLAUDE_PEER_PREFS" "$BATS_TEST_TMPDIR/before.plist"
+  long=$CLAUDE_PEER_LOOK/$(printf 'a%.0s' $(seq 1 60))
+  CLAUDE_PEER_LOOK=$long run sh "$BIN" look on
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"is ${#long} bytes"*"at most 58"* ]]
+  cmp "$CLAUDE_PEER_PREFS" "$BATS_TEST_TMPDIR/before.plist"
+  [ ! -e "$long" ]
+  # exactly at the limit still installs
+  CLAUDE_PEER_LOOK=$CLAUDE_PEER_LOOK/$(printf 'a%.0s' $(seq 1 $((58 - ${#CLAUDE_PEER_LOOK} - 1)))) run sh "$BIN" look on
+  [ "$status" -eq 0 ]
+}
+
+@test "status: the look line says when the look directory is too long for a socket path" {
+  lookprefs
+  sh "$BIN" look on >/dev/null
+  long=$CLAUDE_PEER_LOOK/$(printf 'a%.0s' $(seq 1 60))
+  mkdir "$long"; echo variable >"$long/kind"
+  CLAUDE_PEER_LOOK=$long run sh "$BIN" status
+  [[ "$output" == *"look: on "*"; socket path too long (the look directory is ${#long} bytes, the limit 58), so no pane listens"* ]]
+}
+
+@test "status: warns that CLAUDE_PEER_LOOK moves the panes' sockets but not the trigger's, only while look is on" {
+  lookprefs
+  run sh "$BIN" status
+  [[ "$output" != *"CLAUDE_PEER_LOOK"* ]]
+  sh "$BIN" look on >/dev/null
+  run sh "$BIN" status
+  [[ "$output" == *"warning: CLAUDE_PEER_LOOK is set"* ]]
+  run env -u CLAUDE_PEER_LOOK sh "$BIN" status
+  [[ "$output" != *"CLAUDE_PEER_LOOK"* ]]
+}
+
+@test "status: the look line counts events that passed a held lock, and says when nothing can lock" {
+  lookprefs
+  sh "$BIN" look on >/dev/null
+  base="look: on (variable trigger in 2 of 2 profiles); 0 panes listening, 0 stale; last event never"
+  [ "$(lookline)" = "$base" ]
+  : >"$CLAUDE_PEER_LOOK/unlocked"
+  [ "$(lookline)" = "$base" ]
+  printf 'timeout\ntimeout\n' >"$CLAUDE_PEER_LOOK/unlocked"
+  [ "$(lookline)" = "$base; 2 events passed a held lock" ]
+  echo notool >"$CLAUDE_PEER_LOOK/unlocked"
+  [ "$(lookline)" = "$base; events are not serialised (no flock, and no lockf that locks a descriptor)" ]
 }
 
 @test "sleeper: a repository name too long for the block is cut, the label never" {
