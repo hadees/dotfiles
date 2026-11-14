@@ -8,11 +8,32 @@ paths:
 
 # Claude peers: the sleeper that moves while it is looked at
 
-The part of `bin/claude-peer` that moves a waiting pane's figure only while the operator
-looks at it: `look`, its trigger and its lock. The limited timer it replaces, and the rest
-of the script, are in `claude-peer.md`.
+The part of `bin/claude-peer` that moves a waiting pane's figure: the limited timer, waking,
+and `look`, which moves it only while the operator looks at it, with its trigger and lock.
+The rest of the script is in `claude-peer.md`.
 
-**It moves while it is looked at.** The limited timer above moves a figure in a tab nobody
+**It moves inside fzf, and wakes.** No animator process: before each fzf launch (sleeper
+showing, `git config claude-peer.art-seconds` over 0; default 20, read when the pane starts)
+the pane writes one complete header per pose, `$pn_me.frame.0`…`.3` (z's near, near-mid, all
+with the pom-pom swayed, none swayed) and `.still` (A1's header), exports
+`CLAUDE_PEER_FRAMES` and `CLAUDE_PEER_ART_SECONDS`, and adds `--with-shell='sh -c'`,
+`--bind='change,focus:rebind(every(1))'` and, last, `--bind='every(1):bg-transform:<tick>'`
+(`PANE_TICK`): each second one `sh` and one `cat` pick the pose from `FZF_IDLE_TIME_MS`, and
+once art-seconds pass without a key the header becomes `.still` and the timer unbinds, so an
+idle picker forks nothing; a key or a cursor move binds it again. The once-a-second poll this
+file rejects for the wait is bounded here by that limit. `pane_cleanup` and `pane_reap` take
+the frame files with the wait file. Waking: `PG_WAKE` is set by `pane_fzf` around a pick that
+starts a session and by the request path when the request closed an open fzf; `pane_go`
+reads and clears it and, with the sleeper showing, calls `art_wake` once the slot is taken
+(a refused slot draws nothing): `wake-1` (cap lifted, no z's) where fzf erased itself, 0.25 s,
+up over it (`ESC[9A`, 11 under) and `wake-2` (eyes open) on top, 0.25 s, then the header line
+as before. The list and the quiet state never move and never wake. A context that asks a
+question wakes under its answer. The screen tests hold the figure still from `setup`
+(`art-seconds 0`) and set 3 where they test the movement; the look tests make their own
+directory under `/tmp` (`CLAUDE_PEER_LOOK`), because the sandbox `HOME` is too long for a
+socket path.
+
+**It moves while it is looked at.** The limited timer moves a figure in a tab nobody
 watches, and a background tab left on a waiting picker never clears its activity indicator.
 So the pane has three modes, chosen per launch in `pane_fzf`. *Look*: the layout is not
 `none` and `pn_look` is set. *Limited*: the layout is not `none`, `art-seconds` is over 0 and
