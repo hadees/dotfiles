@@ -23,6 +23,11 @@ setup() {
   [ "$(defaults read NSGlobalDomain com.apple.swipescrolldirection)" = "0" ]
 }
 
+@test "Resume is off everywhere but iTerm2, whose session restoration needs it" {
+  [ "$(defaults read NSGlobalDomain NSQuitAlwaysKeepsWindows)" = "0" ]
+  [ "$(defaults read com.googlecode.iterm2 NSQuitAlwaysKeepsWindows)" = "1" ]
+}
+
 @test "screenshot location is set to Desktop" {
   [ "$(defaults read com.apple.screencapture location)" = "$HOME/Desktop" ]
 }

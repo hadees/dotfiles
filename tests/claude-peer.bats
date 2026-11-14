@@ -795,6 +795,89 @@ hold() {
   [ -z "$(ls "$REPO/.git/claude-peer.wait")" ]
 }
 
+# panes and the terminal file a pane records beside its wait file
+
+term_of() { cat "$REPO/.git/claude-peer.wait/$1.$2.term"; }
+
+@test "a pane records its terminal: the session id without its w0t0p0 prefix, and the suite" {
+  unset IT2_SUITE
+  ITERM_SESSION_ID=w1t2p3:ABCD-1234 pane alpha
+  [ "$(term_of alpha "$LAST_PANE")" = "ABCD-1234"$'\n'"-" ]
+  IT2_SUITE=bench ITERM_SESSION_ID=w0t0p1:EF56 pane beta
+  [ "$(term_of beta "$LAST_PANE")" = "EF56"$'\n'"bench" ]
+}
+
+@test "outside iTerm2 the pane records - and waits as before" {
+  unset ITERM_SESSION_ID IT2_SUITE
+  pane alpha
+  [ "$(term_of alpha "$LAST_PANE")" = "-"$'\n'"-" ]
+  ITERM_SESSION_ID= pane beta
+  [ "$(term_of beta "$LAST_PANE")" = "-"$'\n'"-" ]
+  run sh "$BIN" slots
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | cut -f1,2)" = "alpha"$'\t'"waiting"$'\n'"beta"$'\t'"waiting" ]
+}
+
+@test "panes: a waiting pane and a running one, each with its id" {
+  unset IT2_SUITE
+  ITERM_SESSION_ID=w0t0p1:AAAA pane alpha
+  wp=$LAST_PANE
+  ITERM_SESSION_ID=w0t0p2:BBBB IT2_SUITE=bench FAKE_SHELL_SLEEP=8 pane beta
+  rp=$LAST_PANE
+  press beta ''
+  wait_claim "$REPO/.claude/worktrees/beta"
+  run sh "$BIN" panes
+  [ "$status" -eq 0 ]
+  [ "$output" = "alpha"$'\t'"waiting"$'\t'"$wp"$'\t'"$REPO"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"AAAA"$'\t'"-"$'\n'"beta"$'\t'"running"$'\t'"$rp"$'\t'"$REPO"$'\t'"$REPO/.claude/worktrees/beta"$'\t'"BBBB"$'\t'"bench" ]
+  cd "$BATS_TEST_TMPDIR"
+  run sh "$BIN" panes "$REPO"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 2 ]
+}
+
+@test "panes: a pane without the file prints - and -" {
+  pane alpha
+  rm "$REPO/.git/claude-peer.wait/alpha.$LAST_PANE.term"
+  run sh "$BIN" panes
+  [ "$status" -eq 0 ]
+  [ "$output" = "alpha"$'\t'"waiting"$'\t'"$LAST_PANE"$'\t'"$REPO"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"-"$'\t'"-" ]
+}
+
+@test "the terminal file stays while a session runs and goes when the pane ends" {
+  ITERM_SESSION_ID=w0t0p1:AAAA FAKE_SHELL_SLEEP=8 pane alpha
+  pp=$LAST_PANE
+  press alpha ''
+  wait_claim "$REPO/.claude/worktrees/alpha"
+  [ ! -e "$REPO/.git/claude-peer.wait/alpha.$pp" ]
+  [ "$(term_of alpha "$pp" | sed -n 1p)" = AAAA ]
+  kill "$pp"
+  until_ok '! kill -0 $pp 2>/dev/null'
+  [ -z "$(ls "$REPO/.git/claude-peer.wait")" ]
+}
+
+@test "slots, peers and waiters do not list the terminal file" {
+  pane alpha
+  [ -f "$REPO/.git/claude-peer.wait/alpha.$LAST_PANE.term" ]
+  : >"$REPO/.git/claude-peer.wait/beta.$LAST_PANE.term"
+  run sh "$BIN" slots
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 1 ]
+  [ -z "$(sh "$BIN" peers)" ]
+  [ "$(sh "$BIN" panes | wc -l | tr -d ' ')" -eq 1 ]
+}
+
+@test "panes outside a repository prints nothing and exits 0" {
+  mkdir "$BATS_TEST_TMPDIR/plain"
+  cd "$BATS_TEST_TMPDIR/plain"
+  run sh "$BIN" panes
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run sh "$BIN" panes "$BATS_TEST_TMPDIR/nope"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run sh "$BIN" panes a b
+  [ "$status" -eq 2 ]
+}
+
 @test "hermes --wait: asks hermes_peer to wait for Return, unless claude-peer.start is auto" {
   run sh "$BIN" hermes --wait
   [ "$status" -eq 0 ]

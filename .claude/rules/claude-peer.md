@@ -69,6 +69,9 @@ what this version builds and say `installed, out of date (...); this version
 defines N (...)` when they differ (the script changed since `install` last
 ran), or `not installed`.
 
+`iterm2-relaunch claude-peer` runs `install` with iTerm2 quit and starts it
+again (`iterm2-relaunch.md`); the keys it builds are reserved in `iterm2-prefs.md`.
+
 **How a tab gets its workgroup.** The `claude` job trigger names one workgroup
 per iTerm2 profile, and an iTerm2 profile says nothing about the repo, so the
 choice is the `claude()` wrapper's, made before the job starts. It sets the
@@ -169,7 +172,13 @@ Ctrl-C) removes its wait file and leaves a plain shell, anything else asks
 again; when the session ends for any reason the claim goes
 and the pane waits again, so a pane never ends. A waiting pane owns
 `<git common dir>/claude-peer.wait/<slot>.<pid>` (line 1 the leader's
-directory); the next pane to register deletes the files of dead pids. Outside a
+directory); the next pane to register deletes the files of dead pids. Right after
+it, a pane writes `<slot>.<pid>.term`, a sidecar of that file: line 1 is
+`ITERM_SESSION_ID` with its leading `w<n>t<n>p<n>:` removed, line 2 `IT2_SUITE`, each `-` when
+unset or empty. It stays while a session runs and goes with the pane, and `waiters`
+skips it. `claude-peer panes [<dir>]` prints
+`slot<TAB>running|waiting<TAB>pid<TAB>leader<TAB>worktree<TAB>session id<TAB>suite` per live
+pane of the repository, and `-` and `-` for a pane opened before the file existed. Outside a
 repository the pane prints one line and leaves a plain shell. `git config
 claude-peer.start auto` (read in the starting directory; the public repo sets it
 nowhere) makes a pane settle `CLAUDE_PEER_SETTLE` seconds (default 2, 0

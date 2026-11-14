@@ -228,7 +228,8 @@ function dotfiles() {
 	# iTerm2's preferences are merged from per-owner fragments in the same
 	# way, so they too compose only once every overlay has deployed its own.
 	# --auto says nothing where iTerm2 does not load the composed folder and
-	# writes nothing while iTerm2 runs (iTerm2 rewrites the store at quit).
+	# writes nothing while iTerm2 runs (iTerm2 rewrites the store at quit);
+	# where source changes wait, it arms the compose that runs when iTerm2 quits.
 	(( $+commands[iterm2-prefs] )) && iterm2-prefs compose --auto;
 	return 0;
 }
@@ -3097,6 +3098,8 @@ function iterm2-doctor() {
 	print -r -- "prefs:   $(iterm2_pref LoadPrefsFromCustomFolder), $(iterm2_pref PrefsCustomFolder)";
 	# Report-only: status --line reads the domain, ps and the fragment files.
 	print -r -- "store:   $( (( $+commands[iterm2-prefs] )) && iterm2-prefs status --line || print -r -- 'iterm2-prefs not deployed' )";
+	# Report-only: status --line reads files and the domain and asks iTerm2 nothing.
+	print -r -- "panes:   $( (( $+commands[pane-sight] )) && pane-sight status --line || print -r -- 'pane-sight not deployed' )";
 	print -r -- "api:     $(iterm2_pref EnableAPIServer)";
 	print -r -- "startup: $(iterm2_pref OpenNoWindowsAtStartup), $(iterm2_pref OpenArrangementAtStartup), $(iterm2_pref AlwaysOpenWindowAtStartup)";
 	# Counts, never names: a dynamic profile or an autolaunch script is

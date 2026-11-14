@@ -105,6 +105,9 @@
 #                            exit 3 not running, 5 busy (or no record) w/o --force
 #   slots [<dir>]            slot<TAB>running|waiting<TAB>worktree<TAB>pid<TAB>
 #                            leader<TAB>session name per slot of the repository
+#   panes [<dir>]            slot<TAB>running|waiting<TAB>pid<TAB>leader<TAB>
+#                            worktree<TAB>iTerm2 session id<TAB>suite per pane
+#                            (- and - when the pane recorded none)
 #   hermes [--wait] [-- hermes args...]
 #                            the Hermes peer: wait CLAUDE_PEER_SETTLE (--wait:
 #                            for Return, in hermes_peer), then an interactive
@@ -1410,6 +1413,10 @@ pane() {
   pn_wd=$(wait_dir "$repo")
   mkdir -p "$pn_wd" || die "cannot create $pn_wd"
   pn_me=$pn_wd/$slot.$$
+  # where this pane is (`panes` prints it): sidecar of the wait file, gone with it
+  pn_it=${ITERM_SESSION_ID-}
+  case $pn_it in w[0-9]*t[0-9]*p[0-9]*:*) pn_it=${pn_it#*:};; esac
+  { printf '%s\n%s\n' "${pn_it:--}" "${IT2_SUITE:--}" >"$pn_me.term"; } 2>/dev/null || :
   pn_tty=${CLAUDE_PEER_TTY:-/dev/tty}
   pn_rpid= pn_reader=1 pn_intr= pn_ended=0 pn_pad= pn_rows= pn_cols= pn_lay=none pn_al=0 pn_qn=0
   trap : USR1
@@ -1811,6 +1818,27 @@ cmd_slots() {
       printf '%s\twaiting\t%s\t%s\t%s\t%s\n' "$sl" "$repo/.claude/worktrees/$sl" "$p" "$l" "$(session_name "$sl")"
     done
   } | LC_ALL=C sort
+}
+
+# [<dir>] -> slot<TAB>running|waiting<TAB>pid<TAB>leader<TAB>worktree<TAB>iTerm2 session
+# id<TAB>suite per live pane of the repository (- and - for a pane that recorded none)
+cmd_panes() {
+  [ $# -le 1 ] || usage
+  [ -z "${1-}" ] || cd -- "$1" 2>/dev/null || exit 0
+  repo=$(repo_root_q) || exit 0
+  wd=$(wait_dir "$repo")
+  { cmd_peers "$repo" | while IFS='	' read -r w p l _; do
+      printf '%s\trunning\t%s\t%s\t%s\n' "${w##*/}" "$p" "$l" "$w"
+    done
+    waiters "$repo" | while IFS='	' read -r sl p l; do
+      printf '%s\twaiting\t%s\t%s\t%s\n' "$sl" "$p" "$l" "$repo/.claude/worktrees/$sl"
+    done
+  } | while IFS='	' read -r sl st p l w; do
+    tf=
+    for f in "$wd"/*."$p".term; do [ -f "$f" ] && { tf=$f; break; }; done
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$sl" "$st" "$p" "$l" "$w" \
+      "$([ -z "$tf" ] || sed -n 1p "$tf")" "$([ -z "$tf" ] || sed -n 2p "$tf")"
+  done | awk -F'\t' -v OFS='\t' '{ if ($6 == "") $6 = "-"; if ($7 == "") $7 = "-"; print }' | LC_ALL=C sort
 }
 
 # --- the coordination log -------------------------------------------------------
@@ -3045,6 +3073,7 @@ case $cmd in
   start) cmd_start "$@";;
   stop) cmd_stop "$@";;
   slots) cmd_slots "$@";;
+  panes) cmd_panes "$@";;
   log) cmd_log "$@";;
   claim) cmd_claim "$@";;
   name) cmd_name "$@";;

@@ -263,6 +263,7 @@ rule first.
 | `claude-peer-look` | the sleeper that moves while looked at: `look`, its trigger, its lock |
 | `claude-peer-caduceus` | the Hermes pane's figure and glint, read from the installed Hermes |
 | `claude-tab` | `claude-tab` list, focus, save, restore; `tabname` |
+| `pane-sight` | reading and picturing another pane, its scope gate and audit log, screen-heads-up |
 | `branchname` | the branch label a prompt or status line shows, the detached-slot base record |
 | `postbox` | cross-profile session mail, its hooks, the courier, the roll-call |
 | `remote-mcp` | bearer-token MCP servers, the tailnet forwarder |
@@ -273,7 +274,8 @@ rule first.
 | `routes` | the fleet routing table |
 | `workset` | working sets, the profile rule, the guard hooks |
 | `iterm2-skill` | the iTerm2 skill's stamp and `verify.sh`, the tracked plist |
-| `iterm2-prefs` | iTerm2's composed preferences: fragments, compose, capture, install |
+| `iterm2-prefs` | iTerm2's composed preferences: fragments, compose, compose at quit, capture, install |
+| `iterm2-relaunch` | quit iTerm2, apply preferences or cask upgrades while it is down, reopen, resume the Claude tabs and peers; the Alfred workflow |
 | `cc-status-shim` | Session Status rows, seat colours, row names, terminal titles |
 | `dot-functions` | what else lives in `dot_functions`, and `emulate -L zsh` |
 

@@ -114,14 +114,22 @@ teardown() {
     [ -f "$TMPHOME/.config/finicky/lib.ts" ]
     [ -f "$TMPHOME/.config/iterm2/prefs.d/10-base.plist" ]
     [ -x "$TMPHOME/bin/iterm2-prefs" ]
+    [ -x "$TMPHOME/bin/iterm2-relaunch" ]
     [ -x "$TMPHOME/bin/screen-heads-up" ]
+    [ -x "$TMPHOME/bin/pane-sight" ]
+    [ -x "$TMPHOME/bin/pane-read" ]
+    [ -x "$TMPHOME/bin/pane-shot" ]
   else
     [ ! -e "$TMPHOME/.mackup.cfg" ]
     [ ! -e "$TMPHOME/.finicky.ts" ]
     [ ! -e "$TMPHOME/.config/finicky" ]
     [ ! -e "$TMPHOME/.config/iterm2" ]
     [ ! -e "$TMPHOME/bin/iterm2-prefs" ]
+    [ ! -e "$TMPHOME/bin/iterm2-relaunch" ]
     [ ! -e "$TMPHOME/bin/screen-heads-up" ]
+    [ ! -e "$TMPHOME/bin/pane-sight" ]
+    [ ! -L "$TMPHOME/bin/pane-read" ]
+    [ ! -L "$TMPHOME/bin/pane-shot" ]
   fi
   # Repo-level, on every OS: iTerm2 reads the clone (PrefsCustomFolder), so a
   # copy in $HOME is read by nothing, and CLAUDE.md is guidance for this repo

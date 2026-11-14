@@ -23,11 +23,21 @@
 #   save [file]              write the live sessions to a file (default
 #                            $XDG_STATE_HOME/claude-tab/saved.tsv; the old one
 #                            becomes <file>.prev); peers and headless sessions
-#                            are left out
-#   restore [--dry-run] [--window <id>] [--delay <seconds>] [file]
+#                            are left out of it, and the running slot peers of
+#                            the saved tabs go to <file>.peers
+#   restore [--dry-run] [--window <id>] [--delay <seconds>] [--prompt <text>]
+#           [--prompt-for <session id> <text>] [--no-peers] [--peer-wait <s>] [file]
 #                            resume the saved sessions inside ONE existing
 #                            window: empty tabs first, new tabs after, never a
-#                            new window (macOS; --dry-run prints the plan)
+#                            new window (macOS; --dry-run prints the plan).
+#                            --prompt: given to every session that was not idle
+#                            when saved (one line, no tab). --prompt-for: that
+#                            text, to the one session with that id, idle or not;
+#                            if it is still alive the text is typed into its own
+#                            tab. --no-peers: do not restart the noted slot
+#                            peers (claude-peer start --continue, retried up to
+#                            --peer-wait seconds, default 60, while their pane
+#                            is not waiting yet)
 set -u
 
 TAB=$(printf '\t')
@@ -35,6 +45,7 @@ TABNAME=${CLAUDE_TAB_TABNAME:-$HOME/bin/tabname}
 PEERCMD=${CLAUDE_TAB_PEER:-$HOME/bin/claude-peer}
 NL='
 '
+CR=$(printf '\r')
 OSA_HINT="osascript could not drive iTerm2 — if macOS asked for Automation permission and was denied, grant it in System Settings > Privacy & Security > Automation"
 
 die() { printf 'claude-tab: %s\n' "$*" >&2; exit 1; }
@@ -57,10 +68,13 @@ proc_running() {
 
 # --- profiles and the registry -----------------------------------------------
 
-# Every Claude profile directory that exists, one per line.
+# Every Claude profile directory that exists, one per line. SAVED_PROFILES (restore
+# sets it) adds the directories a saved file names, for a runner whose environment
+# no longer says where an unpinned profile lives.
 profile_dirs() {
   { printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
     printf '%s\n' "$HOME/.claude"
+    printf '%s\n' "${SAVED_PROFILES-}"
     git config --get-regexp '^claude\.profile\.' 2>/dev/null | cut -d' ' -f2-
   } | while IFS= read -r d; do
         [ -n "$d" ] || continue
@@ -107,7 +121,7 @@ REG
 }
 
 # Live records of every profile for save/restore: pid, profile dir, session id,
-# kind, cwd, name. A second reader so registry_rows keeps the five fields
+# kind, cwd, name, status. A second reader so registry_rows keeps the five fields
 # that list and focus parse.
 registry_full() {
   profile_dirs | while IFS= read -r d; do
@@ -116,7 +130,7 @@ registry_full() {
 import glob, json, os, re, sys
 d = sys.argv[1]
 def field(v):
-    s = re.sub(r"[\t\r\n]", " ", str(v)).strip()
+    s = "" if v is None else re.sub(r"[\t\r\n]", " ", str(v)).strip()
     return s if s else "-"
 for f in sorted(glob.glob(os.path.join(d, "sessions", "*.json"))):
     if not re.fullmatch(r"\d+\.json", os.path.basename(f)):
@@ -132,7 +146,7 @@ for f in sorted(glob.glob(os.path.join(d, "sessions", "*.json"))):
         pass  # alive, just not ours
     except Exception:
         continue
-    print("\t".join(field(x) for x in (pid, d, r.get("sessionId"), r.get("kind"), r.get("cwd"), r.get("name"))))
+    print("\t".join(field(x) for x in (pid, d, r.get("sessionId"), r.get("kind"), r.get("cwd"), r.get("name"), r.get("status"))))
 REG
   done
 }
@@ -300,6 +314,25 @@ return ""
 APPLESCRIPT
 }
 
+# Type $2 into the session on tty $1, in whichever window it is.
+tell_script() {
+  cat <<APPLESCRIPT
+tell application "iTerm2"
+  repeat with w in windows
+    repeat with t in tabs of w
+      repeat with s in sessions of t
+        if (tty of s) is "$(as_string "$1")" then
+          tell s to write text "$(as_string "$2")"
+          return "ok"
+        end if
+      end repeat
+    end repeat
+  end repeat
+end tell
+return ""
+APPLESCRIPT
+}
+
 # A new tab in window $1 (never a new window), $2 typed into it.
 newtab_script() {
   cat <<APPLESCRIPT
@@ -424,7 +457,7 @@ cmd_save() {
     fi
   fi
   kept='' n=0 n_peer=0 n_head=0 n_other=0
-  while IFS=$TAB read -r pid pdir sid kind cwd name; do
+  while IFS=$TAB read -r pid pdir sid kind cwd name st; do
     [ -n "$pid" ] || continue
     tty=$(printf '%s\n' "$ttys" | awk -F'\t' -v p="$pid" '$1 == p { print $2; exit }')
     if [ -z "$tty" ] || [ "$tty" = - ]; then n_head=$((n_head + 1)); continue; fi
@@ -441,8 +474,8 @@ cmd_save() {
     lp=$(label_of "$cwd" </dev/null)
     label=${lp%"$TAB"*}
     # sort key (tab order in iTerm2, then label), then the row
-    kept="$kept$(printf '%06d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "$idx" "$label" \
-      "$pdir" "$sid" "$cwd" "$label" "$name" "$tty" "$where" "$win")$NL"
+    kept="$kept$(printf '%06d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "$idx" "$label" \
+      "$pdir" "$sid" "$cwd" "$label" "$name" "$tty" "$where" "$win" "$st")$NL"
     n=$((n + 1))
   done <<EOF_ROWS
 $rows
@@ -454,21 +487,48 @@ EOF_ROWS
   fi
   mkdir -p "$(dirname "$file")" || die "cannot create $(dirname "$file")"
   [ ! -e "$file" ] || mv -f "$file" "$file.prev" || die "cannot rotate $file"
+  [ ! -e "$file.peers" ] || mv -f "$file.peers" "$file.peers.prev" || die "cannot rotate $file.peers"
+  # Running slot peers of each saved tab's directory: cwd<TAB>slot. Overlay peers
+  # never show in the leader's `slots`, so they are not noted.
+  peers=''
+  if [ -x "$PEERCMD" ]; then
+    while IFS= read -r c; do
+      [ -n "$c" ] || continue
+      phys=$(cd "$c" 2>/dev/null && pwd -P) || phys=$c
+      found=$("$PEERCMD" slots "$c" 2>/dev/null </dev/null |
+        C=$c P=$phys awk -F'\t' '$2 == "running" && ($5 == ENVIRON["C"] || $5 == ENVIRON["P"]) { print ENVIRON["C"] "\t" $1 }')
+      [ -z "$found" ] || peers="$peers$found$NL"
+    done <<EOF_CWDS
+$(printf '%s' "$kept" | cut -f5 | awk '!seen[$0]++')
+EOF_CWDS
+  fi
   {
     printf '# claude-tab save %s %s sessions\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$n"
     printf '%s' "$kept" | LC_ALL=C sort -t"$TAB" -k1,1n -k2,2 | cut -f3-
   } > "$file" || die "cannot write $file"
   warn "saved $n sessions to $file (left out: $left)"
+  if [ -n "$peers" ]; then
+    printf '%s' "$peers" > "$file.peers" || die "cannot write $file.peers"
+    warn "noted $(printf '%s' "$peers" | grep -c .) running peers in $file.peers"
+  fi
 }
+
+# A prompt is one non-empty line: it is typed into a shell and a session.
+one_line() { case $1 in ''|*"$NL"*|*"$TAB"*|*"$CR"*) usage;; esac; }
 
 cmd_restore() {
   need_macos restore
-  dry=0 win='' delay=3 file=''
+  dry=0 win='' delay=3 file='' ptext='' pfor='' pfor_text='' nopeers=0 peerwait=60
   while [ $# -gt 0 ]; do
     case $1 in
       --dry-run) dry=1;;
       --window) [ $# -ge 2 ] || usage; win=$2; shift;;
       --delay) [ $# -ge 2 ] || usage; delay=$2; shift;;
+      --prompt) [ $# -ge 2 ] || usage; ptext=$2; one_line "$ptext"; shift;;
+      --prompt-for) [ $# -ge 3 ] || usage; pfor=$2 pfor_text=$3; one_line "$pfor_text"
+        case $pfor in ''|*[!A-Za-z0-9_-]*) usage;; esac; shift 2;;
+      --no-peers) nopeers=1;;
+      --peer-wait) [ $# -ge 2 ] || usage; peerwait=$2; shift;;
       -*) usage;;
       *) [ -z "$file" ] || usage; file=$1;;
     esac
@@ -476,6 +536,7 @@ cmd_restore() {
   done
   case $delay in ''|*[!0-9.]*|.*|*.*.*) usage;; esac
   case $win in *[!0-9]*) usage;; esac
+  case $peerwait in ''|*[!0-9]*) usage;; esac
   file=${file:-$DEFAULT_SAVED}
   [ -s "$file" ] || die "no saved sessions at $file (claude-tab save)"
   need_python
@@ -494,14 +555,25 @@ cmd_restore() {
 $listing
 EOF_TABS
 
+  SAVED_PROFILES=$(awk -F'\t' '$1 != "" && $1 !~ /^#/ { print $1 }' "$file")
   live=$(registry_full)
   plan='' f=0 n=0 s=0
-  while IFS=$TAB read -r profile sid cwd label _; do
+  while IFS=$TAB read -r profile sid cwd label _ _ _ _ st; do
     case $profile in ''|'#'*) continue;; esac
     cmd=- tty=-
     if printf '%s\n' "$live" | P=$profile S=$sid C=$cwd awk -F'\t' \
         '$2 == ENVIRON["P"] && ($3 == ENVIRON["S"] || $5 == ENVIRON["C"]) { f = 1 } END { exit !f }'; then
       act=skip:live
+      # The session that asked for the relaunch is still alive: nothing else would
+      # wake it, so its text goes into its own tab. No other live row is touched.
+      if [ -n "$pfor" ] && [ "$sid" = "$pfor" ]; then
+        lpid=$(printf '%s\n' "$live" | P=$profile S=$sid awk -F'\t' \
+          '$2 == ENVIRON["P"] && $3 == ENVIRON["S"] { print $1; exit }')
+        if [ -n "$lpid" ]; then
+          ltty=$(tty_table "$lpid" | cut -f2)
+          if [ -n "$ltty" ] && [ "$ltty" != - ]; then act=tell tty=$ltty cmd=$pfor_text; fi
+        fi
+      fi
     elif [ ! -d "$cwd" ]; then act=skip:cwd-gone
     elif [ ! -d "$profile" ]; then act=skip:profile-gone
     else
@@ -509,6 +581,8 @@ EOF_TABS
     fi
     if [ -z "${act-}" ]; then
       cmd="cd -- $(sq "$cwd") && CLAUDE_PROFILE=$(sq "$profile") claude --resume $sid"
+      if [ -n "$pfor" ] && [ "$sid" = "$pfor" ]; then cmd="$cmd $(sq "$pfor_text")"
+      elif [ -n "$ptext" ] && [ "${st-}" != idle ]; then cmd="$cmd $(sq "$ptext")"; fi
       if [ -n "$empty" ]; then
         act=fill tty=${empty%%"$NL"*} empty=${empty#*"$NL"} f=$((f + 1))
       else
@@ -520,16 +594,31 @@ EOF_TABS
     plan="$plan$act$TAB$tty$TAB$label$TAB$cmd$NL"
     act=''
   done < "$file"
-  if [ "$dry" = 1 ]; then printf '%s' "$plan"; return 0; fi
+  if [ "$dry" = 1 ]; then
+    printf '%s' "$plan"
+    if [ "$nopeers" = 0 ] && [ -s "$file.peers" ]; then
+      while IFS=$TAB read -r pleader pslot; do
+        [ -n "$pleader" ] && [ -n "$pslot" ] && printf 'peer\t-\t%s\t%s\n' "$pslot" "$pleader"
+      done < "$file.peers"
+    fi
+    return 0
+  fi
 
   first=1
   while IFS=$TAB read -r act tty label cmd; do
-    case $act in fill|new) ;; *) continue;; esac
+    case $act in fill|new|tell) ;; *) continue;; esac
     [ "$first" = 1 ] || sleep "$delay"
     first=0
-    if [ "$act" = fill ]; then scr=$(fill_script "$win" "$tty" "$cmd"); else scr=$(newtab_script "$win" "$cmd"); fi
+    case $act in
+      fill) scr=$(fill_script "$win" "$tty" "$cmd");;
+      new) scr=$(newtab_script "$win" "$cmd");;
+      tell) scr=$(tell_script "$tty" "$cmd");;
+    esac
     out=$(printf '%s\n' "$scr" | run_script) || die "$OSA_HINT"
-    if [ "$out" != ok ]; then
+    if [ "$act" = tell ]; then
+      if [ "$out" = ok ]; then warn "told the live session $label in its tab"
+      else warn "$tty is no longer a tab; could not tell the live session $label"; fi
+    elif [ "$out" != ok ]; then
       warn "$tty is no longer a tab of window $win; skipped $label"
       if [ "$act" = fill ]; then f=$((f - 1)); else n=$((n - 1)); fi
       s=$((s + 1))
@@ -538,6 +627,27 @@ EOF_TABS
 $plan
 EOF_PLAN
   warn "restored $f into empty tabs, $n in new tabs, $s skipped; $other_empty empty tabs in other windows left alone"
+
+  # Peers last: their panes reappear waiting once the leader's claude has entered
+  # its workgroup, which the typed commands above only just started.
+  if [ "$nopeers" = 0 ] && [ -s "$file.peers" ]; then
+    pk_s=0 pk_a=0 pk_f=0
+    while IFS=$TAB read -r pleader pslot; do
+      [ -n "$pleader" ] && [ -n "$pslot" ] || continue
+      waited=0
+      while :; do
+        ( cd "$pleader" && "$PEERCMD" start "$pslot" --continue ${ptext:+-- "$ptext"} ) >/dev/null 2>&1 </dev/null
+        case $? in
+          0) pk_s=$((pk_s + 1)); break;;
+          3) pk_a=$((pk_a + 1)); break;;
+          4) if [ "$waited" -ge "$peerwait" ]; then pk_f=$((pk_f + 1)); break; fi
+             sleep 2; waited=$((waited + 2));;
+          *) pk_f=$((pk_f + 1)); break;;
+        esac
+      done
+    done < "$file.peers"
+    warn "peers: $pk_s started, $pk_a already running, $pk_f not started"
+  fi
 }
 
 # --- dispatch ----------------------------------------------------------------

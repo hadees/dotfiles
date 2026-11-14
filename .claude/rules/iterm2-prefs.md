@@ -17,7 +17,8 @@ done, 1 failed or refused, 2 usage or not macOS.
 **State of the switch-over.** The mechanism is built, tested and deployed, but
 the live cut-over has NOT happened: iTerm2 still loads the tracked
 `com.googlecode.iterm2.plist` in the clone, which is still the store. Until
-`iterm2-prefs install` runs by hand with iTerm2 quit, `status` reads `store:
+`iterm2-prefs install` runs with iTerm2 quit (by hand, or `iterm2-relaunch
+prefs-install`, which does the quit and the start), `status` reads `store:
 folder ...; not the composed folder`, and `dotfiles` prints nothing new
 because `compose --auto` is silent when iTerm2 does not load the composed
 folder. Prose elsewhere that calls the clone iTerm2's prefs folder is still
@@ -94,6 +95,44 @@ install` already does). While it runs, `compose` says how many source changes
 wait; `status` judges `waiting` and `kept` against the filtered domain then, and
 against the store otherwise.
 
+Writing the store under a running iTerm2, or pushing the change into it, is not
+an option, for four reasons from the source. iTerm2 reads the folder once per
+launch (`iTermRemotePreferences.m:1553-1561`). A store that changed under it
+raises "Settings at ... changed since iTerm2 started" at quit (`:432-441`,
+`:1747-1766`, `:1779-1790`) and saves its own memory over it, which turns
+composed units into false `kept`. The preference setter of the Python API takes
+one JSON value per key and cannot delete a key or carry a data value
+(`sources/API/iTermAPIHelper.m:4033-4049`), and `it2` has no preference verb. So
+the quit has to be real, and `iterm2-relaunch` (`iterm2-relaunch.md`) is the
+tool that does it: items `prefs-install` and `prefs`, run while iTerm2 is down.
+iTerm2 may ask once, at the first launch on the new folder, whether to keep
+snippets and notes there (`iTermRemotePreferences.m:882-913`); that is its own
+question and the operator's to answer.
+
+## Compose at quit
+
+`compose --auto` while iTerm2 runs with source changes waiting arms a waiter:
+`detach` (a process in a session of its own, as in `iterm2-relaunch`) runs the
+internal `_compose-at-quit <iTerm2 pid>`, which waits on **that pid**
+(`await-exit`: signal 0, a permission error counts as alive; a poll by name could
+not tell the iTerm2 that quit from one started a second later) and then runs
+`compose` once. Armed or already armed it prints `iterm2-prefs: <n> source
+changes wait for iTerm2 to quit and are composed when it does (now:
+iterm2-relaunch prefs)`; with arming off (`ITERM2_PREFS_AT_QUIT=0`) or failed,
+`iterm2-prefs: <n> source changes wait for iTerm2 to quit (then: iterm2-prefs
+compose; now: iterm2-relaunch prefs)`. State and log are `compose-at-quit.pid`
+(`<waiter pid> <iTerm2 pid>`), `compose-at-quit.log` and `.log.prev` beside the
+record. If iTerm2 is back before the compose, which then refuses, the waiter
+waits on the new pid in turn; if iTerm2 is seen right after the write it logs
+`raced: iTerm2 started while its preferences were composed; iterm2-prefs status
+shows what is kept`. It never calls `open` and sends no Apple event. It and
+`iterm2-relaunch prefs` never coordinate: when both run, the waiter composes a
+fraction of a second after the exit and the runner's `compose` finds nothing to
+apply, both writes being atomic and identical; a cancelled relaunch leaves an
+armed waiter armed. The one thing that must not overlap is `claude-peer
+install`, which reads and writes the same file: the runner's `claude-peer` item
+waits for a live waiter first.
+
 ## The verbs and their frozen strings
 
 Tests match these.
@@ -108,13 +147,17 @@ Tests match these.
 - `compose [--auto] [--reset] [--print]`: summary `iterm2-prefs: <a> units
   applied from <n> fragments; <k> kept as changed in iTerm2 (iterm2-prefs
   capture); <i> reserved keys ignored` when any count is non-zero. Running
-  without `--auto`: refusal, exit 1. Running with `--auto`: one line only when
-  source changes wait, exit 0. Not installed: refusal without `--auto`, silence
+  without `--auto`: refusal, exit 1 (with iTerm2 running: `iterm2-prefs: iTerm2
+  is running and writes its preferences at quit; quit it first, or run
+  iterm2-relaunch prefs (<n> source changes wait)`). Running with `--auto`: one
+  line only when source changes wait (the compose-at-quit lines below), exit 0. Not installed: refusal without `--auto`, silence
   with it. `--print` writes the would-be store to stdout, touches nothing, never
   reads the domain.
 - `status [--line]`: lines `store:`, `iterm2:`, `fragments:`, `sourced:`,
   `waiting:`, `kept:`, `ignored:`, `skipped:` (`skipped` only when non-zero;
-  `waiting` and `kept` only once installed). `--line` is one of
+  `waiting` and `kept` only once installed), then `at-quit: armed, waits on
+  iTerm2 pid <m>` or `at-quit: not armed`, and `at-quit: last <last line of
+  compose-at-quit.log>` when that log is non-empty. `--line` is one of
   `composed, in sync`, `composed, <w> waiting, <k> kept`, `not composed (folder
   <plist>)`, `not composed (folder <plist>, inside a git repository)`, `not
   composed (domain)`. `iterm2-doctor` prints it as `store:`.
@@ -137,7 +180,9 @@ Tests match these.
   key of the domain; it is not a fragment and nothing reads it but that command.
   `--dry-run` prefixes them `would: ` and prints a `differs` row per unit where
   the source value replaces the old store's. It refuses a folder inside a git
-  repository, a URL store, and a running iTerm2.
+  repository, a URL store, and a running iTerm2 (`iterm2-prefs: quit iTerm2
+  first, or run iterm2-relaunch prefs-install: it rewrites its preferences at
+  quit`); `--dry-run` works while iTerm2 runs.
 
 Values are never printed, only unit names (iTerm2 key names and Guids), except
 by `capture --values`, which cuts them at 200 characters and shows data values
