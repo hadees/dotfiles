@@ -802,6 +802,17 @@ $b|start Beta --continue -- pick up" ]
   ! grep -q 'create tab' "$OSA_ALL" || { echo "unexpected: create tab"; false; }
 }
 
+@test "restore: a session live in a profile no pin or variable names is still not resumed, because the saved file names its directory" {
+  restore_world
+  a=$(make_repo alpha)
+  mkdir -p "$HOME/.claude-unpinned"
+  live_pid; make_session "$HOME/.claude-unpinned" "$LIVE" "$a" n busy sid-a
+  saved_row "$HOME/.claude-unpinned" sid-a "$a" alpha busy
+  run sh "$CT" restore --dry-run "$SAVED"
+  [ "$status" -eq 0 ]
+  [ "$(col 1,3 | tr '\t' ' ')" = "skip:live alpha" ]
+}
+
 @test "restore --prompt-for: a live session is told in its own tab, in whichever window, and nothing is resumed" {
   restore_world
   a=$(make_repo alpha); b=$(make_repo beta)

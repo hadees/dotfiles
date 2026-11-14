@@ -68,10 +68,13 @@ proc_running() {
 
 # --- profiles and the registry -----------------------------------------------
 
-# Every Claude profile directory that exists, one per line.
+# Every Claude profile directory that exists, one per line. SAVED_PROFILES (restore
+# sets it) adds the directories a saved file names, for a runner whose environment
+# no longer says where an unpinned profile lives.
 profile_dirs() {
   { printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
     printf '%s\n' "$HOME/.claude"
+    printf '%s\n' "${SAVED_PROFILES-}"
     git config --get-regexp '^claude\.profile\.' 2>/dev/null | cut -d' ' -f2-
   } | while IFS= read -r d; do
         [ -n "$d" ] || continue
@@ -552,6 +555,7 @@ cmd_restore() {
 $listing
 EOF_TABS
 
+  SAVED_PROFILES=$(awk -F'\t' '$1 != "" && $1 !~ /^#/ { print $1 }' "$file")
   live=$(registry_full)
   plan='' f=0 n=0 s=0
   while IFS=$TAB read -r profile sid cwd label _ _ _ _ st; do

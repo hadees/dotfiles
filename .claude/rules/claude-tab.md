@@ -29,7 +29,9 @@ running `restore`, every foreground process a shell), new tabs are made only
 when those run out, and empty tabs in other windows are counted and left alone.
 It does not use `worktabs`' script, which makes one window per group: the
 operator rejected that. A row whose session is already live in that profile (same
-id or same cwd) is skipped, so running it twice is safe. Restored tabs carry no
+id or same cwd) is skipped, so running it twice is safe; the live check reads the
+registry of every directory in the saved file's first column as well as the
+pinned ones, because `iterm2-relaunch`'s runner has no `CLAUDE_CONFIG_DIR`. Restored tabs carry no
 worktabs mark, so a later `worktabs start` does not recognise them, and a
 session opened by `workset open` comes back without its extra directories. The
 registry layout is observed, not an interface. Tests: `tests/claude-tab.bats`
