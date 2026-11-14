@@ -40,23 +40,25 @@
 # is a credential request, not an image.
 #
 # Inputs: the judges and helpers come from fixed places under $HOME (bin/claude-peer,
-# bin/denyguard, bin/tabname, .functions, it2 at .config/iterm2/it2, iTerm2's files
-# under Library/Application Support, the audit log under .local/state) and zsh and
-# the system tools from PATH, and from no variable: one word in front of the
-# command must not change who judges. The only variables read are
-# PANE_SIGHT_PYTHON and PANE_SIGHT_TIMEOUT, neither of which judges. The git
-# variables that name a config are unset before git is first asked.
+# bin/denyguard, bin/tabname, .functions, it2 at .config/iterm2/it2 or in the iTerm2
+# app bundle, iTerm2's files under Library/Application Support, the audit log under
+# .local/state) and zsh and the system tools from PATH, and from no variable: one
+# word in front of the command must not change who judges. The only variables read
+# are PANE_SIGHT_PYTHON and PANE_SIGHT_TIMEOUT, neither of which judges. Every GIT_
+# variable is unset before git is first asked.
 #
 # The caller is the session this command runs under: the nearest ancestor that is
 # a registered session decides, and CLAUDE_CONFIG_DIR must agree with it. This is
 # the sanctioned route and the record, not a sandbox: a session with Bash can call
 # it2 itself.
 
+# Every GIT_ variable is dropped before git is first asked: GIT_DIR, GIT_WORK_TREE and
+# GIT_CONFIG_* would each change which repository and which pins answer the route question.
+for v in $(env | sed -n 's/^\(GIT_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
+
 usage() { sed -n '/^# Usage:/,/^#$/{ /^#$/d; s/^# \{0,1\}//p; }' "$0" >&2; exit 2; }
 say() { printf 'pane-sight: %s\n' "$*" >&2; }
 fail4() { say "$*"; exit 4; }
-
-unset GIT_CONFIG_GLOBAL GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
 
 TAB=$(printf '\t')
 PEER=$HOME/bin/claude-peer
@@ -438,10 +440,13 @@ audit() {
 # --- talking to iTerm2 -----------------------------------------------------------------
 # Only `it2 session read` and `it2 session get-var tty|path` are ever run.
 
-# it2 comes from one place: iTerm2's Claude Code integration links it there.
+# it2 comes from two fixed places, the first that is executable: iTerm2's Claude
+# Code integration links it into ~/.config/iterm2, and the app bundle carries it.
 find_it2() {
-  f=$HOME/.config/iterm2/it2
-  [ -x "$f" ] && printf '%s\n' "$f"
+  for f in "$HOME/.config/iterm2/it2" /Applications/iTerm.app/Contents/Resources/utilities/it2; do
+    [ -x "$f" ] && { printf '%s\n' "$f"; return 0; }
+  done
+  return 1
 }
 
 # it2 under a time limit, in a process group of its own so the limit can kill all of it.
@@ -477,7 +482,7 @@ api_env() {
 # limit, 125 is "cannot ask" (it2 missing, API off); both have said why.
 it2_call() {
   ic_it2=$(find_it2)
-  [ -n "$ic_it2" ] || { say "it2 is missing ($HOME/.config/iterm2/it2: iTerm2's Claude Code integration links it there)"; return 125; }
+  [ -n "$ic_it2" ] || { say "it2 is missing ($HOME/.config/iterm2/it2, where iTerm2's Claude Code integration links it, and /Applications/iTerm.app/Contents/Resources/utilities/it2)"; return 125; }
   ic_dom=com.googlecode.iterm2
   [ "$t_suite" = - ] || ic_dom=$t_suite
   [ "$(defaults read "$ic_dom" EnableAPIServer 2>/dev/null </dev/null)" = 1 ] ||

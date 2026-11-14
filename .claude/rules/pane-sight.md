@@ -87,19 +87,22 @@ purpose), and command patterns already have a home in each profile's
 **Inputs.** The script reads its judges and helpers from fixed places and from
 no variable: `$HOME/bin/claude-peer`, `$HOME/bin/denyguard`,
 `$HOME/bin/tabname`, `$HOME/.functions`, `zsh` and the system tools from
-`PATH`, `it2` at `$HOME/.config/iterm2/it2` (iTerm2's Claude Code integration
-links it there; the bundle path is not a fallback) and iTerm2's files under
-`$HOME/Library/Application Support`. The test seams for these were removed, not
-gated: a copy that honours seams and can still reach the real `it2` is the same
+`PATH`, `it2` and iTerm2's files under `$HOME/Library/Application Support`.
+`it2` is the first executable of two fixed paths: `$HOME/.config/iterm2/it2`
+(iTerm2's Claude Code integration links it there) and
+`/Applications/iTerm.app/Contents/Resources/utilities/it2` (the app bundle, for a
+machine without that integration). Neither is a variable. The test seams for
+these were removed, not gated: a copy that honours seams and can still reach the real `it2` is the same
 hole one `cp` further away, and honouring them only off the deployed copy needs
 the script to learn where it is deployed from `HOME`, the environment it is
 trying not to trust. The tests run in a sandboxed `HOME` with every judge at its
 real place inside it, so none is needed, and a test fails if the script's text
 names one again. Only `PANE_SIGHT_PYTHON` and `PANE_SIGHT_TIMEOUT` are read;
-neither judges. `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_COUNT` and
-`GIT_CONFIG_PARAMETERS` are unset before `git` is first asked, so the pins the
-route question reads are the machine's own. The audit log is under
-`$HOME/.local/state`; `XDG_STATE_HOME` is not consulted.
+neither judges. Every exported variable whose name starts with `GIT_`
+(`GIT_DIR`, `GIT_WORK_TREE`, `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_COUNT` and the
+rest) is unset at the top of the script, before `git` is first asked, so the
+repository and the pins the route question reads are the machine's own. The
+audit log is under `$HOME/.local/state`; `XDG_STATE_HOME` is not consulted.
 
 **The caller.** The claim is `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`, normalised.
 The command's ancestors are walked from its own pid with `ps -o ppid=` (at most

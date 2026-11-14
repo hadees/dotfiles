@@ -106,6 +106,9 @@ STUB
   export FAKE_TTY='"\/dev\/ttys010"' FAKE_PATH="Variable 'path' not set"
   mkdir -p "$HOME/.config/iterm2"
   IT2="$HOME/.config/iterm2/it2"
+  # the script's second fixed place for it2; a test cannot move it, so a machine
+  # with iTerm2 installed has it
+  BUNDLE_IT2=/Applications/iTerm.app/Contents/Resources/utilities/it2
   cat > "$IT2" <<'STUB'
 #!/bin/sh
 printf '%s\tsuite=%s\tcookie=%s\n' "$*" "${IT2_SUITE-}" "${ITERM2_COOKIE-}" >> "$IT2_LOG"
@@ -460,7 +463,7 @@ U5=55555555-5555-5555-5555-555555555555
   [[ "$output" == *"audit:     1 reads, 1 shots, 1 refused, 1 failed"* ]]
   mv "$IT2" "$BATS_TEST_TMPDIR/it2.away"
   run pane-sight status --line
-  [ "$output" = "not ready: it2 is missing" ]
+  [ -x "$BUNDLE_IT2" ] || [ "$output" = "not ready: it2 is missing" ]
   mv "$BATS_TEST_TMPDIR/it2.away" "$IT2"
   PANE_SIGHT_PYTHON="$BATS_TEST_TMPDIR/none" run pane-sight status --line
   [ "$output" = "not ready: no Python runtime with the iterm2 library" ]
@@ -1427,6 +1430,17 @@ pinned_pane() {
   [ "$(val verdict)" = "refused: other-route" ]
 }
 
+@test "GIT_DIR and GIT_WORK_TREE at a repo that routes to the caller's profile do not change an other-route verdict" {
+  pinned_pane
+  free="$(mk_repo octo-personal-free octo-personal/free)"
+  GIT_DIR="$free/.git" run pane-sight why alpha
+  [ "$status" -eq 3 ]
+  [ "$(val verdict)" = "refused: other-route" ]
+  GIT_DIR="$free/.git" GIT_WORK_TREE="$free" run pane-sight why alpha
+  [ "$status" -eq 3 ]
+  [ "$(val verdict)" = "refused: other-route" ]
+}
+
 @test "XDG_STATE_HOME does not move the audit row" {
   mk_session "$WORK" ledger "$MAIN" ttys116 "$U1"
   XDG_STATE_HOME="$BATS_TEST_TMPDIR/xdg" run pane-sight read ledger
@@ -1435,14 +1449,28 @@ pinned_pane() {
   [ "$(audit_rows | wc -l)" -eq 1 ]
 }
 
-@test "it2 comes from the one place: absent there, it2 is missing and the exit is 1" {
+@test "it2 comes from two fixed places: the first wins, the bundle is the next candidate" {
+  run pane-sight status
+  [[ "$output" == *"it2:       $IT2"$'\n'* ]]
+  mv "$IT2" "$BATS_TEST_TMPDIR/it2.away"
+  run pane-sight status
+  if [ -x "$BUNDLE_IT2" ]; then
+    [[ "$output" == *"it2:       $BUNDLE_IT2"$'\n'* ]]
+  else
+    [[ "$output" == *"it2:       MISSING"$'\n'* ]]
+  fi
+  grep -qF "/Applications/iTerm.app/Contents/Resources/utilities/it2" "$BATS_TEST_DIRNAME/../bin/executable_pane-sight"
+}
+
+@test "it2 absent from both fixed places: it2 is missing and the exit is 1" {
+  [ ! -x "$BUNDLE_IT2" ] || skip "iTerm2's own it2 is installed here, so it2 is never missing"
   peer_alpha
   cp "$IT2" "$BATS_TEST_TMPDIR/it2-elsewhere"
   rm "$IT2"
   PANE_SIGHT_IT2="$BATS_TEST_TMPDIR/it2-elsewhere" run --separate-stderr pane-sight read alpha
   [ "$status" -eq 1 ]
   [ -z "$output" ]
-  [[ "$stderr" == *"it2 is missing ($HOME/.config/iterm2/it2: iTerm2's Claude Code integration links it there)"* ]]
+  [[ "$stderr" == *"it2 is missing ($HOME/.config/iterm2/it2, where iTerm2's Claude Code integration links it, and $BUNDLE_IT2)"* ]]
   [ ! -s "$IT2_LOG" ]
   [[ "$(audit_rows)" == *$'\tread\tfailed:it2\t'* ]]
 }
@@ -1450,7 +1478,7 @@ pinned_pane() {
 @test "the script's text holds none of the seven names that were seams" {
   ! grep -Eq 'PANE_SIGHT_(PEER|DENYGUARD|TABNAME|FUNCTIONS|ZSH|IT2|SUPPORT)' "$BATS_TEST_DIRNAME/../bin/executable_pane-sight" ||
     { echo "a seam is back in pane-sight"; false; }
-  grep -q 'unset GIT_CONFIG_GLOBAL GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS' "$BATS_TEST_DIRNAME/../bin/executable_pane-sight"
+  grep -q "unset \"\$v\"" "$BATS_TEST_DIRNAME/../bin/executable_pane-sight"
 }
 
 @test "why and list refuse a mismatched caller the same way, with no rows" {
