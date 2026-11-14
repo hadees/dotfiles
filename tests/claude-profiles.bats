@@ -1254,6 +1254,20 @@ key_sent() {
   [[ "${recs[0]##*/}" == "$epoch".* ]]
 }
 
+@test "workgroup key: a launch that sends the key deletes entry records over a day old and keeps newer ones" {
+  peer_setup
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  d=$HOME/.local/state/claude-peer/entered
+  mkdir -p "$d"
+  touch -t "$(date -v-2d +%Y%m%d%H%M 2>/dev/null || date -d '2 days ago' +%Y%m%d%H%M)" "$d/1.1"
+  touch "$d/2.2"
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$(key_sent)" == base:* ]]
+  [ ! -e "$d/1.1" ]
+  [ -e "$d/2.2" ]
+  [ "$(ls "$d" | wc -l)" -eq 2 ]
+}
+
 @test "workgroup key: a launch that sends no key records nothing" {
   peer_setup
   repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')

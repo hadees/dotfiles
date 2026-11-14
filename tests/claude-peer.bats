@@ -662,16 +662,14 @@ no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
   [ "$(sh "$BIN" slots | cut -f2 | sort -u)" = waiting ]
 }
 
-@test "restore check: records more than a day old are deleted, others are left" {
-  enter_record 90000
+@test "restore check: an unparseable record is skipped and nothing is deleted" {
   enter_record 5
   d=$XDG_STATE_HOME/claude-peer/entered
   echo junk >"$d/junk"
-  [ "$(ls "$d" | wc -l)" -eq 3 ]
   check_on
   pane alpha
+  ! grep -q "restored" "$BATS_TEST_TMPDIR/pane-alpha.out"
   [ "$(ls "$d" | wc -l)" -eq 2 ]
-  [ -f "$d/junk" ]
 }
 
 @test "start: wakes the pane; the prompt arrives as one final argument" {

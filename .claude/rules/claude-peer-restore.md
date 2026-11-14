@@ -39,8 +39,9 @@ of input is `pane_shell`, the plain shell `q` leaves today; anything else asks
 again. An overlay pane is checked too: its `LEADER` is the public source root,
 which is what `claude()` records from the leader tab. `git config
 claude-peer.restore-check false` turns the check off (the test setups do; the restore tests turn it on with `check_on`, which also sets the two conditions).
-Each check deletes records whose epoch is over a day old and skips unparseable
-files.
+Each check skips unparseable files. `claude()` prunes the records over a day old
+(file modified more than 24 hours ago) as it writes a new one, by the glob
+qualifier `(N.mh+24)`, so a launch forks nothing for it.
 
 Tests: `tests/claude-peer.bats` ("restore check: ...") and, for the record,
 `tests/claude-profiles.bats` ("workgroup key: a launch that sends ...").
