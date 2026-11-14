@@ -1384,7 +1384,11 @@ pane_restored() {
 
 # "$@": the definition's claude args. Needs repo rname slot label LEADER.
 pane() {
-  [ "$(git config --get claude-peer.restore-check 2>/dev/null)" = false ] || pane_entered || pane_restored
+  # Only where claude() could have recorded an entry: the gate it sends the key by.
+  if [ -n "${ITERM_SESSION_ID-}" ] && [ -r "$(enter_file)" ] &&
+    [ "$(git config --get claude-peer.restore-check 2>/dev/null)" != false ]; then
+    pane_entered || pane_restored
+  fi
   pn_wd=$(wait_dir "$repo")
   mkdir -p "$pn_wd" || die "cannot create $pn_wd"
   pn_me=$pn_wd/$slot.$$

@@ -580,9 +580,18 @@ enter_record() {
   printf '%s\t%s\n' "$e" "${2:-$REPO}" >"$XDG_STATE_HOME/claude-peer/entered/$e.$RANDOM"
 }
 
+# check_on: the check on where claude() could have written a record: in an iTerm2
+# tab, with the enter state file `claude-peer default peers` writes
+check_on() {
+  git config --global --unset claude-peer.restore-check
+  export ITERM_SESSION_ID=w0t0p0:FIXTURE
+  mkdir -p "$XDG_STATE_HOME/claude-peer"
+  echo peers >"$XDG_STATE_HOME/claude-peer/enter"
+}
+
 # restored_pane: a pane with the check on, no wait for its wait file; its terminal is tty-alpha
 restored_pane() {
-  git config --global --unset claude-peer.restore-check
+  check_on
   mkfifo "$BATS_TEST_TMPDIR/tty-alpha"
   ( cd "$REPO" && export CLAUDE_PEER_TTY="$BATS_TEST_TMPDIR/tty-alpha" &&
     exec sh "$BIN" run --as alpha --wait >"$BATS_TEST_TMPDIR/pane-alpha.out" 2>&1 3>&- ) &
@@ -592,7 +601,7 @@ restored_pane() {
 no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
 
 @test "restore check: a fresh record for the leader makes a normal waiting pane" {
-  git config --global --unset claude-peer.restore-check
+  check_on
   enter_record 5
   pane alpha
   ! grep -q "restored" "$BATS_TEST_TMPDIR/pane-alpha.out"
@@ -639,13 +648,27 @@ no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
   no_wait_files
 }
 
+@test "restore check: without an iTerm2 tab or the enter file no record could exist, so the pane serves without asking" {
+  check_on
+  rm "$XDG_STATE_HOME/claude-peer/enter"
+  pane alpha
+  ! grep -q "restored" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  [ "$(sh "$BIN" slots | cut -f2)" = waiting ]
+  kill "$LAST_PANE"
+  echo peers >"$XDG_STATE_HOME/claude-peer/enter"
+  unset ITERM_SESSION_ID
+  pane beta
+  ! grep -q "restored" "$BATS_TEST_TMPDIR/pane-beta.out"
+  [ "$(sh "$BIN" slots | cut -f2 | sort -u)" = waiting ]
+}
+
 @test "restore check: records more than a day old are deleted, others are left" {
   enter_record 90000
   enter_record 5
   d=$XDG_STATE_HOME/claude-peer/entered
   echo junk >"$d/junk"
   [ "$(ls "$d" | wc -l)" -eq 3 ]
-  git config --global --unset claude-peer.restore-check
+  check_on
   pane alpha
   [ "$(ls "$d" | wc -l)" -eq 2 ]
   [ -f "$d/junk" ]

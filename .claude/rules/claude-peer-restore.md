@@ -21,7 +21,9 @@ condition, claude-profiles.md), it also writes
 `<epoch seconds><TAB><pwd -P>` (`$EPOCHSECONDS`, loaded for the nonce). Nothing is
 printed and any failure is silent: the launch never waits on it.
 
-**The check.** `pane` runs `pane_entered` first, before the `claude-peer.start
+**The check.** It runs only where `claude()` could have written a record: `$ITERM_SESSION_ID`
+set and the enter state file (`enter_file`) readable, the gate `claude_peer_key` uses. Without
+both, `pane` carries on as before the check, with no prompt. Then `pane` runs `pane_entered` first, before the `claude-peer.start
 auto` branch and before the first wait-file write. A record whose directory
 equals the pane's `LEADER` and whose epoch is at most `CLAUDE_PEER_ENTRY_WINDOW`
 seconds before now (default 60) or at most 5 after it means a workgroup entry
@@ -36,7 +38,7 @@ exits 4 as it does for none. Return goes on as a normal pane; `q`, Ctrl-C or end
 of input is `pane_shell`, the plain shell `q` leaves today; anything else asks
 again. An overlay pane is checked too: its `LEADER` is the public source root,
 which is what `claude()` records from the leader tab. `git config
-claude-peer.restore-check false` turns the check off (the test setups do).
+claude-peer.restore-check false` turns the check off (the test setups do; the restore tests turn it on with `check_on`, which also sets the two conditions).
 Each check deletes records whose epoch is over a day old and skips unparseable
 files.
 
