@@ -1400,7 +1400,7 @@ PY
   [ "$(wc -l <"$OPEN_LOG" | tr -d ' ')" -eq 1 ]
   zipfile=$(cat "$OPEN_LOG")
   [ "${zipfile##*/}" = iTerm2-Relaunch.alfredworkflow ]
-  python3 -I -c 'import sys, zipfile; assert zipfile.ZipFile(sys.argv[1]).namelist() == ["info.plist"]' "$zipfile"
+  python3 -I -c 'import sys, zipfile; assert sorted(zipfile.ZipFile(sys.argv[1]).namelist()) == ["icon.png", "info.plist"]' "$zipfile"
   for v in CLAUDE_CONFIG_DIR CLAUDE_PROFILE CLAUDE_CODE_SESSION_ID CLAUDECODE alfred_workflow_uid; do
     no grep -q "^$v=" "$OPEN_ENV"
   done
