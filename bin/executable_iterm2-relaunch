@@ -39,7 +39,7 @@
 # included) or installs with a pkg or installer, which may ask for a password, is
 # refused, because the runner has no terminal and a sudo prompt would only fail.
 # `brew update` runs before the states are read and `brew fetch --cask` before the
-# consent, so iTerm2 is down for seconds, not for a download. The upgrade runs with
+# quit (both after the consent), so iTerm2 is down for seconds, not for a download. The upgrade runs with
 # SUDO_ASKPASS unset. With jobs surviving a
 # quit (KillJobsInServersOnQuit 0) running Claude sessions keep the old binary through
 # the upgrade; the front says so and the log counts them.
@@ -48,10 +48,12 @@
 # front runs the items in the foreground and leaves iTerm2 closed, because opening
 # it is not what was asked for; `--open` starts it afterwards.
 #
-# The front does nothing with a side effect before it is sure: every item is
-# judged first (a refused one stops everything, one with nothing to do is dropped),
-# then the operator's consent (--yes, or [y/N] on a terminal), then the Apple-event
-# probe, then the Claude tabs are saved, and only then the runner is started. The
+# The front does nothing with a side effect before it is sure: first the operator's
+# consent when iTerm2 is running (--yes, or [y/N] on a terminal; neither means a
+# refusal, with no brew command run), then every item is judged (`brew update`
+# first; a refused one stops everything, one with nothing to do is dropped), `brew
+# fetch`, the Apple-event probe, the Claude tabs saved, and only then the runner is
+# started. The
 # caller is often a Claude session that the quit kills, so the hand-over is verified
 # (the runner is alive and has logged `start:`) and its pid and the log path are
 # printed before the front returns.
@@ -816,6 +818,21 @@ cmd_front() {
   set +f
   [ -n "$items" ] || { usage >&2; exit 2; }
 
+  # The consent comes first: `brew update` and `brew fetch` reach the network and
+  # the disk, and a no or a missing --yes must have run none of it. With iTerm2
+  # closed nothing is quit, so nothing is asked.
+  running=0
+  ! iterm_pid >/dev/null || running=1
+  if [ "$dry" = 0 ]; then
+    if pid=$(runner_pid); then refuse "a relaunch is already under way (pid $pid)"; fi
+    if [ "$running" = 1 ] && [ "$yes" != 1 ]; then
+      [ -t 0 ] || refuse "this quits iTerm2 and ends every session in it; pass --yes once the operator has agreed"
+      printf 'Quit iTerm2 now? Every session in it ends. [y/N] ' >&2
+      read -r ans
+      case $ans in y|Y) ;; *) refuse "not quitting";; esac
+    fi
+  fi
+
   # Before the states are read, so they are not last week's. A failed update warns
   # and the cached state is used.
   case " $items " in
@@ -860,9 +877,7 @@ cmd_front() {
     exit 0
   fi
 
-  if pid=$(runner_pid); then refuse "a relaunch is already under way (pid $pid)"; fi
-
-  if ! iterm_pid >/dev/null; then
+  if [ "$running" = 0 ]; then
     ensure_state
     order_items $items
     run_items
@@ -884,13 +899,6 @@ cmd_front() {
     for t in $items; do
       case $t in brew:*) say "note: jobs survive a quit on this machine, so running Claude sessions keep the old ${t#brew:} until restarted";; esac
     done
-  fi
-
-  if [ "$yes" != 1 ]; then
-    [ -t 0 ] || refuse "this quits iTerm2 and ends every session in it; pass --yes once the operator has agreed"
-    printf 'Quit iTerm2 now? Every session in it ends. [y/N] ' >&2
-    read -r ans
-    case $ans in y|Y) ;; *) refuse "not quitting";; esac
   fi
 
   err=$(osascript -e 'tell application id "com.googlecode.iterm2" to get version' 2>&1 >/dev/null) ||

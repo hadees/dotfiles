@@ -968,7 +968,7 @@ cask() {
   [ "${#lines[@]}" -eq 3 ]
 }
 
-@test "front: brew update runs before the states, brew fetch before the consent, and a failed fetch quits nothing" {
+@test "front: brew update runs before the states, brew fetch before the quit, and a failed fetch quits nothing" {
   export ITERM2_RELAUNCH_DETACH=0
   cask claude-code@latest 2.1.322 2.1.323 true false binary "2.1.322"
   fake_iterm >/dev/null
@@ -995,11 +995,67 @@ cask() {
   [ "${lines[0]}" = "would: brew update first" ]
   [ "${lines[1]}" = "would: brew:claude-code@latest: 2.1.322 -> 2.1.323" ]
   no grep -q "^update\|^fetch" "$BREW_LOG"
-  FAKE_UPDATE=1 run sh "$BIN" brew:claude-code@latest </dev/null 2>&1
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"iterm2-relaunch: brew update failed; using the cached state"* ]]
-  [[ "$output" == *"this quits iTerm2 and ends every session in it"* ]]
   kill -0 "$pid"
+  FAKE_UPDATE=1 ITERM2_RELAUNCH_DETACH=0 run sh "$BIN" --yes --grace 1 brew:claude-code@latest 2>&1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"iterm2-relaunch: brew update failed; using the cached state"* ]]
+  grep -q "done: 1 items, 0 failed" "$LOG"
+}
+
+# pty_ask <answer> <arg>...: the front on a terminal that answers the consent question
+# with <answer>; prints what it showed and ends with its exit status.
+pty_ask() {
+  python3 -I - "$@" <<'PY'
+import os, pty, sys
+answer, argv = sys.argv[1], sys.argv[2:]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp("sh", ["sh"] + argv)
+out, sent = b"", False
+while True:
+    try:
+        chunk = os.read(fd, 4096)
+    except OSError:
+        break
+    if not chunk:
+        break
+    out += chunk
+    if not sent and b"[y/N]" in out:
+        os.write(fd, (answer + "\n").encode())
+        sent = True
+sys.stdout.write(out.decode("utf-8", "replace"))
+_, st = os.waitpid(pid, 0)
+sys.exit(os.waitstatus_to_exitcode(st))
+PY
+}
+
+@test "front: with brew items, no --yes and no terminal, or a no on a terminal, runs no brew command and quits nothing" {
+  cask claude-code@latest 2.1.322 2.1.323 true false binary "2.1.322"
+  pid=$(fake_iterm)
+  run sh "$BIN" brew:claude-code@latest </dev/null 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"this quits iTerm2 and ends every session in it; pass --yes once the operator has agreed"* ]]
+  [ ! -s "$BREW_LOG" ]
+  run pty_ask n "$BIN" brew:claude-code@latest
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Quit iTerm2 now? Every session in it ends. [y/N]"* ]]
+  [[ "$output" == *"not quitting"* ]]
+  run pty_ask "" "$BIN" brew:claude-code@latest
+  [ "$status" -eq 1 ]
+  [ ! -s "$BREW_LOG" ]
+  [ ! -s "$OSA_LOG" ]
+  [ ! -s "$CT_LOG" ]
+  grep -q " refused: not quitting" "$LOG"
+  kill -0 "$pid"
+}
+
+@test "front: a yes on a terminal goes on to brew update, the states and the quit" {
+  cask claude-code@latest 2.1.322 2.1.323 true false binary "2.1.322"
+  fake_iterm >/dev/null
+  ITERM2_RELAUNCH_DETACH=0 run pty_ask y "$BIN" --grace 1 brew:claude-code@latest
+  [ "$status" -eq 0 ]
+  [ "$(head -n 1 "$SEQ")" = "brew update" ]
+  grep -q "done: 1 items, 0 failed" "$LOG"
 }
 
 @test "front: a current cask is nothing to do and iTerm2 is left running" {
@@ -1014,15 +1070,16 @@ cask() {
   kill -0 "$pid"
 }
 
-@test "front: with jobs surviving a quit it notes, before the consent, that running sessions keep the old version" {
+@test "front: with jobs surviving a quit it notes, before the quit, that running sessions keep the old version" {
+  export ITERM2_RELAUNCH_DETACH=0
   cask claude-code@latest 2.1.322 2.1.323 true false binary "2.1.322"
   fake_iterm >/dev/null
-  FAKE_KILLJOBS=0 run sh "$BIN" brew:claude-code@latest </dev/null 2>&1
-  [ "$status" -eq 1 ]
+  FAKE_KILLJOBS=0 run sh "$BIN" --yes --grace 1 brew:claude-code@latest 2>&1
+  [ "$status" -eq 0 ]
   [[ "$output" == *"iterm2-relaunch: note: jobs survive a quit on this machine, so running Claude sessions keep the old claude-code@latest until restarted"* ]]
-  FAKE_KILLJOBS=1 run sh "$BIN" brew:claude-code@latest </dev/null 2>&1
+  FAKE_KILLJOBS=1 run sh "$BIN" --yes --grace 1 brew:claude-code@latest 2>&1
   no grep -q "note:" <<<"$output"
-  run sh "$BIN" brew:claude-code@latest </dev/null 2>&1
+  run sh "$BIN" --yes --grace 1 brew:claude-code@latest 2>&1
   no grep -q "note:" <<<"$output"
 }
 
