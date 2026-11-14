@@ -142,8 +142,12 @@ failed, restore <ok|skipped|failed>`. `free_screen` runs just before `done:`, so
   operator without it. A handler, not `trap ''`: an ignored signal would be
   inherited by every item and the timeout's `kill` could not stop one.
 - **The runner's environment.** The front starts the runner under `env -i` with
-  an allowlist: `HOME PATH LANG XDG_STATE_HOME`, `LC_*`, every `ITERM2_RELAUNCH_*`
-  seam and what `clean_open` passes on. What the runner starts (`claude-tab
+  an allowlist: `HOME PATH LANG GIT_CONFIG_GLOBAL`, and by namespace `LC_*`, `XDG_*`,
+  `HOMEBREW_*`, `ITERM2_PREFS_*`, `CLAUDE_PEER_*` and every `ITERM2_RELAUNCH_*` seam,
+  plus what `clean_open` passes on. The front judged every item with the caller's
+  configuration of those tools, so the runner must act with the same one.
+  `CLAUDE_CONFIG_DIR`, `CLAUDE_PROFILE`, `CLAUDE_CODE_*`, `BROWSER` and `OPEN_AS_ALIAS`
+  stay out. What the runner starts (`claude-tab
   restore`, then `claude-peer start`) would otherwise record the caller's
   `CLAUDE_PID` and `CLAUDE_CODE_SESSION_ID` in a restarted peer's claim as Lead.
   The caller's id reaches the runner as an argument.

@@ -92,7 +92,9 @@
 # nothing further.
 #
 # The runner is started under `env -i` with an allowlist (HOME, PATH, LANG, LC_*,
-# XDG_STATE_HOME, every ITERM2_RELAUNCH_* seam, and what clean_open passes on): what
+# XDG_*, HOMEBREW_*, GIT_CONFIG_GLOBAL, ITERM2_PREFS_*, CLAUDE_PEER_*, every
+# ITERM2_RELAUNCH_* seam, and what clean_open passes on): the sibling tools and brew
+# then see the configuration the front judged the items with. What
 # it starts, `claude-tab restore` and so `claude-peer start`, would otherwise record
 # the caller's Claude session (CLAUDE_PID, CLAUDE_CODE_SESSION_ID) as its own.
 # The caller's id reaches the runner as an argument.
@@ -213,9 +215,9 @@ brew_cmd() { sh -c "$brew_sh" sh "$brew" "$@"; }
 # the ones it needs to find its way and its state, every seam, and what clean_open
 # hands iTerm2. ITERM2_RELAUNCH_PASS names more, for the tests' stubs.
 runner_env_names() {
-  printf '%s\n' HOME PATH LANG XDG_STATE_HOME USER LOGNAME SHELL TMPDIR SSH_AUTH_SOCK DISPLAY \
+  printf '%s\n' HOME PATH LANG GIT_CONFIG_GLOBAL USER LOGNAME SHELL TMPDIR SSH_AUTH_SOCK DISPLAY \
     COMMAND_MODE __CF_USER_TEXT_ENCODING
-  env | sed -nE 's/^((LC_|ITERM2_RELAUNCH_)[A-Za-z0-9_]*)=.*/\1/p'
+  env | sed -nE 's/^((LC_|XDG_|HOMEBREW_|ITERM2_RELAUNCH_|ITERM2_PREFS_|CLAUDE_PEER_)[A-Za-z0-9_]*)=.*/\1/p'
   printf '%s\n' ${ITERM2_RELAUNCH_PASS-}
 }
 

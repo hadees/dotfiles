@@ -44,7 +44,7 @@ setup() {
   # The front starts the runner under env -i; these are what its stubs read, as a
   # production runner would be given its seams.
   export ITERM2_RELAUNCH_PASS="$(grep -ohE 'FAKE_[A-Z0-9_]+' "$BATS_TEST_FILENAME" | sort -u | tr '\n' ' ') \
-SEQ OSA_LOG PREFS_LOG CT_LOG CT_ENV PEER_LOG OPEN_LOG OPEN_ENV HU_LOG BREW_LOG BATS_TEST_TMPDIR GIT_CONFIG_GLOBAL"
+SEQ OSA_LOG PREFS_LOG CT_LOG CT_ENV PEER_LOG OPEN_LOG OPEN_ENV HU_LOG BREW_LOG BATS_TEST_TMPDIR"
   stubs
 }
 
@@ -621,6 +621,8 @@ compose" ]
 @test "the runner, and what it starts, get none of the caller's Claude environment, only the allowlist and the seams" {
   export FAKE_PREFS_LINE="composed, 1 waiting, 0 kept" LC_ALL=C LANG=C
   export CLAUDE_PID=123 CLAUDE_CODE_SESSION_ID=abc CLAUDECODE=1 BROWSER=x OPEN_AS_ALIAS=x CLAUDE_PROFILE=x ITERM_SESSION_ID=x
+  export CLAUDE_CONFIG_DIR=x CLAUDE_CODE_FOO=x
+  export XDG_CONFIG_HOME=x HOMEBREW_CASK_OPTS=x ITERM2_PREFS_FRAGMENTS=x CLAUDE_PEER_CONTEXTS=x
   fake_iterm >/dev/null
   run sh "$BIN" --yes --grace 1 prefs
   [ "$status" -eq 0 ]
@@ -628,8 +630,12 @@ compose" ]
   grep -q "done: 1 items, 0 failed, restore ok" "$LOG"
   grep -q "caller=abc " "$LOG"
   [ -s "$CT_ENV" ]
-  for v in CLAUDE_PID CLAUDE_CODE_SESSION_ID CLAUDECODE BROWSER OPEN_AS_ALIAS CLAUDE_PROFILE ITERM_SESSION_ID; do
+  for v in CLAUDE_PID CLAUDE_CODE_SESSION_ID CLAUDECODE BROWSER OPEN_AS_ALIAS CLAUDE_PROFILE ITERM_SESSION_ID \
+           CLAUDE_CONFIG_DIR CLAUDE_CODE_FOO; do
     no grep -q "^$v=" "$CT_ENV"
+  done
+  for v in XDG_CONFIG_HOME HOMEBREW_CASK_OPTS ITERM2_PREFS_FRAGMENTS CLAUDE_PEER_CONTEXTS GIT_CONFIG_GLOBAL; do
+    grep -q "^$v=" "$CT_ENV"
   done
   grep -q "^HOME=" "$CT_ENV"
   grep -q "^LC_ALL=C" "$CT_ENV"
