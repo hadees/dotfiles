@@ -228,7 +228,8 @@ function dotfiles() {
 	# iTerm2's preferences are merged from per-owner fragments in the same
 	# way, so they too compose only once every overlay has deployed its own.
 	# --auto says nothing where iTerm2 does not load the composed folder and
-	# writes nothing while iTerm2 runs (iTerm2 rewrites the store at quit).
+	# writes nothing while iTerm2 runs (iTerm2 rewrites the store at quit);
+	# where source changes wait, it arms the compose that runs when iTerm2 quits.
 	(( $+commands[iterm2-prefs] )) && iterm2-prefs compose --auto;
 	return 0;
 }

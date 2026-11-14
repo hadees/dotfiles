@@ -273,7 +273,8 @@ rule first.
 | `routes` | the fleet routing table |
 | `workset` | working sets, the profile rule, the guard hooks |
 | `iterm2-skill` | the iTerm2 skill's stamp and `verify.sh`, the tracked plist |
-| `iterm2-prefs` | iTerm2's composed preferences: fragments, compose, capture, install |
+| `iterm2-prefs` | iTerm2's composed preferences: fragments, compose, compose at quit, capture, install |
+| `iterm2-relaunch` | quit iTerm2, apply preferences or cask upgrades while it is down, reopen, resume the Claude tabs and peers; the Alfred workflow |
 | `cc-status-shim` | Session Status rows, seat colours, row names, terminal titles |
 | `dot-functions` | what else lives in `dot_functions`, and `emulate -L zsh` |
 

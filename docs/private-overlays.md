@@ -504,9 +504,10 @@ the last compose (`.claude/rules/iterm2-prefs.md` has the mechanism).
 ~/.local/state/iterm2/prefs-sourced.plist    the composer's record of the last compose
 ```
 
-The switch-over has not happened yet: until `iterm2-prefs install` is run by
-hand with iTerm2 quit, iTerm2 still loads the tracked plist in the public
-clone, and `dotfiles` composes nothing.
+The switch-over has not happened yet: until `iterm2-prefs install` is run with
+iTerm2 quit (`iterm2-relaunch prefs-install` quits it, runs `install`, reopens
+it and resumes the Claude tabs), iTerm2 still loads the tracked plist in the
+public clone, and `dotfiles` composes nothing.
 
 The base's Default profile keeps the Guid it was captured with. On a machine
 whose own default profile has another Guid, which is every machine but that
@@ -514,8 +515,8 @@ one, `install` adds the base profile beside the existing one and makes it the
 default, so Settings > Profiles shows two named Default until one is deleted
 there. `install --dry-run` shows what would change first, `install --no-seed`
 starts the store from the fragments alone, and the saved domain is the way back
-from either. Run `iterm2-prefs install --dry-run` before the first `install` on
-any machine.
+from either. Run `iterm2-prefs install --dry-run` (it works while iTerm2 runs)
+before the first `install` on any machine, whichever way it is then run.
 
 What an overlay implements, all of it:
 
@@ -541,8 +542,10 @@ What an overlay implements, all of it:
    (`claude-peer.<owner>/<repo>.label`), because `Workgroups` is reserved.
 
 The two commands an owner needs: `iterm2-prefs capture --file <fragment path>
-<unit>...` in its own worktree, then `dotfiles`; with iTerm2 quit,
-`iterm2-prefs compose` applies what `dotfiles` reported as waiting. The
+<unit>...` in its own worktree, then `dotfiles`; what `dotfiles` reported as
+waiting is composed by itself when iTerm2 next quits (compose at quit), or at
+once by `iterm2-relaunch prefs`, which quits iTerm2, composes and reopens it;
+with iTerm2 already quit, `iterm2-prefs compose` does the same by hand. The
 composed store names every owner at once, so it lives in no repository;
 `iterm2-prefs install` refuses a folder inside one.
 

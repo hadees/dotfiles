@@ -69,6 +69,9 @@ what this version builds and say `installed, out of date (...); this version
 defines N (...)` when they differ (the script changed since `install` last
 ran), or `not installed`.
 
+`iterm2-relaunch claude-peer` runs `install` with iTerm2 quit and starts it
+again (`iterm2-relaunch.md`); the keys it builds are reserved in `iterm2-prefs.md`.
+
 **How a tab gets its workgroup.** The `claude` job trigger names one workgroup
 per iTerm2 profile, and an iTerm2 profile says nothing about the repo, so the
 choice is the `claude()` wrapper's, made before the job starts. It sets the

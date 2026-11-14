@@ -51,6 +51,7 @@ com.googlecode.iterm2.plist
 bin/worktabs
 # iTerm2's composed preferences are macOS-only
 bin/iterm2-prefs
+bin/iterm2-relaunch
 .config/iterm2
 # The screen heads-up is a macOS notification
 bin/screen-heads-up

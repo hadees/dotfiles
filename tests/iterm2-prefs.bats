@@ -28,12 +28,25 @@ setup() {
   export ITERM2_PREFS_FRAGMENTS="$FRAGS"
   export ITERM2_PREFS_DIR="$BATS_TEST_TMPDIR/store"
   export ITERM2_PREFS_RECORD="$BATS_TEST_TMPDIR/record.plist"
+  # no test but the compose-at-quit ones may start a waiter
+  export ITERM2_PREFS_AT_QUIT=0
+  export FAKE_PROCS_FILE="$BATS_TEST_TMPDIR/procs"
+  AQ="$XDG_STATE_HOME/iterm2/compose-at-quit"
   stubs
   mkplist "$BATS_TEST_TMPDIR/domain.plist" '{}'
   export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist" FAKE_LOAD=0
   export FAKE_DEFAULTS_LOG="$BATS_TEST_TMPDIR/defaults.log"
   export ITERM2_PREFS_BEFORE="$BATS_TEST_TMPDIR/before.plist"
   LIVEF="$ITERM2_PREFS_DIR/com.googlecode.iterm2.plist"
+}
+
+teardown() {
+  local p
+  if [ -f "$FAKE_PROCS_FILE" ]; then
+    while read -r p _; do kill "$p" 2>/dev/null; done <"$FAKE_PROCS_FILE"
+  fi
+  if [ -f "$AQ.pid" ]; then read -r p _ <"$AQ.pid"; kill "$p" 2>/dev/null; fi
+  return 0
 }
 
 stubs() {
@@ -44,12 +57,18 @@ printf '%s\n' "${FAKE_OS:-Darwin}"
 STUB
   cat >"$b/ps" <<'STUB'
 #!/bin/sh
-for p in ${FAKE_PROCS:-}; do printf '%s\n' "$p"; done
+# the iTerm2 of FAKE_PROCS has pid 4242; FAKE_PROCS_FILE lines are "<pid> <name>"
+for p in ${FAKE_PROCS:-}; do printf '4242 %s\n' "$p"; done
+[ ! -f "${FAKE_PROCS_FILE-}" ] || cat "$FAKE_PROCS_FILE"
 STUB
   cat >"$b/defaults" <<'STUB'
 #!/bin/sh
 case $1 in
-  read) case $3 in
+  read) # FAKE_START_ON_DEFAULTS=<marker>: once no iTerm2 is listed, the first read starts one
+        if [ -n "${FAKE_START_ON_DEFAULTS-}" ] && [ ! -e "$FAKE_START_ON_DEFAULTS" ] && ! grep -q iTerm2 "$FAKE_PROCS_FILE"; then
+          echo "9999 iTerm2" >>"$FAKE_PROCS_FILE"; : >"$FAKE_START_ON_DEFAULTS"
+        fi
+        case $3 in
           LoadPrefsFromCustomFolder) [ -n "${FAKE_LOAD-}" ] && printf '%s\n' "$FAKE_LOAD" || exit 1;;
           PrefsCustomFolder) printf '%s\n' "$FAKE_FOLDER";;
         esac;;
@@ -277,10 +296,10 @@ has() { grep -Fxq -- "$1" <<<"$output"; }
   frag 10-one '{"Keep": 2}'
   run sh "$BIN" compose
   [ "$status" -eq 1 ]
-  [ "$output" = "iterm2-prefs: iTerm2 is running and writes its preferences at quit; quit it first (1 source changes wait)" ]
+  [ "$output" = "iterm2-prefs: iTerm2 is running and writes its preferences at quit; quit it first, or run iterm2-relaunch prefs (1 source changes wait)" ]
   run sh "$BIN" compose --auto
   [ "$status" -eq 0 ]
-  [ "$output" = "iterm2-prefs: 1 source changes wait for iTerm2 to quit (then: iterm2-prefs compose)" ]
+  [ "$output" = "iterm2-prefs: 1 source changes wait for iTerm2 to quit (then: iterm2-prefs compose; now: iterm2-relaunch prefs)" ]
   [ "$(sums)" = "$before" ]
 }
 
@@ -460,7 +479,8 @@ sourced: 4 units (2 top-level, 2 keys in 1 profiles)
 waiting: 4 source changes not in the store
 kept: 0 units changed in iTerm2 (iterm2-prefs capture)
 ignored: 1 reserved keys in fragments: 10-one:Workgroups
-skipped: 1 files in $FRAGS not named NN-<name>.plist"
+skipped: 1 files in $FRAGS not named NN-<name>.plist
+at-quit: not armed"
   [ "$output" = "$expected" ]
   sh "$BIN" compose >/dev/null
   edit_live 'd["Keep"] = 9'
@@ -758,7 +778,7 @@ phys() { (cd -P "$ITERM2_PREFS_DIR" && pwd); }
   export FAKE_PROCS=iTerm2
   run sh "$BIN" install
   [ "$status" -eq 1 ]
-  [ "$output" = "iterm2-prefs: quit iTerm2 first: it rewrites its preferences at quit" ]
+  [ "$output" = "iterm2-prefs: quit iTerm2 first, or run iterm2-relaunch prefs-install: it rewrites its preferences at quit" ]
   [[ ! -e "$LIVEF" ]]
   [[ ! -e "$FAKE_DEFAULTS_LOG" ]]
   [[ ! -e "$ITERM2_PREFS_BEFORE" ]]
@@ -977,4 +997,134 @@ BASE="$BATS_TEST_DIRNAME/../dot_config/iterm2/prefs.d/10-base.plist"
   call=$(echo "$output" | grep -n 'iterm2-prefs compose --auto' | tail -1 | cut -d: -f1)
   ret=$(echo "$output" | grep -n 'return 0' | tail -1 | cut -d: -f1)
   [ "$ret" -gt "$call" ]
+}
+
+# --- compose at quit -------------------------------------------------------
+
+# fake_iterm: a live process standing in for iTerm2; lists it and prints its pid. It is the
+# child of a shell that waits for it, so killing it leaves no zombie and kill -0 tells the
+# truth; fd 3 is closed or bats waits for it for ever.
+fake_iterm() {
+  local f="$BATS_TEST_TMPDIR/fake.$RANDOM"
+  ( /bin/sh -c '/bin/sleep 300 & echo $! >"$1"; wait' sh "$f" >/dev/null 2>&1 3>&- & )
+  while [ ! -s "$f" ]; do /bin/sleep 0.05; done
+  printf '%s iTerm2\n' "$(cat "$f")" >>"$FAKE_PROCS_FILE"
+  cat "$f"
+}
+quit_fake() {
+  kill "$1" 2>/dev/null
+  grep -v "^$1 " "$FAKE_PROCS_FILE" >"$FAKE_PROCS_FILE.n" || true  # exits 1 when nothing is left
+  mv "$FAKE_PROCS_FILE.n" "$FAKE_PROCS_FILE"
+}
+
+# waitfor <command>: true within 10 seconds
+waitfor() {
+  local i
+  for i in $(seq 100); do eval "$1" && return 0; /bin/sleep 0.1; done
+  return 1
+}
+
+# armable: installed and composed with Keep=1, then the source says Keep=2 while an iTerm2
+# runs whose domain still holds 1; the pid is in $ITERM
+armable() {
+  installed_fixture
+  frag 10-one '{"Keep": 1}'
+  sh "$BIN" compose >/dev/null
+  mkplist "$FAKE_DOMAIN" '{"Keep": 1}'
+  frag 10-one '{"Keep": 2}'
+  ITERM=$(fake_iterm)
+  export ITERM2_PREFS_AT_QUIT=1
+}
+
+@test "compose --auto while iTerm2 runs: arms the compose at quit, says so, and the store is composed once that iTerm2 is gone" {
+  armable
+  run sh "$BIN" compose --auto
+  [ "$status" -eq 0 ]
+  [ "$output" = "iterm2-prefs: 1 source changes wait for iTerm2 to quit and are composed when it does (now: iterm2-relaunch prefs)" ]
+  waitfor '[ -s "$AQ.pid" ]'
+  [ "$(pget "$LIVEF" 'd["Keep"]')" = 1 ]
+  quit_fake "$ITERM"
+  waitfor 'grep -q "done: compose exit 0" "$AQ.log"'
+  [ "$(pget "$LIVEF" 'd["Keep"]')" = 2 ]
+  grep -q "compose: exit 0" "$AQ.log"
+  [ ! -e "$AQ.pid" ]
+}
+
+@test "compose --auto: a second run arms no second waiter" {
+  armable
+  run sh "$BIN" compose --auto
+  waitfor '[ -s "$AQ.pid" ]'
+  first=$(cat "$AQ.pid")
+  run sh "$BIN" compose --auto
+  [ "$status" -eq 0 ]
+  [ "$output" = "iterm2-prefs: 1 source changes wait for iTerm2 to quit and are composed when it does (now: iterm2-relaunch prefs)" ]
+  [ "$(cat "$AQ.pid")" = "$first" ]
+  [ ! -e "$AQ.log.prev" ]
+  [ "$(grep -c '^' "$AQ.log")" = 1 ]
+}
+
+@test "compose --auto with ITERM2_PREFS_AT_QUIT=0: arms nothing, prints the manual line" {
+  armable
+  export ITERM2_PREFS_AT_QUIT=0
+  run sh "$BIN" compose --auto
+  [ "$status" -eq 0 ]
+  [ "$output" = "iterm2-prefs: 1 source changes wait for iTerm2 to quit (then: iterm2-prefs compose; now: iterm2-relaunch prefs)" ]
+  /bin/sleep 0.5
+  [ ! -e "$AQ.pid" ]
+  [ ! -e "$AQ.log" ]
+}
+
+@test "_compose-at-quit: an iTerm2 that is back before the compose is waited on in turn" {
+  armable
+  b=$(fake_iterm)
+  run sh "$BIN" compose --auto
+  waitfor '[ -s "$AQ.pid" ]'
+  quit_fake "$ITERM"
+  waitfor 'grep -q "armed: iTerm2 pid $b" "$AQ.log"'
+  grep -q "compose: exit 1" "$AQ.log"
+  [ "$(pget "$LIVEF" 'd["Keep"]')" = 1 ]
+  quit_fake "$b"
+  waitfor 'grep -q "done: compose exit 0" "$AQ.log"'
+  grep -q "compose: exit 0" "$AQ.log"
+  [ "$(pget "$LIVEF" 'd["Keep"]')" = 2 ]
+}
+
+@test "_compose-at-quit: an iTerm2 seen right after the write is logged as raced" {
+  armable
+  export FAKE_START_ON_DEFAULTS="$BATS_TEST_TMPDIR/started"
+  run sh "$BIN" compose --auto
+  waitfor '[ -s "$AQ.pid" ]'
+  quit_fake "$ITERM"
+  waitfor 'grep -q "done: compose exit 0" "$AQ.log"'
+  grep -q "raced: iTerm2 started while its preferences were composed" "$AQ.log"
+}
+
+@test "_compose-at-quit: a fragment that does not parse ends the waiter, refusal in the log" {
+  armable
+  run sh "$BIN" compose --auto
+  waitfor '[ -s "$AQ.pid" ]'
+  printf 'not a plist' >"$FRAGS/10-one.plist"
+  quit_fake "$ITERM"
+  waitfor 'grep -q "done: compose exit 1" "$AQ.log"'
+  grep -q "10-one.plist: not a property list; nothing composed" "$AQ.log"
+  [ ! -e "$AQ.pid" ]
+  [ "$(pget "$LIVEF" 'd["Keep"]')" = 1 ]
+}
+
+@test "status: at-quit is armed with the pid, or not armed" {
+  armable
+  run sh "$BIN" status
+  has "at-quit: not armed"
+  [[ "$output" != *"at-quit: last"* ]]
+  run sh "$BIN" status --line
+  [[ "$output" != *at-quit* ]]
+  sh "$BIN" compose --auto >/dev/null
+  waitfor '[ -s "$AQ.pid" ]'
+  run sh "$BIN" status
+  has "at-quit: armed, waits on iTerm2 pid $ITERM"
+  quit_fake "$ITERM"
+  waitfor 'grep -q "done: compose exit 0" "$AQ.log"'
+  run sh "$BIN" status
+  has "at-quit: not armed"
+  grep -Eq '^at-quit: last [^ ]+ done: compose exit 0$' <<<"$output"
 }
