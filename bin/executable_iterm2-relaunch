@@ -3,7 +3,8 @@
 # the Claude sessions back.
 #
 # Usage:
-#   iterm2-relaunch [--yes] [--dry-run] [--no-restore] [--no-prompt] [--wait <s>] [--grace <s>] <item>[,<item>...]...
+#   iterm2-relaunch [--yes] [--dry-run] [--no-restore] [--no-prompt] [--open] [--wait <s>] [--grace <s>] <item>[,<item>...]...
+#                    (iTerm2 not running: the items run and it is left closed; --open starts it afterwards)
 #   iterm2-relaunch items            one row per item: item<TAB>ready|nothing|refused<TAB>detail
 #   iterm2-relaunch status           runner:, last:, log: lines
 #   iterm2-relaunch cancel           call a relaunch off before iTerm2 has been asked to quit
@@ -42,6 +43,10 @@
 # SUDO_ASKPASS unset. With jobs surviving a
 # quit (KillJobsInServersOnQuit 0) running Claude sessions keep the old binary through
 # the upgrade; the front says so and the log counts them.
+#
+# When iTerm2 is not running there is nothing to quit and no consent to ask: the
+# front runs the items in the foreground and leaves iTerm2 closed, because opening
+# it is not what was asked for; `--open` starts it afterwards.
 #
 # The front does nothing with a side effect before it is sure: every item is
 # judged first (a refused one stops everything, one with nothing to do is dropped),
@@ -785,13 +790,14 @@ refuse() { refuse_msg "$1"; exit 1; }
 
 cmd_front() {
   need_macos iterm2-relaunch
-  yes=0 dry=0 restore=1 prompt=1 wait=120 grace=5 raw=''
+  yes=0 dry=0 restore=1 prompt=1 open=0 wait=120 grace=5 raw=''
   while [ $# -gt 0 ]; do
     case $1 in
       --yes) yes=1;;
       --dry-run) dry=1;;
       --no-restore) restore=0;;
       --no-prompt) prompt=0;;
+      --open) open=1;;
       --wait|--grace)
         case ${2-} in ''|*[!0-9]*) warn "$1 takes a number of seconds"; usage >&2; exit 2;; esac
         if [ "$1" = --wait ]; then wait=$2; else grace=$2; fi
@@ -841,10 +847,16 @@ cmd_front() {
   [ "$restore" = 0 ] || [ ! -x "$ct" ] || tabs=1
   if [ "$dry" = 1 ]; then
     printf '%s' "$states" | while IFS=$TAB read -r t s d; do printf 'would: %s: %s\n' "$t" "$d"; done
-    [ "$tabs" = 0 ] || echo "would: save Claude tabs (claude-tab save)"
-    ! iterm_pid >/dev/null || echo "would: quit iTerm2 after ${grace}s and wait up to ${wait}s for it"
-    echo "would: start iTerm2"
-    [ "$tabs" = 0 ] || echo "would: restore Claude tabs and peers (claude-tab restore)"
+    if iterm_pid >/dev/null; then
+      [ "$tabs" = 0 ] || echo "would: save Claude tabs (claude-tab save)"
+      echo "would: quit iTerm2 after ${grace}s and wait up to ${wait}s for it"
+      echo "would: start iTerm2"
+      [ "$tabs" = 0 ] || echo "would: restore Claude tabs and peers (claude-tab restore)"
+    elif [ "$open" = 1 ]; then
+      echo "would: start iTerm2"
+    else
+      echo "would: leave iTerm2 closed (it is not running)"
+    fi
     exit 0
   fi
 
@@ -854,7 +866,11 @@ cmd_front() {
     ensure_state
     order_items $items
     run_items
-    if start_iterm; then s='started it'; rc=0; else s='could not start it'; rc=1; fi
+    rc=0 s='left it closed'
+    if [ "$open" = 1 ]; then
+      wait_compose_waiter
+      if start_iterm; then s='started it'; else s='could not start it'; rc=1; fi
+    fi
     say "iTerm2 was not running; $total items done, $failed failed; $s"
     [ "$failed" -eq 0 ] || rc=1
     exit "$rc"

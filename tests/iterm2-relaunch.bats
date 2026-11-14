@@ -554,7 +554,10 @@ compose" ]
   run sh "$BIN" --dry-run --no-restore --grace 2 prefs-install
   [ "$status" -eq 0 ]
   [ "${#lines[@]}" -eq 2 ]
+  [ "${lines[1]}" = "would: leave iTerm2 closed (it is not running)" ]
+  run sh "$BIN" --dry-run --open prefs-install
   [ "${lines[1]}" = "would: start iTerm2" ]
+  [ "${#lines[@]}" -eq 2 ]
 }
 
 @test "Apple events refused in the foreground: the reason is printed, exit 1, nothing saved" {
@@ -679,19 +682,33 @@ compose" ]
   [ ! -s "$PREFS_LOG" ]
 }
 
-@test "iTerm2 not running: the items run at once, iTerm2 is started, nothing is asked" {
+@test "iTerm2 not running: the items run at once, iTerm2 is left closed, nothing is asked" {
   FAKE_PREFS_LINE="composed, 1 waiting, 0 kept" run sh "$BIN" prefs </dev/null
   [ "$status" -eq 0 ]
-  [ "$output" = "iterm2-relaunch: iTerm2 was not running; 1 items done, 0 failed; started it" ]
+  [ "$output" = "iterm2-relaunch: iTerm2 was not running; 1 items done, 0 failed; left it closed" ]
   [ "$(cat "$PREFS_LOG")" = compose ]
-  grep -Fxq -- "-b com.googlecode.iterm2" "$OPEN_LOG"
+  [ ! -s "$OPEN_LOG" ]
+  [ ! -s "$FAKE_PROCS_FILE" ]
   [ ! -s "$OSA_LOG" ]
   [ ! -s "$CT_LOG" ]
-  kill "$(cut -d' ' -f1 "$FAKE_PROCS_FILE")"
-  : >"$FAKE_PROCS_FILE"
   FAKE_PREFS_RC=1 FAKE_PREFS_LINE="composed, 1 waiting, 0 kept" run sh "$BIN" prefs </dev/null
   [ "$status" -eq 1 ]
-  [[ "$output" == *"1 items done, 1 failed; started it" ]]
+  [[ "$output" == *"1 items done, 1 failed; left it closed" ]]
+  [ ! -s "$OPEN_LOG" ]
+}
+
+@test "iTerm2 not running, --open: the items run, then iTerm2 is started; a start that fails is exit 1" {
+  FAKE_PREFS_LINE="composed, 1 waiting, 0 kept" run sh "$BIN" --open prefs </dev/null
+  [ "$status" -eq 0 ]
+  [ "$output" = "iterm2-relaunch: iTerm2 was not running; 1 items done, 0 failed; started it" ]
+  [ "$(grep -c -Fx -- "-b com.googlecode.iterm2" "$OPEN_LOG")" -eq 1 ]
+  [ "$(grep -E '^(prefs|open)' "$SEQ" | tr '\n' ',')" = "prefs compose,open," ]
+  kill "$(cut -d' ' -f1 "$FAKE_PROCS_FILE")"
+  : >"$FAKE_PROCS_FILE"
+  : >"$BATS_TEST_TMPDIR/open-fails"
+  FAKE_PREFS_LINE="composed, 1 waiting, 0 kept" run sh "$BIN" --open prefs </dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"1 items done, 0 failed; could not start it" ]]
 }
 
 @test "a refusal is appended to run.log, and --dry-run writes none" {
