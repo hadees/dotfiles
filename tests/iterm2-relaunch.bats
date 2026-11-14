@@ -724,7 +724,7 @@ compose" ]
   FAKE_DRY=1 FAKE_DRY_MSG="boom" run sh "$BIN" --yes prefs-install
   FAKE_DRY=1 FAKE_DRY_MSG="boom" run sh "$BIN" --yes prefs-install
   [ "$(grep -c " refused: prefs-install: boom" "$LOG")" -eq 2 ]
-  [ "$(stat -f %Lp "$STATE/run.log" 2>/dev/null || stat -c %a "$STATE/run.log")" = 600 ]
+  [ "$(stat -c %a "$STATE/run.log" 2>/dev/null || stat -f %Lp "$STATE/run.log")" = 600 ]
 }
 
 # The heads-up before the screen is taken, and cancel.
@@ -1373,6 +1373,7 @@ PY
 }
 
 @test "alfred-install: hands the zipped workflow to Alfred with a clean environment; with no Alfred app it builds nothing and says so" {
+  command -v zip >/dev/null || skip "no zip (Alfred is macOS-only)"
   export TMPDIR="$BATS_TEST_TMPDIR/tmp"
   mkdir -p "$TMPDIR"
   export CLAUDE_CONFIG_DIR=x CLAUDE_PROFILE=x CLAUDE_CODE_SESSION_ID=x CLAUDECODE=x alfred_workflow_uid=x
