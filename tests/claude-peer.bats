@@ -615,7 +615,7 @@ no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
 @test "restore check: no record asks first, writes no wait file, start finds nothing; Return makes a pane" {
   restored_pane
   until_ok 'grep -q "Return if this tab is proj" "$BATS_TEST_TMPDIR/pane-alpha.out"'
-  [ "$(sed -n 1p "$BATS_TEST_TMPDIR/pane-alpha.out")" = "Alpha: iTerm2 restored this pane; it would serve proj." ]
+  [ "$(sed -n 1p "$BATS_TEST_TMPDIR/pane-alpha.out")" = "Alpha: no workgroup entry was recorded for this pane; it would serve proj." ]
   [ "$(sed -n 2p "$BATS_TEST_TMPDIR/pane-alpha.out")" = "Return if this tab is proj's, q for a shell." ]
   no_wait_files
   run sh "$BIN" start alpha
@@ -630,7 +630,7 @@ no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
 
 @test "restore check: q leaves a plain shell and no wait file" {
   restored_pane
-  until_ok 'grep -q "restored this pane" "$BATS_TEST_TMPDIR/pane-alpha.out"'
+  until_ok 'grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-alpha.out"'
   press alpha q
   until_ok '[ "$(tail -n 1 "$FAKE_SHELL_LOG")" = "pwd=$REPO args=-i" ]'
   no_wait_files
@@ -638,7 +638,7 @@ no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
 
 @test "restore check: end of input leaves a plain shell" {
   restored_pane
-  until_ok 'grep -q "restored this pane" "$BATS_TEST_TMPDIR/pane-alpha.out"'
+  until_ok 'grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-alpha.out"'
   ( : >"$BATS_TEST_TMPDIR/tty-alpha" ) 3>&-   # a writer that closes with nothing written
   until_ok '[ "$(tail -n 1 "$FAKE_SHELL_LOG")" = "pwd=$REPO args=-i" ]'
   no_wait_files
@@ -648,7 +648,7 @@ no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
   enter_record 5 "$REPO/sub"
   enter_record 120
   restored_pane
-  until_ok 'grep -q "restored this pane" "$BATS_TEST_TMPDIR/pane-alpha.out"'
+  until_ok 'grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-alpha.out"'
   no_wait_files
 }
 

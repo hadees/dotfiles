@@ -1434,7 +1434,7 @@ pane_entered() {
 pane_restored() {
   trap pane_shell INT
   while :; do
-    printf '%s: iTerm2 restored this pane; it would serve %s.\nReturn if this tab is %s'"'"'s, q for a shell.\n' "$label" "$rname" "$rname"
+    printf '%s: no workgroup entry was recorded for this pane; it would serve %s.\nReturn if this tab is %s'"'"'s, q for a shell.\n' "$label" "$rname" "$rname"
     IFS= read -r pr_l 2>/dev/null <"${CLAUDE_PEER_TTY:-/dev/tty}" || pane_shell
     case $pr_l in
       '') break;;

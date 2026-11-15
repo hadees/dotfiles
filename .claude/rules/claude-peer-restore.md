@@ -29,10 +29,13 @@ equals the pane's `LEADER` and whose epoch is at most `CLAUDE_PEER_ENTRY_WINDOW`
 seconds before now (default 60) or at most 5 after it means a workgroup entry
 opened the pane, and it carries on as ever. Otherwise `pane_restored` prints
 
-    <Label>: iTerm2 restored this pane; it would serve <repo>.
+    <Label>: no workgroup entry was recorded for this pane; it would serve <repo>.
     Return if this tab is <repo>'s, q for a shell.
 
-and reads one line from `${CLAUDE_PEER_TTY:-/dev/tty}`. It writes no wait file and
+The wording covers both ways a pane gets there: iTerm2 restoring it after a
+crash, and a workgroup entered from Shell > Workgroups rather than by `claude`
+(the operator's wording, 2026-11-15). The pane then reads one line from
+`${CLAUDE_PEER_TTY:-/dev/tty}`. It writes no wait file and
 no `.term` sidecar meanwhile, so `claude-peer start` finds no waiting pane and
 exits 4 as it does for none. Return goes on as a normal pane; `q`, Ctrl-C or end
 of input is `pane_shell`, the plain shell `q` leaves today; anything else asks
