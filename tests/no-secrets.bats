@@ -97,6 +97,7 @@ email_hits() {
     [ -f "$dir/$f" ] || continue
     case $f in
       LICENSE-MIT.txt|README.md|dot_vim/syntax/json.vim) continue ;;
+      *.png|*.jpg|*.gif|*.icns) continue ;;   # images: macOS sed drops NULs, so grep -I reads them as text
     esac
     LC_ALL=C sed -E \
         -e 's/git@[A-Za-z0-9.-]+//g' \

@@ -303,6 +303,17 @@ and the start time in epoch seconds; lines 1-3, `peers` and the session name are
 unchanged. The pane's header line is the slot's label, then ` · started by <by>`
 (not for Return) and ` · <task>`.
 
+`git config claude-peer.model <alias>` (per repository or global, read by
+`default_model` where the pane stands) is a default `--model` for a fresh start
+that has none of its own: a plain start, a picker pick, a context with no
+`model:`. A context's `model:` wins; a context with `agent:` gets none (the
+definition carries its model); `--continue` and `--resume` get none, so a
+resumed session keeps its model and cache. A value that is empty is unset; one
+that starts with `-` or holds whitespace is ignored with one stderr line. It is
+read inside `pane_go`, each time a session starts, not when the pane opens: a
+waiting pane takes a change at its next session, with no reopening. Hermes and
+Lead do not go through `pane_go`.
+
 **Names, hand-offs, how a session ended** are in `claude-peer-handoff.md`.
 
 The public source ships seven top-level contexts, `dot_config/claude-peer/contexts/NN-<name>.ctx`

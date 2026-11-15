@@ -581,6 +581,18 @@ handoff_note() {
 # header.
 task_line() { printf '%s\n' "$1" | sed -n 1p | tr '\t\r' '  ' | cut -c1-80; }
 
+# git config claude-peer.model, read where the caller stands each time a session
+# starts: the name, or nothing (unset, empty, or a value that could read as a flag
+# or holds whitespace, which is said once and ignored).
+default_model() {
+  dm_v=$(git config --get claude-peer.model 2>/dev/null) || dm_v=
+  case $dm_v in
+    '') ;;
+    -*|*[[:space:]]*) warn "claude-peer.model '$dm_v' is not a model name; ignored";;
+    *) printf '%s\n' "$dm_v";;
+  esac
+}
+
 # mode(fresh|continue|resume) slot(or -) prompt claude-args...: take a slot, run one
 # session in it, return. Never exits: a refusal is printed and the pane waits on.
 # The caller sets PG_CTX (a context path), PG_CTXNAME, PG_BY (who started it) and
@@ -618,12 +630,18 @@ pane_go() {
 
 $(handoff_note)"; fi
   [ "$pg_mode" != continue ] || set -- --continue "$@"
+  pg_ca= pg_cm= pg_ce= pg_cs=
   if [ -n "$pg_ctx" ]; then
-    for pg_k in agent model effort; do
-      pg_v=$(ctx_get "$pg_ctx" "$pg_k"); [ -z "$pg_v" ] || set -- "$@" "--$pg_k" "$pg_v"
-    done
-    pg_v=$(ctx_get "$pg_ctx" system); [ -z "$pg_v" ] || set -- "$@" --append-system-prompt "$pg_v"
+    pg_ca=$(ctx_get "$pg_ctx" agent) pg_cm=$(ctx_get "$pg_ctx" model)
+    pg_ce=$(ctx_get "$pg_ctx" effort) pg_cs=$(ctx_get "$pg_ctx" system)
   fi
+  # only a fresh start with no model of its own: a resumed session keeps its model
+  # and cache, an agent definition carries its model
+  [ "$pg_mode" != fresh ] || [ -n "$pg_cm" ] || [ -n "$pg_ca" ] || pg_cm=$(default_model)
+  [ -z "$pg_ca" ] || set -- "$@" --agent "$pg_ca"
+  [ -z "$pg_cm" ] || set -- "$@" --model "$pg_cm"
+  [ -z "$pg_ce" ] || set -- "$@" --effort "$pg_ce"
+  [ -z "$pg_cs" ] || set -- "$@" --append-system-prompt "$pg_cs"
   [ -z "$pg_prompt" ] || set -- "$@" "$pg_prompt"
   [ "$pg_mode" != resume ] || set -- "$@" --resume   # no value: Claude's own list chooses
   run_session "$pg_wt" "$(session_name "$pg_taken")" "$@"
