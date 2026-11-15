@@ -928,7 +928,7 @@ cask() {
   run sh "$BIN" --yes brew:selfupdating 2>&1
   [ "$status" -eq 1 ]
   [[ "$output" == *"iterm2-relaunch: brew:selfupdating: updates itself; its Homebrew record only looks stale"* ]]
-  ! grep -q quit "$OSA_LOG"
+  no grep -q quit "$OSA_LOG"
   no grep -q "^fetch" "$BREW_LOG"
   kill -0 "$pid"
 }
@@ -968,7 +968,7 @@ cask() {
   [ "$status" -eq 1 ]
   [[ "$output" == *"iterm2-relaunch: brew:claude-code: not an installed cask"* ]]
   no grep -q '^info' "$BREW_LOG"
-  ! grep -q quit "$OSA_LOG"
+  no grep -q quit "$OSA_LOG"
   kill -0 "$pid"
   run sh "$BIN" items
   [ "${#lines[@]}" -eq 3 ]
@@ -992,7 +992,7 @@ cask() {
   FAKE_FETCH=1 run sh "$BIN" --yes --grace 1 brew:claude-code@latest 2>&1
   [ "$status" -eq 1 ]
   [[ "$output" == *"iterm2-relaunch: brew:claude-code@latest: download failed"* ]]
-  ! grep -q quit "$OSA_LOG"
+  no grep -q quit "$OSA_LOG"
   [ ! -s "$CT_LOG" ]
   grep -q " refused: brew:claude-code@latest: download failed" "$LOG"
   kill -0 "$pid"
@@ -1076,7 +1076,7 @@ PY
   [ "$status" -eq 0 ]
   [[ "$output" == *"brew:claude-code@latest: nothing to do"* ]]
   [[ "$output" == *"nothing to do; iTerm2 left running"* ]]
-  ! grep -q quit "$OSA_LOG"
+  no grep -q quit "$OSA_LOG"
   no grep -q "^fetch" "$BREW_LOG"
   kill -0 "$pid"
 }
@@ -1424,12 +1424,12 @@ PY
   [[ "$output" == *"downloaded 1 cask(s)"* ]]
   grep -qx "brew update" "$SEQ"
   grep -Fq "fetch --cask claude-code@latest|" "$BREW_LOG"
-  ! grep -q quit "$OSA_LOG"
+  no grep -q quit "$OSA_LOG"
   [ -s "$(dirname "$LOG")/prefetched" ]
   : >"$SEQ"
   run sh "$BIN" --yes --grace 1 brew:claude-code@latest
   [ "$status" -eq 0 ]
-  ! grep -qx "brew update" "$SEQ"
+  no grep -qx "brew update" "$SEQ"
   grep -qx "brew fetch" "$SEQ"
   # a stale stamp is ignored
   echo 1 >"$(dirname "$LOG")/prefetched"; : >"$SEQ"
@@ -1437,4 +1437,12 @@ PY
   run sh "$BIN" --yes --grace 1 brew:claude-code@latest
   [ "$status" -eq 0 ]
   grep -qx "brew update" "$SEQ"
+}
+
+@test "prefetch: a failed brew update writes no stamp, so the next relaunch updates" {
+  cask claude-code@latest 2.1.322 2.1.323 true false binary "2.1.322"
+  FAKE_UPDATE=1 run sh "$BIN" prefetch 2>&1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"brew update failed"* ]]
+  [ ! -e "$(dirname "$LOG")/prefetched" ]
 }

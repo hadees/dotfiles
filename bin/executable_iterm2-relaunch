@@ -764,8 +764,8 @@ say() { printf 'iterm2-relaunch: %s\n' "$*"; }
 cmd_prefetch() {
   [ -n "$brew" ] || { say "no Homebrew; nothing to prefetch"; exit 0; }
   prep "updating Homebrew"
-  brew_cmd update || warn "brew update failed; using the cached state"
-  date +%s >"$state/prefetched"
+  # the stamp only after an update that worked: a stale tap must not skip the front's
+  if brew_cmd update; then date +%s >"$state/prefetched"; else warn "brew update failed; using the cached state"; fi
   n=0
   for it in $(cmd_items | awk -F'\t' '$1 ~ /^brew:/ && $2 == "ready" { print $1 }'); do
     prep "downloading ${it#brew:}"
