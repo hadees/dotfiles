@@ -182,7 +182,7 @@ pane of the repository, and `-` and `-` for a pane opened before the file existe
 repository the pane prints one line and leaves a plain shell. `git config
 claude-peer.start auto` (read in the starting directory; the public repo sets it
 nowhere) makes a pane settle `CLAUDE_PEER_SETTLE` seconds (default 2, 0
-disables), start one fresh session, then wait like any other.
+disables), start one fresh session, then wait like any other. A pane iTerm2 restored asks first (`claude-peer-restore.md`).
 
 The wait is a trapped signal, not a poll. The pane blocks in `wait` on a
 background reader of one line from `${CLAUDE_PEER_TTY:-/dev/tty}` (a long
@@ -197,8 +197,7 @@ stopping and the pane falls back to request-only waiting; its claude gets them
 back. TERM and HUP kill the reader and delete the wait file.
 
 **The pool.** A pane's slot is a preference. The pool is the words of `git
-config claude-peer.slots` (default the 24 Greek letters, `alpha` to `omega`, four tabs of five
-and four over); its first five are the bar's names. A configured pool of five or fewer
+config claude-peer.slots` (default the 24 Greek letters, `alpha` to `omega`); its first five are the bar's names. A configured pool of five or fewer
 has no spare names, so a second tab takes a free one from under the first. A pane takes its
 own slot when no Claude runs in it, else the first free name from the pool's
 sixth on, and only then a free one of the first five, so one tab is always

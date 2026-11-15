@@ -116,7 +116,7 @@ to, `claude()` writes an OSC 1337 `SetUserVar=claudePeerEnter=<base64 of
 directory). Nothing is sent without `$ITERM_SESSION_ID`, inside a peer
 (`$CLAUDE_PEER_WORKTREE`), or without the state file `claude-peer default peers`
 writes. `claude-doctor`'s `workgroup:` line shows the key or why there is none.
-The mechanism is in `claude-peer.md`. On a launch that sent the key, the tab
+The mechanism is in `claude-peer.md`. The launch also writes a record of the entry, which a restored pane checks (`claude-peer-restore.md`). On a launch that sent the key, the tab
 is Lead's, so the launch becomes `claude -n <claude-peer name lead> …` (so
 `<repo>-lead`, `--continue` and `--resume` included, which is what keeps the
 name across `claude-tab restore`) unless an argument is `-n`, `--name` or
