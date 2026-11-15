@@ -608,7 +608,7 @@ no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
   check_on
   enter_record 5
   pane alpha
-  ! grep -q "restored" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  ! grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-alpha.out"
   [ "$(sh "$BIN" slots | cut -f2)" = waiting ]
 }
 
@@ -656,13 +656,13 @@ no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
   check_on
   rm "$XDG_STATE_HOME/claude-peer/enter"
   pane alpha
-  ! grep -q "restored" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  ! grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-alpha.out"
   [ "$(sh "$BIN" slots | cut -f2)" = waiting ]
   kill "$LAST_PANE"
   echo peers >"$XDG_STATE_HOME/claude-peer/enter"
   unset ITERM_SESSION_ID
   pane beta
-  ! grep -q "restored" "$BATS_TEST_TMPDIR/pane-beta.out"
+  ! grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-beta.out"
   [ "$(sh "$BIN" slots | cut -f2 | sort -u)" = waiting ]
 }
 
@@ -672,7 +672,7 @@ no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
   echo junk >"$d/junk"
   check_on
   pane alpha
-  ! grep -q "restored" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  ! grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-alpha.out"
   [ "$(ls "$d" | wc -l)" -eq 2 ]
 }
 
