@@ -1,0 +1,11 @@
+icon.png is a modified copy of the iTerm2 application icon.
+
+Source: iTerm2 3.7.7, https://github.com/gnachman/iTerm2
+License: GNU General Public License, version 2 or later (iTerm2's COPYING
+notes that its Apache-2.0 dependencies make it effectively GPL-3.0). The
+icon is distributed under those terms, not under this repository's MIT
+licence. The full text: https://www.gnu.org/licenses/gpl-3.0.txt
+
+Changes (2026-11): redrawn with a restart arrow and a "restarting" bar,
+generated from the original icon with an image model, background cut to
+transparency, scaled to 512 px.
