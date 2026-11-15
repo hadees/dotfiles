@@ -266,6 +266,30 @@ This is a Python-side class, so it is deliberately **not** in the manifest —
 there is no string in the app binary to check it against. It moves with the
 `iterm2` package version, not with the app.
 
+## One session's picture, and which lookups reach a peer
+
+`ScreenshotRequest` (protocol 1.17, `capabilities.py`; the server speaks 1.23)
+takes a session id and returns a PNG of that session alone, drawn off screen
+from its own lines at 2x when the session's view has no window. It holds that
+pane's cells and no Toolbelt, tab bar, neighbour pane or other application. The
+library has it as `iterm2.rpc.async_screenshot(connection, session_id)`
+(`response.screenshot_response`: `status` 0 ok, 1 no such session, 2 malformed,
+3 not drawn; `png`). Call the RPC directly: `iterm2.App` is built from the
+session list. The binary carries the handler (`apiServerScreenshot:handler:`)
+and `screenshotPNGData`, both in the manifest. Measured on 3.7.7: a running
+workgroup peer that was not showing came back as a full-size PNG of its pane
+alone; a peer that has never been shown may have nothing to draw (status 3).
+
+Which lookups reach a workgroup peer that is not swapped in: the API's
+session-id resolution (`anySessionWithGUID:`, which walks peer ports and the
+workgroup registry) does, so `session read`, `session get-var` and the render
+all work on it by id. The session list (`it2 session list`, `tab.sessions`) and
+AppleScript's `sessions of tab` do not. `it2 session get-var` prints a JSON
+string for a string variable (`"\/dev\/ttys010"`, slashes escaped, in quotes)
+and a message (`Variable 'path' not set`) for an unset one. `it2 session read
+--lines N` counts trailing blank rows, so read the screen and take the tail.
+`pane-sight` is built on these (`.claude/rules/pane-sight.md`).
+
 ## Signatures you will reach for
 
 ```python

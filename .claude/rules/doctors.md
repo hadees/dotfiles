@@ -74,3 +74,8 @@ how many keys changed in iTerm2 are kept, or that the store is a folder inside
 a git repository. It is `iterm2-prefs not deployed` when the command is absent.
 The command reads the domain, `ps` and the fragment files and writes nothing, so
 the doctor stays report-only.
+
+`panes:`, directly after `store:`, is `pane-sight status --line`: `ready (<r> reads,
+<s> shots, <x> refused)` or `not ready: <the first missing piece>`, or `pane-sight
+not deployed`. It reads files and `defaults` and asks iTerm2 nothing, so the
+doctor stays report-only.

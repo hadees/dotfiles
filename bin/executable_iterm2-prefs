@@ -28,7 +28,9 @@
 # Why only while iTerm2 is quit: it holds the truth in memory and overwrites
 # the file at quit, and a file that changed under it raises "changed since
 # iTerm2 started". `compose` and `install` therefore write nothing while it
-# runs. `lint` and `compose --print` read and print only, and need no macOS.
+# runs. `compose --auto` with source changes waiting arms a detached waiter that
+# composes once that iTerm2 pid has gone (state and log: compose-at-quit.* beside
+# the record; ITERM2_PREFS_AT_QUIT=0 never arms). `lint` and `compose --print` read and print only, and need no macOS.
 #
 # Reserved, never composed: Workgroups and each profile's Triggers (written by
 # claude-peer and by iTerm2's own onboarding), the keys iTerm2 itself does not
@@ -60,18 +62,19 @@ os() { uname -s 2>/dev/null; }
 # Exit 2 as for usage: the verb cannot be used here at all, nothing was refused.
 need_macos() { [ "$(os)" = Darwin ] || { warn "$1 needs macOS"; exit 2; }; }
 
-# `ps` rather than pgrep, as bin/executable_claude-peer: pgrep cannot see
+# pid of the running iTerm2, or nothing and exit 1. ps, not pgrep: pgrep cannot see
 # processes of the caller's own session under some sandboxes.
-proc_running() {
-  ps -Ao ucomm= 2>/dev/null |
-    awk -v n="$1" '{ sub(/[ \t]+$/, "", $0); if ($0 == n) f = 1 } END { exit !f }'
+iterm_pid() {
+  ps -Ao pid=,ucomm= 2>/dev/null |
+    awk '{ p = $1; $1 = ""; sub(/^[ \t]+/, ""); sub(/[ \t]+$/, "")
+           if ($0 == "iTerm2") { print p; f = 1; exit } } END { exit !f }'
 }
 
 # The stdlib only, and Python 3.9 clean (no match, no `X | Y` annotations):
 # /usr/bin/python3 is all a fresh mac has.
 prefs_py() {
   python3 -I - "$@" <<'PYEOF'
-import datetime, os, plistlib, re, subprocess, sys, tempfile, time
+import datetime, os, plistlib, re, signal, subprocess, sys, tempfile, time
 
 MISSING = type("Missing", (), {"__repr__": lambda self: "MISSING"})()
 
@@ -465,6 +468,74 @@ def usage(text):
     return 2
 
 
+def detach(log, argv):
+    """Run argv in a session of its own, so it outlives iTerm2 and the shell that asked."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.makedirs(os.path.dirname(log), mode=0o700, exist_ok=True)
+    pid = os.fork()
+    if pid:
+        os.waitpid(pid, 0)
+        return
+    try:
+        os.setsid()
+        if os.fork():
+            os._exit(0)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        os.chdir("/")
+        null = os.open(os.devnull, os.O_RDONLY)
+        out = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        os.dup2(null, 0)
+        os.dup2(out, 1)
+        os.dup2(out, 2)
+        os.closerange(3, 256)
+        os.execv(argv[0], argv)
+    finally:
+        os._exit(127)
+
+
+def cmd_detach(args):
+    detach(args[0], args[1:])
+    return 0
+
+
+def cmd_await_exit(args):
+    """Return once process args[0] is gone. By pid: a poll by name cannot tell the iTerm2 that quit
+    from one started a second later."""
+    pid = int(args[0])
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return 0
+        except PermissionError:
+            pass
+        time.sleep(0.2)
+
+
+def arm_at_quit():
+    """Start the waiter that composes once the running iTerm2 has quit. False when it cannot or must not."""
+    pid, me = os.environ.get("ITERM2_PREFS_ITERM_PID", ""), os.environ.get("ITERM2_PREFS_SELF", "")
+    if os.environ.get("ITERM2_PREFS_AT_QUIT") == "0" or not me or not re.fullmatch("[0-9]+", pid):
+        return False
+    base = os.path.join(state_home(), "iterm2", "compose-at-quit")
+    try:
+        with open(base + ".pid") as f:
+            waiter, watched = f.read().split()
+        os.kill(int(waiter), 0)
+        if watched == pid:
+            return True
+    except (OSError, ValueError):
+        pass
+    try:
+        if os.path.exists(base + ".log"):
+            os.replace(base + ".log", base + ".log.prev")
+        detach(base + ".log", ["/bin/sh", me, "_compose-at-quit", pid])
+    except OSError:
+        return False
+    return True
+
+
 def cmd_lint(args):
     public = args[:1] == ["--public"]
     files = args[1:] if public else args
@@ -521,10 +592,14 @@ def cmd_compose(args):
         waiting = len(three_way(new, rec, units_of(domain_prefs()))[0])
         if not auto:
             sys.stderr.write("iterm2-prefs: iTerm2 is running and writes its preferences at quit; "
-                             "quit it first (%d source changes wait)\n" % waiting)
+                             "quit it first, or run iterm2-relaunch prefs (%d source changes wait)\n" % waiting)
             return 1
-        if waiting:
-            print("iterm2-prefs: %d source changes wait for iTerm2 to quit (then: iterm2-prefs compose)" % waiting)
+        if waiting and arm_at_quit():
+            print("iterm2-prefs: %d source changes wait for iTerm2 to quit and are composed when it does "
+                  "(now: iterm2-relaunch prefs)" % waiting)
+        elif waiting:
+            print("iterm2-prefs: %d source changes wait for iTerm2 to quit (then: iterm2-prefs compose; "
+                  "now: iterm2-relaunch prefs)" % waiting)
         return 0
     fresh = not os.path.exists(live_path())
     prefs = load_or_empty(live_path())
@@ -603,7 +678,7 @@ def cmd_install(args):
     dry, no_seed = "--dry-run" in args, "--no-seed" in args
     pre = "would: " if dry else ""
     if running() and not dry:
-        raise Fail("quit iTerm2 first: it rewrites its preferences at quit")
+        raise Fail("quit iTerm2 first, or run iterm2-relaunch prefs-install: it rewrites its preferences at quit")
     fragments, new, owner, order, ignored = sourced()
     if not fragments:
         raise Fail("no fragments in %s; run dotfiles first" % frag_dir())
@@ -773,7 +848,8 @@ def cmd_capture(args):
 def main():
     verb, args = sys.argv[1], sys.argv[2:]
     try:
-        return {"lint": cmd_lint, "compose": cmd_compose, "status": cmd_status, "capture": cmd_capture, "install": cmd_install}[verb](args)
+        return {"lint": cmd_lint, "compose": cmd_compose, "status": cmd_status, "capture": cmd_capture, "install": cmd_install,
+                "_detach": cmd_detach, "await-exit": cmd_await_exit}[verb](args)
     except Fail as e:
         sys.stderr.write("iterm2-prefs: %s\n" % e)
         return 1
@@ -783,11 +859,58 @@ sys.exit(main())
 PYEOF
 }
 
-# The Python reads whether iTerm2 runs from this, so ps is asked once and in shell.
+# The Python reads whether iTerm2 runs, its pid and this script's path from here, so ps
+# is asked once and in shell.
 go() {
-  if proc_running iTerm2; then ITERM2_PREFS_RUNNING=1; else ITERM2_PREFS_RUNNING=0; fi
-  export ITERM2_PREFS_RUNNING
+  if ITERM2_PREFS_ITERM_PID=$(iterm_pid); then ITERM2_PREFS_RUNNING=1; else ITERM2_PREFS_ITERM_PID= ITERM2_PREFS_RUNNING=0; fi
+  case $0 in
+    /*) ITERM2_PREFS_SELF=$0;;
+    *) ITERM2_PREFS_SELF=$PWD/$0;;
+  esac
+  export ITERM2_PREFS_ITERM_PID ITERM2_PREFS_RUNNING ITERM2_PREFS_SELF
   prefs_py "$@"
+}
+
+# State of the compose-at-quit waiter, beside the record: sets _s to the path stem.
+at_quit_state() { _s=${XDG_STATE_HOME:-$HOME/.local/state}/iterm2/compose-at-quit; }
+at_quit_log() { at_quit_state; printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$_s.log"; }
+
+# The waiter `compose --auto` arms: wait for that iTerm2 pid to go, then compose once.
+# It never calls open and sends no Apple event.
+compose_at_quit() {
+  pid=$1
+  at_quit_state
+  mkdir -p "${_s%/*}"
+  printf '%s %s\n' "$$" "$pid" >"$_s.pid"
+  while :; do
+    at_quit_log "armed: iTerm2 pid $pid"
+    prefs_py await-exit "$pid"
+    go compose >>"$_s.log" 2>&1; rc=$?
+    at_quit_log "compose: exit $rc"
+    new=$(iterm_pid)
+    if [ "$rc" -eq 0 ]; then
+      [ -z "$new" ] || at_quit_log "raced: iTerm2 started while its preferences were composed; iterm2-prefs status shows what is kept"
+      break
+    fi
+    [ -n "$new" ] || break
+    pid=$new
+    printf '%s %s\n' "$$" "$pid" >"$_s.pid"
+  done
+  read -r _w _ 2>/dev/null <"$_s.pid"
+  [ "${_w:-}" != "$$" ] || rm -f "$_s.pid"
+  at_quit_log "done: compose exit $rc"
+  return "$rc"
+}
+
+# The two long-form status lines about the waiter.
+at_quit_status() {
+  at_quit_state
+  if read -r _w _i 2>/dev/null <"$_s.pid" && kill -0 "$_w" 2>/dev/null; then
+    echo "at-quit: armed, waits on iTerm2 pid $_i"
+  else
+    echo "at-quit: not armed"
+  fi
+  [ ! -s "$_s.log" ] || printf 'at-quit: last %s\n' "$(tail -n 1 "$_s.log")"
 }
 
 # The chezmoi source path of a deployed fragment: the default config first, then
@@ -812,7 +935,15 @@ case ${1:-} in
       *) need_macos compose;;
     esac
     shift; go compose "$@";;
-  status) need_macos status; shift; go status "$@";;
+  status)
+    need_macos status; shift
+    go status "$@"; rc=$?
+    [ "$rc" -ne 0 ] || [ $# -gt 0 ] || at_quit_status
+    exit "$rc";;
+  _compose-at-quit)
+    need_macos _compose-at-quit
+    case ${2:-} in ''|*[!0-9]*) warn "usage: _compose-at-quit <iTerm2 pid>"; exit 2;; esac
+    compose_at_quit "$2"; exit $?;;
   capture)
     shift
     # --into <fragment> becomes --file <chezmoi source path>; --from decides whether this needs macOS

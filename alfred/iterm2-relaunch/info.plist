@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>bundleid</key>
+	<string>local.iterm2-relaunch.alfred</string>
+	<key>category</key>
+	<string>Tools</string>
+	<key>connections</key>
+	<dict>
+		<key>026481AE-71FA-4477-BA0F-A89A822C263C</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>1F544C68-EFEF-4CBA-BD08-4148D0BC6A36</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
+	</dict>
+	<key>createdby</key>
+	<string></string>
+	<key>description</key>
+	<string>Quit iTerm2, apply preferences or upgrades, reopen it and resume the Claude tabs</string>
+	<key>disabled</key>
+	<false/>
+	<key>name</key>
+	<string>iTerm2 Relaunch</string>
+	<key>objects</key>
+	<array>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>alfredfiltersresults</key>
+				<true/>
+				<key>alfredfiltersresultsmatchmode</key>
+				<integer>0</integer>
+				<key>argumenttreatemptyqueryasnil</key>
+				<false/>
+				<key>argumenttrimmode</key>
+				<integer>0</integer>
+				<key>argumenttype</key>
+				<integer>1</integer>
+				<key>escaping</key>
+				<integer>100</integer>
+				<key>keyword</key>
+				<string>irelaunch</string>
+				<key>queuedelaycustom</key>
+				<integer>3</integer>
+				<key>queuedelayimmediatelyinitially</key>
+				<true/>
+				<key>queuedelaymode</key>
+				<integer>0</integer>
+				<key>queuemode</key>
+				<integer>1</integer>
+				<key>runningsubtext</key>
+				<string>Reading what is ready…</string>
+				<key>script</key>
+				<string>"$HOME/bin/iterm2-relaunch" alfred
+</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>subtext</key>
+				<string>Preferences and upgrades that need it down</string>
+				<key>title</key>
+				<string>Relaunch iTerm2</string>
+				<key>type</key>
+				<integer>0</integer>
+				<key>withspace</key>
+				<true/>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.input.scriptfilter</string>
+			<key>uid</key>
+			<string>026481AE-71FA-4477-BA0F-A89A822C263C</string>
+			<key>version</key>
+			<integer>3</integer>
+		</dict>
+		<dict>
+			<key>config</key>
+			<dict>
+				<key>concurrently</key>
+				<false/>
+				<key>escaping</key>
+				<integer>100</integer>
+				<key>script</key>
+				<string>"$HOME/bin/iterm2-relaunch" --yes "$1"
+</string>
+				<key>scriptargtype</key>
+				<integer>1</integer>
+				<key>scriptfile</key>
+				<string></string>
+				<key>type</key>
+				<integer>0</integer>
+			</dict>
+			<key>type</key>
+			<string>alfred.workflow.action.script</string>
+			<key>uid</key>
+			<string>1F544C68-EFEF-4CBA-BD08-4148D0BC6A36</string>
+			<key>version</key>
+			<integer>2</integer>
+		</dict>
+	</array>
+	<key>readme</key>
+	<string>Lists the work that needs iTerm2 down (preferences waiting, a
+claude-code upgrade, the Claude Peers workgroups) and runs it.
+
+Return on a row runs ~/bin/iterm2-relaunch --yes with that item: it
+ends every session in iTerm2, does the work, reopens iTerm2 and resumes
+the Claude tabs. A heads-up with a "Not now" button comes first.
+
+All logic lives in ~/bin/iterm2-relaunch - this workflow is two calls
+into it, so there is nothing here to keep in sync. Alfred runs scripts
+with /bin/zsh --no-rcs and a fixed PATH that excludes ~/bin, which is why
+both scripts use an absolute $HOME/bin/iterm2-relaunch.
+
+  irelaunch   list what is ready, hit return to run it
+</string>
+	<key>uidata</key>
+	<dict>
+		<key>026481AE-71FA-4477-BA0F-A89A822C263C</key>
+		<dict>
+			<key>xpos</key>
+			<integer>40</integer>
+			<key>ypos</key>
+			<integer>40</integer>
+		</dict>
+		<key>1F544C68-EFEF-4CBA-BD08-4148D0BC6A36</key>
+		<dict>
+			<key>xpos</key>
+			<integer>250</integer>
+			<key>ypos</key>
+			<integer>40</integer>
+		</dict>
+	</dict>
+	<key>variables</key>
+	<dict/>
+	<key>variablesdontexport</key>
+	<array/>
+	<key>version</key>
+	<string>1.0</string>
+	<key>webaddress</key>
+	<string></string>
+</dict>
+</plist>

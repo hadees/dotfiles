@@ -453,11 +453,72 @@ sid-o omega /dev/ttys009 other -" ]
   [ ! -e "$f.prev" ]
 }
 
+# stub_slots : a claude-peer that answers `slots` with $FAKE_SLOTS and `peers` with
+# nothing.
+stub_slots() {
+  cat > "$BATS_TEST_TMPDIR/claude-peer" <<'STUB'
+#!/bin/sh
+[ "${1-}" = slots ] && printf '%s\n' "${FAKE_SLOTS:-}"
+exit 0
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/claude-peer"
+  export CLAUDE_TAB_PEER="$BATS_TEST_TMPDIR/claude-peer"
+}
+
+@test "save: the ninth column is the session's status, - when the record has none" {
+  a=$(make_repo alpha); b=$(make_repo beta)
+  live_pid; make_session "$HOME/.claude" "$LIVE" "$a" na busy sid-a; tty_of "$LIVE" ttys001
+  live_pid; pb=$LIVE; tty_of "$pb" ttys002
+  printf '{"pid":%s,"sessionId":"sid-b","cwd":"%s","kind":"interactive","name":"nb"}\n' "$pb" "$b" > "$HOME/.claude/sessions/$pb.json"
+  export FAKE_TABS=$'7\t/dev/ttys001\ta\n7\t/dev/ttys002\tb'
+  f="$BATS_TEST_TMPDIR/saved.tsv"
+  run sh "$CT" save "$f"
+  [ "$status" -eq 0 ]
+  [ "$(tail -n +2 "$f" | cut -f2,9 | tr '\t' ' ')" = "sid-a busy
+sid-b -" ]
+  [ "$(tail -n +2 "$f" | awk -F'\t' '{ print NF }' | sort -u)" = 9 ]
+}
+
+@test "save: running slot peers of a saved tab are noted in .peers; waiting ones, other leaders' and a missing claude-peer are not" {
+  a=$(make_repo alpha); b=$(make_repo beta)
+  stub_slots
+  export FAKE_SLOTS="Alpha	running	$a/.claude/worktrees/alpha	11	$a	x
+Beta	waiting	$a/.claude/worktrees/beta	-	$a	-
+Gamma	running	$b/.claude/worktrees/gamma	12	$b	y
+Delta	running	/elsewhere/wt	13	/elsewhere/leader	z"
+  live_pid; make_session "$HOME/.claude" "$LIVE" "$a" na idle sid-a; tty_of "$LIVE" ttys001
+  f="$BATS_TEST_TMPDIR/saved.tsv"
+  run --separate-stderr sh "$CT" save "$f"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$f.peers")" = "$(printf '%s\tAlpha' "$a")" ]
+  [[ "$stderr" == "claude-tab: saved 1 sessions"*$'\n'"claude-tab: noted 1 running peers in $f.peers" ]]
+  rm -f "$f.peers"
+  CLAUDE_TAB_PEER="$BATS_TEST_TMPDIR/nowhere" run sh "$CT" save "$f"
+  [ "$status" -eq 0 ]
+  [ ! -e "$f.peers" ]
+}
+
+@test "save: no running peer leaves no .peers file, and an old one rotates to .prev" {
+  a=$(make_repo alpha)
+  stub_slots
+  export FAKE_SLOTS="Alpha	waiting	/wt	-	$a	-"
+  live_pid; make_session "$HOME/.claude" "$LIVE" "$a" na idle sid-a; tty_of "$LIVE" ttys001
+  f="$BATS_TEST_TMPDIR/saved.tsv"
+  printf 'old\tpeer\n' > "$f.peers"
+  run --separate-stderr sh "$CT" save "$f"
+  [ "$status" -eq 0 ]
+  [ ! -e "$f.peers" ]
+  [ "$(cat "$f.peers.prev")" = "$(printf 'old\tpeer')" ]
+  [[ "$stderr" != *noted* ]]
+}
+
 # --- restore -----------------------------------------------------------------
 
-# saved_row <profile dir> <session id> <cwd> <label> : one row of $SAVED.
+# saved_row <profile dir> <session id> <cwd> <label> [status] : one row of $SAVED
+# (eight columns, nine with a status, as old and new files are).
 saved_row() {
-  printf '%s\t%s\t%s\t%s\tname\t/dev/ttys099\titerm2\t7\n' "$1" "$2" "$3" "$4" >> "$SAVED"
+  printf '%s\t%s\t%s\t%s\tname\t/dev/ttys099\titerm2\t7' "$1" "$2" "$3" "$4" >> "$SAVED"
+  if [ -n "${5-}" ]; then printf '\t%s\n' "$5" >> "$SAVED"; else printf '\n' >> "$SAVED"; fi
 }
 
 # idle_tty <tty> [extra "stat ucomm" row] : a tty sitting at a shell prompt.
@@ -593,6 +654,191 @@ fill gamma" ]
   [[ "$stderr" == *"claude-tab: osascript could not drive iTerm2 — if macOS asked for Automation permission and was denied, grant it in System Settings > Privacy & Security > Automation" ]]
   run sh "$CT" restore --bogus
   [ "$status" -eq 2 ]
+}
+
+# stub_start : a claude-peer whose `start` logs "cwd|arguments" to $PEER_LOG and
+# exits with the next code of $PEER_RCS (one per line), else $FAKE_PEER_RC.
+stub_start() {
+  export PEER_LOG="$BATS_TEST_TMPDIR/peer-log" PEER_RCS="$BATS_TEST_TMPDIR/peer-rcs"
+  : > "$PEER_LOG"; : > "$PEER_RCS"
+  cat > "$BATS_TEST_TMPDIR/claude-peer" <<'STUB'
+#!/bin/sh
+printf '%s|%s\n' "$PWD" "$*" >> "$PEER_LOG"
+if [ -s "$PEER_RCS" ]; then
+  rc=$(head -1 "$PEER_RCS"); tail -n +2 "$PEER_RCS" > "$PEER_RCS.n"; mv "$PEER_RCS.n" "$PEER_RCS"; exit "$rc"
+fi
+exit "${FAKE_PEER_RC:-0}"
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/claude-peer"
+  export CLAUDE_TAB_PEER="$BATS_TEST_TMPDIR/claude-peer"
+}
+
+@test "restore --prompt: a session that was not idle resumes with the prompt as one quoted argument; an idle one resumes without" {
+  restore_world
+  a=$(make_repo alpha); b=$(make_repo beta); c=$(make_repo gamma)
+  saved_row "$HOME/.claude-personal" sid-a "$a" alpha idle
+  saved_row "$HOME/.claude-personal" sid-b "$b" beta busy
+  saved_row "$HOME/.claude-personal" sid-c "$c" gamma -
+  run sh "$CT" restore --dry-run --prompt "carry on, it's fine" "$SAVED"
+  [ "$status" -eq 0 ]
+  [ "$(col 4 | sed -n 1p)" = "cd -- '$a' && CLAUDE_PROFILE='$HOME/.claude-personal' claude --resume sid-a" ]
+  [ "$(col 4 | sed -n 2p)" = "cd -- '$b' && CLAUDE_PROFILE='$HOME/.claude-personal' claude --resume sid-b 'carry on, it'\\''s fine'" ]
+  [[ "$(col 4 | sed -n 3p)" == *"claude --resume sid-c 'carry on, it'\\''s fine'" ]]
+}
+
+@test "restore --prompt-for: the named session gets its own text, idle or not" {
+  restore_world
+  a=$(make_repo alpha); b=$(make_repo beta)
+  saved_row "$HOME/.claude-personal" sid-a "$a" alpha idle
+  saved_row "$HOME/.claude-personal" sid-b "$b" beta busy
+  run sh "$CT" restore --dry-run --prompt-for sid-a "you started this" "$SAVED"
+  [ "$status" -eq 0 ]
+  [[ "$(col 4 | sed -n 1p)" == *"claude --resume sid-a 'you started this'" ]]
+  [[ "$(col 4 | sed -n 2p)" == *"claude --resume sid-b" ]]
+  run sh "$CT" restore --dry-run --prompt "everyone" --prompt-for sid-b "you started this" "$SAVED"
+  [ "$status" -eq 0 ]
+  [[ "$(col 4 | sed -n 1p)" == *"claude --resume sid-a" ]]
+  [[ "$(col 4 | sed -n 2p)" == *"claude --resume sid-b 'you started this'" ]]
+}
+
+@test "restore: a file without the ninth column restores as before" {
+  restore_world
+  a=$(make_repo alpha)
+  saved_row "$HOME/.claude-personal" sid-a "$a" alpha
+  [ "$(awk -F'\t' 'END { print NF }' "$SAVED")" -eq 8 ]
+  run sh "$CT" restore --dry-run "$SAVED"
+  [ "$status" -eq 0 ]
+  [ "$(col 1,3 | tr '\t' ' ')" = "fill alpha" ]
+  [ "$(col 4)" = "cd -- '$a' && CLAUDE_PROFILE='$HOME/.claude-personal' claude --resume sid-a" ]
+}
+
+@test "restore --prompt: an empty prompt or one holding a newline or tab is a usage error" {
+  restore_world
+  a=$(make_repo alpha); saved_row "$HOME/.claude-personal" sid-a "$a" alpha busy
+  run sh "$CT" restore --dry-run --prompt '' "$SAVED"
+  [ "$status" -eq 2 ]
+  run sh "$CT" restore --dry-run --prompt $'one\ntwo' "$SAVED"
+  [ "$status" -eq 2 ]
+  run sh "$CT" restore --dry-run --prompt $'one\ttwo' "$SAVED"
+  [ "$status" -eq 2 ]
+  run sh "$CT" restore --dry-run --prompt-for sid-a $'one\ntwo' "$SAVED"
+  [ "$status" -eq 2 ]
+  run sh "$CT" restore --dry-run --prompt-for sid-a '' "$SAVED"
+  [ "$status" -eq 2 ]
+  run sh "$CT" restore --dry-run --prompt
+  [ "$status" -eq 2 ]
+  run sh "$CT" restore --dry-run --peer-wait x "$SAVED"
+  [ "$status" -eq 2 ]
+}
+
+@test "restore: a prompt holding an apostrophe and a double quote reaches osascript intact" {
+  restore_world
+  a=$(make_repo alpha); saved_row "$HOME/.claude-personal" sid-1 "$a" alpha busy
+  run sh "$CT" restore --prompt "don't \"quote\"" "$SAVED"
+  [ "$status" -eq 0 ]
+  grep -qF "claude --resume sid-1 'don'\\\\''t \\\"quote\\\"'\"" "$OSA_ALL"
+}
+
+@test "restore: each noted peer is started with --continue and the prompt, from the leader's directory" {
+  restore_world; stub_start
+  a=$(make_repo alpha); b=$(make_repo beta)
+  printf '%s\tAlpha\n%s\tBeta\n' "$a" "$b" > "$SAVED.peers"
+  run --separate-stderr sh "$CT" restore --prompt "pick up" "$SAVED"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$PEER_LOG")" = "$a|start Alpha --continue -- pick up
+$b|start Beta --continue -- pick up" ]
+  [[ "$stderr" == *"claude-tab: peers: 2 started, 0 already running, 0 not started" ]]
+  : > "$PEER_LOG"
+  run sh "$CT" restore "$SAVED"
+  [ "$(head -1 "$PEER_LOG")" = "$a|start Alpha --continue" ]
+}
+
+@test "restore: a pane that is not waiting yet is tried again, then counted as not started" {
+  restore_world; stub_start
+  a=$(make_repo alpha)
+  printf '%s\tAlpha\n' "$a" > "$SAVED.peers"
+  printf '4\n4\n0\n' > "$PEER_RCS"
+  run --separate-stderr sh "$CT" restore "$SAVED"
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$PEER_LOG" | tr -d ' ')" -eq 3 ]
+  [ "$(grep -cx 2 "$SLEEP_LOG")" -eq 2 ]
+  [[ "$stderr" == *"peers: 1 started, 0 already running, 0 not started" ]]
+  : > "$PEER_LOG"
+  FAKE_PEER_RC=4 run --separate-stderr sh "$CT" restore --peer-wait 4 "$SAVED"
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$PEER_LOG" | tr -d ' ')" -eq 3 ]
+  [[ "$stderr" == *"peers: 0 started, 0 already running, 1 not started" ]]
+  FAKE_PEER_RC=1 run --separate-stderr sh "$CT" restore "$SAVED"
+  [[ "$stderr" == *"peers: 0 started, 0 already running, 1 not started" ]]
+}
+
+@test "restore --no-peers and --dry-run start no peer; --dry-run lists them" {
+  restore_world; stub_start
+  a=$(make_repo alpha)
+  printf '%s\tAlpha\n' "$a" > "$SAVED.peers"
+  run --separate-stderr sh "$CT" restore --no-peers "$SAVED"
+  [ "$status" -eq 0 ]
+  [ ! -s "$PEER_LOG" ]
+  [[ "$stderr" != *peers:* ]]
+  run sh "$CT" restore --dry-run "$SAVED"
+  [ "$status" -eq 0 ]
+  [ ! -s "$PEER_LOG" ]
+  [ "$output" = "$(printf 'peer\t-\tAlpha\t%s' "$a")" ]
+  run sh "$CT" restore --dry-run --no-peers "$SAVED"
+  [ -z "$output" ]
+}
+
+@test "restore: a session that is still alive is not resumed, by id or by directory, and gets no prompt" {
+  restore_world; stub_start
+  a=$(make_repo alpha); b=$(make_repo beta)
+  live_pid; make_session "$HOME/.claude-personal" "$LIVE" "$a" n busy sid-a; tty_of "$LIVE" ttys020
+  live_pid; make_session "$HOME/.claude-personal" "$LIVE" "$b" n busy other-id; tty_of "$LIVE" ttys021
+  saved_row "$HOME/.claude-personal" sid-a "$a" alpha busy
+  saved_row "$HOME/.claude-personal" sid-b "$b" beta busy
+  run --separate-stderr sh "$CT" restore --prompt "carry on" "$SAVED"
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "claude-tab: restored 0 into empty tabs, 0 in new tabs, 2 skipped; 1 empty tabs in other windows left alone" ]
+  ! grep -q 'write text' "$OSA_ALL" || { echo "unexpected: write text"; false; }
+  ! grep -q 'create tab' "$OSA_ALL" || { echo "unexpected: create tab"; false; }
+}
+
+@test "restore: a session live in a profile no pin or variable names is still not resumed, because the saved file names its directory" {
+  restore_world
+  a=$(make_repo alpha)
+  mkdir -p "$HOME/.claude-unpinned"
+  live_pid; make_session "$HOME/.claude-unpinned" "$LIVE" "$a" n busy sid-a
+  saved_row "$HOME/.claude-unpinned" sid-a "$a" alpha busy
+  run sh "$CT" restore --dry-run "$SAVED"
+  [ "$status" -eq 0 ]
+  [ "$(col 1,3 | tr '\t' ' ')" = "skip:live alpha" ]
+}
+
+@test "restore --prompt-for: a live session is told in its own tab, in whichever window, and nothing is resumed" {
+  restore_world
+  a=$(make_repo alpha); b=$(make_repo beta)
+  live_pid; make_session "$HOME/.claude-personal" "$LIVE" "$a" n busy sid-a; tty_of "$LIVE" ttys020
+  live_pid; make_session "$HOME/.claude-personal" "$LIVE" "$b" n busy other-id; tty_of "$LIVE" ttys021
+  saved_row "$HOME/.claude-personal" sid-a "$a" alpha busy
+  saved_row "$HOME/.claude-personal" sid-b "$b" beta busy
+  run --separate-stderr sh "$CT" restore --prompt-for sid-a "the run is over" "$SAVED"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'write text' "$OSA_ALL")" -eq 1 ]
+  grep -qF 'write text "the run is over"' "$OSA_ALL"
+  grep -qF 'is "/dev/ttys020"' "$OSA_ALL"
+  ! grep -q 'whose id is' "$OSA_ALL" || { echo "unexpected: whose id is"; false; }
+  ! grep -q 'create tab' "$OSA_ALL" || { echo "unexpected: create tab"; false; }
+  [[ "$stderr" == *"claude-tab: told the live session alpha in its tab"* ]]
+  [[ "$stderr" == *"2 skipped"* ]]
+}
+
+@test "restore: a peer whose slot is already running is counted as already running and not started again" {
+  restore_world; stub_start
+  a=$(make_repo alpha)
+  printf '%s\tAlpha\n' "$a" > "$SAVED.peers"
+  FAKE_PEER_RC=3 run --separate-stderr sh "$CT" restore "$SAVED"
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$PEER_LOG" | tr -d ' ')" -eq 1 ]
+  [[ "$stderr" == *"peers: 0 started, 1 already running, 0 not started" ]]
 }
 
 @test "AppleScript separators are a real tab character, never the tab keyword" {

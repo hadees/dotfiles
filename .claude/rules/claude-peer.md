@@ -36,15 +36,15 @@ iTerm2 verbs refuse off macOS.
 The definitions are **two more** Workgroups, never extra peers on the builtin:
 peers spawn at entry and the builtin is entered on every `claude` job.
 `Claude Peers` (`claudePeer.workgroup`) is Lead, the root, and the peers Alpha,
-Beta and Gamma, whose commands are `claude-peer run --as <slot> --wait`.
+Beta, Gamma, Delta and Epsilon, whose commands are `claude-peer run --as <slot> --wait`.
 `Claude Peers + Hermes` (`claudePeer.h`, session ids under `claudePeer.h.`) is
-the same four plus a Hermes peer running `claude-peer hermes --wait`. There are
+the same six plus a Hermes peer running `claude-peer hermes --wait`. There are
 two because a pane cannot remove itself: a member whose program exits stays as
 an ended pane with a restart offer, and closing a member exits the whole group,
 so a repo where no Hermes profile routes must be given the definition without
 the pane, chosen before entry. There is no Diff peer, and nothing is copied
 from `builtin.claudeCode`; the builtin is never edited. In code `build_base`
-returns the four sessions for an id prefix and `with_hermes` the twin of a
+returns the six sessions for an id prefix and `with_hermes` the twin of a
 definition. A machine with private overlays gets two more, `Claude Peers +
 Overlays` (`claudePeer.v.overlays`) and `Claude Peers + Hermes + Overlays`
 (`claudePeer.v.overlays.h`), four in all: `build_overlays` returns them from the
@@ -68,6 +68,9 @@ compare the installed definition's sessions (identifier, name, command) with
 what this version builds and say `installed, out of date (...); this version
 defines N (...)` when they differ (the script changed since `install` last
 ran), or `not installed`.
+
+`iterm2-relaunch claude-peer` runs `install` with iTerm2 quit and starts it
+again (`iterm2-relaunch.md`); the keys it builds are reserved in `iterm2-prefs.md`.
 
 **How a tab gets its workgroup.** The `claude` job trigger names one workgroup
 per iTerm2 profile, and an iTerm2 profile says nothing about the repo, so the
@@ -111,7 +114,7 @@ ever asked to type one. A trigger it did not write is never touched. The cost
 of disabling the job trigger: a `claude` not started through the wrapper
 (`command claude`, an editor terminal) enters no workgroup, and `claude
 --version` no longer does either. Because a slot pane waits, entering costs
-three blocked `sh` processes per tab and no Claude, row, registry record or
+five blocked `sh` processes per tab and no Claude, row, registry record or
 worktree until a peer is started; where Hermes routes, one idle shell more.
 `status` prints `default:` as `peers (<n> profiles, <k> workgroups by
 variable)`, `builtin` or `mixed`, and a second line when the enter file and the
@@ -125,7 +128,7 @@ trigger is `leaderOnly`, so the leader's `claude` ending tears the group down
 and terminates the peers that were started (a waiting pane has nothing to lose); worktrees and transcripts survive, `claude-peer run
 <branch>` or `run --as <slot>` then `claude --continue` resumes. The Session Status tool lists
 buried peers, one row each, and a click swaps the peer in; keep *Merge
-workgroup statuses* **off** (on, four Claudes are one row). Rows read
+workgroup statuses* **off** (on, every Claude of the tab is one row). Rows read
 `<repo> ▸ Lead` for the leader once a peer is running and `<repo> · <Label>`
 for peers, both from `tabname` (see the cc-status shim paragraph on roles).
 
@@ -169,11 +172,17 @@ Ctrl-C) removes its wait file and leaves a plain shell, anything else asks
 again; when the session ends for any reason the claim goes
 and the pane waits again, so a pane never ends. A waiting pane owns
 `<git common dir>/claude-peer.wait/<slot>.<pid>` (line 1 the leader's
-directory); the next pane to register deletes the files of dead pids. Outside a
+directory); the next pane to register deletes the files of dead pids. Right after
+it, a pane writes `<slot>.<pid>.term`, a sidecar of that file: line 1 is
+`ITERM_SESSION_ID` with its leading `w<n>t<n>p<n>:` removed, line 2 `IT2_SUITE`, each `-` when
+unset or empty. It stays while a session runs and goes with the pane, and `waiters`
+skips it. `claude-peer panes [<dir>]` prints
+`slot<TAB>running|waiting<TAB>pid<TAB>leader<TAB>worktree<TAB>session id<TAB>suite` per live
+pane of the repository, and `-` and `-` for a pane opened before the file existed. Outside a
 repository the pane prints one line and leaves a plain shell. `git config
 claude-peer.start auto` (read in the starting directory; the public repo sets it
 nowhere) makes a pane settle `CLAUDE_PEER_SETTLE` seconds (default 2, 0
-disables), start one fresh session, then wait like any other.
+disables), start one fresh session, then wait like any other. A pane iTerm2 restored asks first (`claude-peer-restore.md`).
 
 The wait is a trapped signal, not a poll. The pane blocks in `wait` on a
 background reader of one line from `${CLAUDE_PEER_TTY:-/dev/tty}` (a long
@@ -188,12 +197,12 @@ stopping and the pane falls back to request-only waiting; its claude gets them
 back. TERM and HUP kill the reader and delete the wait file.
 
 **The pool.** A pane's slot is a preference. The pool is the words of `git
-config claude-peer.slots` (default `alpha beta gamma delta epsilon zeta eta theta
-iota kappa lambda mu`); its first three are the bar's names. A pane takes its
+config claude-peer.slots` (default the 24 Greek letters, `alpha` to `omega`); its first five are the bar's names. A configured pool of five or fewer
+has no spare names, so a second tab takes a free one from under the first. A pane takes its
 own slot when no Claude runs in it, else the first free name from the pool's
-fourth on, and only then a free one of the first three, so one tab is always
-Alpha, Beta, Gamma under their labels and a second tab gets Delta, Epsilon,
-Zeta, never a name from under the first. It prints the name it took, and `(this
+sixth on, and only then a free one of the first five, so one tab is always
+Alpha to Epsilon under their labels and a second tab gets Zeta, Eta, Theta,
+Iota, Kappa, never a name from under the first. It prints the name it took, and `(this
 pane's Alpha is in use by the peers of <leader>)` when that differs. With every
 name taken it prints `all <n> slots are in use in <repo>` and `Return tries
 again`, and waits. `next` is not a slot name.
@@ -376,24 +385,8 @@ line) or the picker opens from it (Return), `pane_unquiet` moves up over the blo
 line and the typed line and erases down (`ESC[11A`, `ESC[J` beside; 13 under), so one sleeper is
 ever on screen; a session started from quiet (`c`, a context name, Return with the picker off)
 leaves it above the session. A pane resized between going quiet and the next key miscounts once.
-**It moves inside fzf, and wakes.** No animator process: before each fzf launch (sleeper
-showing, `git config claude-peer.art-seconds` over 0; default 20, read when the pane starts)
-the pane writes one complete header per pose, `$pn_me.frame.0`…`.3` (z's near, near-mid, all
-with the pom-pom swayed, none swayed) and `.still` (A1's header), exports
-`CLAUDE_PEER_FRAMES` and `CLAUDE_PEER_ART_SECONDS`, and adds `--with-shell='sh -c'`,
-`--bind='change,focus:rebind(every(1))'` and, last, `--bind='every(1):bg-transform:<tick>'`
-(`PANE_TICK`): each second one `sh` and one `cat` pick the pose from `FZF_IDLE_TIME_MS`, and
-once art-seconds pass without a key the header becomes `.still` and the timer unbinds, so an
-idle picker forks nothing; a key or a cursor move binds it again. The once-a-second poll this
-file rejects for the wait is bounded here by that limit. `pane_cleanup` and `pane_reap` take
-the frame files with the wait file. Waking: `PG_WAKE` is set by `pane_fzf` around a pick that
-starts a session and by the request path when the request closed an open fzf; `pane_go`
-reads and clears it and, with the sleeper showing, calls `art_wake` once the slot is taken
-(a refused slot draws nothing): `wake-1` (cap lifted, no z's) where fzf erased itself, 0.25 s,
-up over it (`ESC[9A`, 11 under) and `wake-2` (eyes open) on top, 0.25 s, then the header line
-as before. The list and the quiet state never move and never wake. A context that asks a
-question wakes under its answer. The screen tests hold the figure still from `setup`
-(`art-seconds 0`) and set 3 where they test the movement.
+**It moves, wakes, and moves while looked at.** The pose frames, the `art-seconds` limit,
+waking, and `claude-peer look` with its trigger and lock are in `claude-peer-look.md`.
 `claude-peer art [--slot] [--frame] [--z all|near|near-mid|none] [--truecolor|--256]` prints a
 frame; `art --screen [--slot]` prints the quiet screen as a pane would pad it, for the terminal
 or `CLAUDE_PEER_SIZE`: the operator's preview and the screen tests' reference. The figure is
@@ -441,7 +434,7 @@ main checkout and then calls `pane` with slot `overlay`, so everything a slot pa
 reused: worktree `<overlay>/.claude/worktrees/overlay`, detached at `origin/HEAD` when new and
 reused as left, the `**/.claude/worktrees/` line in that repository's `.git/info/exclude`, the
 claim, the pool (a second tab of the public source finds `overlay` in use and takes the pool
-from its fourth name on, as Alpha does), Return/`c`/`q`, and `claude` through an interactive
+from its sixth name on, as Alpha does), Return/`c`/`q`, and `claude` through an interactive
 shell so the `claude()` wrapper resolves the profile from the overlay's own origin and pin,
 which are read and never written. It changes directory, and does not call `run`, because `run`
 takes the leader to be the directory it stands in: the claim must name the public source as
@@ -456,9 +449,11 @@ entered, prints one line and leaves a plain shell, never iTerm2's restart banner
 The two definitions are separate from the others because peers spawn at entry: panes added to
 `Claude Peers` would appear in every repository's tab. The bar is the root plus the peers in
 session order and ⌥⇧⌘1…8 pick by position, so the Hermes twin of the overlay group is built from
-`claudePeer.h` plus the overlays, not by `with_hermes` of the first: Lead, Alpha, Beta, Gamma, then the
-overlays, or Lead, Alpha, Beta, Gamma, Hermes, then the overlays. Hermes keeps ⌥⇧⌘5; ⌥⇧⌘9 is
-"last", so it becomes the last overlay (iTerm2 3.7.7 source; not yet seen on a real tab). One
+`claudePeer.h` plus the overlays, not by `with_hermes` of the first: Lead, Alpha, Beta, Gamma, Delta,
+Epsilon, then the overlays, or the same and Hermes, then the overlays. Hermes is ⌥⇧⌘7 (the
+operator's order, 2026-11-13: Hermes after Epsilon in both bars); ⌥⇧⌘9 is "last", so it becomes
+the last overlay, and with Hermes and three overlays the ninth pane (Overlay 2) has no
+number and ⌥⇧⌘9 still picks the last (iTerm2 3.7.7 source; not yet seen on a real tab). One
 pair is built at `install` time for the overlays the machine has then (none: neither, and a stale
 pair is removed with the state file); `install` needs iTerm2 quit, the one part of this that does.
 Between a change of the overlay set and the next `install` things degrade visibly: a pane whose
@@ -488,7 +483,10 @@ never the caller's server) at fixed sizes, captures it with `capture-pane -p`
 list (centred, every row whole, a question under it, a `start` taking it, an older
 fzf falling back to it), the fzf picker, and the sleeper (cell for cell against
 `claude-peer art`, whole while the list scrolls, absent at 15 rows, one after Esc and
-Return, and above the list). The sleeper's tests unset the `claude-peer.art false` that
+Return, and above the list; looked-at mode: still until told, moving while looked at and
+still again after `look lost` or a second session's `look gained`, moving at once when it
+opens under the operator's eyes, and drawn the same looked at or held still; those need
+`curl` with `UnixSockets`). The sleeper's tests unset the `claude-peer.art false` that
 `setup` sets for the rest. Waits are for text and for a still screen, never a bare
 `sleep`. They need a UTF-8 locale and, in a container, an init as process 1
 (`docker run --init`): the harness test and `screen_close` say so by name, and

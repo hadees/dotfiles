@@ -40,6 +40,15 @@ cannot answer. That failure used to abort the whole apply partway. Neither
 path ever runs `brew bundle cleanup`: that uninstalls anything absent from the
 list, which is not what converging a machine should mean.
 
+`update()` still upgrades everything in place, `claude-code@latest` included.
+`iterm2-relaunch brew:<cask>` (`iterm2-relaunch.md`) is only for an upgrade that
+wants the terminal and its Claude sessions down: a session finds what is
+outdated, upgrades whatever needs no quit, and relaunches for the rest. It
+refuses a cask that updates itself (iTerm2's, whose Caskroom record only looks
+stale) and one with a `pkg` or `installer` artifact, for the reason above: the
+runner has no terminal to answer a password. When `update()` got there first the
+row reads `is current` and nothing is quit.
+
 `update()` itself always runs from `$HOME` and puts the shell back where it
 started, whatever directory it was typed in — a removed cwd (a deleted
 worktree, the usual way) is inherited by every child and each dies on its own

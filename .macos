@@ -117,6 +117,9 @@ defaults write NSGlobalDomain NSTextShowsControlCharacters -bool true
 
 # Disable Resume system-wide
 defaults write NSGlobalDomain NSQuitAlwaysKeepsWindows -bool false
+# ...except iTerm2: its session restoration reopens windows only with Resume on,
+# and claude-peer's workgroups rely on that
+defaults write com.googlecode.iterm2 NSQuitAlwaysKeepsWindows -bool true
 
 # Disable automatic termination of inactive apps
 defaults write NSGlobalDomain NSDisableAutomaticTermination -bool true

@@ -203,6 +203,14 @@ available."
 Requiring AppleScript here is deliberate: it forces the caller through
 macOS's Automation permission prompt. See `references/python-api.md`.
 
+## A workgroup peer that is not showing
+
+`sessions of tab` is the tab's session list, which holds only the swapped-in
+peer of a pane that time-shares one: a peer that is not showing is in no tab
+and nothing in the dictionary reaches it, so `text of session` cannot read it
+and there is no image command at all. The Python API can: see "One session's
+picture" in `references/python-api.md`.
+
 ## Docs vs. the binary (3.6.11, re-checked on 3.7.6)
 
 | Claim | Reality |

@@ -1,0 +1,961 @@
+#!/bin/sh
+# iterm2-relaunch — quit iTerm2, do work that needs it down, start it again, bring
+# the Claude sessions back.
+#
+# Usage:
+#   iterm2-relaunch [--yes] [--dry-run] [--no-restore] [--no-prompt] [--open] [--wait <s>] [--grace <s>] <item>[,<item>...]...
+#                    (iTerm2 not running: the items run and it is left closed; --open starts it afterwards)
+#   iterm2-relaunch items            one row per item: item<TAB>ready|nothing|refused<TAB>detail
+#   iterm2-relaunch status           runner:, last:, log: lines
+#   iterm2-relaunch cancel           call a relaunch off before iTerm2 has been asked to quit
+#   iterm2-relaunch alfred           Alfred Script Filter JSON, one row per item
+#   iterm2-relaunch alfred-install [<dir>]   zip the Alfred workflow and hand it to Alfred
+#   iterm2-relaunch _run <wait> <grace> <restore 0|1> <prompt 0|1> <caller id|-> <item>...
+#                    (internal: the runner, started in a session of its own)
+#
+# Exit codes: 0 done or handed over, 1 failed or refused, 2 usage or not macOS. `_run`: 0 every
+# item succeeded, 1 an item failed (iTerm2 was still started), 3 iTerm2 did not quit
+# (nothing was done).
+#
+# Items, run in this order while iTerm2 is down: prefs-install (iterm2-prefs
+# install), prefs (iterm2-prefs compose), claude-peer (claude-peer install, then
+# claude-peer default peers when its status asks for exactly that), then brew:<cask>
+# as given (brew upgrade --cask, for a cask that wants the terminal and its Claude
+# sessions down, such as claude-code@latest). Others the runner does not know are
+# logged as `<item>: exit 2`. A failed item never stops the next one.
+#
+# claude-peer comes after the two prefs items because its Workgroups and Triggers
+# are reserved keys no preferences fragment may carry: `claude-peer install` writes
+# them straight into the store iTerm2 loads, which `iterm2-prefs install` repoints.
+# A live compose-at-quit waiter (compose-at-quit.pid) is waited for before the first
+# item and again before iTerm2 starts: the waiter and the items read, change and
+# write the same files.
+#
+# Every item runs under a bound of ITERM2_RELAUNCH_ITEM_TIMEOUT polls: one that
+# outlasts it is killed, logged as `<item>: timed out after <n>s` and counted failed,
+# and the next item still runs, so no item can keep iTerm2 from starting again.
+#
+# A brew: item is judged before anything quits: a cask that updates itself (iTerm2
+# included) or installs with a pkg or installer, which may ask for a password, is
+# refused, because the runner has no terminal and a sudo prompt would only fail.
+# `brew update` runs before the states are read and `brew fetch --cask` before the
+# quit (both after the consent), so iTerm2 is down for seconds, not for a download. The upgrade runs with
+# SUDO_ASKPASS unset. With jobs surviving a
+# quit (KillJobsInServersOnQuit 0) running Claude sessions keep the old binary through
+# the upgrade; the front says so and the log counts them.
+#
+# When iTerm2 is not running there is nothing to quit and no consent to ask: the
+# front runs the items in the foreground and leaves iTerm2 closed, because opening
+# it is not what was asked for; `--open` starts it afterwards.
+#
+# The front does nothing with a side effect before it is sure: first the operator's
+# consent when iTerm2 is running (--yes, or [y/N] on a terminal; neither means a
+# refusal, with no brew command run), then every item is judged (`brew update`
+# first; a refused one stops everything, one with nothing to do is dropped), `brew
+# fetch`, the Apple-event probe, the Claude tabs saved, and only then the runner is
+# started. The
+# caller is often a Claude session that the quit kills, so the hand-over is verified
+# (the runner is alive and has logged `start:`) and its pid and the log path are
+# printed before the front returns.
+#
+# The operator is warned before the screen is taken: before it asks iTerm2 to quit,
+# and again before the restore types into the window, the runner calls the shared
+# `screen-heads-up "<what>" <grace>` (a countdown that goes ahead unless the
+# operator answers "Not now"). "Not now" before the quit ends the run with nothing
+# done (exit 3); before the restore it leaves the tabs for `claude-tab restore` by
+# hand. Without the helper, or when it cannot ask, the grace is simply waited and
+# logged. `cancel` is the same "not now" for a session or a typed command.
+#
+# Why a quit at all: iTerm2 reads its preferences folder once per launch and
+# writes it back at quit, so a store written under it is overwritten or raises
+# "changed since iTerm2 started". Why a runner of its own: iTerm2 ends a job with
+# killpg on the job's group, so a process that called setsid, forked again and
+# ignores SIGHUP outlives it. That is `detach`, standard-library Python, no launchd.
+#
+# From the moment the quit is asked (`quit: asking` in the log, which `cancel` refuses
+# on) until iTerm2 is started again the runner cannot be called off or killed
+# short: TERM and INT only set a flag, and an EXIT trap starts iTerm2 if the runner
+# ends anyway, so a quit that was asked never leaves the operator without it. Before
+# that, the same signals end the run at the next wait with `cancelled:`.
+#
+# Why the Apple-event probe comes first: a runner that cannot send Apple events
+# must find out before it has asked for anything. The quit itself runs in the
+# background, because a synchronous one blocks for as long as iTerm2's own "Quit
+# iTerm2?" alert is open; the runner polls for the process to go instead.
+#
+# iTerm2 is always started again, whatever failed, with the environment a Dock
+# launch gives an app (`clean_open`): `open` hands its own environment to the app,
+# and the app keeps it for its whole run, so every tab would inherit a Claude
+# session's variables. The restore is watched: iTerm2 3.7.7 has crashed on
+# scripted session changes, so after it the runner checks that the iTerm2 it
+# started is still the one running, starts it once more if not, and restores
+# nothing further.
+#
+# The runner is started under `env -i` with an allowlist (HOME, PATH, LANG, LC_*,
+# XDG_*, HOMEBREW_*, GIT_CONFIG_GLOBAL, ITERM2_PREFS_*, CLAUDE_PEER_*, every
+# ITERM2_RELAUNCH_* seam, and what clean_open passes on): the sibling tools and brew
+# then see the configuration the front judged the items with. What
+# it starts, `claude-tab restore` and so `claude-peer start`, would otherwise record
+# the caller's Claude session (CLAUDE_PID, CLAUDE_CODE_SESSION_ID) as its own.
+# The caller's id reaches the runner as an argument.
+#
+# The Alfred front (keyword `irelaunch`, alfred/iterm2-relaunch): the Script Filter runs
+# `alfred`, which turns the rows of `items` (no `brew update`, so it is quick) into
+# JSON, and Return runs `iterm2-relaunch --yes <item>`, outside any Claude session
+# and with Alfred's minimal environment; the only thing here that starts an app,
+# the runner's `open`, goes through `clean_open`, so none of that environment
+# reaches iTerm2. The workflow is not a chezmoi target (Alfred rewrites its
+# info.plist), so `alfred-install` zips it and `open`s it for Alfred's import sheet.
+#
+# State, in ${XDG_STATE_HOME:-$HOME/.local/state}/iterm2-relaunch: run.log,
+# run.pid, domain-before-quit.plist (the preferences domain saved before the
+# quit; `iterm2-prefs capture --from <it> --all` lists what an unclean exit lost).
+# Siblings are named by absolute path because Alfred's PATH excludes ~/bin.
+#
+# Test seams: ITERM2_RELAUNCH_PREFS, ITERM2_RELAUNCH_CLAUDE_TAB,
+# ITERM2_RELAUNCH_CLAUDE_PEER (default ~/bin/claude-peer),
+# ITERM2_RELAUNCH_HEADS_UP (default ~/bin/screen-heads-up), ITERM2_RELAUNCH_BREW
+# (else brew on PATH, else /opt/homebrew/bin or /usr/local/bin; Alfred's PATH has
+# neither), ITERM2_RELAUNCH_ITEM_TIMEOUT (polls an item may take, default 600),
+# ITERM2_RELAUNCH_TICK (seconds per poll, default 1), ITERM2_RELAUNCH_DETACH (0: run
+# the runner in the foreground), ITERM2_RELAUNCH_PASS (more variable names the runner
+# keeps; the tests' stubs read some).
+set -u
+
+warn() { printf 'iterm2-relaunch: %s\n' "$*" >&2; }
+die() { warn "$*"; exit 1; }
+
+usage() { sed -n '/^# Usage:/,/^# Exit codes/p' "$0" | sed 's/^# \{0,1\}//'; }
+
+os() { uname -s 2>/dev/null; }
+# Exit 2 as for usage: the verb cannot be used here at all, nothing was refused.
+need_macos() { [ "$(os)" = Darwin ] || { warn "$1 needs macOS"; exit 2; }; }
+
+# The script's absolute path, for the runner it starts.
+self() {
+  case $0 in
+    /*) printf '%s\n' "$0";;
+    *) printf '%s/%s\n' "$PWD" "$0";;
+  esac
+}
+
+state_dir() { printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/iterm2-relaunch"; }
+state=$(state_dir)
+log=$state/run.log
+prefs=${ITERM2_RELAUNCH_PREFS:-$HOME/bin/iterm2-prefs}
+ct=${ITERM2_RELAUNCH_CLAUDE_TAB:-$HOME/bin/claude-tab}
+hu=${ITERM2_RELAUNCH_HEADS_UP:-$HOME/bin/screen-heads-up}
+cpeer=${ITERM2_RELAUNCH_CLAUDE_PEER:-$HOME/bin/claude-peer}
+tick=${ITERM2_RELAUNCH_TICK:-1}
+item_timeout=${ITERM2_RELAUNCH_ITEM_TIMEOUT:-600}
+TAB=$(printf '\t')
+NL='
+'
+
+# The state directory (0700) and run.log (0600) exist.
+ensure_state() {
+  mkdir -p "$state" && chmod 700 "$state"
+  [ -e "$log" ] || { : >"$log" && chmod 600 "$log"; }
+}
+
+# log_line <text>: one line of run.log, stamped.
+log_line() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$log"; }
+
+# pid of the running iTerm2, or nothing and exit 1. ps, not pgrep: pgrep cannot see
+# processes of the caller's own session under some sandboxes.
+iterm_pid() {
+  ps -Ao pid=,ucomm= 2>/dev/null |
+    awk '{ p = $1; $1 = ""; sub(/^[ \t]+/, ""); sub(/[ \t]+$/, "")
+           if ($0 == "iTerm2") { print p; f = 1; exit } } END { exit !f }'
+}
+
+# open(1) with the environment a Dock launch gives an app, never the caller's:
+# open hands its own environment to the app it starts, and the app keeps it for
+# its whole run, so every tab would inherit it. open is resolved on the caller's
+# PATH first, because env -i resets PATH. TMPDIR and SSH_AUTH_SOCK are what the
+# login session has (`getconf DARWIN_USER_TEMP_DIR`, `launchctl getenv`, both
+# read-only), the caller's own only when that says nothing: a Dock launch gets the
+# system's values, and the caller's may be a Claude session's.
+clean_open() {
+  _open=$(command -v open) || return 127
+  set -- "$_open" "$@"
+  _tmp=$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null); [ -n "$_tmp" ] || _tmp=${TMPDIR-}
+  _sock=$(launchctl getenv SSH_AUTH_SOCK 2>/dev/null); [ -n "$_sock" ] || _sock=${SSH_AUTH_SOCK-}
+  [ -z "$_tmp" ] || set -- "TMPDIR=$_tmp" "$@"
+  [ -z "$_sock" ] || set -- "SSH_AUTH_SOCK=$_sock" "$@"
+  for _v in USER LOGNAME SHELL DISPLAY COMMAND_MODE __CF_USER_TEXT_ENCODING; do
+    eval "_val=\${$_v-}"
+    [ -z "$_val" ] || set -- "$_v=$_val" "$@"
+  done
+  env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin "$@"
+}
+
+# The brew to use, or nothing: the seam if set (it must be executable), else brew on
+# PATH, else the usual prefixes (Alfred's PATH has neither).
+brew_bin() {
+  if [ -n "${ITERM2_RELAUNCH_BREW-}" ]; then
+    [ -x "$ITERM2_RELAUNCH_BREW" ] && printf '%s\n' "$ITERM2_RELAUNCH_BREW"
+    return
+  fi
+  command -v brew && return
+  for _b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+    [ -x "$_b" ] && { printf '%s\n' "$_b"; return; }
+  done
+  return 1
+}
+brew=$(brew_bin 2>/dev/null) || brew=''
+
+# brew from $HOME (a removed cwd kills brew), unattended, no auto update, and no
+# SUDO_ASKPASS: the runner has no terminal, so a sudo that needs a password has to
+# fail at once instead of waiting.
+brew_sh='cd "$HOME" && env -u SUDO_ASKPASS HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ASK=1 "$@"'
+brew_cmd() { sh -c "$brew_sh" sh "$brew" "$@"; }
+
+# runner_env_names: the variables the runner keeps, one per line (plain names only):
+# the ones it needs to find its way and its state, every seam, and what clean_open
+# hands iTerm2. ITERM2_RELAUNCH_PASS names more, for the tests' stubs.
+runner_env_names() {
+  printf '%s\n' HOME PATH LANG GIT_CONFIG_GLOBAL USER LOGNAME SHELL TMPDIR SSH_AUTH_SOCK DISPLAY \
+    COMMAND_MODE __CF_USER_TEXT_ENCODING
+  env | sed -nE 's/^((LC_|XDG_|HOMEBREW_|ITERM2_RELAUNCH_|ITERM2_PREFS_|CLAUDE_PEER_)[A-Za-z0-9_]*)=.*/\1/p'
+  printf '%s\n' ${ITERM2_RELAUNCH_PASS-}
+}
+
+# The stdlib only, and Python 3.9 clean: /usr/bin/python3 is all a fresh mac has.
+relaunch_py() {
+  python3 -I - "$@" <<'PYEOF'
+import json, os, signal, sys
+
+
+def detach(log, argv):
+    """Run argv in a session of its own, so it outlives iTerm2 and the shell that asked."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.makedirs(os.path.dirname(log), mode=0o700, exist_ok=True)
+    pid = os.fork()
+    if pid:
+        os.waitpid(pid, 0)
+        return
+    try:
+        os.setsid()
+        if os.fork():
+            os._exit(0)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        os.chdir("/")
+        null = os.open(os.devnull, os.O_RDONLY)
+        out = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        os.dup2(null, 0)
+        os.dup2(out, 1)
+        os.dup2(out, 2)
+        os.closerange(3, 256)
+        os.execv(argv[0], argv)
+    finally:
+        os._exit(127)
+
+
+def brew_rows(doc):
+    """One `brew info --cask --json=v2` document in, one row per cask out."""
+    try:
+        casks = json.loads(doc).get("casks") or []
+    except ValueError:
+        return 1
+    for c in casks:
+        pw = any(isinstance(a, dict) and ("pkg" in a or "installer" in a) for a in c.get("artifacts") or [])
+        print("\t".join([c["token"], str(c.get("installed") or "-"), str(c.get("version") or "-"),
+                         "1" if c.get("outdated") else "0", "1" if c.get("auto_updates") else "0",
+                         "1" if pw else "0"]))
+    return 0
+
+
+DOWN = "Quits iTerm2 (every session ends), "
+BACK = ", reopens it and resumes the Claude tabs"
+READY = {
+    "prefs-install": ("Switch iTerm2 to composed preferences",
+                      "One time. " + DOWN + "installs" + BACK),
+    "prefs": ("Apply iTerm2 preference changes ({d})", DOWN + "composes" + BACK),
+    "claude-peer": ("Install the Claude Peers workgroups", "{d}. " + DOWN + "installs" + BACK),
+}
+NOTHING = {
+    "prefs": ("iTerm2 preferences are in sync", "Nothing waits"),
+    "claude-peer": ("Claude Peers workgroups are installed and current", "Nothing to do"),
+}
+
+
+def alfred(rows):
+    """The rows of `items` in, one line of Alfred Script Filter JSON out."""
+    out, ready = [], []
+    for row in rows.splitlines():
+        name, state, detail = (row.split("\t", 2) + ["", ""])[:3]
+        arg = name
+        if state == "refused":
+            title, sub, arg = name + " cannot run", detail, None
+        elif name.startswith("brew:") and state == "ready":
+            title, sub = "Upgrade %s (%s)" % (name[5:], detail), DOWN + "upgrades" + BACK
+        elif name.startswith("brew:"):
+            # only the front looks upstream, so a current cask stays actionable
+            title = "Upgrade " + name[5:]
+            sub = detail + "; looks for a newer one first and quits nothing if there is none"
+        elif state == "ready" and name in READY:
+            title, sub = [t.format(d=detail) for t in READY[name]]
+        else:
+            title, sub = NOTHING.get(name, (name, detail))
+            arg = None
+        if state == "ready":
+            ready.append(name)
+        item = {"title": title, "subtitle": sub, "valid": arg is not None}
+        if arg is not None:
+            item["arg"] = arg
+        out.append(item)
+    if len(ready) >= 2:
+        out.insert(0, {"title": "Everything that is ready (%d items)" % len(ready),
+                       "subtitle": ", ".join(ready), "arg": ",".join(ready), "valid": True})
+    print(json.dumps({"skipknowledge": True, "items": out}))
+    return 0
+
+
+def main():
+    verb, args = sys.argv[1], sys.argv[2:]
+    if verb == "alfred" and len(args) == 1:
+        return alfred(args[0])
+    if verb == "brew-rows" and len(args) == 1:
+        return brew_rows(args[0])
+    if verb == "_detach" and len(args) >= 2:
+        detach(args[0], args[1:])
+        return 0
+    return 2
+
+
+sys.exit(main())
+PYEOF
+}
+
+# start_iterm: open iTerm2 by bundle id, else by name; prints nothing, status is open's.
+start_iterm() {
+  clean_open -b com.googlecode.iterm2 >>"$log" 2>&1 || clean_open -a iTerm >>"$log" 2>&1
+}
+
+# pid of the live runner, or nothing and exit 1.
+runner_pid() {
+  _p=$(cat "$state/run.pid" 2>/dev/null)
+  case $_p in ''|*[!0-9]*) return 1;; esac
+  kill -0 "$_p" 2>/dev/null && printf '%s\n' "$_p"
+}
+
+cmd_status() {
+  if pid=$(runner_pid); then echo "runner: $pid running"; else echo "runner: none"; fi
+  [ ! -s "$log" ] || printf 'last: %s\n' "$(tail -n 1 "$log")"
+  echo "log: $log"
+}
+
+# order_items <item>...: sets `ordered`, prefs-install, prefs, claude-peer, then the rest as given.
+order_items() {
+  ordered=''
+  for want in prefs-install prefs claude-peer; do
+    for i in "$@"; do [ "$i" != "$want" ] || ordered="$ordered $i"; done
+  done
+  for i in "$@"; do
+    case $i in prefs-install|prefs|claude-peer) ;; *) ordered="$ordered $i";; esac
+  done
+}
+
+# peer_default_line: the `default:` line of `claude-peer status` when it ends with
+# exactly `claude-peer default peers` (the mixed state ends `default peers|builtin`,
+# which is the operator's to choose), else nothing.
+peer_default_line() {
+  "$cpeer" status 2>/dev/null | awk '/^default:/ { s = $0; sub(/[ \t]+$/, "", s)
+    if (s ~ /claude-peer default peers$/) { print s; exit } }'
+}
+
+# wait_compose_waiter: a live compose-at-quit waiter (compose-at-quit.pid) reads,
+# changes and writes the stores the items and iTerm2's own start use, so it is
+# waited for, at most 30 polls, before the first item and again before iTerm2 starts.
+wait_compose_waiter() {
+  _pw=${XDG_STATE_HOME:-$HOME/.local/state}/iterm2/compose-at-quit.pid
+  pn=0
+  while [ "$pn" -lt 30 ]; do
+    pp=$(awk 'NR == 1 { print $1 }' "$_pw" 2>/dev/null)
+    case $pp in ''|*[!0-9]*) break;; esac
+    kill -0 "$pp" 2>/dev/null || break
+    sleep "$tick"; pn=$((pn + 1))
+  done
+  [ "$pn" -eq 0 ] || log_line "compose-at-quit: waited for its waiter"
+  return 0
+}
+
+# peer_item: claude-peer install, then claude-peer default peers when status asks
+# for it. Output is this function's own stdout and stderr.
+peer_item() {
+  "$cpeer" install || return $?
+  [ -z "$(peer_default_line)" ] || "$cpeer" default peers
+}
+
+# kill_tree <pid>: the pid and its descendants, the children first (a killed parent
+# would hand them to init, out of reach of pgrep -P).
+kill_tree() {
+  for _c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$_c"; done
+  kill "$1" 2>/dev/null
+}
+
+# bounded <item> <command>...: runs the command (a program or a function) in the
+# background and sets `brc` to its exit status. It is polled through an exit-status
+# file, not kill -0: a finished child stays a zombie under dash until it is waited
+# for. One that outlasts ITERM2_RELAUNCH_ITEM_TIMEOUT polls is killed, logged as
+# `<item>: timed out after <n>s` and counts as exit 124, so no item can keep iTerm2
+# from starting again. The output is the caller's own stdout and stderr.
+# ponytail: a timeout kills the command and its descendants as pgrep -P sees them; one that
+# daemonised itself may finish.
+bounded() {
+  bitem=$1; shift
+  rm -f "$state/item.rc"
+  ( "$@"; echo $? >"$state/item.rc" ) 3>&- &
+  bpid=$!
+  bn=0
+  while [ ! -s "$state/item.rc" ] && [ "$bn" -lt "$item_timeout" ]; do sleep "$tick"; bn=$((bn + 1)); done
+  if [ -s "$state/item.rc" ]; then
+    wait "$bpid"
+    brc=$(cat "$state/item.rc")
+    case $brc in ''|*[!0-9]*) brc=1;; esac
+  else
+    kill_tree "$bpid"
+    wait "$bpid" 2>/dev/null
+    log_line "$bitem: timed out after ${bn}s"
+    brc=124
+  fi
+}
+
+# brew_upgrade <brew:cask>: the upgrade while iTerm2 is down, with the versions
+# before and after in the log.
+brew_upgrade() {
+  bt=${1#brew:}
+  [ -n "$brew" ] || { echo "Homebrew not found"; return 1; }
+  blive=$("$ct" list 2>/dev/null | wc -l | tr -d ' ')
+  bbefore=$(brew_cmd list --cask --versions "$bt" 2>/dev/null); bbefore=${bbefore#* }
+  [ -n "$bbefore" ] || bbefore=-
+  bounded "$1" sh -c "$brew_sh" sh "$brew" upgrade --cask "$bt"
+  bafter=$(brew_cmd list --cask --versions "$bt" 2>/dev/null); bafter=${bafter#* }
+  [ -n "$bafter" ] || bafter=-
+  log_line "$1: $bbefore -> $bafter"
+  if [ "$blive" -gt 0 ] && [ "$bbefore" != "$bafter" ]; then
+    log_line "$1: $blive Claude sessions kept running through the upgrade and stay on $bbefore until each is restarted"
+  fi
+  return "$brc"
+}
+
+# run_items: runs `ordered`, sets `total` and `failed`; the items' output is this
+# function's own stdout and stderr.
+run_items() {
+  total=0 failed=0
+  wait_compose_waiter
+  for i in $ordered; do
+    total=$((total + 1))
+    case $i in
+      prefs-install) bounded "$i" "$prefs" install;;
+      prefs) bounded "$i" "$prefs" compose;;
+      claude-peer) bounded "$i" peer_item;;
+      brew:*) brew_upgrade "$i"; brc=$?;;
+      *) brc=2;;
+    esac
+    rc=$brc
+    log_line "$i: exit $rc"
+    [ "$rc" -eq 0 ] || failed=$((failed + 1))
+  done
+}
+
+# heads_up <what>: asks the operator through screen-heads-up and returns 0 to go
+# ahead, 1 for "not now" or when `cancelled` was set while it waited. Sets `went` once the helper has said go. A missing helper
+# or one that cannot ask is waited out for the grace and logged; exit 4 (another
+# heads-up is waiting, so something else is about to take the screen) is asked again.
+went=0
+cancelled=0 need_launch=0
+heads_up() {
+  if [ -x "$hu" ]; then
+    n=0
+    while :; do
+      "$hu" "$1" "$grace" >>"$log" 2>&1
+      rc=$?
+      [ "$rc" -eq 4 ] && [ "$cancelled" = 0 ] || break
+      n=$((n + 1))
+      [ "$n" -lt 30 ] || { log_line "heads-up: another one was waiting"; return 1; }
+      sleep "$tick"
+    done
+    [ "$cancelled" = 0 ] || return 1
+    case $rc in
+      0) log_line "heads-up: go"; went=1; return 0;;
+      1) return 1;;
+    esac
+    log_line "heads-up: helper failed (exit $rc); waited ${grace}s"
+  else
+    log_line "heads-up: no helper; waited ${grace}s"
+  fi
+  n=0
+  while [ "$n" -lt "$grace" ] && [ "$cancelled" = 0 ]; do sleep "$tick"; n=$((n + 1)); done
+  [ "$cancelled" = 0 ]
+}
+
+# free_screen <text>: after a go, tells the helper the screen is free again. Not
+# restoring the front app: its plain `open` would start a missing iTerm2 with the
+# runner's environment.
+free_screen() {
+  [ "$went" = 1 ] || return 0
+  "$hu" --free "$1" --no-restore >>"$log" 2>&1
+}
+
+# cancel_exit: a cancel arrived before iTerm2 was asked to quit.
+cancel_exit() {
+  log_line "cancelled: before iTerm2 was asked to quit"
+  free_screen "iTerm2 was not quit"
+  rm -f "$state/run.pid"
+  exit 3
+}
+
+# on_exit: a runner that ends after the quit was asked and before iTerm2 was started
+# again (a failed command, a bug) still starts it: the operator is never left
+# without iTerm2.
+on_exit() {
+  [ "$need_launch" = 1 ] || return 0
+  need_launch=0
+  log_line "launch: the runner ended early; starting iTerm2"
+  start_iterm
+}
+
+# _run <wait> <grace> <restore 0|1> <prompt 0|1> <caller id|-> <item>...
+cmd_run() {
+  need_macos _run
+  [ $# -ge 6 ] || { usage >&2; exit 2; }
+  wait=$1 grace=$2 restore=$3 prompt=$4 caller=$5
+  shift 5
+  list=$(IFS=,; printf '%s' "$*")
+  est=15
+  for i in "$@"; do case $i in brew:*) est=$((est + 30));; esac; done
+  order_items "$@"
+
+  ensure_state
+  # From here to the quit a TERM or INT (cancel) only sets a flag the waits check. A
+  # handler, not `trap ''`: an ignored signal would be inherited by every item.
+  trap 'cancelled=1' TERM INT
+  trap on_exit EXIT
+  printf '%s\n' "$$" >"$state/run.pid" && chmod 600 "$state/run.pid"
+  log_line "start: items=$list restore=$restore prompt=$prompt caller=$caller pid=$$"
+
+  if iterm_pid >/dev/null; then
+    log_line "quit: in ${grace}s"
+    heads_up_ok=0
+    heads_up "iTerm2 quits for $list and is back in about ${est}s; every session in it ends and is resumed" && heads_up_ok=1
+    [ "$cancelled" = 0 ] || cancel_exit
+    if [ "$heads_up_ok" = 0 ]; then
+      log_line "aborted: not now; nothing done"
+      rm -f "$state/run.pid"
+      exit 3
+    fi
+    if ! osascript -e 'tell application id "com.googlecode.iterm2" to get version' >/dev/null 2>>"$log"; then
+      log_line "aborted: cannot send Apple events to iTerm2; nothing done"
+      free_screen "iTerm2 was not quit"
+      rm -f "$state/run.pid"
+      exit 3
+    fi
+    ( umask 077; defaults export com.googlecode.iterm2 "$state/domain-before-quit.plist" >>"$log" 2>&1 ) ||
+      log_line "quit: domain not saved (defaults export failed); continuing"
+    # `asking` is logged first, so a cancel that reads the log after this is refused;
+    # a cancel that got in before it left the flag, which is checked once more here.
+    log_line "quit: asking"
+    [ "$cancelled" = 0 ] || cancel_exit
+    # From here until iTerm2 is started again the flag is never read: the quit is
+    # under way, and a runner that stopped now would leave the operator without iTerm2.
+    need_launch=1
+    osascript -e 'tell application id "com.googlecode.iterm2" to quit' >>"$log" 2>&1 3>&- &
+    qpid=$!
+    log_line "quit: asked"
+    n=0
+    while iterm_pid >/dev/null && [ "$n" -lt "$wait" ]; do sleep "$tick"; n=$((n + 1)); done
+    kill "$qpid" 2>/dev/null
+    if iterm_pid >/dev/null; then
+      log_line "aborted: iTerm2 still running after ${wait}s; nothing done"
+      need_launch=0
+      free_screen "iTerm2 was not quit"
+      rm -f "$state/run.pid"
+      exit 3
+    fi
+    log_line "quit: exited after ${n}s"
+    sleep "$tick"
+    if [ "$(defaults read com.googlecode.iterm2 NoSyncLastShutdownWasClean 2>/dev/null)" = 1 ]; then
+      log_line "quit: clean"
+    else
+      log_line "quit: not clean (crash or kill); settings changed since the last save are not in the store; iterm2-prefs capture --from $state/domain-before-quit.plist --all lists them"
+    fi
+  else
+    log_line "quit: iTerm2 was not running"
+  fi
+
+  run_items >>"$log" 2>&1
+
+  wait_compose_waiter
+  started=''
+  if start_iterm; then
+    n=0
+    while [ "$n" -lt 30 ]; do
+      started=$(iterm_pid) && break
+      sleep "$tick"; n=$((n + 1))
+    done
+    if [ -n "$started" ]; then log_line "launch: started"; else log_line "launch: not seen after 30s"; fi
+  else
+    log_line "launch: failed"
+  fi
+  need_launch=0
+  trap - TERM INT
+
+  r=skipped alive=''
+  if [ "$restore" = 1 ] && [ -n "$started" ]; then
+    n=0 ready=0
+    while [ "$n" -lt "$wait" ]; do
+      if "$ct" restore --dry-run >/dev/null 2>&1; then ready=1; break; fi
+      sleep "$tick"; n=$((n + 1))
+    done
+    if [ "$ready" = 1 ]; then
+      # Counted before the restore, so only sessions that survived the quit are in it.
+      alive=$("$ct" restore --dry-run 2>/dev/null | awk -F'\t' '$1 == "skip:live" { c++ } END { print c + 0 }')
+      everyone="iTerm2 was relaunched by iterm2-relaunch ($list), which ended this session mid-run. Nothing in your work tree was changed by it. Look at where you left off (your last turn, your task list, git status), restart anything that was running in the background, and carry on. If you were waiting on the operator, say so and wait."
+      callertext="You started this relaunch of iTerm2 (iterm2-relaunch $list) and it has run. Read $log and run iterm2-relaunch status, check that each item did what it should (iterm2-prefs status for prefs, claude --version after an upgrade), report the result to the operator, then carry on with what you were doing."
+      if heads_up "iTerm2 is back; its Claude tabs are being restored into the front window, leave it alone for about a minute"; then
+        set -- restore
+        if [ "$prompt" = 1 ]; then
+          set -- "$@" --prompt "$everyone"
+          [ "$caller" = - ] || set -- "$@" --prompt-for "$caller" "$callertext"
+        fi
+        if "$ct" "$@" >>"$log" 2>&1; then r=ok; else r=failed; fi
+      else
+        log_line "restore: not now; run: claude-tab restore"
+      fi
+    else
+      r=failed
+    fi
+    [ "$r" != failed ] || log_line "restore: failed; run: claude-tab restore"
+    if [ "$(iterm_pid)" != "$started" ]; then
+      log_line "restore: iTerm2 exited during the restore (crash?); started it again, restored nothing further"
+      start_iterm
+      r=failed
+    fi
+  fi
+  [ -z "$alive" ] || [ "$alive" -eq 0 ] ||
+    log_line "restore: $alive sessions were still running and were left as they are"
+
+  free_screen "iTerm2 is back ($total items, $failed failed)"
+  log_line "done: $total items, $failed failed, restore $r"
+  rm -f "$state/run.pid"
+  [ "$failed" -eq 0 ]
+}
+
+# cancel: calls a relaunch off while the runner is still in its heads-up or grace.
+cmd_cancel() {
+  runner_pid >/dev/null || die "no relaunch is under way"
+  if grep -Eq ' quit: (asking|asked)$' "$log" 2>/dev/null; then
+    die "too late: iTerm2 has been asked to quit (Cancel in its own alert still stops it)"
+  fi
+  if [ -x "$hu" ] && "$hu" --not-now >/dev/null 2>&1; then
+    n=0
+    while [ "$n" -lt 5 ] && runner_pid >/dev/null; do sleep "$tick"; n=$((n + 1)); done
+  fi
+  # The runner logs `cancelled:` and removes run.pid itself; wait for it to be gone.
+  if pid=$(runner_pid); then
+    kill "$pid" 2>/dev/null
+    n=0
+    while [ "$n" -lt 20 ] && runner_pid >/dev/null; do sleep "$tick"; n=$((n + 1)); done
+    ! runner_pid >/dev/null || die "the runner has not stopped; it is past the point where it can be called off (see $log)"
+  fi
+  say "cancelled; iTerm2 was not asked to quit"
+}
+
+# known_item <item>: whether the runner has work of that name. A cask token is
+# Homebrew's own alphabet: lower case, no `/` (a tap path or a file), no `..`.
+known_item() {
+  case $1 in
+    prefs-install|prefs|claude-peer) return 0;;
+    brew:*..*) return 1;;
+    # grep in the C locale: a range in a case pattern may match upper case
+    brew:?*) printf '%s\n' "${1#brew:}" | LC_ALL=C grep -Eq '^[a-z0-9][a-z0-9@._+-]*$'; return;;
+  esac
+  return 1
+}
+
+# item_state <item>: prints <ready|nothing|refused><TAB><detail>.
+item_state() {
+  case $1 in
+    prefs-install)
+      case $("$prefs" status --line 2>/dev/null) in
+        composed*) printf 'nothing\talready composed\n'; return 0;;
+      esac
+      if err=$("$prefs" install --dry-run 2>&1 >/dev/null); then
+        printf 'ready\tone-time switch to the composed preferences folder\n'
+      else
+        err=$(printf '%s' "$err" | tr '\n' ' ' | sed 's/ *$//')
+        printf 'refused\t%s\n' "${err:-install --dry-run failed}"
+      fi;;
+    prefs)
+      line=$("$prefs" status --line 2>/dev/null)
+      case $line in
+        'composed, in sync'|'composed, 0 waiting,'*) printf 'nothing\tin sync\n';;
+        'composed, '*' waiting'*) w=${line#composed, }; printf 'ready\t%s waiting\n' "${w%% *}";;
+        'not composed'*) printf 'refused\tnot composed; use prefs-install\n';;
+        *) printf 'refused\tcannot read the preferences state\n';;
+      esac;;
+    claude-peer)
+      if [ ! -x "$cpeer" ]; then printf 'refused\tclaude-peer is not deployed\n'; return 0; fi
+      # prefs-install in this run: the install lands in the composed store after the switch.
+      case " ${items-} " in
+        *" prefs-install "*)
+          case $(item_state prefs-install) in
+            ready*) printf 'ready\trewritten into the composed store after the switch\n'; return 0;;
+          esac;;
+      esac
+      pst=$("$cpeer" status 2>/dev/null)
+      line=$(printf '%s\n' "$pst" | grep -F 'claude-peer install' | head -n 1 | cut -c1-120)
+      [ -n "$line" ] || line=$(peer_default_line)
+      if [ -n "$line" ]; then printf 'ready\t%s\n' "$line"; else printf 'nothing\tinstalled and current\n'; fi;;
+    brew:*)
+      if [ -z "$brew" ]; then printf 'refused\tHomebrew not found\n'; return 0; fi
+      # installed casks first: `brew info` of anything else may go to the network or a tap
+      if ! brew_cmd list --cask -1 2>/dev/null | grep -Fxq -- "${1#brew:}"; then
+        printf 'refused\tnot an installed cask\n'; return 0
+      fi
+      row=''
+      if json=$(brew_cmd info --cask --json=v2 "${1#brew:}" 2>/dev/null); then
+        row=$(relaunch_py brew-rows "$json" | head -n 1)
+      fi
+      IFS=$TAB read -r _ inst ver outdated auto pw <<EOF_ROW
+$row
+EOF_ROW
+      if [ -z "${inst-}" ] || [ "$inst" = - ]; then printf 'refused\tnot an installed cask\n'
+      elif [ "$auto" = 1 ]; then printf 'refused\tupdates itself; its Homebrew record only looks stale\n'
+      elif [ "$pw" = 1 ]; then printf 'refused\tits installer may ask for a password; upgrade it from a terminal\n'
+      elif [ "$outdated" = 1 ]; then printf 'ready\t%s -> %s\n' "$inst" "$ver"
+      else printf 'nothing\t%s is current\n' "$inst"
+      fi;;
+  esac
+}
+
+# items: the row for the item that applies to the machine's state, then one per
+# offered cask (claude-code@latest, claude-code, git config iterm2-relaunch.brew)
+# that is installed.
+cmd_items() {
+  case $("$prefs" status --line 2>/dev/null) in composed*) t=prefs;; *) t=prefs-install;; esac
+  printf '%s\t%s\n' "$t" "$(item_state "$t")"
+  printf 'claude-peer\t%s\n' "$(item_state claude-peer)"
+  [ -z "$brew" ] || { printf 'claude-code@latest\nclaude-code\n'; git config --get-all iterm2-relaunch.brew 2>/dev/null; } |
+    awk '!seen[$0]++' | while IFS= read -r c; do
+      known_item "brew:$c" || continue
+      st=$(item_state "brew:$c")
+      [ "$st" != "refused${TAB}not an installed cask" ] || continue
+      printf 'brew:%s\t%s\n' "$c" "$st"
+    done
+}
+
+say() { printf 'iterm2-relaunch: %s\n' "$*"; }
+
+# alfred: the Script Filter JSON, always one line.
+cmd_alfred() { relaunch_py alfred "$(cmd_items)"; }
+
+# The workflow source lives in the repo, not in a deployed location: Alfred rewrites
+# info.plist whenever the workflow is edited in its GUI, so a chezmoi-managed copy
+# would show permanent drift. Ask chezmoi where the source is, or take a path.
+workflow_source() {
+  [ -n "${1-}" ] && { printf '%s\n' "$1"; return 0; }
+  command -v chezmoi >/dev/null 2>&1 || return 1
+  _src=$(chezmoi source-path 2>/dev/null) || return 1
+  [ -n "$_src" ] || return 1
+  printf '%s\n' "$_src/alfred/iterm2-relaunch"
+}
+
+# alfred-install [<dir>]: an .alfredworkflow is a zip of the directory's contents;
+# Alfred shows its own import sheet. Handed over with clean_open, because Alfred may
+# not be running and would keep the caller's environment for its whole run.
+cmd_alfred_install() {
+  dir=$(workflow_source "${1-}") ||
+    die "cannot locate the workflow source (chezmoi not installed?); pass the path: iterm2-relaunch alfred-install <dir>"
+  [ -f "$dir/info.plist" ] || die "no info.plist in $dir"
+  found=
+  for app in "${ITERM2_RELAUNCH_APPLICATIONS:-/Applications}"/Alfred*.app "$HOME"/Applications/Alfred*.app; do
+    [ -d "$app" ] && found=1
+  done
+  [ -n "$found" ] || die "Alfred is not installed; nothing built"
+  tmp=$(mktemp -d) || die "cannot create a temp directory"
+  out=$tmp/iTerm2-Relaunch.alfredworkflow
+  ( cd "$dir" && zip -q -r "$out" . -x '.*' ) || { rm -rf "$tmp"; die "could not build $out"; }
+  clean_open "$out" || { rm -rf "$tmp"; die "could not hand $out to Alfred"; }
+  say "handed $(basename "$out") to Alfred; confirm the import in its window"
+  say 'then the keyword is "irelaunch"'
+}
+
+# Every refusal after the flag parse is also a `refused:` line of run.log, except
+# under --dry-run, which touches nothing.
+refuse_msg() {
+  warn "$1"
+  [ "$dry" = 1 ] || { ensure_state; log_line "refused: $1"; }
+}
+refuse() { refuse_msg "$1"; exit 1; }
+
+cmd_front() {
+  need_macos iterm2-relaunch
+  yes=0 dry=0 restore=1 prompt=1 open=0 wait=120 grace=5 raw=''
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --yes) yes=1;;
+      --dry-run) dry=1;;
+      --no-restore) restore=0;;
+      --no-prompt) prompt=0;;
+      --open) open=1;;
+      --wait|--grace)
+        case ${2-} in ''|*[!0-9]*) warn "$1 takes a number of seconds"; usage >&2; exit 2;; esac
+        if [ "$1" = --wait ]; then wait=$2; else grace=$2; fi
+        shift;;
+      -*) warn "unknown option: $1"; usage >&2; exit 2;;
+      *) raw="$raw,$1";;
+    esac
+    shift
+  done
+  items=''
+  set -f
+  for t in $(printf '%s' "$raw" | tr ',' ' '); do
+    known_item "$t" || { set +f; warn "unknown item: $t"; usage >&2; exit 2; }
+    case " $items " in *" $t "*) ;; *) items="$items $t";; esac
+  done
+  set +f
+  [ -n "$items" ] || { usage >&2; exit 2; }
+
+  # The consent comes first: `brew update` and `brew fetch` reach the network and
+  # the disk, and a no or a missing --yes must have run none of it. With iTerm2
+  # closed nothing is quit, so nothing is asked.
+  running=0
+  ! iterm_pid >/dev/null || running=1
+  if [ "$dry" = 0 ]; then
+    if pid=$(runner_pid); then refuse "a relaunch is already under way (pid $pid)"; fi
+    if [ "$running" = 1 ] && [ "$yes" != 1 ]; then
+      [ -t 0 ] || refuse "this quits iTerm2 and ends every session in it; pass --yes once the operator has agreed"
+      printf 'Quit iTerm2 now? Every session in it ends. [y/N] ' >&2
+      read -r ans
+      case $ans in y|Y) ;; *) refuse "not quitting";; esac
+    fi
+  fi
+
+  # Before the states are read, so they are not last week's. A failed update warns
+  # and the cached state is used.
+  case " $items " in
+    *" brew:"*)
+      if [ -z "$brew" ]; then :
+      elif [ "$dry" = 1 ]; then echo "would: brew update first"
+      else brew_cmd update || warn "brew update failed; using the cached state"
+      fi;;
+  esac
+
+  todo='' states='' refusals=''
+  for t in $items; do
+    st=$(item_state "$t")
+    s=${st%%"$TAB"*} d=${st#*"$TAB"}
+    case $s in
+      refused) refusals="$refusals$t: $d$NL";;
+      nothing) say "$t: nothing to do";;
+      ready) todo="$todo $t"; states="$states$t$TAB$s$TAB$d$NL";;
+    esac
+  done
+  if [ -n "$refusals" ]; then
+    printf '%s' "$refusals" | while IFS= read -r l; do refuse_msg "$l"; done
+    exit 1
+  fi
+  [ -n "$todo" ] || { say "nothing to do; iTerm2 left running"; exit 0; }
+  items=${todo# }
+
+  tabs=0
+  [ "$restore" = 0 ] || [ ! -x "$ct" ] || tabs=1
+  if [ "$dry" = 1 ]; then
+    printf '%s' "$states" | while IFS=$TAB read -r t s d; do printf 'would: %s: %s\n' "$t" "$d"; done
+    if iterm_pid >/dev/null; then
+      [ "$tabs" = 0 ] || echo "would: save Claude tabs (claude-tab save)"
+      echo "would: quit iTerm2 after ${grace}s and wait up to ${wait}s for it"
+      echo "would: start iTerm2"
+      [ "$tabs" = 0 ] || echo "would: restore Claude tabs and peers (claude-tab restore)"
+    elif [ "$open" = 1 ]; then
+      echo "would: start iTerm2"
+    else
+      echo "would: leave iTerm2 closed (it is not running)"
+    fi
+    exit 0
+  fi
+
+  if [ "$running" = 0 ]; then
+    ensure_state
+    order_items $items
+    run_items
+    rc=0 s='left it closed'
+    if [ "$open" = 1 ]; then
+      wait_compose_waiter
+      if start_iterm; then s='started it'; else s='could not start it'; rc=1; fi
+    fi
+    say "iTerm2 was not running; $total items done, $failed failed; $s"
+    [ "$failed" -eq 0 ] || rc=1
+    exit "$rc"
+  fi
+
+  # The download happens while the terminal is still up.
+  for t in $items; do
+    case $t in brew:*) brew_cmd fetch --cask "${t#brew:}" || refuse "$t: download failed";; esac
+  done
+  if [ "$(defaults read com.googlecode.iterm2 KillJobsInServersOnQuit 2>/dev/null)" = 0 ]; then
+    for t in $items; do
+      case $t in brew:*) say "note: jobs survive a quit on this machine, so running Claude sessions keep the old ${t#brew:} until restarted";; esac
+    done
+  fi
+
+  err=$(osascript -e 'tell application id "com.googlecode.iterm2" to get version' 2>&1 >/dev/null) ||
+    refuse "cannot send Apple events to iTerm2: $(printf '%s\n' "$err" | head -n 1)"
+
+  if [ "$restore" = 1 ]; then
+    # A failed save leaves the old file alone, and restoring that would bring back old tabs.
+    if [ "$tabs" = 0 ] || ! "$ct" save; then
+      warn "no tabs were saved; the Claude tabs will not be restored"
+      restore=0
+    fi
+  fi
+
+  caller=${CLAUDE_CODE_SESSION_ID:--}
+  ensure_state
+  [ ! -e "$log" ] || mv -f "$log" "$log.prev"
+  list=$(printf '%s' "$items" | tr ' ' ',')
+
+  # The runner gets an environment of its own, not the caller's: whatever it starts
+  # (claude-tab restore, claude-peer start) would otherwise record the caller's
+  # Claude session as its own. The caller's id goes as an argument instead.
+  # shellcheck disable=SC2086
+  set -- /bin/sh "$(self)" _run "$wait" "$grace" "$restore" "$prompt" "$caller" $items
+  for _v in $(runner_env_names); do
+    case $_v in ''|*[!A-Za-z0-9_]*) continue;; esac
+    eval "[ -z \"\${$_v+x}\" ] || set -- \"$_v=\${$_v}\" \"\$@\""
+  done
+  set -- /usr/bin/env -i "$@"
+  if [ "${ITERM2_RELAUNCH_DETACH:-1}" = 0 ]; then
+    "$@"
+    exit $?
+  fi
+  relaunch_py _detach "$log" "$@"
+  n=0
+  while [ "$n" -lt 50 ]; do
+    if pid=$(runner_pid) && grep -q ' start: ' "$log" 2>/dev/null; then
+      say "runner $pid has the work ($list) and asks iTerm2 to quit in ${grace}s"
+      say "log: $log"
+      say "to call it off before iTerm2 is asked: iterm2-relaunch cancel"
+      exit 0
+    fi
+    sleep 0.1; n=$((n + 1))
+  done
+  refuse "the runner did not start; iTerm2 is not asked to quit"
+}
+
+case ${1:-} in
+  status) need_macos status; cmd_status;;
+  items) need_macos items; cmd_items;;
+  cancel) need_macos cancel; cmd_cancel;;
+  alfred) need_macos alfred; cmd_alfred;;
+  alfred-install) need_macos alfred-install; shift; cmd_alfred_install "$@";;
+  _run) shift; cmd_run "$@";;
+  _detach) shift; relaunch_py _detach "$@";;
+  -h|--help|help) usage;;
+  '') usage >&2; exit 2;;
+  *) cmd_front "$@";;
+esac

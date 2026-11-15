@@ -1,0 +1,880 @@
+#!/bin/sh
+# pane-sight — read and picture another iTerm2 pane, behind a scope gate.
+#
+# Usage:
+#   pane-sight read <name> [--lines <n>]       also: pane-read <name> [--lines <n>]
+#   pane-sight shot <name> [--out <file>]      also: pane-shot <name> [--out <file>]
+#   pane-sight why  <name>                     resolution and verdict; asks the pane nothing
+#   pane-sight list                            every pane it can name, with its verdict
+#   pane-sight status [--line]
+#
+# Exit codes: 0 done; 1 failed; 2 usage or not macOS; 3 refused by scope; 4 no
+# such pane, more than one, or a pane that cannot be addressed.
+#
+# A name is a claude-peer slot, a session name, a tabname label or a pid.
+# Scope is decided on the pane's terminal before iTerm2 is asked for anything:
+# a terminal that carries a Claude session of another profile (by a registry
+# row, by a CLAUDE_CONFIG_DIR in any process's environment, or by a process named
+# claude that this profile's registry does not hold) is refused, a
+# directory this profile's deny list covers is refused (denyguard), and a
+# terminal with no session in a directory that routes to another profile is
+# refused; so is a terminal whose processes cannot be listed. Every doubt
+# refuses. `why` and `list` print names, pids, directories
+# and profile labels, never what a pane shows.
+#
+# The registry is every profile's `sessions/<pid>.json`, an observed layout as
+# in claude-tab.
+#
+# `read` prints one screen of text, never scrollback. Secret-shaped strings on it
+# are replaced and counted, never refused: the count (stderr, audit log) is what
+# tells the operator one is sitting on a terminal. Only two `it2` verbs are ever
+# run: `session read` and `session get-var`.
+#
+# `shot` is iTerm2's own render of ONE session by its id (rpc.async_screenshot):
+# that terminal pane's cells and nothing else, no panel, no window furniture, no
+# other pane, no other application. It is not scanned and not refused for what
+# the pane shows. This script has no other way to make an image: it never runs
+# screencapture and never runs osascript itself, and tests/pane-sight.bats fails
+# if it does. it2 and the iterm2 library (auth.py) may run osascript to ask
+# iTerm2 for an API cookie, which can raise macOS's Automation prompt once; that
+# is a credential request, not an image.
+#
+# Inputs: the judges and helpers come from fixed places under $HOME (bin/claude-peer,
+# bin/denyguard, bin/tabname, .functions, it2 at .config/iterm2/it2 or in the iTerm2
+# app bundle, iTerm2's files under Library/Application Support, the audit log under
+# .local/state) and zsh and the system tools from PATH, and from no variable: one
+# word in front of the command must not change who judges. The only variables read
+# are PANE_SIGHT_PYTHON and PANE_SIGHT_TIMEOUT, neither of which judges. Every GIT_
+# variable is unset before git is first asked.
+#
+# The caller is the session this command runs under: the nearest ancestor that is
+# a registered session decides, and CLAUDE_CONFIG_DIR must agree with it. This is
+# the sanctioned route and the record, not a sandbox: a session with Bash can call
+# it2 itself.
+
+# Every GIT_ variable is dropped before git is first asked: GIT_DIR, GIT_WORK_TREE and
+# GIT_CONFIG_* would each change which repository and which pins answer the route question.
+for v in $(env | sed -n 's/^\(GIT_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
+
+usage() { sed -n '/^# Usage:/,/^#$/{ /^#$/d; s/^# \{0,1\}//p; }' "$0" >&2; exit 2; }
+say() { printf 'pane-sight: %s\n' "$*" >&2; }
+fail4() { say "$*"; exit 4; }
+
+TAB=$(printf '\t')
+PEER=$HOME/bin/claude-peer
+DENY=$HOME/bin/denyguard
+TABNAME=$HOME/bin/tabname
+FUNCS=$HOME/.functions
+ZSH=zsh
+SUPPORT="$HOME/Library/Application Support"
+AUDIT_DIR=$HOME/.local/state/pane-sight
+AUDIT=$AUDIT_DIR/audit.log
+
+need_macos() {
+  [ "$(uname -s 2>/dev/null)" = Darwin ] || { say "needs macOS: iTerm2 runs nowhere else"; exit 2; }
+}
+
+# --- profiles and the registry -------------------------------------------------
+
+norm() { python3 -c 'import os,sys; print(os.path.normpath(os.path.expanduser(sys.argv[1])))' "$1"; }
+
+# Every Claude profile directory that exists, one per line, normalised and
+# de-duplicated: the caller's, the default one, each `claude.profile.*` value (as
+# claude-tab), each per-repo pin whose value is itself a directory (a profile
+# started by directory: `claude.<owner>/<repo>.profile` may name one), and the
+# lines of $EXTRA_DIRS.
+PD_PY='import os, sys
+seen = set()
+for d in sys.stdin.read().split("\n"):
+    if d.startswith("~/"):
+        d = os.environ["HOME"] + d[1:]
+    if not d or not os.path.isdir(d):
+        continue
+    d = os.path.normpath(d)
+    if d not in seen:
+        seen.add(d)
+        print(d)'
+profile_dirs() {
+  { printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+    printf '%s\n' "$HOME/.claude"
+    git config --get-regexp '^claude\.profile\.' 2>/dev/null | cut -d' ' -f2-
+    git config --get-regexp '^claude\..+\.profile$' 2>/dev/null | cut -d' ' -f2- | grep -E '^(/|~/)'
+    printf '%s\n' "${EXTRA_DIRS-}"
+  } | python3 -c "$PD_PY"
+}
+
+profile_label() {
+  b=$(basename "$1")
+  case $b in
+    .claude) printf 'default\n' ;;
+    .claude-*) printf '%s\n' "${b#.claude-}" ;;
+    *) printf '%s\n' "$b" ;;
+  esac
+}
+
+# Live sessions of every profile: pid, profile dir, cwd, name ("-" for empty).
+registry() {
+  PANE_SIGHT_DIRS=$(profile_dirs) python3 - <<'REG'
+import glob, json, os, re
+def field(v):
+    s = re.sub(r"[\t\r\n]", " ", str(v)).strip()
+    return s if s else "-"
+seen = set()
+for d in os.environ.get("PANE_SIGHT_DIRS", "").split("\n"):
+    d = os.path.normpath(d) if d else ""
+    if not d or d in seen:
+        continue
+    seen.add(d)
+    for f in sorted(glob.glob(os.path.join(d, "sessions", "*.json"))):
+        if not re.fullmatch(r"\d+\.json", os.path.basename(f)):
+            continue
+        try:
+            with open(f) as fh:
+                r = json.load(fh)
+            pid = r["pid"]
+            if type(pid) is not int or pid <= 0:
+                continue
+            os.kill(pid, 0)
+        except PermissionError:
+            pass  # alive, just not ours
+        except Exception:
+            continue
+        print("\t".join(field(x) for x in (pid, d, r.get("cwd"), r.get("name"))))
+REG
+}
+
+# --- small readers ---------------------------------------------------------------
+
+# /dev/<tty> of a pid; fails for a process with no terminal.
+tty_of() {
+  t=$(ps -o tty= -p "$1" 2>/dev/null | tr -d ' \t')
+  case $t in ''|'?'|'??') return 1 ;; esac
+  printf '/dev/%s\n' "${t#/dev/}"
+}
+
+# The last word of a process's environment that starts with <sed prefix>,
+# the prefix removed. Only a claude process shows its environment to ps.
+env_word() {
+  ps -Eww -o command= -p "$1" 2>/dev/null | tr ' ' '\n' | sed -n "s/^$2//p" | tail -n 1
+}
+
+same_dir() { a=$(cd "$1" 2>/dev/null && pwd -P) && b=$(cd "$2" 2>/dev/null && pwd -P) && [ "$a" = "$b" ]; }
+
+dir_label() { [ -x "$TABNAME" ] && "$TABNAME" "$1" 2>/dev/null </dev/null | sed -n 1p; }
+
+# <slot> with its first letter upper-cased.
+cap() { printf '%s' "$1" | awk '{ print toupper(substr($0, 1, 1)) substr($0, 2) }'; }
+
+# The processes of a terminal, from two ps calls: pid TAB ucomm TAB the directory
+# its environment names in CLAUDE_CONFIG_DIR (the last such word; "-" for none).
+# The ucomm column can hold spaces. ps hides some environments, so scope does not
+# rest on this alone. A CLAUDE_CONFIG_DIR whose value holds a space is read cut at
+# the space; cut, it matches nothing known and refuses.
+TTYP_PY='import os, re, sys
+names, envs = {}, {}
+for l in os.environ.get("PS_NAMES", "").split("\n"):
+    m = re.match(r"\s*(\d+)\s+(.*?)\s*$", l)
+    if m:
+        names[m.group(1)] = m.group(2)
+for l in os.environ.get("PS_ENVS", "").split("\n"):
+    m = re.match(r"\s*(\d+)\s+(.*)$", l)
+    if not m:
+        continue
+    words = [w for w in m.group(2).split() if w.startswith("CLAUDE_CONFIG_DIR=")]
+    v = words[-1][len("CLAUDE_CONFIG_DIR="):] if words else None
+    if v is not None and not v:
+        v = os.path.join(os.environ["HOME"], ".claude")
+    envs[m.group(1)] = os.path.normpath(os.path.expanduser(v)) if v is not None else "-"
+for pid in list(names) + [p for p in envs if p not in names]:
+    print("%s\t%s\t%s" % (pid, names.get(pid) or "-", envs.get(pid, "-")))'
+# Fails, printing nothing, when either ps call fails or prints nothing or python fails.
+tty_procs() { # <tty>
+  tp_names=$(ps -o pid=,ucomm= -t "${1#/dev/}" 2>/dev/null </dev/null) || return 1
+  tp_envs=$(ps -Eww -o pid=,command= -t "${1#/dev/}" 2>/dev/null </dev/null) || return 1
+  [ -n "$tp_names" ] && [ -n "$tp_envs" ] || return 1
+  PS_NAMES=$tp_names PS_ENVS=$tp_envs python3 -c "$TTYP_PY" || return 1
+}
+
+# The command's own ancestors, nearest first, as pid TAB ucomm TAB the directory its
+# environment names in CLAUDE_CONFIG_DIR ("-" for none): walked with ps -o ppid=,
+# at most 40 steps, ending at pid 0, pid 1 or an empty answer.
+ancestors() {
+  an_pid=$$ an_n=0
+  while [ "$an_n" -lt 40 ]; do
+    an_pid=$(ps -o ppid= -p "$an_pid" 2>/dev/null </dev/null | tr -d ' \t')
+    case $an_pid in ''|0|1|*[!0-9]*) break ;; esac
+    an_n=$((an_n + 1))
+    an_uc=$(ps -o ucomm= -p "$an_pid" 2>/dev/null </dev/null)
+    an_cm=$(ps -Eww -o command= -p "$an_pid" 2>/dev/null </dev/null)
+    PS_NAMES="$an_pid $an_uc" PS_ENVS="$an_pid $an_cm" python3 -c "$TTYP_PY"
+  done
+}
+
+# --- resolution --------------------------------------------------------------------
+
+t_kind= t_label= t_sid= t_suite=- t_tty= t_dir= t_pid=-
+UUID_RE='[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}'
+UUID_PREFIX='w[0-9]+t[0-9]+p[0-9]+[:.]'
+
+# A bare iTerm2 session id: its terminal and directory come from iTerm2, the
+# only calls made before scope. `path` is set only where iTerm2's shell
+# integration reports the directory; with it, a bare id goes through the deny
+# and route checks, without it the directory is empty and scope refuses it
+# unless a session of this profile is on the terminal.
+id_target() { # <name>
+  i_sid=$(printf '%s' "$1" | sed -E 's/^w[0-9]+t[0-9]+p[0-9]+[:.]//')
+  i_ans=$(it2_call session get-var tty --session "$i_sid"); it2_dead $?
+  i_tty=$(var_value "$i_ans")
+  case $i_tty in /dev/?*) ;; *) fail4 "iTerm2 has no session $i_sid" ;; esac
+  i_ans=$(it2_call session get-var path --session "$i_sid"); it2_dead $?
+  i_dir=$(var_value "$i_ans")
+  case $i_dir in /*) [ -d "$i_dir" ] || i_dir= ;; *) i_dir= ;; esac
+  t_kind=id t_label=$(printf '%s' "$i_sid" | cut -c1-8) t_sid=$i_sid t_suite=${IT2_SUITE:--}
+  t_tty=$i_tty t_dir=$i_dir t_pid=-
+}
+
+# A session row (pid, profile dir, cwd, name) becomes the target.
+session_target() { # <arg> <pid> <pdir> <cwd> <name>
+  s_tty=$(tty_of "$2") || fail4 "$1 (pid $2) has no terminal"
+  s_sid=$(env_word "$2" 'ITERM_SESSION_ID=[^:]*:')
+  [ -n "$s_sid" ] || fail4 "pid $2 is not in an iTerm2 session pane-sight can address"
+  s_suite=$(env_word "$2" 'IT2_SUITE=')
+  s_lab=$(dir_label "$4")
+  [ -n "$s_lab" ] || { [ "$5" != - ] && s_lab=$5; }
+  [ -n "$s_lab" ] || s_lab=$(basename "$4")
+  t_kind=session t_label=$s_lab t_sid=$s_sid t_suite=${s_suite:--} t_tty=$s_tty
+  t_dir=$4 t_pid=$2
+  [ "$t_dir" != - ] || t_dir=
+}
+
+# A claude-peer panes row (slot state pid leader worktree sid suite) becomes the target.
+peer_target() { # <arg> <row>
+  IFS=$TAB read -r p_slot p_state p_pid p_leader p_wt p_sid p_suite <<EOF_ROW
+$2
+EOF_ROW
+  p_tty=$(tty_of "$p_pid") || fail4 "$1 (pid $p_pid) has no terminal"
+  if [ "$p_state" = running ]; then
+    p_lab=$("$TABNAME" --role "$p_wt" 2>/dev/null </dev/null | sed -n 1p | cut -f2)
+    [ -n "$p_lab" ] || p_lab=$(cap "$p_slot")
+    p_dir=$p_wt
+  else
+    p_lab=$(cap "$p_slot")
+    p_dir=$p_leader
+  fi
+  if [ "$p_sid" = - ]; then
+    [ "$p_state" = running ] || fail4 "$p_lab's pane has no recorded iTerm2 session (it was opened before claude-peer wrote one); reopen its tab"
+    e_pid=$p_pid
+    while IFS=$TAB read -r r_pid _ r_cwd _; do
+      [ -n "$r_pid" ] && same_dir "$r_cwd" "$p_wt" && { e_pid=$r_pid; break; }
+    done <<EOF_REG
+$REG
+EOF_REG
+    p_sid=$(env_word "$e_pid" 'ITERM_SESSION_ID=[^:]*:')
+    [ -n "$p_sid" ] || fail4 "pid $e_pid is not in an iTerm2 session pane-sight can address"
+    p_suite=$(env_word "$e_pid" 'IT2_SUITE=')
+  fi
+  t_kind=peer-$p_state t_label=$p_lab t_sid=$p_sid t_suite=${p_suite:--} t_tty=$p_tty
+  t_dir=$p_dir t_pid=$p_pid
+}
+
+# resolve <name>: sets t_*; otherwise prints the exit-4 line and exits 4.
+resolve() {
+  name=$1
+  if printf '%s' "$name" | grep -Eiq "^($UUID_PREFIX)?$UUID_RE\$"; then
+    id_target "$name"
+    return 0
+  fi
+  case $name in
+    *[!0-9]*|'') ;;
+    *)
+      row=$(printf '%s\n' "$REG" | awk -F'\t' -v p="$name" '$1 == p')
+      if [ -n "$row" ]; then
+        IFS=$TAB read -r r_pid r_pdir r_cwd r_name <<EOF_ROW
+$row
+EOF_ROW
+        session_target "$name" "$r_pid" "$r_pdir" "$r_cwd" "$r_name"
+        return 0
+      fi
+      row=$(printf '%s\n' "$PANES" | awk -F'\t' -v p="$name" '$3 == p')
+      [ -z "$row" ] || { peer_target "$name" "$(printf '%s\n' "$row" | sed -n 1p)"; return 0; }
+      ;;
+  esac
+
+  rows=$(printf '%s\n' "$PANES" | awk -F'\t' -v n="$name" '$1 == n')
+  if [ -n "$rows" ]; then
+    run=$(printf '%s\n' "$rows" | awk -F'\t' '$2 == "running"')
+    if [ -n "$run" ]; then
+      [ "$(printf '%s\n' "$run" | wc -l)" -le 1 ] ||
+        fail4 "$name names more than one running pane: pid $(printf '%s\n' "$run" | cut -f3 | paste -sd, - | sed 's/,/, /g')"
+      peer_target "$name" "$run"
+      return 0
+    fi
+    # Waiting panes: only those with a terminal, then the caller's own leader.
+    live=$(printf '%s\n' "$rows" | while IFS=$TAB read -r sl st p l w si su; do
+             tty_of "$p" >/dev/null && printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$sl" "$st" "$p" "$l" "$w" "$si" "$su"
+           done)
+    [ -n "$live" ] || fail4 "$name (pid $(printf '%s\n' "$rows" | sed -n 1p | cut -f3)) has no terminal"
+    mine=$(printf '%s\n' "$live" | while IFS=$TAB read -r sl st p l w si su; do
+             [ -n "$TOP" ] && same_dir "$l" "$TOP" && printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$sl" "$st" "$p" "$l" "$w" "$si" "$su"
+           done)
+    [ -z "$mine" ] || live=$mine
+    [ "$(printf '%s\n' "$live" | wc -l)" -le 1 ] ||
+      fail4 "$name names more than one waiting pane: pid $(printf '%s\n' "$live" | cut -f3 | paste -sd, - | sed 's/,/, /g')"
+    peer_target "$name" "$live"
+    return 0
+  fi
+
+  # A session by name or by its tabname label.
+  hits=$(printf '%s\n' "$REG" | while IFS=$TAB read -r pid pdir cwd sname; do
+           [ -n "$pid" ] || continue
+           if [ "$sname" = "$name" ] || [ "$(dir_label "$cwd")" = "$name" ]; then
+             printf '%s\t%s\t%s\t%s\n' "$pid" "$pdir" "$cwd" "$sname"
+           fi
+         done)
+  if [ -n "$hits" ]; then
+    [ "$(printf '%s\n' "$hits" | wc -l)" -le 1 ] ||
+      fail4 "$name names more than one session: pid $(printf '%s\n' "$hits" | cut -f1 | paste -sd, - | sed 's/,/, /g')"
+    IFS=$TAB read -r r_pid r_pdir r_cwd r_name <<EOF_ROW
+$hits
+EOF_ROW
+    session_target "$name" "$r_pid" "$r_pdir" "$r_cwd" "$r_name"
+    return 0
+  fi
+  fail4 "no pane named $name (pane-sight list)"
+}
+
+# --- scope ---------------------------------------------------------------------------
+
+s_code= s_text= s_prof=-
+
+# The profile `claude` would use in <dir>, asked of the wrapper's own resolver
+# in a zsh of its own. Prints "same", or "other" and then the directory.
+route_of() { # <dir>
+  "$ZSH" -fc 'emulate -L zsh
+    source "$1" 2>/dev/null || exit 3
+    (( $+functions[claude_profile_dir] )) || exit 3
+    cd -q -- "$2" 2>/dev/null || exit 3
+    unset CLAUDE_PROFILE
+    d=$(claude_profile_dir 2>/dev/null) || d=$HOME/.claude
+    [[ -n $d ]] || d=$HOME/.claude
+    if [[ ${d:a} == ${3:a} ]]; then print same; else print other; print -r -- ${d:a}; fi' \
+    zsh "$FUNCS" "$1" "$CALLER" 2>/dev/null </dev/null
+}
+
+refuse() { s_code=$1 s_text="refused: $t_label: $2"; return 3; }
+
+# scope: reads t_*; returns 0, or sets s_code and s_text and returns 3.
+# Nothing here asks iTerm2 anything. P is the terminal's processes and M this
+# profile's own registry rows among them. Evidence of somebody else's Claude, any
+# one of which refuses: a registry row of another directory; an environment naming
+# another CLAUDE_CONFIG_DIR (a session's children carry it even where ps hides the
+# claude process's own); a process named exactly claude that M does not hold.
+scope() {
+  s_code= s_text= s_prof=-
+  PROCS=$(tty_procs "$t_tty") || PROCS=
+  # who is on the terminal must be knowable: the target's own pid has to be in the list
+  if [ -z "$PROCS" ] || { [ "$t_pid" != - ] && ! printf '%s\n' "$PROCS" | awk -F'\t' -v p="$t_pid" '$1 == p { f = 1 } END { exit !f }'; }; then
+    refuse no-processes "cannot tell who is on its terminal"
+    return 3
+  fi
+  p_pids=$(printf '%s\n' "$PROCS" | awk -F'\t' 'NF { printf " %s", $1 } END { print " " }')
+  ON=$(printf '%s\n' "$REG" | awk -F'\t' -v p="$p_pids" 'NF && index(p, " " $1 " ")')
+  M=$(printf '%s\n' "$ON" | awk -F'\t' -v c="$CALLER" 'NF && $2 == c')
+  other=$(printf '%s\n' "$ON" | awk -F'\t' -v c="$CALLER" 'NF && $2 != c { print $2; exit }')
+  [ -n "$other" ] || other=$(printf '%s\n' "$PROCS" | awk -F'\t' -v c="$CALLER" 'NF && $3 != "-" && $3 != c { print $3; exit }')
+  if [ -n "$other" ]; then
+    s_prof=$(profile_label "$other")
+    refuse other-profile "its pane runs a Claude session of the $s_prof profile; this session is $OWN"
+    return 3
+  fi
+  m_pids=$(printf '%s\n' "$M" | awk -F'\t' 'NF { printf " %s", $1 } END { print " " }')
+  unknown=$(printf '%s\n' "$PROCS" | awk -F'\t' -v m="$m_pids" 'NF && $2 == "claude" && !index(m, " " $1 " ") { print $1; exit }')
+  if [ -n "$unknown" ]; then
+    refuse unknown-session "its pane runs a Claude process (pid $unknown) that is not a session of this profile ($OWN)"
+    return 3
+  fi
+  if [ -n "$M" ]; then
+    s_prof=$OWN
+    D=$(printf '%s\n' "$M" | cut -f3)
+  else
+    D=$t_dir
+  fi
+  [ -n "$D" ] || { refuse no-directory "cannot tell which directory its pane is in"; return 3; }
+  while IFS= read -r d; do
+    case $d in /*) ;; *) refuse no-directory "cannot tell which directory its pane is in"; return 3 ;; esac
+    if [ -x "$DENY" ]; then "$DENY" check --profile "$CALLER" "$d" >/dev/null 2>&1 </dev/null; rc=$?; else rc=127; fi
+    case $rc in
+      0) ;;
+      1) refuse denied "its directory is inside a deny rule of this profile"; return 3 ;;
+      *) refuse deny-unknown "denyguard could not say whether its directory is allowed"; return 3 ;;
+    esac
+  done <<EOF_D
+$D
+EOF_D
+  if [ -z "$M" ]; then
+    ans=$(route_of "$t_dir") || ans=
+    case $ans in
+      same) ;;
+      other*)
+        refuse other-route "no Claude session runs there and its directory routes to the $(profile_label "$(printf '%s\n' "$ans" | sed -n 2p)") profile; this session is $OWN"
+        return 3 ;;
+      *) refuse route-unknown "could not ask which profile its directory routes to"; return 3 ;;
+    esac
+  fi
+  return 0
+}
+
+# --- audit ---------------------------------------------------------------------------
+
+clean_label() { printf '%s' "$t_label" | tr '\t\n\r' '   '; }
+
+# audit <verb> <result> <detail>: one row; non-zero when it could not be written.
+audit() {
+  c=$(clean_label)
+  ( umask 077
+    mkdir -p "$AUDIT_DIR" && chmod 700 "$AUDIT_DIR" &&
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$t_kind" "$c" \
+      "${CLAUDE_CODE_SESSION_ID:--}" "$3" >> "$AUDIT" ) 2>/dev/null
+}
+
+# --- talking to iTerm2 -----------------------------------------------------------------
+# Only `it2 session read` and `it2 session get-var tty|path` are ever run.
+
+# it2 comes from two fixed places, the first that is executable: iTerm2's Claude
+# Code integration links it into ~/.config/iterm2, and the app bundle carries it.
+find_it2() {
+  for f in "$HOME/.config/iterm2/it2" /Applications/iTerm.app/Contents/Resources/utilities/it2; do
+    [ -x "$f" ] && { printf '%s\n' "$f"; return 0; }
+  done
+  return 1
+}
+
+# it2 under a time limit, in a process group of its own so the limit can kill all of it.
+RUN_PY='import os, signal, subprocess, sys
+it2, limit, args = sys.argv[1], int(sys.argv[2]), sys.argv[3:]
+p = subprocess.Popen([it2] + args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+try:
+    out, _ = p.communicate(timeout=limit)
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid, signal.SIGKILL)
+    p.communicate()
+    sys.exit(124)
+sys.stdout.buffer.write(out)
+sys.exit(p.returncode)'
+
+# The environment iTerm2's API wants, for a subshell about to talk to it.
+api_env() {
+  if [ "$t_suite" = - ]; then
+    unset IT2_SUITE
+    # the shim's cookie clause: a cookie older than the socket is stale, never exported
+    ck=$HOME/.local/state/iterm2/api-cookie
+    if [ -z "${ITERM2_COOKIE-}" ] && [ -r "$ck" ] && [ "$ck" -nt "$SUPPORT/iTerm2/private/socket" ]; then
+      read -r c k < "$ck"
+      [ -z "$k" ] || { ITERM2_COOKIE=$c ITERM2_KEY=$k; export ITERM2_COOKIE ITERM2_KEY; }
+    fi
+  else
+    IT2_SUITE=$t_suite; export IT2_SUITE
+  fi
+}
+
+# it2_call <it2 args>: prints it2's stdout, returns its status. 124 is the time
+# limit, 125 is "cannot ask" (it2 missing, API off); both have said why.
+it2_call() {
+  ic_it2=$(find_it2)
+  [ -n "$ic_it2" ] || { say "it2 is missing ($HOME/.config/iterm2/it2, where iTerm2's Claude Code integration links it, and /Applications/iTerm.app/Contents/Resources/utilities/it2)"; return 125; }
+  ic_dom=com.googlecode.iterm2
+  [ "$t_suite" = - ] || ic_dom=$t_suite
+  [ "$(defaults read "$ic_dom" EnableAPIServer 2>/dev/null </dev/null)" = 1 ] ||
+    { say "iTerm2's API is off (Settings > General > Magic > Enable Python API)"; return 125; }
+  ic_lim=${PANE_SIGHT_TIMEOUT:-10}
+  case $ic_lim in ''|*[!0-9]*|0) ic_lim=10 ;; esac
+  (
+    api_env
+    exec python3 -c "$RUN_PY" "$ic_it2" "$ic_lim" "$@"
+  )
+  ic_rc=$?
+  [ "$ic_rc" -ne 124 ] || say "iTerm2 did not answer within ${ic_lim}s (an API permission prompt may be waiting in iTerm2)"
+  return "$ic_rc"
+}
+
+# it2_dead <status of it2_call>: exits 1 when it could not ask or ran out of time.
+it2_dead() {
+  case $1 in 124|125) ;; *) return 0 ;; esac
+  case $verb in read|shot) audit "$verb" failed:it2 "" ;; esac
+  exit 1
+}
+
+# What `it2 session get-var` printed, as a value: a leading double quote means a
+# JSON string ("\/dev\/ttys010"); anything else is taken as printed. An answer
+# that does not parse is empty.
+VAR_PY='import json, sys
+s = sys.stdin.read().strip()
+if s.startswith(chr(34)):
+    try:
+        s = json.loads(s)
+    except ValueError:
+        s = ""
+    if not isinstance(s, str):
+        s = ""
+print(s)'
+var_value() { printf '%s' "$1" | python3 -c "$VAR_PY"; }
+
+# The scope was judged on the terminal and content is fetched by id: the two
+# must be the same pane.
+bind_check() {
+  b_ans=$(it2_call session get-var tty --session "$t_sid"); it2_dead $?
+  b_got=$(var_value "$b_ans")
+  [ "$b_got" = "$t_tty" ] && return 0
+  audit "$verb" failed:binding ""
+  say "iTerm2 says session $t_sid is on ${b_got:-an unknown terminal}, not $t_tty; nothing was read"
+  exit 1
+}
+
+# --- masking ---------------------------------------------------------------------------
+
+# stdin: the screen. stdout: "total TAB kept TAB masked", then the last <n> lines
+# with secret-shaped strings replaced. The key block goes first, on the whole
+# screen, so a block that starts above the window is masked too. A net that
+# counts and replaces; it never refuses. Patterns are built in pieces so this
+# file does not trip tests/no-secrets.bats.
+MASK_PY='import re, sys
+text = sys.stdin.buffer.read().decode("utf-8", "replace")
+n = int(sys.argv[1])
+lines = [l.rstrip() for l in text.split("\n")]
+while lines and not lines[-1]:
+    lines.pop()
+total = len(lines)
+count = 0
+def mask(rx, tag, s, group=0, keep=None):
+    def rep(m):
+        global count
+        if keep and not keep(m.group(group)):
+            return m.group(0)
+        count += 1
+        a, b = m.start(group) - m.start(0), m.end(group) - m.start(0)
+        return m.group(0)[:a] + "[masked:" + tag + "]" + m.group(0)[b:]
+    return rx.sub(rep, s)
+pem = re.compile("-----BEGIN" + "[A-Z0-9 ]*PRIVATE" + " KEY-----" + ".*?" + "(?:-----END" + "[A-Z0-9 ]*PRIVATE" + " KEY-----|\\Z)", re.S)
+both = lambda v: re.search("[A-Za-z]", v) and re.search("[0-9]", v)
+pats = [
+    (re.compile("\\b(?:gh[pousr]" + "_[A-Za-z0-9]{20,})"), "github", 0, None),
+    (re.compile("\\bgithub" + "_pat_[A-Za-z0-9_]{20,}"), "github", 0, None),
+    (re.compile("\\bsk-[A-Za-z0-9_-]{20,}"), "key", 0, None),
+    (re.compile("\\bxox[abprs]-[A-Za-z0-9-]{10,}"), "slack", 0, None),
+    (re.compile("\\b(?:AKIA|ASIA)[0-9A-Z]{16}\\b"), "aws", 0, None),
+    (re.compile("\\beyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}"), "jwt", 0, None),
+    (re.compile("\\bbearer\\s+([A-Za-z0-9._~+/=-]{20,})", re.I), "bearer", 1, None),
+    (re.compile("\\b[A-Za-z0-9_]*(?:password|passwd|secret|token|api[_-]?key)[A-Za-z0-9_]*\\s*[=:]\\s*[\"\\x27]?([A-Za-z0-9+/_.=-]{16,})", re.I), "value", 1, both),
+]
+lines = mask(pem, "pem", "\n".join(lines)).split("\n")
+while lines and not lines[-1]:
+    lines.pop()
+for i, l in enumerate(lines):
+    for rx, tag, group, keep in pats:
+        l = mask(rx, tag, l, group, keep)
+    lines[i] = l
+kept = lines[-n:]
+sys.stdout.buffer.write(("%d\t%d\t%d\n" % (total, len(kept), count) + "".join(l + "\n" for l in kept)).encode("utf-8", "replace"))'
+
+# note_due <verb>: 0 unless a row with noted=1 for this caller, label and verb is under 600 s old.
+note_due() {
+  nd_cut=$(python3 -c 'import time; print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 600)))') || return 0
+  nd_lab=$(clean_label)
+  ! awk -F'\t' -v v="$1" -v l="$nd_lab" -v c="${CLAUDE_CODE_SESSION_ID:--}" -v cut="$nd_cut" \
+    '$2 == v && $5 == l && $6 == c && $7 ~ /noted=1/ && $1 >= cut { f = 1 } END { exit !f }' "$AUDIT" 2>/dev/null
+}
+
+# --- verbs ---------------------------------------------------------------------------
+
+cmd_read() {
+  r_n=60 r_name=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --lines) [ $# -ge 2 ] || usage; r_n=$2; shift 2 ;;
+      -?*) usage ;;
+      *) [ -z "$r_name" ] || usage; r_name=$1; shift ;;
+    esac
+  done
+  [ -n "$r_name" ] || usage
+  case $r_n in ''|*[!0-9]*) usage ;; esac
+  { [ "$r_n" -ge 1 ] && [ "$r_n" -le 500 ]; } || usage
+  init
+  resolve "$r_name"
+  # scope is decided before iTerm2 is asked for any content
+  if ! scope; then
+    audit read "refused:$s_code" ""
+    say "$s_text"
+    exit 3
+  fi
+  [ "$t_kind" = id ] || bind_check
+  r_txt=$(it2_call session read --session "$t_sid"); r_rc=$?
+  it2_dead "$r_rc"
+  [ "$r_rc" -eq 0 ] || { audit read failed:read ""; say "it2 could not read $t_label's pane"; exit 1; }
+  r_res=$(printf '%s\n' "$r_txt" | python3 -c "$MASK_PY" "$r_n")
+  r_stats=$(printf '%s\n' "$r_res" | sed -n 1p)
+  [ -n "$r_stats" ] || { audit read failed:mask ""; say "could not mask the text; nothing was shown"; exit 1; }
+  r_total=$(printf '%s' "$r_stats" | cut -f1)
+  r_kept=$(printf '%s' "$r_stats" | cut -f2)
+  r_masked=$(printf '%s' "$r_stats" | cut -f3)
+  r_det="lines=$r_kept masked=$r_masked"
+  r_note=
+  case $t_kind in peer-*) note_due read && { r_note=1; r_det="$r_det noted=1"; } ;; esac
+  # the row first: a read that cannot be recorded shows nothing
+  audit read ok "$r_det" || { say "cannot write $AUDIT; nothing was shown"; exit 1; }
+  say "$t_label ($t_kind): $r_kept of $r_total lines, $r_masked masked"
+  [ "$r_kept" -eq 0 ] || printf '%s\n' "$r_res" | sed 1d
+  [ -z "$r_note" ] || [ ! -x "$PEER" ] || "$PEER" log note "read of $t_label's pane" >/dev/null 2>&1 </dev/null || true
+  exit 0
+}
+
+# The one render: iTerm2's picture of the session whose id is argv[1], written to
+# argv[2] (which must not exist) under an alarm of argv[3] seconds. Exit 10+status
+# when iTerm2 says no (11 no such session, 12 malformed, 13 not drawn). The
+# library's App is built from the session list, which holds no hidden peer, so the
+# RPC is called directly.
+SHOT_PY='import os, signal, sys
+import iterm2
+from iterm2 import rpc
+
+sid, out, limit = sys.argv[1], sys.argv[2], int(sys.argv[3])
+signal.signal(signal.SIGALRM, signal.SIG_DFL)  # an inherited SIG_IGN would disarm the limit
+signal.alarm(limit)
+
+async def main(connection):
+    r = await rpc.async_screenshot(connection, sid)
+    s = r.screenshot_response
+    if s.status != 0:
+        sys.exit(10 + s.status)
+    png = bytes(s.png)
+    if not png.startswith(b"\x89PNG\r\n\x1a\n") or len(png) < 33:
+        sys.exit(13)
+    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(png)
+    print("%d\t%d\t%d" % (int.from_bytes(png[16:20], "big"), int.from_bytes(png[20:24], "big"), len(png)))
+
+iterm2.run_until_complete(main)'
+
+cmd_shot() {
+  h_out= h_name=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --out) [ $# -ge 2 ] || usage; h_out=$2; shift 2 ;;
+      -?*) usage ;;
+      *) [ -z "$h_name" ] || usage; h_name=$1; shift ;;
+    esac
+  done
+  [ -n "$h_name" ] || usage
+  if [ -n "$h_out" ]; then
+    case $h_out in /*) ;; *) h_out=$PWD/$h_out ;; esac
+    [ ! -e "$h_out" ] || { say "$h_out exists; shot will not overwrite it"; exit 2; }
+    [ -d "$(dirname "$h_out")" ] || { say "no directory for $h_out"; exit 2; }
+  fi
+  # the runtime before iTerm2 is asked anything: asking without one offers a dialog
+  h_py=$(find_py) || {
+    say "no Python runtime with the iterm2 library (iTerm2 > Scripts > Manage > Install Python Runtime, or set PANE_SIGHT_PYTHON)"
+    exit 1
+  }
+  init
+  resolve "$h_name"
+  if ! scope; then
+    audit shot "refused:$s_code" ""
+    say "$s_text"
+    exit 3
+  fi
+  [ "$t_kind" = id ] || bind_check
+  h_default=
+  if [ -z "$h_out" ]; then
+    h_dir=${TMPDIR:-/tmp}/pane-sight
+    ( umask 077; mkdir -p "$h_dir" ) && chmod 700 "$h_dir" || { say "cannot make $h_dir"; exit 1; }
+    h_out=$h_dir/$(clean_label | tr -c 'A-Za-z0-9._-' '-')-$(date -u +%Y%m%dT%H%M%SZ).png
+    h_default=1
+    # a second shot of the pane within the same second
+    [ ! -e "$h_out" ] || h_out=${h_out%.png}-$$.png
+  fi
+  h_lim=${PANE_SIGHT_TIMEOUT:-10}
+  case $h_lim in ''|*[!0-9]*|0) h_lim=10 ;; esac
+  h_res=$( ( api_env; exec "$h_py" -c "$SHOT_PY" "$t_sid" "$h_out" "$h_lim" ) ); h_rc=$?
+  case $h_rc in
+    0) ;;
+    142) audit shot failed:it2 ""
+         say "iTerm2 did not answer within ${h_lim}s (an API permission prompt may be waiting in iTerm2)"; exit 1 ;;
+    11) audit shot failed:no-session ""; say "iTerm2 has no session $t_sid"; exit 1 ;;
+    13) audit shot failed:not-drawn ""
+        say "not drawn: iTerm2 returned no image for $t_label"
+        case $t_kind in peer-*) say "a peer that has never been shown may have nothing to draw: click its Session Status row once and try again" ;; esac
+        exit 1 ;;
+    *) audit shot failed:render ""; say "the render failed (status $h_rc)"; exit 1 ;;
+  esac
+  h_w=$(printf '%s' "$h_res" | cut -f1); h_h=$(printf '%s' "$h_res" | cut -f2); h_b=$(printf '%s' "$h_res" | cut -f3)
+  h_det="bytes=$h_b file=$h_out"
+  h_note=
+  case $t_kind in peer-*) note_due shot && { h_note=1; h_det="$h_det noted=1"; } ;; esac
+  # the row first: a shot that cannot be recorded leaves no file
+  audit shot ok "$h_det" || { rm -f "$h_out"; say "cannot write $AUDIT; nothing was shown"; exit 1; }
+  say "$t_label ($t_kind): ${h_w}x${h_h} px, $h_b bytes"
+  printf '%s\n' "$h_out"
+  [ -z "$h_note" ] || [ ! -x "$PEER" ] || "$PEER" log note "shot of $t_label's pane" >/dev/null 2>&1 </dev/null || true
+  if [ -n "$h_default" ]; then
+    ls -t "$h_dir" 2>/dev/null | grep '\.png$' | tail -n +21 | while IFS= read -r f; do rm -f "$h_dir/$f"; done
+  fi
+  exit 0
+}
+
+# A refusal of the caller comes before any name is resolved; read and shot leave a
+# best-effort audit row with kind and label "-".
+caller_refuse() { # <code> <sentence>
+  t_kind=- t_label=-
+  case $verb in read|shot) audit "$verb" "refused:$1" "" ;; esac
+  say "refused: $2"
+  exit 3
+}
+
+# caller_of: sets CALLER and OWN. The caller is the claim (CLAUDE_CONFIG_DIR) when no
+# ancestor is a registered session; else the profile of the nearest registered
+# ancestor, and a claim that differs from it is refused. An ancestor named claude that
+# no registry holds, met before any registered one, is refused. A pid held by
+# registries of more than one directory, one of them not the claim, counts as that
+# other directory.
+caller_of() {
+  co_a=
+  while IFS=$TAB read -r co_pid co_uc co_dir; do
+    [ -n "$co_pid" ] || continue
+    co_rows=$(printf '%s\n' "$REG" | awk -F'\t' -v p="$co_pid" '$1 == p')
+    if [ -n "$co_rows" ]; then
+      co_a=$(printf '%s\n' "$co_rows" | awk -F'\t' -v c="$CLAIM" '$2 != c { print $2; exit }')
+      [ -n "$co_a" ] || co_a=$CLAIM
+      break
+    fi
+    [ "$co_uc" != claude ] ||
+      caller_refuse caller-unknown "this command runs under a Claude process (pid $co_pid) that no profile's registry holds"
+  done <<EOF_ANC
+$ANC
+EOF_ANC
+  CALLER=${co_a:-$CLAIM}
+  OWN=$(profile_label "$CALLER")
+  [ "$CALLER" = "$CLAIM" ] ||
+    caller_refuse caller-mismatch "CLAUDE_CONFIG_DIR names the $(profile_label "$CLAIM") profile, but this command runs under a session of the $OWN profile"
+}
+
+# init: the caller, its repository's panes, and the registry.
+init() {
+  CLAIM=$(norm "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
+  ANC=$(ancestors)
+  EXTRA_DIRS=$(printf '%s\n' "$CLAIM"; printf '%s\n' "$ANC" | awk -F'\t' 'NF && $3 != "-" { print $3 }')
+  REG=$(registry)
+  caller_of
+  TOP=$(git rev-parse --show-toplevel 2>/dev/null)
+  PANES=
+  [ -x "$PEER" ] && PANES=$("$PEER" panes 2>/dev/null </dev/null)
+}
+
+cmd_why() {
+  [ $# -eq 1 ] || usage
+  init
+  resolve "$1"
+  scope; rc=$?
+  verdict=readable
+  [ "$rc" -eq 0 ] || verdict="refused: $s_code"
+  printf 'name\t%s\nkind\t%s\nlabel\t%s\npid\t%s\ntty\t%s\nsession\t%s\nsuite\t%s\ndir\t%s\nverdict\t%s\n' \
+    "$1" "$t_kind" "$t_label" "$t_pid" "$t_tty" "$t_sid" "$t_suite" "${t_dir:--}" "$verdict"
+  [ "$rc" -eq 0 ] || say "$s_text"
+  exit "$rc"
+}
+
+# verdict_of <name>: "profile<TAB>verdict", never exits.
+verdict_of() {
+  v=$( ( resolve "$1" 2>/dev/null
+         scope; rc=$?
+         if [ "$rc" -eq 0 ]; then vv=readable; else vv="refused: $s_code"; fi
+         printf '%s\t%s\n' "$s_prof" "$vv" ) )
+  printf '%s\n' "${v:-$(printf -- '-\tunaddressable')}"
+}
+
+# shown <pid> <cwd>: does a peer row already show this session?
+shown() {
+  printf '%s\n' "$PANES" | awk -F'\t' -v p="$1" '$3 == p { f = 1 } END { exit !f }' && return 0
+  printf '%s\n' "$PANES" | awk -F'\t' '$2 == "running" { print $5 }' |
+    { while IFS= read -r w; do same_dir "$w" "$2" && exit 0; done; exit 1; }
+}
+
+cmd_list() {
+  [ $# -eq 0 ] || usage
+  init
+  printf '%s\n' "$PANES" | while IFS=$TAB read -r sl st p l w _; do
+    [ -n "$sl" ] || continue
+    n=$sl
+    [ "$(printf '%s\n' "$PANES" | awk -F'\t' -v s="$sl" '$1 == s' | wc -l)" -le 1 ] || n=$p
+    printf '%s\tpeer-%s\t%s\t%s\n' "$n" "$st" "$p" "$(verdict_of "$n")"
+  done
+  printf '%s\n' "$REG" | while IFS=$TAB read -r pid pdir cwd sname; do
+    [ -n "$pid" ] || continue
+    shown "$pid" "$cwd" && continue
+    n=$sname
+    if [ "$n" = - ] || [ "$(printf '%s\n' "$REG" | awk -F'\t' -v s="$n" '$4 == s' | wc -l)" -gt 1 ]; then n=$pid; fi
+    v=$(verdict_of "$pid")
+    printf '%s\tsession\t%s\t%s\t%s\n' "$n" "$pid" "$(profile_label "$pdir")" "${v#*"$TAB"}"
+  done
+}
+
+first_exe() { for f in "$@"; do [ -x "$f" ] && r=$f; done; printf '%s\n' "${r:-}"; }
+
+# The Python runtime that carries the iterm2 library (as open-as finds it); fails when none.
+find_py() {
+  fp=${PANE_SIGHT_PYTHON:-}
+  [ -n "$fp" ] || fp=$(first_exe "$SUPPORT"/iTerm2/iterm2env/versions/*/bin/python3 "$SUPPORT"/iTerm2/uv/venvs/*/bin/python3)
+  [ -x "$fp" ] && printf '%s\n' "$fp"
+}
+
+cmd_status() {
+  line=
+  case ${1-} in --line) line=1; shift ;; esac
+  [ $# -eq 0 ] || usage
+  it2=$(find_it2)
+  py=$(find_py)
+  api=off
+  [ "$(defaults read com.googlecode.iterm2 EnableAPIServer 2>/dev/null)" = 1 ] && api=on
+  dg=; [ -x "$DENY" ] && dg=$DENY
+  rs=; zp=$(command -v "$ZSH" 2>/dev/null) && [ -r "$FUNCS" ] && rs="$zp $FUNCS"
+  counts=$(awk -F'\t' '
+    $2 == "read" && $3 == "ok" { r++ }  $2 == "shot" && $3 == "ok" { s++ }
+    $3 ~ /^refused:/ { x++ }  $3 ~ /^failed:/ { f++ }
+    END { printf "%d reads, %d shots, %d refused, %d failed", r, s, x, f }' "$AUDIT" 2>/dev/null) ||
+    counts='0 reads, 0 shots, 0 refused, 0 failed'
+  [ -n "$counts" ] || counts='0 reads, 0 shots, 0 refused, 0 failed'
+  if [ -n "$line" ]; then
+    missing=
+    [ -n "$it2" ] || missing='it2 is missing'
+    [ -n "$missing" ] || [ -n "$py" ] || missing='no Python runtime with the iterm2 library'
+    [ -n "$missing" ] || [ "$api" = on ] || missing="iTerm2's API is off"
+    [ -n "$missing" ] || [ -n "$dg" ] || missing='denyguard is missing'
+    [ -n "$missing" ] || [ -n "$rs" ] || missing='the profile resolver is missing'
+    if [ -n "$missing" ]; then printf 'not ready: %s\n' "$missing"
+    else printf 'ready (%s)\n' "$(printf '%s' "$counts" | awk -F', ' '{ print $1 ", " $2 ", " $3 }')"; fi
+    return 0
+  fi
+  printf 'it2:       %s\nruntime:   %s\napi:       %s\ndenyguard: %s\nresolver:  %s\naudit:     %s\n' \
+    "${it2:-MISSING}" "${py:-MISSING}" "$api" "${dg:-MISSING}" "${rs:-MISSING}" "$counts"
+}
+
+# --- dispatch ------------------------------------------------------------------------
+
+case ${0##*/} in
+  pane-read) set -- read "$@" ;;
+  pane-shot) set -- shot "$@" ;;
+esac
+[ $# -ge 1 ] || usage
+verb=$1; shift
+case $verb in
+  read|shot|why|list|status) ;;
+  *) usage ;;
+esac
+need_macos
+case $verb in
+  read) cmd_read "$@" ;;
+  shot) cmd_shot "$@" ;;
+  why) cmd_why "$@" ;;
+  list) cmd_list "$@" ;;
+  status) cmd_status "$@" ;;
+esac

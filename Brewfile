@@ -38,6 +38,7 @@ brew 'git' # a free and open source distributed version control system designed 
 brew 'git-filter-repo' # Rewrites git history — file contents, paths, and commit messages. Supersedes git-filter-branch; unlike bfg it can rewrite messages.
 brew 'git-flow' # Git extensions for Vincent Driessen's branching model
 brew 'git-lfs' # Git extension for versioning large files
+brew 'glab' # GitLab CLI — the official GitLab command-line tool.
 brew 'gmp' # is a free library for arbitrary precision arithmetic, operating on signed integers, rational numbers, and floating-point numbers.
 brew 'gnu-getopt' # parse command-line arguments from shell scripts
 brew 'gnu-sed' # sed (stream editor) is a non-interactive command-line text editor.

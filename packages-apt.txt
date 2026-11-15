@@ -24,6 +24,8 @@ direnv
 git-delta
 git-filter-repo
 git-lfs
+# glab: Ubuntu packages it from noble on; a release without it skips it
+glab
 whois
 jc
 gallery-dl

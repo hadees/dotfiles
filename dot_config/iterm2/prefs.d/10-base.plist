@@ -1428,7 +1428,13 @@
 	</dict>
 	<key>PromptOnQuit</key>
 	<false/>
+	<key>RestoreWindowContents</key>
+	<true/>
+	<key>RunJobsInServers</key>
+	<true/>
 	<key>SoundForEsc</key>
+	<false/>
+	<key>StatusMergeWorkgroups</key>
 	<false/>
 	<key>TabStyleWithAutomaticOption</key>
 	<integer>4</integer>
@@ -1444,6 +1450,8 @@
 	<key>UseRecommendedAIModel</key>
 	<true/>
 	<key>VisualIndicatorForEsc</key>
+	<false/>
+	<key>kTurnOffSlowTriggersOfferUserDefaultsKey</key>
 	<false/>
 </dict>
 </plist>

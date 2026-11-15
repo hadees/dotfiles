@@ -215,6 +215,27 @@ STUBEOF
   [[ "$output" == *"store:   iterm2-prefs not deployed"* ]]
 }
 
+@test "iterm2-doctor: panes comes from pane-sight status --line" {
+  make_app "$(doctor_stamp)"
+  cat > "$STUB/pane-sight" <<STUBEOF
+#!/bin/sh
+printf '%s\n' "\$*" > "$BATS_TEST_TMPDIR/panes-args"
+echo "ready (3 reads, 1 shots, 0 refused)"
+STUBEOF
+  chmod +x "$STUB/pane-sight"
+  doctor
+  [ "$status" -eq 0 ]
+  [[ "$output" == *$'\n'"panes:   ready (3 reads, 1 shots, 0 refused)"$'\n'* ]]
+  [ "$(cat "$BATS_TEST_TMPDIR/panes-args")" = "status --line" ]
+}
+
+@test "iterm2-doctor: says so when pane-sight is not deployed" {
+  make_app "$(doctor_stamp)"
+  run zsh -c "source '$DOTFUNCTIONS'; unset 'commands[pane-sight]'; iterm2-doctor"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"panes:   pane-sight not deployed"* ]]
+}
+
 @test "iterm2-doctor: counts dynamic profiles and autolaunch scripts, never names them" {
   make_app "$(doctor_stamp)"
   support="$HOME/Library/Application Support/iTerm2"
