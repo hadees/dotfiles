@@ -712,6 +712,80 @@ no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
   [ "$(cat "$BATS_TEST_TMPDIR/last")" = "--continue" ]
 }
 
+# claude-peer.model: a default model for a fresh start that has none of its own
+modelfix() {
+  ctxfix
+  printf 'title: M\nmodel: sonnet\n\nm {input}\n' >"$CLAUDE_PEER_CONTEXTS/50-m.ctx"
+  printf 'title: A\nagent: plan-fable\n\na\n' >"$CLAUDE_PEER_CONTEXTS/51-a.ctx"
+  printf 'title: N\n\nn\n' >"$CLAUDE_PEER_CONTEXTS/52-n.ctx"
+}
+
+@test "claude-peer.model: a plain start and a context with no model get --model" {
+  modelfix
+  git -C "$REPO" config claude-peer.model opus
+  FAKE_SHELL_SLEEP=2 pane alpha
+  run sh "$BIN" start alpha fix the thing
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha --model opus fix the thing\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  run sh "$BIN" start alpha --context n
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha --model opus n\$" "$FAKE_SHELL_LOG"'
+}
+
+@test "claude-peer.model: a context's own model wins; a context with an agent gets none" {
+  modelfix
+  git -C "$REPO" config claude-peer.model opus
+  FAKE_SHELL_SLEEP=2 pane alpha
+  run sh "$BIN" start alpha --context m go
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha --model sonnet m go\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  run sh "$BIN" start alpha --context a
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha --agent plan-fable a\$" "$FAKE_SHELL_LOG"'
+  ! grep -q -- "opus" "$FAKE_SHELL_LOG"
+  # the key is live: a plain start takes it
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  run sh "$BIN" start alpha plain
+  until_ok 'grep -q "claude-peer proj-alpha --model opus plain\$" "$FAKE_SHELL_LOG"'
+}
+
+@test "claude-peer.model: --continue gets none, and so does an unset key" {
+  modelfix
+  git -C "$REPO" config claude-peer.model opus
+  FAKE_SHELL_SLEEP=2 pane alpha
+  run sh "$BIN" start alpha --continue go on
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha --continue go on\$" "$FAKE_SHELL_LOG"'
+  ! grep -q -- "--model" "$FAKE_SHELL_LOG"
+  # the key is live: a plain start takes it
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  run sh "$BIN" start alpha plain
+  until_ok 'grep -q "claude-peer proj-alpha --model opus plain\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  git -C "$REPO" config --unset claude-peer.model
+  run sh "$BIN" start alpha fix it
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha fix it\$" "$FAKE_SHELL_LOG"'
+}
+
+@test "claude-peer.model: a value that could read as a flag, or holds a space, is ignored with one stderr line" {
+  git -C "$REPO" config claude-peer.model -x
+  FAKE_SHELL_SLEEP=2 pane alpha
+  run sh "$BIN" start alpha fix the thing
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha fix the thing\$" "$FAKE_SHELL_LOG"'
+  [ "$(grep -c "claude-peer: claude-peer.model '-x' is not a model name; ignored" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 1 ]
+  ! grep -q -- "--model" "$FAKE_SHELL_LOG"
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  git -C "$REPO" config claude-peer.model 'a b'
+  run sh "$BIN" start alpha again
+  until_ok 'grep -q "claude-peer proj-alpha again\$" "$FAKE_SHELL_LOG"'
+  grep -q "claude-peer.model 'a b' is not a model name; ignored" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  ! grep -q -- "--model" "$FAKE_SHELL_LOG"
+}
+
 @test "start: no waiting pane is 4, a running slot is 3, a prompt that begins with - is 2" {
   run sh "$BIN" start alpha
   [ "$status" -eq 4 ]
