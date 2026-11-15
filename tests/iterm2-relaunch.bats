@@ -928,7 +928,7 @@ cask() {
   run sh "$BIN" --yes brew:selfupdating 2>&1
   [ "$status" -eq 1 ]
   [[ "$output" == *"iterm2-relaunch: brew:selfupdating: updates itself; its Homebrew record only looks stale"* ]]
-  [ ! -s "$OSA_LOG" ]
+  ! grep -q quit "$OSA_LOG"
   no grep -q "^fetch" "$BREW_LOG"
   kill -0 "$pid"
 }
@@ -968,7 +968,7 @@ cask() {
   [ "$status" -eq 1 ]
   [[ "$output" == *"iterm2-relaunch: brew:claude-code: not an installed cask"* ]]
   no grep -q '^info' "$BREW_LOG"
-  [ ! -s "$OSA_LOG" ]
+  ! grep -q quit "$OSA_LOG"
   kill -0 "$pid"
   run sh "$BIN" items
   [ "${#lines[@]}" -eq 3 ]
@@ -982,12 +982,17 @@ cask() {
   [ "$status" -eq 0 ]
   [ "$(head -n 5 "$SEQ" | tr '\n' ' ')" = "brew update brew list brew info brew fetch osa-probe " ]
   grep -Fq "fetch --cask claude-code@latest|" "$BREW_LOG"
+  # the slow steps before the countdown are logged and, with no terminal, shown
+  cat "$LOG.prev" "$LOG" 2>/dev/null | grep -q " prep: updating Homebrew before the relaunch"
+  cat "$LOG.prev" "$LOG" 2>/dev/null | grep -q " prep: downloading claude-code@latest before the relaunch"
+  grep -q "display notification" "$OSA_LOG"
+  grep -q "downloading claude-code@latest" "$OSA_LOG"
   : >"$SEQ"; : >"$BREW_LOG"; : >"$OSA_LOG"; : >"$CT_LOG"
   pid=$(fake_iterm)
   FAKE_FETCH=1 run sh "$BIN" --yes --grace 1 brew:claude-code@latest 2>&1
   [ "$status" -eq 1 ]
   [[ "$output" == *"iterm2-relaunch: brew:claude-code@latest: download failed"* ]]
-  [ ! -s "$OSA_LOG" ]
+  ! grep -q quit "$OSA_LOG"
   [ ! -s "$CT_LOG" ]
   grep -q " refused: brew:claude-code@latest: download failed" "$LOG"
   kill -0 "$pid"
@@ -1071,7 +1076,7 @@ PY
   [ "$status" -eq 0 ]
   [[ "$output" == *"brew:claude-code@latest: nothing to do"* ]]
   [[ "$output" == *"nothing to do; iTerm2 left running"* ]]
-  [ ! -s "$OSA_LOG" ]
+  ! grep -q quit "$OSA_LOG"
   no grep -q "^fetch" "$BREW_LOG"
   kill -0 "$pid"
 }
@@ -1408,4 +1413,28 @@ PY
   run sh "$BIN" alfred-install "$BATS_TEST_TMPDIR/nowhere" 2>&1
   [ "$status" -eq 1 ]
   [[ "$output" == *"no info.plist in $BATS_TEST_TMPDIR/nowhere"* ]]
+}
+
+@test "prefetch: brew update and the ready casks' download with nothing quit; a relaunch within 30 minutes skips its brew update" {
+  export ITERM2_RELAUNCH_DETACH=0
+  cask claude-code@latest 2.1.322 2.1.323 true false binary "2.1.322"
+  fake_iterm >/dev/null
+  run sh "$BIN" prefetch
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"downloaded 1 cask(s)"* ]]
+  grep -qx "brew update" "$SEQ"
+  grep -Fq "fetch --cask claude-code@latest|" "$BREW_LOG"
+  ! grep -q quit "$OSA_LOG"
+  [ -s "$(dirname "$LOG")/prefetched" ]
+  : >"$SEQ"
+  run sh "$BIN" --yes --grace 1 brew:claude-code@latest
+  [ "$status" -eq 0 ]
+  ! grep -qx "brew update" "$SEQ"
+  grep -qx "brew fetch" "$SEQ"
+  # a stale stamp is ignored
+  echo 1 >"$(dirname "$LOG")/prefetched"; : >"$SEQ"
+  fake_iterm >/dev/null
+  run sh "$BIN" --yes --grace 1 brew:claude-code@latest
+  [ "$status" -eq 0 ]
+  grep -qx "brew update" "$SEQ"
 }

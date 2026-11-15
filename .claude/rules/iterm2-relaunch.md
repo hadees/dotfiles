@@ -78,7 +78,16 @@ when none is left it prints `nothing to do; iTerm2 left running`. With a
 `brew:` item it runs `brew update` first (a failure warns and uses the cached
 state) and `brew fetch --cask` for each ready one before the quit, so iTerm2
 is down for seconds, not for a download; a failed fetch refuses with `<item>:
-download failed`. A current cask is `nothing` in the front but stays actionable
+download failed`. Both run before the countdown and can take minutes, so each first
+logs `prep: <what>` and, with no terminal (Alfred), posts a notification saying
+so: a run that is downloading must not look dead.
+`iterm2-relaunch prefetch` does that slow half ahead of time, with nothing quit:
+`brew update`, then `brew fetch --cask` for every brew item `items` calls ready,
+and a stamp `prefetched` (epoch seconds) in the state directory. Homebrew
+caches the download, so the relaunch's own fetch is instant, and for 30
+minutes after the stamp the front skips its `brew update` (`prep: Homebrew
+updated by prefetch less than 30m ago; not again`). A session offering a
+relaunch with a `brew:` item runs `prefetch` first. A current cask is `nothing` in the front but stays actionable
 in the Alfred list, because only the front looks upstream.
 
 **Passwords are ruled out, not handled.** The runner has no terminal, stdin is
