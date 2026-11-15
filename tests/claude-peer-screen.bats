@@ -974,11 +974,12 @@ woke() {
 
 # The Hermes peer's wait as `claude-peer hermes --wait` runs it: hermes_peer from
 # dot_functions with the routing and hermes itself stubbed, claude-peer on PATH, and
-# an installed Hermes whose banner holds a small invented figure.
+# an installed Hermes whose banner holds a small invented figure, or the rows given.
 hermes_open() {
   local d=$HOME/.hermes/hermes-agent/hermes_cli
   mkdir -p "$d"
-  printf '%s\n' 'HERMES_CADUCEUS = """[#CD7F32]⢀⣀⣀⣀⣀⣀⡀[/]' '⣿⣿⣿⣿⣿⣿⣿' '⣿⣿⣿⣿⣿⣿⣿' '⠈⠉⠉⠉⠉⠉⠁"""' >"$d/banner.py"
+  if [ $# -gt 0 ]; then printf 'HERMES_CADUCEUS = """%s"""\n' "$(printf '%s\n' "$@")" >"$d/banner.py"
+  else printf '%s\n' 'HERMES_CADUCEUS = """[#CD7F32]⢀⣀⣀⣀⣀⣀⡀[/]' '⣿⣿⣿⣿⣿⣿⣿' '⣿⣿⣿⣿⣿⣿⣿' '⠈⠉⠉⠉⠉⠉⠁"""' >"$d/banner.py"; fi
   ln -sf "$BIN" "$BATS_TEST_TMPDIR/bin/claude-peer"
   screen_run 80 24 zsh -f -c "source '$BATS_TEST_DIRNAME/../dot_functions'
     hermes_profile() { print prof; }
@@ -1061,4 +1062,16 @@ hermes_open() {
   [ "$(count_lines '^HERMES-RAN')" -eq 0 ] || { screen_show; false; }
   screen_keys Down; screen_keys Down; screen_keys Down; screen_keys Enter
   screen_wait '^LEFT'
+}
+
+@test "hermes picker: a figure of 30 braille cells is measured in columns, and the picker is centred" {
+  need tmux
+  need fzf
+  git config --global --unset claude-peer.art
+  git config --global claude-peer.art-seconds 0
+  local row; row=$(printf '⣿%.0s' $(seq 30))
+  hermes_open "$row" "$row"
+  screen_wait 'shell +Drop to a shell'
+  # 58 wide at 80 columns: 11 columns of margin, as the slot picker's
+  [ "$(count_lines '^           Hermes ▸')" -eq 1 ] || { screen_show; false; }
 }

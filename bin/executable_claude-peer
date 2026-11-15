@@ -939,8 +939,8 @@ herm_levels() {
   done
 }
 
-# banner <at>|<dir> level×7 -> frame <at> (0 is still) on stdout, or every frame into
-# <dir>/0… and "<count> <columns>" on stdout. Status 3, silent, when there is no figure.
+# banner <at>|<dir>|-w level×7 -> frame <at> (0 is still) on stdout, every frame into
+# <dir>/0… and "<count> <columns>" on stdout, or (-w) the figure's columns, its pad in. Status 3, silent, when there is no figure.
 herm_py() {
   python3 -I - "$@" 2>/dev/null <<'PYEOF'
 import re, sys
@@ -980,6 +980,8 @@ def frame(t):
 
 if out.isdigit():
     sys.stdout.write(frame(int(out)))
+elif out == "-w":
+    print(W + 2)
 else:
     n = H + W + 40
     for t in range(n):
@@ -1060,22 +1062,27 @@ herm_pick() {
   [ $((hp_fh + 7)) -le "$hp_r" ] || { hp_fig= hp_fh=0; }
   hp_h=6 hp_head=$hp_hint
   [ -z "$hp_fig" ] || { hp_h=$((hp_fh + 7)); hp_head=$(printf '%s\n\n%s' "$hp_fig" "$hp_hint"); }
-  hp_e=$(printf '\033')
-  hp_w=$(printf '%s\n' "$hp_fig" | sed "s/$hp_e\[[0-9;]*[A-Za-z]//g" | awk '{ if (length($0) > w) w = length($0) } END { print (w > 58 ? w : 58) }')
+  # columns from python: awk's length() counts bytes on macOS, three per braille cell
+  hp_w=58
+  if [ -n "$hp_fig" ]; then
+    # shellcheck disable=SC2046
+    hp_fw=$(herm_py "$(herm_banner)" -w $(herm_levels)) && [ "$hp_fw" -gt 58 ] && hp_w=$hp_fw
+  fi
   hp_l=0 hp_rt=0
   if [ "$hp_c" -ge 80 ] && [ $((hp_w + 2)) -le "$hp_c" ]; then
     hp_l=$(( (hp_c - hp_w) / 2 )); hp_rt=$((hp_c - hp_w - hp_l))
   fi
   if [ "$(art_mode)" = truecolor ]; then hp_k='#ffd696' hp_s='38;2;255;214;150'
   else hp_k=$(art_c256 '255 214 150') hp_s="38;5;$hp_k"; fi
-  # shellcheck disable=SC2046
+  hp_cols=$(fzf_colors)
+  # shellcheck disable=SC2086
   hp_pick=$(printf '%s\n' \
       "@fresh	fresh     A new session" \
       "@continue	continue  Pick up the last conversation" \
       "@resume	resume    Choose an earlier conversation" \
       "@shell	shell     Drop to a shell" |
     ( unset FZF_DEFAULT_OPTS FZF_DEFAULT_OPTS_FILE
-      exec fzf $(fzf_colors) --color=header:-1 --color="pointer:$hp_k,prompt:$hp_k" \
+      exec fzf $hp_cols --color=header:-1 --color="pointer:$hp_k,prompt:$hp_k" \
         --no-multi --no-sort --no-mouse --layout=reverse --header-first \
         --height="$hp_h" --info=hidden --no-separator \
         --margin="0,$hp_rt,0,$hp_l" --pointer='▸' --gutter=' ' \
