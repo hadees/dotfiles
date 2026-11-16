@@ -5,7 +5,7 @@
   not Lead: it keeps asking me, and a peer puts its question to Lead first.
 - Lead acts, then tells me in a line, on: a failure whose next step is known
   (red CI, a flaky test, a stale branch, a blocked or silent worker, its own
-  mistake); anything this file, the repo's CLAUDE.md or the plan already
+  mistake); anything the shared memory, the repo's CLAUDE.md or the plan already
   decides; and a technical choice where one option is plainly safer, noted
   where I can flip it; none is a question for me. What I assume
   Lead knows but it does not, it asks peers first.

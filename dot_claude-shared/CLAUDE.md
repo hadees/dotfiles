@@ -1,7 +1,8 @@
 # Shared user memory
 
 Imported by every Claude Code profile (see "Claude Code profiles" in the
-dotfiles CLAUDE.md). Keep this file free of anything account-, org-, or
+dotfiles CLAUDE.md). Keep this file and every topic it imports free of
+anything account-, org-, or
 employer-specific — profile-specific memory belongs in that profile's own
 `CLAUDE.work.md` or `CLAUDE.local.md`.
 
