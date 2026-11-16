@@ -1,8 +1,8 @@
 # Claude delegation notes
 
-Measurements and provenance behind the rules in `dot_claude-shared/CLAUDE.md`
+Measurements and provenance behind the rules in `dot_claude-shared/topics/delegation-and-model-routing.md`
 ("Delegation and model routing"). Every rule stays there, in the always-loaded
-file; this page holds only what a session does not need in order to act, and
+memory; this page holds only what a session does not need in order to act, and
 loads only when read.
 
 ## Ponytail

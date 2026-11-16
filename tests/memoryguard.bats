@@ -585,12 +585,24 @@ Until: when the fix lands")"
   export STUB_ANSWER='{"answers":{"destination":{"choice":"shared-memory","confidence":0.9},"private":{"choice":"no","confidence":0.9},"place":{"choice":"shared:Delegation","confidence":0.9}}}'
   hook_pre "$(inrepo "one")"
   reason="$(field "$output" permissionDecisionReason)"
-  [[ "$reason" == *'shared memory, /src/dot_claude-shared/CLAUDE.md, section "Delegation"'* ]]
+  [[ "$reason" == *'shared memory (public: nothing account-, org- or employer-specific), /src/dot_claude-shared/CLAUDE.md, section "Delegation"'* ]]
   [[ "$reason" != *"another repository"* ]]
   printf '#!/bin/sh\nexit 1\n' > "$BIN/chezmoi"
   STUB_ANSWER='{"answers":{"destination":{"choice":"shared-memory","confidence":0.9},"private":{"choice":"no","confidence":0.9},"place":{"choice":"none","confidence":0.9}}}'
   hook_pre "$(inrepo "one b")"
-  [[ "$(field "$output" permissionDecisionReason)" == *"in shared memory, the chezmoi source of ~/.claude-shared/CLAUDE.md."* ]]
+  [[ "$(field "$output" permissionDecisionReason)" == *"in shared memory (public: nothing account-, org- or employer-specific), the chezmoi source of ~/.claude-shared/CLAUDE.md."* ]]
+  # A section that lives in a topic file the index imports is named by that file.
+  mkdir -p "$HOME/.claude-shared/topics"
+  printf '# S\n\n@topics/delegation.md\n' > "$HOME/.claude-shared/CLAUDE.md"
+  printf '## Delegation\n\ntext\n' > "$HOME/.claude-shared/topics/delegation.md"
+  printf '#!/bin/sh\necho /src/dot_claude-shared/$(basename "$2")\n' > "$BIN/chezmoi"; chmod +x "$BIN/chezmoi"
+  STUB_ANSWER='{"answers":{"destination":{"choice":"shared-memory","confidence":0.9},"private":{"choice":"no","confidence":0.9},"place":{"choice":"shared:Delegation","confidence":0.9}}}'
+  hook_pre "$(inrepo "one c")"
+  [[ "$(field "$output" permissionDecisionReason)" == *'shared memory (public: nothing account-, org- or employer-specific), /src/dot_claude-shared/delegation.md, section "Delegation"'* ]]
+  # A section no topic holds is a new topic file with its import, never a heading in the index.
+  STUB_ANSWER='{"answers":{"destination":{"choice":"shared-memory","confidence":0.9},"private":{"choice":"no","confidence":0.9},"place":{"choice":"none","confidence":0.9}}}'
+  hook_pre "$(inrepo "one d")"
+  [[ "$(field "$output" permissionDecisionReason)" == *"a new topic file in /src/dot_claude-shared/topics, imported by a line in /src/dot_claude-shared/CLAUDE.md"* ]]
   STUB_ANSWER='{"answers":{"destination":{"choice":"rule","confidence":0.9},"private":{"choice":"no","confidence":0.9},"place":{"choice":"rule:frobnicate","confidence":0.9}}}'
   hook_pre "$(inrepo "two")"
   reason="$(field "$output" permissionDecisionReason)"
