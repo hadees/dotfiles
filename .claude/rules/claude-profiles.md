@@ -31,7 +31,11 @@ directory cannot render them at all. It has no access to these templates. So
 the same bodies are also deployed, once, to `~/.claude-shared/agents`, and
 such a profile symlinks its `agents` directory at that — the
 public-machinery/private-profile split the shared `CLAUDE.md` already uses.
-A sixth definition, `decide-haiku`, is a decision seat: its reply is one
+`plan-gpt` is `plan-fable` on `model: gpt-6-astra`: a `gpt-*` id is not a native
+Claude model and works only in a session `claude()` routed through the gateway,
+so the orchestrator runs `claude_gpt_ready` before dispatching it
+(`docs/claude-proxy.md`); `tests/claude-agents.bats` accepts that grammar and
+nothing else outside the Claude ids. A sixth definition, `decide-haiku`, is a decision seat: its reply is one
 JSON object read by `memoryguard`, so it ends with a `## Decision contract`
 instead of `## Report`. `tools: Read` exists only because the allowlist may not
 be empty; the caller runs it with no tools. It is never spawned from a
@@ -39,7 +43,14 @@ conversation.
 A body shared by more than one seat lives in `.chezmoitemplates/claude-agent-bodies/`
 (today `planner.md`, taking `seatName`, which `plan-fable` invokes with
 `{{ template "claude-agent-bodies/planner.md" (dict "seatName" "plan-fable") -}}`
-after its frontmatter). It sits outside `claude-agents/` because every `*.md`
+after its frontmatter, and `plan-gpt` the same with `"plan-gpt"`). The one
+difference between the two rendered bodies is a block between
+`<!-- gpt-assumptions:start -->` and `<!-- gpt-assumptions:end -->`, emitted only
+when `seatName` is `plan-gpt` (the Claude-behaviour assumptions a GPT plan must
+declare); `tests/claude-agents.bats` pins `plan-fable`'s body by hash and
+compares the two with exactly that block removed. The GPT handover and advisor
+protocol is the pointer-only shared topic `gpt-seats.md`, and dispatching any
+`gpt-*` agent depends on `claude_gpt_ready` (`docs/claude-proxy.md`). It sits outside `claude-agents/` because every `*.md`
 there is a definition that needs a stub; a fragment placed there would be a bogus
 agent. `tests/claude-agents.bats` renders each definition through its stub once
 per file and lints the rendered text, so a seat whose body is a fragment is

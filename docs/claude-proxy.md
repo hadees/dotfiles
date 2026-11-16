@@ -166,6 +166,84 @@ read from `~/.cargo/.crates.toml` (`unknown` when unreadable), without running t
 executable; it proves neither that the executable works nor that the service
 runs.
 
+## GPT agents
+
+A definition whose `model:` starts `gpt-` (today `plan-gpt`, `gpt-6-astra`, the
+same planner as `plan-fable`) works only in a routed session. The orchestrator
+runs `claude_gpt_ready MODEL` before dispatching one, never overrides the
+definition's model in the Agent call, and does not dispatch on an unavailable
+or error result (an absent helper, or output that disagrees with the exit
+status, is `GPT_ROUTE_ERROR reason=helper-error`). Ready proves routing and
+liveness, not login, entitlement or quota; a GPT agent cannot check for itself
+before its first request. A step of a `plan-gpt` plan goes to `work-sonnet`
+like any other, and the planner that owns the accepted report owns its
+revisions.
+
+The protocol lives in the shared memory's pointer-only topic
+`dot_claude-shared/topics/gpt-seats.md` (the index lists it with its trigger;
+the delegation topic is unchanged). Static checks in `tests/claude-agents.bats`
+and `tests/claude-shared-memory.bats` pin its structure, not whether Claude
+follows it.
+
+**Handover.** `plan-gpt` is used when asked for by name, or once after a
+terminal `plan-fable` whose returned error is a confirmed Fable allowance
+failure: the rejected allowance `status="rejected"` with
+`rateLimitType="seven_day_overage_included"`, the observed text `You've hit your
+Fable limit` (2026-11-15; a `· resets <time>` suffix is not parsed), or
+`Fable limit reached`. Matching is on the error, never on text quoted in the
+brief or a report. `model_requires_usage_credits` or `consent_unanswered` alone,
+a generic 429, overload, timeout, authentication or context failure, an
+unexplained incomplete report and a successful substituted-model result do not
+qualify, and nothing is classified while `plan-fable` still runs or consent
+awaits the operator. The unchanged brief goes to one fresh `plan-gpt` after the
+readiness check; the Claude fallback and usage-credit consent are untouched.
+Every `plan-fable` that ends in failure, incomplete output or on a substituted
+model ends with one line,
+`GPT_HANDOVER attempted= dispatched= unavailable= reason=` (`fable-limit`,
+`route-unavailable`, `not-fable-limit` or `unclassified`), and every `plan-gpt`
+with `GPT_PLAN outcome=<complete|incomplete|failed> reason=<none|chatgpt-limit|auth|api-error|unclassified>`.
+If ChatGPT is exhausted too, that is one GPT attempt and a stated failure: no
+other `gpt-*` model, no bounce to Fable, no escalation.
+
+**Claude-behaviour advice.** The planner body carries, for `plan-gpt` only, an
+instruction block between `<!-- gpt-assumptions:start -->` and
+`<!-- gpt-assumptions:end -->`: when the plan relies on how Claude reads, loads
+or follows instructions, files, memory, tools or agent definitions, the report
+has one `## Claude-behaviour assumptions` table (`ID`, `Assumption`, `Affected
+steps`, `Basis / check`; IDs `CB1`, `CB2`, ...) before `## Unverified`, and
+otherwise no such section. The orchestrator hands a nonempty section, verbatim
+plus a fixed read-only instruction, to a fresh built-in `claude-code-guide`
+invoked with `model: opus`, and nothing else from the plan. The reply is one
+JSON object with an `agree`, `disagree` or `unknown` verdict per ID. A
+`disagree` goes back to `plan-gpt` to revise; `unknown` is acceptable only when
+the report already lists the dependency under `Unverified` and no step relies
+on it first; an unavailable or malformed advisor leaves the gate unresolved and
+nothing substitutes for it. Each assessed revision ends with
+`GPT_ADVISOR dispatched= assumptions= agree= disagree= unknown= outcome=`
+(`empty`, `agree`, `revise`, `unknown`, `unavailable` or `protocol-error`). It is
+advice on Claude's behaviour, not a verdict on how Claude will behave in every
+session.
+
+Whether the account really delivers the allowance signals, and whether the
+orchestrator follows the protocol, are live acceptance checks. The scenarios,
+each an input to the existing `cli.fable-handover`, `cli.provider-routing` and
+`cli.gpt-tool-roundtrip` evidence:
+
+| Scenario | Required observation |
+| --- | --- |
+| The observed Fable-limit error, before output | One unchanged-brief GPT handover. |
+| The same error after partial output | Wait for the terminal incomplete result, then one handover. |
+| Generic throttle, auth error, quota wording only quoted in the brief, successful substitution | No handover. |
+| Consent still pending | No handover and no automatic answer. |
+| Helper absent or route unavailable | Counted decline; no GPT Agent call. |
+| Fable and ChatGPT both exhausted | One GPT attempt, an explicit terminal failure, no alternate GPT model or planner bounce. |
+| GPT plan with no Claude-behaviour dependency | No assumptions section and no Opus call. |
+| Nonempty assumptions section | Fresh guide invocation on Opus; payload is the section plus the fixed instruction. |
+| Advisor disagrees | Revision goes to GPT; no worker starts on the disputed plan. |
+| Advisor returns unknown | The dependency stays visible and is verified first or removed by the planner. |
+| Advisor absent, quota-limited or malformed | Counted unresolved gate, no automatic substitution. |
+| Revised report | One new assessment; none for an unchanged report. |
+
 ## Why transport alone is not parity
 
 The proxy relays request bytes and headers, and streams the response back.

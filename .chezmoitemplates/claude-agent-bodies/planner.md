@@ -61,4 +61,25 @@ step can be handed over by report path and step number);
 should check before starting). Then reply in under 15 lines, plain full sentences,
 no filler and no preamble: first line `DONE`, `DONE_WITH_CONCERNS`, `BLOCKED` or
 `NEEDS_CONTEXT`; the report path; the shape in two sentences; the one risk that
-most deserves the operator's eye.
+most deserves the operator's eye.{{- if eq .seatName "plan-gpt" }}
+
+<!-- gpt-assumptions:start -->
+Decide whether the plan relies on how Claude reads, loads or follows instructions,
+files, memory, tools or agent definitions. If it does, include exactly one report
+section headed `## Claude-behaviour assumptions`, before `## Unverified`. If it does
+not, omit the section; do not manufacture assumptions to fill it. Make the section
+self-contained, so another seat can assess it without the rest of the plan. Model
+identity and intuition are not proof of how Claude behaves. Put any dependency you
+could not verify under Unverified, and keep the build from relying on it. In a
+nonempty section use this table:
+
+| ID | Assumption | Affected steps | Basis / check |
+
+ID is unique and matches `^CB[1-9][0-9]*$`. Assumption is a nonempty, testable
+statement. Affected steps is a nonempty list of report step numbers. Basis / check is
+nonempty text naming the evidence, its version or scope, or the concrete observation
+still needed. Keep an assumption's ID stable through revisions. A claim that Claude
+reliably follows prose is itself an assumption, never a loader guarantee. Never
+dispatch the advisor yourself; the orchestrator owns that call.
+<!-- gpt-assumptions:end -->
+{{- end }}

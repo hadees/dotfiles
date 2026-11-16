@@ -25,6 +25,10 @@ in the conversation, read its file before the work it covers:
 - `seeing-another-pane.md`: before asking me for a screenshot, or before
   taking the screen.
 - `relaunching-iterm2.md`: work that needs iTerm2 to quit.
+- `gpt-seats.md`: before dispatching any `gpt-*` agent, after a `plan-fable`
+  that ended in failure, incomplete output or on a substituted model, or before
+  accepting or revising a `plan-gpt` report; it adds GPT routing, handover and
+  Opus advice to the delegation rules.
 
 @topics/github-accounts.md
 

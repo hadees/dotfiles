@@ -132,12 +132,15 @@ shared_templates() {
   done
 }
 
-@test "model is a documented alias or full id" {
+@test "model is a documented alias or full id, or a gpt-* id the claude-codex gateway serves" {
+  # gpt-* is not a native Claude model: it works only in a session routed
+  # through the gateway (docs/claude-proxy.md), which claude_gpt_ready checks
+  # before dispatch. The grammar is the one claude_gpt_ready accepts.
   for t in $(templates); do
     m="$(fmval "$t" model)"
     case "$m" in
       haiku|sonnet|opus|fable|inherit|claude-*) ;;
-      *) echo "$t: model '$m'"; false ;;
+      *) [[ "$m" =~ ^gpt-[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "$t: model '$m'"; false; } ;;
     esac
   done
 }
@@ -230,7 +233,7 @@ shared_templates() {
     done
   done
   # Only a stub that calls a shared template is checked against the shared
-  # set. The five are the cross-profile seats, not an allowlist: a profile
+  # set. The shared ones are the cross-profile seats, not an allowlist: a profile
   # dir may carry agents of its own, and those are not this test's business.
   for d in "${STUB_DIRS[@]}"; do
     for s in "$d"/*.md.tmpl; do
@@ -265,6 +268,69 @@ shared_templates() {
 
 @test "plan-fable's report path carries its own seat name" {
   grep -q 'claude-reports/<repository name>/plan-fable-<short slug>.md' "$RENDERED/plan-fable.md"
+}
+
+# plan-fable's rendered body, byte for byte, as it was when the planner body
+# moved into a shared fragment (sha256 of everything after the frontmatter).
+# plan-gpt's one permitted difference is the marked block below, so a change to
+# the shared body that is meant to reach both seats means updating this pin.
+FABLE_BODY_SHA256=859bf043c307abbd23b428155ee0e51066080cf53d89ce6e95091a753def6916
+GPT_BLOCK_START='<!-- gpt-assumptions:start -->'
+GPT_BLOCK_END='<!-- gpt-assumptions:end -->'
+
+# The raw text after the frontmatter, as rendered.
+raw_body() {
+  awk 'NR>1 && $0=="---" {found=1; next} found {print}' "$1"
+}
+
+@test "plan-gpt is plan-fable's planner on a GPT model: same tools and effort, own report path" {
+  grep -q 'claude-reports/<repository name>/plan-gpt-<short slug>.md' "$RENDERED/plan-gpt.md"
+  [ "$(fmval "$RENDERED/plan-gpt.md" model)" = gpt-6-astra ]
+  [ "$(fmval "$RENDERED/plan-gpt.md" tools)" = "$(fmval "$RENDERED/plan-fable.md" tools)" ]
+  [ "$(fmval "$RENDERED/plan-gpt.md" effort)" = "$(fmval "$RENDERED/plan-fable.md" effort)" ]
+}
+
+@test "plan-fable's rendered body is unchanged, and plan-gpt differs from it by exactly the marked assumptions block" {
+  local sum
+  sum="$(raw_body "$RENDERED/plan-fable.md" | python3 -c 'import sys,hashlib; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')"
+  [ "$sum" = "$FABLE_BODY_SHA256" ] || { echo "plan-fable body changed: $sum"; false; }
+  [ "$(grep -c -F "$GPT_BLOCK_START" "$RENDERED/plan-gpt.md")" -eq 1 ]
+  [ "$(grep -c -F "$GPT_BLOCK_END" "$RENDERED/plan-gpt.md")" -eq 1 ]
+  ! grep -q -e 'gpt-assumptions' -e 'Claude-behaviour' "$RENDERED/plan-fable.md" || { echo "plan-fable carries the GPT block"; false; }
+  # Remove exactly the block, flatten the way body() does, normalise only the seat name.
+  [ "$(raw_body "$RENDERED/plan-gpt.md" | sed "/$GPT_BLOCK_START/,/$GPT_BLOCK_END/d" | tr '\n' ' ' | tr -s ' ')" \
+    = "$(body "$RENDERED/plan-fable.md" | sed 's/plan-fable/plan-gpt/g')" ]
+}
+
+@test "plan-gpt's assumptions block states the trigger, the omission rule, the table and the no-dispatch rule" {
+  local blk p
+  blk="$(sed -n "/$GPT_BLOCK_START/,/$GPT_BLOCK_END/p" "$RENDERED/plan-gpt.md" | tr '\n' ' ' | tr -s ' ')"
+  for p in 'how Claude reads, loads or follows' '## Claude-behaviour assumptions' 'before `## Unverified`' \
+    'omit the section' 'do not manufacture' '| ID | Assumption | Affected steps | Basis / check |' \
+    '^CB[1-9][0-9]*$' 'Never dispatch the advisor yourself'; do
+    grep -qF -- "$p" <<< "$blk" || { echo "assumptions block: no '$p'"; false; }
+  done
+}
+
+@test "neither planner can edit, write or dispatch, and both keep the read-only and report rules" {
+  local f
+  for f in plan-fable plan-gpt; do
+    ! fmval "$RENDERED/$f.md" tools | grep -qwE 'Edit|Write|Agent' || { echo "$f: gained a tool"; false; }
+    grep -q 'You do not dispatch subagents' "$RENDERED/$f.md"
+    grep -q 'You have no editing tools' "$RENDERED/$f.md"
+    grep -q 'The one file you write is the report' "$RENDERED/$f.md"
+  done
+}
+
+@test "work-sonnet takes a step from either planner, and the shared memory carries the GPT gate" {
+  local d shared p
+  d="$(fmval "$TEMPLATES/work-sonnet.md" description)"
+  grep -q 'plan-fable or plan-gpt plan' <<< "$d" || { echo "work-sonnet: does not name both planners"; false; }
+  shared="$(shared_memory_all | tr '\n' ' ' | tr -s ' ')"
+  for p in 'claude_gpt_ready MODEL' 'seven_day_overage_included' 'Fable limit reached' "You've hit your Fable limit" \
+    'GPT_HANDOVER attempted=' 'GPT_PLAN outcome=' 'GPT_ADVISOR dispatched='; do
+    grep -qF -- "$p" <<< "$shared" || { echo "shared memory: no '$p'"; false; }
+  done
 }
 
 @test "the neutral shared copy exists, because an overlay-owned profile can only symlink at it" {
