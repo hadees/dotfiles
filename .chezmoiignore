@@ -68,6 +68,14 @@ bin/pane-shot
 Library/LaunchAgents/local.claude-codex.plist
 {{ end -}}
 
+{{ if not (stat (joinPath .chezmoi.homeDir ".cargo/bin/claude-codex")) -}}
+# plan-gpt routes through claude-codex: without the proxy installed the agent
+# could only fail, so no clone gets it
+.claude/agents/plan-gpt.md
+.claude-hadees/agents/plan-gpt.md
+.claude-shared/agents/plan-gpt.md
+{{ end -}}
+
 {{ if eq .machineClass "ephemeral" -}}
 # Disposable boxes get shell config only: no package installs and no tooling
 # that assumes a long-lived machine. Identity and secrets need no entry here
