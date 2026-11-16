@@ -4333,6 +4333,22 @@ if bad: print("\n".join(bad)); sys.exit(1)
 ' "$top"
 }
 
+@test "overlay pane: the hat takes the colour of the pane's position, not the slot's" {
+  ov_prefs outside
+  hellofix
+  git config --global claude-peer.picker list
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg fake1.toml "$OV1"
+  overlay_cfg fake2.toml "$OV2"
+  sh "$BIN" install >/dev/null
+  COLORTERM=truecolor CLAUDE_PEER_SIZE='40 120' opane 2 "$OV2"
+  until_ok 'grep -qF "$LISTHINT" "$BATS_TEST_TMPDIR/pane-2.out"'
+  grep -qF $'\033[38;2;90;120;200mFake2 ▸\033[0m ' "$BATS_TEST_TMPDIR/pane-2.out"
+  COLORTERM=truecolor CLAUDE_PEER_SIZE='40 120' opane fake1 "$OV1" "$REPO" b
+  until_ok 'grep -qF "$LISTHINT" "$BATS_TEST_TMPDIR/pane-b.out"'
+  grep -qF $'\033[38;2;153;204;153mFake1 ▸\033[0m ' "$BATS_TEST_TMPDIR/pane-b.out"
+}
+
 @test "overlay pane: the header is the display label from git config" {
   ov_prefs outside
   OV1=$(overlay_repo ov1)

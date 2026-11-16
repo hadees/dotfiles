@@ -376,11 +376,10 @@ bold `▬` in `K` on `O`; truecolor when `COLORTERM` says so, else the nearest 2
 (one awk, POSIX: drawn under mawk and gawk by the list's screen test on every CI job). The z's
 are a bold `Z`, a `z` in 256-colour 250 and a dim `z`; fzf would grey the bold one under the
 theme's `header` colour, which `--color=header:-1` prevents. The cap is coloured per slot
-(`art_cap`: `git config claude-peer.<slot>.cap '#rrggbb'`, else the slot's place in the pool:
-green, the approved blue, purple, cyan, yellow, red, from Base16 Eighties; the band is 0.7 of
-it). While the figure shows, the selector matches the hat (`art_hat`, the operator's
-call): fzf's `pointer` and `prompt` and the list's `<Label> ▸` take the cap's colour,
-`#rrggbb` in truecolor, else the 256-colour index the art draws it in; without the figure
+(`art_cap`: `git config claude-peer.<slot>.cap '#rrggbb'`, else the slot's place in the pool,
+an overlay pane's by bar position: green, the approved blue, purple, cyan, yellow, red, from Base16
+Eighties; band 0.7 of it). While the figure shows, the selector matches the hat (`art_hat`): fzf's `pointer` and `prompt` and the list's `<Label> ▸` take the cap's colour,
+`#rrggbb` in truecolor, else its 256-colour index in the art; without the figure
 fzf keeps its own colours. `git config claude-peer.art false` hides it; `claude-peer.art-file <path>` replaces it,
 and a file that does not parse prints `claude-peer: <path>: <reason>` and the built-in is
 drawn. `pane_geom` sets `pn_lay`: `beside` at 80 columns and 16 rows or more (`✻ <Label> ·
