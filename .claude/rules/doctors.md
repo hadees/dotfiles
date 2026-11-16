@@ -79,3 +79,13 @@ the doctor stays report-only.
 <s> shots, <x> refused)` or `not ready: <the first missing piece>`, or `pane-sight
 not deployed`. It reads files and `defaults` and asks iTerm2 nothing, so the
 doctor stays report-only.
+
+`claude-doctor`'s `proxy:` line, after `iterm2:`, says how the session reaches
+the model: `scope=session` from the markers `claude()` exported (never
+re-decided, so a recovered daemon changes nothing), `unverified` in a Claude
+Code session that has none, else `scope=next-launch`, the decision a launch here
+would make. `proxybin:` follows with the fixed executable, the pinned version
+and the version in Cargo's `~/.cargo/.crates.toml` (`unknown` when unreadable),
+without running it. A missing executable reads `MISSING` only when
+`CLAUDE_CODEX_PROXY` is set or the LaunchAgent plist is deployed, else
+`not installed; optional`. Both read only; the helpers are in `defined:`.

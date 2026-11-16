@@ -362,7 +362,7 @@ function bin_trace() {
 function claude() {
 	emulate -L zsh;
 	local dir alias opener here line attended key lead REPLY;
-	local -a sess;
+	local -a sess reply;
 	dir="$(claude_profile_dir)" || dir='';
 	# An attended launch: somebody is sitting at it. No terminal, print
 	# mode, a version/help flag, or a first argument shaped like a
@@ -475,6 +475,44 @@ function claude() {
 			unset OPEN_AS_ALIAS;
 			[[ ${BROWSER:t} == open-as ]] && unset BROWSER;
 		fi;
+		# Which endpoint this session talks to: claude-codex on loopback when it
+		# is installed and healthy, direct to Anthropic otherwise, a caller's own
+		# route left alone (claude_proxy_decide has the precedence). Decided
+		# afresh for every launch: the markers exported below replace any
+		# inherited ones, and a loopback URL is ours only while the inherited
+		# routed marker vouches for it (claude_proxy_external), so decide runs
+		# before they are touched. Help and version invocations route nothing:
+		# their inherited markers are dropped. A missing or failing helper
+		# launches direct, never aborts.
+		# A declined route says why on one stderr line, but only to somebody
+		# who opted in (the executable is installed or CLAUDE_CODEX_PROXY is
+		# set; opting out always counts) and only on an attended launch, so a
+		# clone that never installed the proxy hears nothing, and neither does
+		# a pipe, `-p` or a subcommand. Not-installed is never said.
+		# `git config claude.proxy-check false` silences it.
+		if (( ${argv[(I)(-h|--help|-v|--version)]} )); then
+			unset CLAUDE_CODEX_ROUTE CLAUDE_CODEX_REASON;
+		else
+			if (( $+functions[claude_proxy_decide] )) && claude_proxy_decide; then :; else reply=(direct helper-error ''); fi;
+			export CLAUDE_CODEX_ROUTE=$reply[1] CLAUDE_CODEX_REASON=$reply[2];
+			case $reply[1] in
+				routed)
+					export ANTHROPIC_BASE_URL=$reply[3];
+					export CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING="${CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING-1}";
+					export ENABLE_TOOL_SEARCH="${ENABLE_TOOL_SEARCH-true}";
+					export CLAUDE_CODE_GATEWAY_HINT_HEADERS="${CLAUDE_CODE_GATEWAY_HINT_HEADERS-1}";;
+				# Direct means no base URL at all: a decision other than
+				# external found it unset or our own loopback, which a dead
+				# or opted-out launch must not inherit from its parent.
+				direct) unset ANTHROPIC_BASE_URL;;
+			esac;
+			if [[ -n $attended && $reply[1] != routed && $reply[2] != not-installed ]] \
+				&& [[ $reply[2] == opt-out || -x $HOME/.cargo/bin/claude-codex || -n ${CLAUDE_CODEX_PROXY-} ]] \
+				&& (( $+functions[claude_proxy_notice] )) \
+				&& [[ "$(command git config --get claude.proxy-check 2>/dev/null)" != false ]]; then
+				claude_proxy_notice $reply[2] >&2;
+			fi;
+		fi;
 		# Subagents default to Sonnet, in every profile. A subagent's model
 		# resolves per-invocation argument → its own definition's `model:` →
 		# this variable → the main conversation's model, so it moves only the
@@ -529,6 +567,139 @@ function claude() {
 		fi;
 		exec command claude "$@";
 	)
+}
+
+# claude-codex, the local proxy that sends `gpt-*` models to Codex and every
+# Claude model on to Anthropic unchanged. Its endpoint and install path are
+# fixed (docs/claude-proxy.md): http://127.0.0.1:18765 and
+# ~/.cargo/bin/claude-codex. The helpers below only read; claude() acts on them.
+
+# Is something other than this integration already choosing the endpoint? A
+# nonlocal ANTHROPIC_BASE_URL, an Anthropic Unix socket, or an enabled
+# alternative provider. Sets REPLY to external-base-url or external-provider
+# and returns 0, else returns 1. The canonical loopback URL, optionally with
+# one trailing slash, is ours only when the inherited CLAUDE_CODEX_ROUTE=routed
+# marker came with it (a parent session of ours launched this one); without
+# the marker it is somebody's own proxy and stays theirs.
+function claude_proxy_external() {
+	emulate -L zsh;
+	local url=${ANTHROPIC_BASE_URL-} v;
+	REPLY='';
+	if [[ -n $url && ! ( ${url%/} == http://127.0.0.1:18765 && ${CLAUDE_CODEX_ROUTE-} == routed ) ]] || [[ -n ${ANTHROPIC_UNIX_SOCKET-} ]]; then
+		REPLY=external-base-url;
+		return 0;
+	fi;
+	for v in CLAUDE_CODE_USE_{BEDROCK,VERTEX,FOUNDRY,ANTHROPIC_AWS}; do
+		case ${(L)${(P)v}} in 1|true|yes|on) REPLY=external-provider; return 0;; esac;
+	done;
+	return 1;
+}
+
+# Does the proxy answer its health check? Sets REPLY to ok, missing-curl,
+# unreachable or unexpected-health; returns 0 only for ok; prints nothing.
+# `command curl` skips this repo's curl wrapper and `-q` any .curlrc; the
+# request carries no credentials, follows no redirect, uses no proxy.
+function claude_proxy_probe() {
+	emulate -L zsh;
+	local out code;
+	(( $+commands[curl] )) || { REPLY=missing-curl; return 1; };
+	out="$(command curl -q --noproxy '*' --connect-timeout 1 --max-time 1 -sS -o - -w '\n%{http_code}' http://127.0.0.1:18765/healthz 2>/dev/null)" || { REPLY=unreachable; return 1; };
+	code=${out##*$'\n'};
+	if [[ $code == 200 && ${out%$'\n'*} =~ '^[[:space:]]*\{[[:space:]]*"ok"[[:space:]]*:[[:space:]]*true[[:space:]]*\}[[:space:]]*$' ]]; then
+		REPLY=ok;
+		return 0;
+	fi;
+	REPLY=unexpected-health;
+	return 1;
+}
+
+# The decision for a NEW launch, as the array reply=(route reason endpoint).
+# route is routed|direct|external; reason is healthy, opt-out, not-installed,
+# missing-curl, unreachable, unexpected-health, external-base-url,
+# external-provider, credential-override or invalid-mode (a failing helper is
+# claude()'s own helper-error). endpoint is the loopback URL when routed, the
+# caller's own when external (never printed: it may carry a credential), else
+# empty. Precedence: an external route wins, even over the opt-out; then
+# CLAUDE_CODEX_PROXY=0; then an API key or auth token (left alone, so no
+# subscription routing); then unset, empty or 1 routes when the executable
+# exists and the health check passes. Returns 0, or 2 when a helper is gone.
+# Prints nothing and probes only when it has to.
+function claude_proxy_decide() {
+	emulate -L zsh;
+	local REPLY;
+	(( $+functions[claude_proxy_probe] && $+functions[claude_proxy_external] )) || return 2;
+	if claude_proxy_external; then reply=(external $REPLY "${ANTHROPIC_BASE_URL-}"); return 0; fi;
+	if [[ ${CLAUDE_CODEX_PROXY-} == 0 ]]; then reply=(direct opt-out ''); return 0; fi;
+	if [[ -n ${ANTHROPIC_API_KEY-}${ANTHROPIC_AUTH_TOKEN-} ]]; then reply=(direct credential-override ''); return 0; fi;
+	case ${CLAUDE_CODEX_PROXY-} in ''|1) ;; *) reply=(direct invalid-mode ''); return 0;; esac;
+	[[ -x $HOME/.cargo/bin/claude-codex ]] || { reply=(direct not-installed ''); return 0; };
+	if claude_proxy_probe; then reply=(routed healthy http://127.0.0.1:18765); else reply=(direct $REPLY ''); fi;
+	return 0;
+}
+
+# What the RUNNING session was launched with, from the markers claude()
+# exported and the environment it actually has: reply=(route reason endpoint)
+# as above. It never probes and never decides again, so a daemon that recovers
+# cannot turn a direct session into a routed one. No markers is
+# unmarked-session (returns 0, route empty); markers that disagree with the
+# environment are state-mismatch (returns 2, route empty).
+function claude_proxy_session() {
+	emulate -L zsh;
+	local route=${CLAUDE_CODEX_ROUTE-} reason=${CLAUDE_CODEX_REASON-} url=${ANTHROPIC_BASE_URL-} ours=0 ext=0 REPLY;
+	(( $+functions[claude_proxy_external] )) || { reply=('' helper-error ''); return 2; };
+	[[ -n $url && ${url%/} == http://127.0.0.1:18765 ]] && ours=1;
+	claude_proxy_external && ext=1;
+	if [[ -z $route$reason ]]; then reply=('' unmarked-session ''); return 0; fi;
+	case $route/$reason in
+		routed/healthy) (( ours && ! ext ));;
+		direct/(opt-out|not-installed|missing-curl|unreachable|unexpected-health|credential-override|invalid-mode|helper-error)) [[ -z $url ]] && (( ! ext ));;
+		external/external-(base-url|provider)) (( ext ));;
+		*) false;;
+	esac || { reply=('' state-mismatch ''); return 2; };
+	case $route in
+		routed) reply=(routed $reason http://127.0.0.1:18765);;
+		external) reply=(external $reason "$url");;
+		*) reply=(direct $reason '');;
+	esac;
+	return 0;
+}
+
+# Preflight for an agent whose model is a gpt-* id: prints one line and says
+# whether to dispatch it. Uses the running session (never claude_proxy_decide)
+# plus a liveness probe. Ready means routed and answering, not logged in or
+# within quota. 0 ready, 1 unavailable, 2 invalid model or a helper is gone.
+function claude_gpt_ready() {
+	emulate -L zsh;
+	local -a reply;
+	local REPLY;
+	[[ ${1-} =~ '^gpt-[A-Za-z0-9][A-Za-z0-9._-]*$' ]] || { print -r -- 'GPT_ROUTE_ERROR reason=invalid-model'; return 2; };
+	(( $+functions[claude_proxy_session] && $+functions[claude_proxy_probe] )) || { print -r -- 'GPT_ROUTE_ERROR reason=helper-error'; return 2; };
+	claude_proxy_session;
+	[[ ${reply[2]} == helper-error ]] && { print -r -- 'GPT_ROUTE_ERROR reason=helper-error'; return 2; };
+	if [[ ${reply[1]} != routed ]]; then print -r -- "GPT_ROUTE_UNAVAILABLE reason=${reply[2]}"; return 1; fi;
+	claude_proxy_probe || { print -r -- "GPT_ROUTE_UNAVAILABLE reason=$REPLY"; return 1; };
+	print -r -- "GPT_ROUTE_READY model=$1 auth=untested";
+}
+
+# The one stderr line for a declined route, from the reason in claude_proxy_decide.
+# Prints nothing and returns 1 for healthy or an unknown reason.
+function claude_proxy_notice() {
+	emulate -L zsh;
+	local why;
+	case ${1-} in
+		opt-out) why='by opt-out for Remote Control';;
+		not-installed) why='because the proxy is not installed';;
+		missing-curl) why='because curl is missing, so the proxy cannot be checked';;
+		unreachable) why='because proxy is unreachable';;
+		unexpected-health) why='because the proxy answered its health check unexpectedly';;
+		credential-override) why='because an API key or auth token is set';;
+		invalid-mode) why='because CLAUDE_CODEX_PROXY is neither 0 nor 1';;
+		helper-error) why='because the routing helper failed';;
+		external-base-url) print -r -- 'claude: external base URL preserved; GPT routing is unverified in this session.'; return 0;;
+		external-provider) print -r -- 'claude: external provider preserved; GPT routing is unverified in this session.'; return 0;;
+		*) return 1;;
+	esac;
+	print -r -- "claude: direct $why; GPT agents unavailable in this session.";
 }
 
 # The key naming the iTerm2 Workgroup a claude tab here should enter, for
@@ -828,7 +999,7 @@ function claude-as() {
 function claude-doctor() {
 	local origin acct map dir cred email slug pin;
 	print -r -- "wrapper: $(whence -w claude)";
-	print -r -- "defined: $(defined_trace claude_profile_dir claude_sessions_here claude_memory_leaks tabstatus_wiring iterm2_cookie_state iterm2_skill_drift iterm2_app_path claude_peer_key hermes_profile claude_browser_alias claude_browser_can_open gh_account_for_cwd git_origin_slug bin_trace)";
+	print -r -- "defined: $(defined_trace claude_profile_dir claude_proxy_probe claude_proxy_decide claude_proxy_session claude_proxy_external claude_proxy_notice claude_sessions_here claude_memory_leaks tabstatus_wiring iterm2_cookie_state iterm2_skill_drift iterm2_app_path claude_peer_key hermes_profile claude_browser_alias claude_browser_can_open gh_account_for_cwd git_origin_slug bin_trace)";
 	print -r -- "binary:  $(bin="$(whence -p claude)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH')";
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
@@ -930,6 +1101,44 @@ function claude-doctor() {
 		REPLY+=' (claude.iterm2-check is false, so claude does not warn)';
 	fi;
 	print -r -- "iterm2:  $REPLY";
+	# How this session reaches the model: from the markers claude() exported
+	# when the session is one (never re-decided, so a recovered daemon does not
+	# rewrite history), else a prediction for the next launch here.
+	local -a reply;
+	local px_scope=next-launch px_ver px_state px_tail='' px_health='' px_bin="$HOME/.cargo/bin/claude-codex";
+	if (( $+functions[claude_proxy_session] && $+functions[claude_proxy_decide] && $+functions[claude_proxy_probe] )); then
+		if [[ -n ${CLAUDE_CODEX_ROUTE-}${CLAUDE_CODEX_REASON-} ]]; then
+			px_scope=session; claude_proxy_session;
+		elif [[ -n ${CLAUDECODE-} ]]; then
+			px_scope=session; reply=('' unmarked-session '');
+		else
+			claude_proxy_decide || reply=(direct helper-error '');
+		fi;
+		if [[ $reply[1] == routed ]]; then
+			if [[ $px_scope == session ]]; then claude_proxy_probe; else REPLY=ok; fi;
+			px_health=" health=$REPLY";
+		fi;
+		if [[ $px_scope == session ]]; then
+			case $reply[1]/$reply[2] in
+				routed/*) [[ $REPLY == ok ]] && px_tail='; GPT route ready, authentication untested' || px_tail='; GPT unavailable';;
+				direct/opt-out) px_tail='; Remote Control direct launch; GPT unavailable';;
+				direct/*) px_tail='; GPT unavailable';;
+				external/*) px_tail='; GPT route unverified';;
+				*) px_tail='; unverified (not launched by the claude wrapper, or its state disagrees); GPT unavailable';;
+			esac;
+		fi;
+		print -r -- "proxy:   scope=$px_scope mode=${reply[1]:-unknown} reason=$reply[2]$px_health$px_tail";
+	else
+		print -r -- "proxy:   unknown: the routing helpers are not defined (see defined: above)";
+	fi;
+	px_ver="$(command sed -n 's/^"claude-codex \([^ ]*\) .*/\1/p' "$HOME/.cargo/.crates.toml" 2>/dev/null | command head -n1)";
+	# MISSING means something should have put it there: the user set the mode
+	# or the LaunchAgent is deployed. A clone that never opted in has no
+	# claude-codex, and that is fine.
+	if [[ -x $px_bin ]]; then px_state=present;
+	elif [[ -n ${CLAUDE_CODEX_PROXY-} && ${CLAUDE_CODEX_PROXY} != 0 || -e $HOME/Library/LaunchAgents/local.claude-codex.plist ]]; then px_state=MISSING;
+	else px_state='not installed; optional, see docs/claude-proxy.md'; fi;
+	print -r -- "proxybin: ${px_bin/#$HOME/~} ($px_state); pinned 0.8.0, installed ${px_ver:-unknown} (Cargo metadata, executable not run)";
 	# The profile's Bash deny guard: how many path rules it would enforce,
 	# whether the PreToolUse hook is actually wired and fail-closed (not
 	# silently defanged with `|| true`), whether the binary itself is on
