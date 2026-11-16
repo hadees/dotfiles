@@ -895,13 +895,14 @@ art_awk() {
 }
 
 # slot -> ac_cap and ac_band, "r g b": git config claude-peer.<slot>.cap, else by
-# the slot's place in the pool (Base16 Eighties hues; the second is the approved blue).
+# cap_index (an overlay pane sets it: overlay N is N-1) or the slot's place in the pool
+# (Base16 Eighties hues; the second is the approved blue).
 art_cap() {
   ac_h=$(git config --get "claude-peer.$1.cap" 2>/dev/null) || ac_h=
   ac_h=${ac_h#\#}
   if ! printf '%s\n' "$ac_h" | LC_ALL=C grep -Eq '^[0-9A-Fa-f]{6}$'; then
-    ac_i=0 ac_pos=0
-    for ac_w in $(pool_words 2>/dev/null); do
+    ac_i=0 ac_pos=${cap_index:-0}
+    [ -n "${cap_index-}" ] || for ac_w in $(pool_words 2>/dev/null); do
       [ "$ac_w" != "$1" ] || { ac_pos=$ac_i; break; }
       ac_i=$((ac_i + 1))
     done
@@ -2329,10 +2330,14 @@ cmd_overlays() {
 cmd_overlay() {
   [ $# -eq 1 ] || usage
   LEADER=$(pwd -P)
-  co_name=$1
+  co_name=$1 cap_index=
   case $1 in
-    ''|*[!0-9]*) ;;
-    *) co_name=$(overlay_installed "$1") || {
+    ''|*[!0-9]*)
+      # by name: its place among the installed panes, else among the overlays now
+      cap_index=$( { sed -n 1p "$(overlays_file)" 2>/dev/null; overlay_names 2>/dev/null; } |
+        CO_N=$1 awk '{ for (i = 1; i <= NF; i++) if ($i == ENVIRON["CO_N"]) { print i - 1; exit } }');;
+    *) cap_index=$(printf '%s\n' "$1" | awk '{ print $1 - 1 }')  # awk: a leading 0 is not octal
+       co_name=$(overlay_installed "$1") || {
          echo "claude-peer: no overlay pane $1 is installed on this machine (claude-peer status says what is; claude-peer install with iTerm2 quit writes them); plain shell"
          exec "${SHELL:-/bin/sh}" -i
        };;
