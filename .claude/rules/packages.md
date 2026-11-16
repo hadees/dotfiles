@@ -88,7 +88,10 @@ a WSL box whose package install had skipped for want of sudo.
 Homebrew's formula is keg-only (nothing is linked into `<prefix>/bin`), so
 `dot_exports` adds `~/.cargo/bin` and `$HOMEBREW_PREFIX/opt/rustup/bin` right
 behind Homebrew's `bin` and `sbin`, each only when it exists. Ubuntu carries
-`rustup` from noble and Debian from trixie; an older release skips it. Rust
+`rustup` from noble and Debian from trixie; an older release skips it, and so
+does a box with the distro's `rustc`/`cargo` installed, since `rustup` conflicts
+with them and every apt install runs `--no-remove` (a conflict is skipped,
+never resolved by removing what is there). Rust
 comes from the package lists, not asdf. `claude-codex` is `cargo install`ed by
 hand at a pinned version (`docs/claude-proxy.md`) and `update()` never touches
 it or Cargo; `tests/update.bats` pins that with stubs.

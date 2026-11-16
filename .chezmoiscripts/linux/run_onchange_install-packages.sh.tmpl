@@ -28,7 +28,7 @@ fi
 if [ "$(id -u)" -ne 0 ] && ! sudo -n true 2> /dev/null; then
 	echo "No root and no passwordless sudo — skipping package install.";
 	for list in "$@"; do
-		echo "Run manually: xargs -a $list sudo apt-get install -y";
+		echo "Run manually: xargs -a $list sudo apt-get install -y --no-remove";
 	done
 	exit 0;
 fi
@@ -41,6 +41,8 @@ for list in "$@"; do
 	# Per-package so one missing name (distro drift) doesn't abort the rest.
 	grep -vE '^[[:space:]]*(#|$)' "$list" | while read -r pkg; do
 		# </dev/null: apt-get must not read the rest of the list from the loop's stdin.
-		$SUDO apt-get install -y -qq "$pkg" </dev/null || echo "skipped (unavailable): $pkg";
+		# --no-remove: a package that conflicts with something installed (rustup
+		# with a distro rustc/cargo) is skipped, never swapped in by removal.
+		$SUDO apt-get install -y -qq --no-remove "$pkg" </dev/null || echo "skipped (unavailable or conflicting): $pkg";
 	done
 done

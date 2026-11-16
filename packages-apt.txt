@@ -85,7 +85,9 @@ ffmpeg
 lynx
 apktool
 # rustup: Ubuntu packages it from noble on and Debian from trixie on; a release
-#   without it skips it, and the Rust toolchain is then installed by hand.
+#   without it skips it, and the Rust toolchain is then installed by hand. It
+#   conflicts with the distro rustc/cargo; the installer's --no-remove skips it
+#   on a box that has them rather than removing them.
 rustup
 
 # transmission-cli is deliberately macOS-only, not missing from Ubuntu: the
