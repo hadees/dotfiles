@@ -32,7 +32,12 @@ setup() {
   unset CLAUDE_PROFILE CLAUDE_CONFIG_DIR BROWSER OPEN_AS_ALIAS SSH_CONNECTION \
     CLAUDE_CODE_SUBAGENT_MODEL CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL \
     CLAUDE_CODE_PROMPT_CACHE_TTL PONYTAIL_SUBAGENT_MATCHER \
-    CLAUDE_CODE_DISABLE_TERMINAL_TITLE
+    CLAUDE_CODE_DISABLE_TERMINAL_TITLE CLAUDE_CODEX_PROXY CLAUDE_CODEX_ROUTE \
+    CLAUDE_CODEX_REASON ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN \
+    ANTHROPIC_UNIX_SOCKET CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX \
+    CLAUDE_CODE_USE_FOUNDRY CLAUDE_CODE_USE_ANTHROPIC_AWS \
+    CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING ENABLE_TOOL_SEARCH \
+    CLAUDE_CODE_GATEWAY_HINT_HEADERS
 
   # Fixture pins: one "work" org and one "personal" owner, mapped to two
   # accounts; work maps to the default dir, personal to a separate profile.
@@ -81,6 +86,23 @@ account_in() {
 
 claude_in() {
   run zsh -c "source '$DOTFUNCTIONS'; cd '$1'; claude"
+}
+
+# The profile choice is the same on a machine that routes through claude-codex:
+# the one test here that plants a healthy proxy (installed executable, health
+# answer), so no other test meets it. tests/claude-proxy.bats is about routing.
+@test "claude: a routed launch still gets its account's config dir" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  mkdir -p "$HOME/.cargo/bin"
+  printf '#!/bin/sh\nexit 0\n' > "$HOME/.cargo/bin/claude-codex"
+  chmod +x "$HOME/.cargo/bin/claude-codex"
+  printf '#!/bin/sh\nprintf "{\\"ok\\":true}\\n200"\n' > "$BATS_TEST_TMPDIR/bin/curl"
+  chmod +x "$BATS_TEST_TMPDIR/bin/curl"
+  printf '#!/bin/sh\necho "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR-UNSET} ROUTE=${CLAUDE_CODEX_ROUTE-UNSET} URL=${ANTHROPIC_BASE_URL-UNSET}"\n' \
+    > "$BATS_TEST_TMPDIR/bin/claude"
+  claude_in "$repo"
+  [ "$status" -eq 0 ]
+  [ "$output" = "CLAUDE_CONFIG_DIR=$HOME/.claude-personal ROUTE=routed URL=http://127.0.0.1:18765" ]
 }
 
 @test "dot_functions defines the claude wrapper and account resolver" {
@@ -167,7 +189,7 @@ claude_in() {
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: claude: function"* ]]
-  [[ "$output" == *"defined: ok (14 helpers)"* ]]
+  [[ "$output" == *"defined: ok (19 helpers)"* ]]
   [[ "$output" == *"binary:  $BATS_TEST_TMPDIR/bin/claude"* ]]
   [[ "$output" == *"account: personal-account"* ]]
   [[ "$output" == *"launch:  $HOME/.claude-personal"* ]]
