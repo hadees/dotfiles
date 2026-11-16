@@ -364,9 +364,17 @@ EOF
   run tool '{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"Bash","tool_input":{"command":"x"},"tool_response":{"stdout":"","stderr":"No SSH private key found for the specified public key"}}'
   [ "$status" -eq 0 ]
   [[ "$(context)" == *BODY-commit-signing ]]
-  run tool '{"hook_event_name":"PostToolUse","session_id":"s2","tool_name":"Bash","tool_input":{"command":"x"},"tool_response":{"stdout":"op-ssh-sign said no","stderr":""}}'
+  run tool '{"hook_event_name":"PostToolUse","session_id":"s2","tool_name":"Bash","tool_input":{"command":"x"},"tool_response":{"stdout":"error: op-ssh-sign said no","stderr":""}}'
   [[ "$(context)" == *BODY-commit-signing ]]
   run tool '{"hook_event_name":"PostToolUse","session_id":"s3","tool_name":"Bash","tool_input":{"command":"x"},"tool_response":"failed to write commit object"}'
+  [[ "$(context)" == *BODY-commit-signing ]]
+}
+
+@test "hook tool: op-ssh-sign in a successful output adds nothing, in a failed call or beside an error line it does" {
+  run tool '{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"Bash","tool_input":{"command":"git config -l"},"tool_response":{"stdout":"gpg.ssh.program=/x/op-ssh-sign\ngpg.format=ssh","stderr":""}}'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run tool '{"hook_event_name":"PostToolUseFailure","session_id":"s1","tool_name":"Bash","tool_input":{"command":"git config -l | grep nope"},"error":"Exit code 1\n/x/op-ssh-sign"}'
   [[ "$(context)" == *BODY-commit-signing ]]
 }
 
@@ -431,6 +439,57 @@ EOF
   [ -n "$output" ]
   [ "$(printf 'main\tcommit-signing\na_b\tcommit-signing\n')" = "$(cat "$XDG_STATE_HOME/shared-memory/told/s1")" ]
   [ "$(cut -f5 "$LOG" | sort | uniq -c | tr -s ' ' | tr '\n' ';')" = " 3 injected; 2 told;" ]
+}
+
+@test "hook tool: two hooks of one session running at once inject once" {
+  local n sid pids=() out="$BATS_TEST_TMPDIR/conc"
+  mkdir -p "$out"
+  for n in 1 2 3 4; do
+    sid="c$n"
+    tool "${SIGN_FAIL/\"s1\"/\"$sid\"}" > "$out/$sid.a" &
+    pids+=($!)
+    tool "${SIGN_FAIL/\"s1\"/\"$sid\"}" > "$out/$sid.b" &
+    pids+=($!)
+  done
+  wait "${pids[@]}"
+  for n in 1 2 3 4; do
+    [ "$(cat "$out/c$n.a" "$out/c$n.b" | grep -c BODY-commit-signing)" -eq 1 ] || { echo "session c$n"; false; }
+  done
+  [ "$(grep -c "injected" "$LOG")" -eq 4 ]
+}
+
+@test "hook tool: a hook waits for the session's lock, and gives the same answer once it has it" {
+  local told="$XDG_STATE_HOME/shared-memory/told" out="$BATS_TEST_TMPDIR/waited" holder
+  mkdir -p "$told"
+  python3 -c 'import fcntl, sys, time
+fd = open(sys.argv[1], "a")
+fcntl.flock(fd, fcntl.LOCK_EX)
+print("held", flush=True)
+time.sleep(2)' "$told/s1~lock" > "$BATS_TEST_TMPDIR/held" &
+  holder=$!
+  until [ -s "$BATS_TEST_TMPDIR/held" ]; do sleep 0.05; done
+  tool "$SIGN_FAIL" > "$out" &
+  sleep 0.7
+  [ ! -s "$out" ] || { echo "the hook did not wait for the lock"; false; }
+  wait "$holder"
+  wait $!
+  grep -q BODY-commit-signing "$out"
+}
+
+@test "hook tool: a clear removes the session's lock file too" {
+  local told="$XDG_STATE_HOME/shared-memory/told"
+  tool "$SIGN_FAIL" > /dev/null
+  [ "$(ls "$told" | wc -l | tr -d ' ')" -eq 2 ]
+  start '{"session_id":"s1","source":"clear"}' > /dev/null
+  [ -z "$(ls "$told")" ]
+}
+
+@test "hook tool: a payload file that cannot be written is not left in TMPDIR" {
+  local tmpd="$BATS_TEST_TMPDIR/tmpd"
+  mkdir -p "$tmpd"
+  run sh -c 'ulimit -f 0; trap "" XFSZ; printf %s "$1" | TMPDIR="$2" sh "$3" hook tool' sh "$SIGN_FAIL" "$tmpd" "$SM"
+  [ "$status" -eq 0 ]
+  [ -z "$(ls -A "$tmpd")" ]
 }
 
 @test "hook tool: a start hook's clear forgets what a tool hook told" {

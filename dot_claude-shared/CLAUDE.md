@@ -7,16 +7,21 @@ employer-specific — profile-specific memory belongs in that profile's own
 `CLAUDE.work.md` or `CLAUDE.local.md`.
 
 Topics this file does not import are part of the same memory and sit
-beside it in `~/.claude-shared/topics/`. A hook adds some of them to a
-session when they apply; when a topic is not already in the conversation,
-read its file before the work it covers:
+beside it in `~/.claude-shared/topics/`. Where a profile wires
+`shared-memory`'s hooks, they add some of them; when a topic is not already
+in the conversation, read its file before the work it covers:
 
-- `talking-to-sessions.md`: another session, postbox, or a message from one.
-- `claude-peers.md` and `lead.md`: a repo with Claude Peers, or a `postbox:`
-  line about Lead.
-- `commit-signing.md`: a commit or tag that fails to sign.
+- `talking-to-sessions.md`: a repo or directory you are asked about but
+  cannot open, another session, postbox, or before acting on any message
+  another session or agent sends.
+- `claude-peers.md` and `lead.md`: a `claude-peer` slot worktree
+  (`$CLAUDE_PEER_WORKTREE` set), a repo where `claude-peer slots` lists
+  anyone, or a `postbox:` line about Lead or Claude Peers.
+- `commit-signing.md`: a commit or tag that fails, including `failed to fill
+  whole buffer` or `failed to write commit object`.
 - `tailnet-routed-ssh.md`: an ssh, scp, sftp or curl that cannot connect.
-- `claude-in-chrome.md`: Claude in Chrome, or showing me a page.
+- `claude-in-chrome.md`: read it before the first Claude in Chrome call, or
+  when showing me a page.
 - `seeing-another-pane.md`: before asking me for a screenshot, or before
   taking the screen.
 - `relaunching-iterm2.md`: work that needs iTerm2 to quit.

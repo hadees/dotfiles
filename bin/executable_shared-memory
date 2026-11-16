@@ -70,6 +70,7 @@ hook)
     exit 0
   }
   tmp=$(mktemp "${TMPDIR:-/tmp}/shared-memory.XXXXXX") || exit 0
+  trap 'rm -f "$tmp"' EXIT
   printf '%s' "$payload" >"$tmp" || exit 0
   exec 3<"$tmp"
   rm -f "$tmp"
@@ -84,6 +85,7 @@ esac
 
 rc=0
 python3 -I - "$@" <<'PY' || rc=$?
+import fcntl
 import json
 import os
 import re
@@ -92,6 +94,7 @@ import stat
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 
 # slug -> when it is added: at session start, or by a tool event (a later
 # hook route). Every other topic file is imported by the index, or a pointer.
@@ -111,7 +114,11 @@ TOLD_MAX_DAYS = 14
 START_ORDER = ("talking-to-sessions", "claude-peers", "lead")
 # What a failed commit signature and a failed connection print. "Could not
 # resolve host" also covers "... hostname". The sh prefilter above repeats them.
-SIGNING = ("failed to fill whole buffer", "failed to write commit object", "op-ssh-sign", "No SSH private key found")
+SIGNING = ("failed to fill whole buffer", "failed to write commit object", "No SSH private key found")
+# The signer's own name is in ordinary output too (git config -l, a diff), so
+# it counts only from a failed tool call or beside a git error line.
+SIGNER = "op-ssh-sign"
+ERROR_LINE = re.compile(r"^\s*(error|fatal):", re.M)
 CONNECT = ("Could not resolve hostname", "Could not resolve host", "Connection refused", "Connection timed out",
            "Operation timed out", "No route to host", "Connection closed by", "kex_exchange_identification",
            "Failed to connect to", "Couldn't connect to server", "Network is unreachable", "SOCKS")
@@ -244,15 +251,39 @@ def told_path(session_id):
     return os.path.join(TOLD, re.sub(r"[^A-Za-z0-9._-]", "_", session_id))
 
 
+def lock_path(session_id):
+    # "~" is outside the characters told_path keeps, so no session id can name it.
+    return told_path(session_id) + "~lock"
+
+
+@contextmanager
+def told_lock(session_id):
+    # Held from reading the told file to appending to it, so two hooks of one
+    # session running at once do not both inject. Fails open: with no lock the
+    # hook behaves as it did before.
+    fd = None
+    try:
+        os.makedirs(TOLD, exist_ok=True)
+        fd = os.open(lock_path(session_id), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError:
+        pass
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def tidy_told(payload):
     # A cleared or compacted session has lost what the tool events told it.
     # Housekeeping only: a failure here must not cost the injection.
     try:
         sid = payload.get("session_id")
         if payload.get("source") in ("clear", "compact") and isinstance(sid, str) and sid:
-            path = told_path(sid)
-            if os.path.isfile(path):
-                os.remove(path)
+            for path in (told_path(sid), lock_path(sid)):
+                if os.path.isfile(path):
+                    os.remove(path)
         old = time.time() - TOLD_MAX_DAYS * DAY
         for name in os.listdir(TOLD) if os.path.isdir(TOLD) else ():
             path = os.path.join(TOLD, name)
@@ -360,7 +391,8 @@ def tool_slugs(payload):
     slugs = []
     if name == "Bash":
         cmd = args.get("command")
-        if any(s in text for s in SIGNING):
+        failed = payload.get("hook_event_name") == "PostToolUseFailure"
+        if any(s in text for s in SIGNING) or (SIGNER in text and (failed or ERROR_LINE.search(text))):
             slugs.append("commit-signing")
         if isinstance(cmd, str) and NET_COMMAND.search(cmd) and any(s in text for s in CONNECT):
             slugs.append("tailnet-routed-ssh")
@@ -380,6 +412,11 @@ def hook_tool():
         return
     agent = payload.get("agent_id")
     who = re.sub(r"[^A-Za-z0-9._-]", "_", agent) if isinstance(agent, str) and agent else "main"
+    with told_lock(sid):
+        tell_tool(payload, event, sid, who)
+
+
+def tell_tool(payload, event, sid, who):
     index = read_text(os.path.join(DIR, "CLAUDE.md"))
     path = told_path(sid)
     told = read_text(path).split("\n")
