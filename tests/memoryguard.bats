@@ -599,6 +599,15 @@ Until: when the fix lands")"
   STUB_ANSWER='{"answers":{"destination":{"choice":"shared-memory","confidence":0.9},"private":{"choice":"no","confidence":0.9},"place":{"choice":"shared:Delegation","confidence":0.9}}}'
   hook_pre "$(inrepo "one c")"
   [[ "$(field "$output" permissionDecisionReason)" == *'shared memory (public: nothing account-, org- or employer-specific), /src/dot_claude-shared/delegation.md, section "Delegation"'* ]]
+  # A topic the index does not import is still seen: named by its file, and offered in the outline.
+  printf '## Browser\n\ntext\n' > "$HOME/.claude-shared/topics/browser.md"
+  STUB_ANSWER='{"answers":{"destination":{"choice":"shared-memory","confidence":0.9},"private":{"choice":"no","confidence":0.9},"place":{"choice":"shared:Browser","confidence":0.9}}}'
+  hook_pre "$(inrepo "one e")"
+  [[ "$(field "$output" permissionDecisionReason)" == *'/src/dot_claude-shared/browser.md, section "Browser"'* ]]
+  grep -q 'shared:Browser' "$STUB_DIR/request.json"
+  grep -q 'Section \\"Browser\\" of the shared memory, read when its topic applies.' "$STUB_DIR/request.json"
+  grep -q 'Section \\"Delegation\\" of the shared memory every session loads.' "$STUB_DIR/request.json"
+  rm "$HOME/.claude-shared/topics/browser.md"
   # A section no topic holds is a new topic file with its import, never a heading in the index.
   STUB_ANSWER='{"answers":{"destination":{"choice":"shared-memory","confidence":0.9},"private":{"choice":"no","confidence":0.9},"place":{"choice":"none","confidence":0.9}}}'
   hook_pre "$(inrepo "one d")"
