@@ -45,11 +45,12 @@ Topics this file does not import:
 - `talking-to-sessions.md`: another session.
 - `claude-peers.md` and `lead.md`: a repo with peers.
 - `commit-signing.md`: a commit that fails to sign.
+- `claude-in-chrome.md`: the browser.
 
 @topics/always-here.md
 EOF
   local t
-  for t in always-here talking-to-sessions claude-peers lead commit-signing tailnet-routed-ssh; do
+  for t in always-here talking-to-sessions claude-peers lead commit-signing tailnet-routed-ssh claude-in-chrome; do
     printf '## Fixture %s\n\nBODY-%s\n' "$t" "$t" > "$SHARED_MEMORY_DIR/topics/$t.md"
   done
 
@@ -65,6 +66,19 @@ start() {
   [ -n "$payload" ] || payload="{\"session_id\":\"s1\",\"cwd\":\"$HOME/work\"}"
   printf '%s' "$payload" | sh "$SM" hook start
 }
+
+tool() {
+  printf '%s' "$1" | sh "$SM" hook tool
+}
+
+# The additionalContext of the one JSON object a tool hook printed.
+context() {
+  printf '%s' "$output" | python3 -c 'import json, sys; print(json.load(sys.stdin)["hookSpecificOutput"]["additionalContext"])'
+}
+
+SIGN_FAIL='{"hook_event_name":"PostToolUseFailure","session_id":"s1","tool_name":"Bash","tool_input":{"command":"git commit -m x"},"error":"Exit code 128\nerror: 1Password: failed to fill whole buffer\nfatal: failed to write commit object"}'
+SSH_FAIL='{"hook_event_name":"PostToolUseFailure","session_id":"s1","tool_name":"Bash","tool_input":{"command":"cd x && ssh host true"},"error":"Exit code 255\nssh: connect to host host port 22: Connection refused"}'
+CHROME='{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"mcp__claude-in-chrome__tabs_context_mcp","tool_input":{},"tool_response":"ok"}'
 
 @test "topics: imported wins, listed pointer and unreachable are classed, exit 1 when one is neither" {
   run sh "$SM" topics
@@ -334,4 +348,176 @@ EOF
   run sh "$SM" log
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+}
+
+@test "hook tool: a failed signature adds commit-signing on PostToolUseFailure, echoing the event" {
+  run tool "$SIGN_FAIL"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | python3 -c 'import json, sys; d = json.load(sys.stdin); print(list(d), sorted(d["hookSpecificOutput"]), d["hookSpecificOutput"]["hookEventName"])')" = "['hookSpecificOutput'] ['additionalContext', 'hookEventName'] PostToolUseFailure" ]
+  [ "$(context | head -1)" = "shared-memory: commit-signing applies to what just happened; from the shared memory:" ]
+  [[ "$(context)" == *BODY-commit-signing ]]
+  [[ "$output" != *decision* ]]
+  [ "$(cut -f3- "$LOG")" = "$(printf 'tool\tcommit-signing\tinjected')" ]
+}
+
+@test "hook tool: a signing string in a PostToolUse tool_response object, stdout or stderr" {
+  run tool '{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"Bash","tool_input":{"command":"x"},"tool_response":{"stdout":"","stderr":"No SSH private key found for the specified public key"}}'
+  [ "$status" -eq 0 ]
+  [[ "$(context)" == *BODY-commit-signing ]]
+  run tool '{"hook_event_name":"PostToolUse","session_id":"s2","tool_name":"Bash","tool_input":{"command":"x"},"tool_response":{"stdout":"op-ssh-sign said no","stderr":""}}'
+  [[ "$(context)" == *BODY-commit-signing ]]
+  run tool '{"hook_event_name":"PostToolUse","session_id":"s3","tool_name":"Bash","tool_input":{"command":"x"},"tool_response":"failed to write commit object"}'
+  [[ "$(context)" == *BODY-commit-signing ]]
+}
+
+@test "hook tool: a failed ssh, scp, sftp or curl adds tailnet-routed-ssh, on both events" {
+  run tool "$SSH_FAIL"
+  [ "$status" -eq 0 ]
+  [[ "$(context)" == *BODY-tailnet-routed-ssh ]]
+  run tool '{"hook_event_name":"PostToolUse","session_id":"s2","tool_name":"Bash","tool_input":{"command":"curl -s http://h/"},"tool_response":{"stdout":"","stderr":"curl: (7) Failed to connect to h port 80"}}'
+  [ "$(printf '%s' "$output" | python3 -c 'import json, sys; print(json.load(sys.stdin)["hookSpecificOutput"]["hookEventName"])')" = PostToolUse ]
+  [[ "$(context)" == *BODY-tailnet-routed-ssh ]]
+  local c
+  for c in 'scp a h:b' 'x; sftp h' 'a | ssh h' '(ssh h)' 'echo $(curl h)' 'ssh h'; do
+    run tool "{\"hook_event_name\":\"PostToolUse\",\"session_id\":\"$c\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$c\"},\"tool_response\":\"No route to host\"}"
+    [[ "$(context)" == *BODY-tailnet-routed-ssh ]] || { echo "no match: $c"; false; }
+  done
+}
+
+@test "hook tool: a curl 404 and a connect string in a command that is not a network tool add nothing" {
+  run tool '{"hook_event_name":"PostToolUseFailure","session_id":"s1","tool_name":"Bash","tool_input":{"command":"curl -f http://h/x"},"error":"Exit code 22\ncurl: (22) The requested URL returned error: 404"}'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run tool '{"hook_event_name":"PostToolUseFailure","session_id":"s1","tool_name":"Bash","tool_input":{"command":"echo sshd Connection refused"},"error":"Exit code 1\nConnection refused"}'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run tool '{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"Read","tool_input":{"command":"ssh h"},"tool_response":"Connection refused failed to fill whole buffer"}'
+  [ -z "$output" ]
+  [ ! -e "$LOG" ]
+}
+
+@test "hook tool: the Claude in Chrome tools and the claude-in-chrome skill add claude-in-chrome" {
+  run tool "$CHROME"
+  [ "$status" -eq 0 ]
+  [[ "$(context)" == *BODY-claude-in-chrome ]]
+  run tool '{"hook_event_name":"PostToolUse","session_id":"s2","tool_name":"Skill","tool_input":{"skill":"claude-in-chrome"},"tool_response":"ok"}'
+  [[ "$(context)" == *BODY-claude-in-chrome ]]
+  run tool '{"hook_event_name":"PostToolUse","session_id":"s3","tool_name":"Skill","tool_input":{"skill":"some:claude-in-chrome"},"tool_response":"ok"}'
+  [[ "$(context)" == *BODY-claude-in-chrome ]]
+  run tool '{"hook_event_name":"PostToolUse","session_id":"s4","tool_name":"Skill","tool_input":{"skill":"claude-in-chrome-notes"},"tool_response":"ok"}'
+  [ -z "$output" ]
+  run tool '{"hook_event_name":"PostToolUse","session_id":"s4","tool_name":"mcp__other__x","tool_input":{"note":"claude-in-chrome"},"tool_response":"ok"}'
+  [ -z "$output" ]
+}
+
+@test "hook tool: one signing failure that is also an ssh failure adds both, signing first" {
+  run tool '{"hook_event_name":"PostToolUseFailure","session_id":"s1","tool_name":"Bash","tool_input":{"command":"ssh h"},"error":"Exit code 255\nop-ssh-sign\nConnection refused"}'
+  [[ "$(context)" == *BODY-commit-signing*BODY-tailnet-routed-ssh ]]
+  [ "$(context | head -1)" = "shared-memory: commit-signing, tailnet-routed-ssh applies to what just happened; from the shared memory:" ]
+}
+
+@test "hook tool: the second hit in a session is told and silent, another agent is told again" {
+  run tool "$SIGN_FAIL"
+  [ -n "$output" ]
+  run tool "$SIGN_FAIL"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run tool "${SIGN_FAIL/\"session_id\":\"s1\"/\"session_id\":\"s1\",\"agent_id\":\"a/b\"}"
+  [[ "$(context)" == *BODY-commit-signing ]]
+  run tool "${SIGN_FAIL/\"session_id\":\"s1\"/\"session_id\":\"s1\",\"agent_id\":\"a/b\"}"
+  [ -z "$output" ]
+  # another session is told again, and a topic that is new to this one is not blocked by the old
+  run tool "${SIGN_FAIL/\"s1\"/\"s2\"}"
+  [ -n "$output" ]
+  [ "$(printf 'main\tcommit-signing\na_b\tcommit-signing\n')" = "$(cat "$XDG_STATE_HOME/shared-memory/told/s1")" ]
+  [ "$(cut -f5 "$LOG" | sort | uniq -c | tr -s ' ' | tr '\n' ';')" = " 3 injected; 2 told;" ]
+}
+
+@test "hook tool: a start hook's clear forgets what a tool hook told" {
+  tool "$SIGN_FAIL" > /dev/null
+  start '{"session_id":"s1","source":"compact"}' > /dev/null
+  run tool "$SIGN_FAIL"
+  [[ "$(context)" == *BODY-commit-signing ]]
+}
+
+@test "hook tool: a topic the index imports is never added, and is logged imported" {
+  printf '@topics/commit-signing.md\n' >> "$SHARED_MEMORY_DIR/CLAUDE.md"
+  run tool "$SIGN_FAIL"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$(cut -f3- "$LOG")" = "$(printf 'tool\tcommit-signing\timported')" ]
+}
+
+@test "hook tool: a topic file that is missing is skipped" {
+  rm "$SHARED_MEMORY_DIR/topics/commit-signing.md"
+  run tool "$SIGN_FAIL"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "hook tool: over 9,000 characters it names the file instead, and logs oversize" {
+  { printf '## Big\n\n'; head -c 9500 /dev/zero | tr '\0' x; printf '\n'; } > "$SHARED_MEMORY_DIR/topics/commit-signing.md"
+  run tool "$SIGN_FAIL"
+  [ "$status" -eq 0 ]
+  [ "${#output}" -lt 9000 ]
+  [[ "$(context)" == *"read ~/.claude-shared/topics/commit-signing.md now: it applies to what just happened and is too long to add here." ]]
+  [ "$(cut -f5 "$LOG")" = oversize ]
+}
+
+@test "hook tool: a payload with none of the prefilter strings never starts python" {
+  printf '#!/bin/sh\necho call >> "%s/calls"\nexec "%s" "$@"\n' "$BATS_TEST_TMPDIR" "$REAL_PYTHON3" > "$BIN/python3"
+  run tool '{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"Bash","tool_input":{"command":"ls"},"tool_response":{"stdout":"a b c","stderr":""}}'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  [ ! -e "$XDG_STATE_HOME/shared-memory" ]
+  run tool "$SIGN_FAIL"
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls" | tr -d ' ')" -eq 1 ]
+}
+
+@test "hook tool: silent under MEMORYGUARD_DEPTH" {
+  MEMORYGUARD_DEPTH=1 run tool "$SIGN_FAIL"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ ! -e "$LOG" ]
+}
+
+@test "hook tool: malformed JSON, no session id, a missing directory and an unknown event exit 0 with no output" {
+  run tool 'not json {  failed to fill whole buffer'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run tool '["failed to fill whole buffer"]'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run sh "$SM" hook tool < /dev/null
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run tool "${SIGN_FAIL/\"session_id\":\"s1\",/}"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run tool "${SIGN_FAIL/PostToolUseFailure/Stop}"
+  [ -z "$output" ]
+  SHARED_MEMORY_DIR="$BATS_TEST_TMPDIR/nowhere" run tool "$SIGN_FAIL"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "hook tool: a PATH without python3 exits 0 with no output and leaves a nopython row, only after a prefilter hit" {
+  local nopy="$BATS_TEST_TMPDIR/nopy" t
+  mkdir -p "$nopy"
+  for t in cat mktemp rm date mkdir; do ln -s "$(command -v "$t")" "$nopy/$t"; done
+  run env PATH="$nopy" /bin/sh "$SM" hook tool <<< "$SIGN_FAIL"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [[ "$(cut -f2- "$LOG")" == $'.claude-test\ttool\t-\tnopython' ]]
+  rm "$LOG"
+  run env PATH="$nopy" /bin/sh "$SM" hook tool <<< '{"tool_name":"Bash","tool_input":{"command":"ls"}}'
+  [ "$status" -eq 0 ]
+  [ ! -e "$LOG" ]
+}
+
+@test "hook tool: log rows carry no session id, command or output" {
+  tool "$SIGN_FAIL" > /dev/null
+  [ "$(awk -F'\t' 'NF != 5' "$LOG" | wc -l | tr -d ' ')" -eq 0 ]
+  ! grep -q 's1\|git commit\|1Password\|BODY' "$LOG" || { echo "the log carries content"; false; }
 }

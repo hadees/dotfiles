@@ -5,7 +5,10 @@
 # ~/.claude-shared/CLAUDE.md imports the topics every session needs and lists
 # the rest. An import is loaded whether or not it is used, so the rest are
 # added by hooks instead: `hook start` (SessionStart) for the topics about
-# the kind of session this is. Each profile's settings.json is owned by its
+# the kind of session this is, and `hook tool` (PostToolUse and
+# PostToolUseFailure) for the topics about something that just went wrong or
+# was just started: a commit that failed to sign, an ssh that could not
+# connect, Claude in Chrome. Each profile's settings.json is owned by its
 # overlay, so this script ships the block to paste (`settings`) and never
 # edits one.
 #
@@ -49,11 +52,23 @@ case "${1:-}" in
 hook)
   [ -z "${MEMORYGUARD_DEPTH:-}" ] || exit 0
   case "${2:-}" in start | tool) ;; *) exit 0 ;; esac
+  payload=$(cat) || exit 0
+  # `hook tool` runs on every Bash call, so a payload that holds none of the
+  # strings python could match (the SIGNING and CONNECT lists below, and the
+  # Claude in Chrome name) never starts python. Keep these in step with them.
+  if [ "$2" = tool ]; then
+    case "$payload" in
+    *"failed to fill whole buffer"* | *"failed to write commit object"* | *"op-ssh-sign"* | *"No SSH private key found"*) ;;
+    *"Could not resolve host"* | *"Connection refused"* | *"Connection timed out"* | *"Operation timed out"* | *"No route to host"*) ;;
+    *"Connection closed by"* | *"kex_exchange_identification"* | *"Failed to connect to"* | *"Couldn't connect to server"*) ;;
+    *"Network is unreachable"* | *"SOCKS"* | *"claude-in-chrome"*) ;;
+    *) exit 0 ;;
+    esac
+  fi
   command -v python3 >/dev/null 2>&1 || {
     nopython "$2"
     exit 0
   }
-  payload=$(cat) || exit 0
   tmp=$(mktemp "${TMPDIR:-/tmp}/shared-memory.XXXXXX") || exit 0
   printf '%s' "$payload" >"$tmp" || exit 0
   exec 3<"$tmp"
@@ -94,6 +109,14 @@ INJECT_MAX = 9000
 PEER_TIMEOUT = 3
 TOLD_MAX_DAYS = 14
 START_ORDER = ("talking-to-sessions", "claude-peers", "lead")
+# What a failed commit signature and a failed connection print. "Could not
+# resolve host" also covers "... hostname". The sh prefilter above repeats them.
+SIGNING = ("failed to fill whole buffer", "failed to write commit object", "op-ssh-sign", "No SSH private key found")
+CONNECT = ("Could not resolve hostname", "Could not resolve host", "Connection refused", "Connection timed out",
+           "Operation timed out", "No route to host", "Connection closed by", "kex_exchange_identification",
+           "Failed to connect to", "Couldn't connect to server", "Network is unreachable", "SOCKS")
+NET_COMMAND = re.compile(r"(^|[;&|(\x60]\s*|\$\(\s*|\s)(ssh|scp|sftp|curl)(\s|$)")
+CHROME_PREFIX = "mcp__claude-in-chrome__"
 
 HOME = os.environ.get("HOME", "")
 DIR = os.environ.get("SHARED_MEMORY_DIR") or os.path.join(HOME, ".claude-shared")
@@ -319,14 +342,87 @@ def hook_start():
         log_row("start", slug, outcome)
 
 
+def tool_text(payload):
+    if payload.get("hook_event_name") == "PostToolUseFailure":
+        err = payload.get("error")
+        return err if isinstance(err, str) else ""
+    resp = payload.get("tool_response")
+    if isinstance(resp, dict):
+        return "\n".join(v for v in (resp.get("stdout"), resp.get("stderr")) if isinstance(v, str))
+    return resp if isinstance(resp, str) else ""
+
+
+def tool_slugs(payload):
+    name = payload.get("tool_name")
+    args = payload.get("tool_input")
+    args = args if isinstance(args, dict) else {}
+    text = tool_text(payload)
+    slugs = []
+    if name == "Bash":
+        cmd = args.get("command")
+        if any(s in text for s in SIGNING):
+            slugs.append("commit-signing")
+        if isinstance(cmd, str) and NET_COMMAND.search(cmd) and any(s in text for s in CONNECT):
+            slugs.append("tailnet-routed-ssh")
+    skill = args.get("skill")
+    if (isinstance(name, str) and name.startswith(CHROME_PREFIX)) or (
+            name == "Skill" and isinstance(skill, str) and (skill == "claude-in-chrome" or skill.endswith(":claude-in-chrome"))):
+        slugs.append("claude-in-chrome")
+    return slugs
+
+
+def hook_tool():
+    payload = read_payload()
+    if payload is None:
+        return
+    event, sid = payload.get("hook_event_name"), payload.get("session_id")
+    if event not in ("PostToolUse", "PostToolUseFailure") or not isinstance(sid, str) or not sid:
+        return
+    agent = payload.get("agent_id")
+    who = re.sub(r"[^A-Za-z0-9._-]", "_", agent) if isinstance(agent, str) and agent else "main"
+    index = read_text(os.path.join(DIR, "CLAUDE.md"))
+    path = told_path(sid)
+    told = read_text(path).split("\n")
+    slugs, texts = [], []
+    for slug in tool_slugs(payload):
+        topic = os.path.join(DIR, "topics", slug + ".md")
+        if not os.path.isfile(topic):
+            continue
+        if is_imported(index, slug):
+            log_row("tool", slug, "imported")
+        elif "%s\t%s" % (who, slug) in told:
+            log_row("tool", slug, "told")
+        else:
+            slugs.append(slug)
+            texts.append(read_text(topic).rstrip())
+    if not slugs:
+        return
+    ctx, outcome = "shared-memory: %s applies to what just happened; from the shared memory:\n\n%s" % (", ".join(slugs), "\n\n".join(texts)), "injected"
+    if len(ctx) > INJECT_MAX:
+        ctx = "shared-memory: %s applies to what just happened:\n%s" % (", ".join(slugs), "\n".join(
+            "read ~/.claude-shared/topics/%s.md now: it applies to what just happened and is too long to add here." % s for s in slugs))
+        outcome = "oversize"
+    sys.stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": ctx}}) + "\n")
+    sys.stdout.flush()
+    try:
+        os.makedirs(TOLD, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("".join("%s\t%s\n" % (who, s) for s in slugs))
+    except OSError:
+        pass
+    for slug in slugs:
+        log_row("tool", slug, outcome)
+
+
 def hook(argv):
     # Every route returns 0: a hook that fails must not block a session.
-    # `tool` is accepted and does nothing until its route is written.
     if os.environ.get("MEMORYGUARD_DEPTH"):
         return 0
     try:
         if argv[:1] == ["start"]:
             hook_start()
+        elif argv[:1] == ["tool"]:
+            hook_tool()
     except BaseException:
         log_row(argv[0], "-", "error")
     return 0
