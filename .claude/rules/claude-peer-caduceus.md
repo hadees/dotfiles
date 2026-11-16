@@ -25,3 +25,14 @@ cursor is always back under the figure), then the still frame with no process ru
 is 0, `q` or end of input 1, and the figure is erased either way. Status 3, silent, is no
 terminal, `claude-peer.art false`, no figure, or a pane smaller than it: `hermes_peer` then
 asks in words as before. `art --hermes [--at <n>]` prints one frame (0 is still).
+
+**The picker.** `art --hermes --pick` is the slot panes' fzf (same options,
+`FZF_DEFAULT_OPTS` colours only, centred from 80 columns) with the still caduceus
+in the header where the sleeper goes, then `↵ start · esc hide`, and four rows:
+fresh, continue, resume, shell. Pointer and prompt (`Hermes ▸`) take the band's lit
+colour. The figure is left out when it, the hint and the rows do not fit the pane.
+Status 0 fresh, 4 continue, 5 resume, 1 shell, 6 Esc or nothing chosen; 3, silent,
+is no terminal, `claude-peer.picker` `list` or `off`, or no fzf 0.75, and
+`hermes_peer` then waits under the figure as before. There are no contexts and no
+task row: Hermes 0.19 has no flag that starts an interactive chat with a first
+prompt (`-z` and `chat -q` answer once and exit).
