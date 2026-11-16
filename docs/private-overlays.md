@@ -638,6 +638,21 @@ profile's settings source as an additional `PreToolUse` matcher, keeping
 its `exit 2` branch intact — that branch is what makes a missing
 `~/bin/denyguard` block Bash instead of silently allowing it.
 
+### Shared-memory topic hooks — every profile's `settings.json`
+
+`bin/executable_shared-memory` adds the shared memory's on-demand topics to a
+session when they apply (see `.claude/rules/shared-memory.md`). The script
+and its hook block are identity-free; only the *file* they get pasted into is
+private, because each profile's `settings.json` is overlay-owned. Paste
+`shared-memory settings`'s output into each profile's settings source: a
+`SessionStart` entry and a `PostToolUse` and a `PostToolUseFailure` entry
+with the matcher it prints, merged with the hooks already there. Every
+entry ends in `|| true` and runs only if `~/bin/shared-memory` is executable,
+so it is safe to wire before the public change lands: until the script is
+deployed it does nothing, and a topic the shared index still imports is never
+added. `claude-doctor`'s `topics:` line says per profile whether the hook is
+wired, partly wired or not.
+
 ### Session Status wiring — every profile's `settings.json`
 
 iTerm2's Session Status rows come from its `cc-status` binary, which its
