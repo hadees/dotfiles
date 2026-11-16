@@ -158,3 +158,18 @@ print(eval(sys.argv[2]))' "$BATS_TEST_TMPDIR/out.plist" "$1"
   [ -z "$(git -C "$SRC" ls-files '*.service' '*systemd*')" ]
   ! grep -rn 'launchctl' "$SRC/.chezmoiscripts" "$SRC/dot_functions" "$SRC/dot_zshrc" "$SRC/dot_exports" || { echo "something loads the service with launchctl"; false; }
 }
+
+@test "the plan-gpt agent stubs deploy only once the proxy is installed" {
+  cd "$SRC"
+  local f
+  chez init --source "$SRC" --promptString machineClass=linux --apply --exclude scripts
+  for f in .claude .claude-hadees .claude-shared; do
+    [ ! -e "$TMPHOME/$f/agents/plan-gpt.md" ] || { echo "$f/agents/plan-gpt.md deploys with no claude-codex installed"; false; }
+  done
+  [ -f "$TMPHOME/.claude-shared/agents/plan-fable.md" ]
+  fake_proxy_install
+  chez apply --source "$SRC" --exclude scripts
+  for f in .claude .claude-hadees .claude-shared; do
+    [ -f "$TMPHOME/$f/agents/plan-gpt.md" ] || { echo "$f/agents/plan-gpt.md missing with claude-codex installed"; false; }
+  done
+}

@@ -96,3 +96,27 @@ PY
   [ "$(grep -c '^## ' <<< "$exp")" -eq "$(grep -c '^@' "$SHARED_MEMORY")" ]
   ! grep -q '^@' <<< "$exp" || { echo "an import line survived the expansion"; false; }
 }
+
+@test "gpt-seats is a pointer-only topic: listed once in the index, not imported, with its trigger and every qualifying phrase" {
+  local topic="$TOPICS/gpt-seats.md" exp flat p
+  [ "$(grep -c '^- `gpt-seats.md`:' "$SHARED_MEMORY")" -eq 1 ]
+  ! grep -q '^@topics/gpt-seats.md' "$SHARED_MEMORY" || { echo "gpt-seats is imported"; false; }
+  [ "$(grep -c '^@topics/delegation-and-model-routing.md$' "$SHARED_MEMORY")" -eq 1 ]
+  [ "$(sh "$SM" topics "$(dirname "$SHARED_MEMORY")" | awk '$1=="gpt-seats" {print $2}')" = pointer ]
+  [ "$(wc -l < "$topic")" -lt "$LINES_MAX" ]
+  ! grep -q 'gpt-seats' "$SM" || { echo "a hook trigger names gpt-seats"; false; }
+  # The index trigger is part of what every session loads; the protocol is not.
+  exp="$(shared_memory_expanded | tr '\n' ' ' | tr -s ' ')"
+  grep -qF 'before dispatching any `gpt-*` agent, after a `plan-fable` that ended in failure, incomplete output or on a substituted model' <<< "$exp" || { echo "index: no gpt-seats trigger"; false; }
+  ! grep -qF 'GPT_HANDOVER' <<< "$exp" || { echo "the GPT protocol is always loaded"; false; }
+  flat="$(tr '\n' ' ' < "$topic" | tr -s ' ')"
+  for p in 'additional planner' 'owns its revisions' 'claude_gpt_ready MODEL' 'GPT_ROUTE_ERROR reason=helper-error' \
+    'seven_day_overage_included' "You've hit your Fable limit" 'Fable limit reached' 'model_requires_usage_credits' \
+    'consent_unanswered' 'GPT_HANDOVER attempted=1 dispatched=1 unavailable=0 reason=fable-limit' \
+    'GPT_HANDOVER attempted=1 dispatched=0 unavailable=1 reason=route-unavailable' \
+    'reason=not-fable-limit' 'reason=unclassified' 'GPT_PLAN outcome=' 'Do not try another `gpt-*` model' \
+    '`claude-code-guide` with `model: opus`' 'no `resume`' 'Assess only the supplied Claude-behaviour assumptions' \
+    '"verdicts"' 'GPT_ADVISOR dispatched=' 'outcome=<empty|agree|revise|unknown|unavailable|protocol-error>'; do
+    grep -qF -- "$p" <<< "$flat" || { echo "gpt-seats: no '$p'"; false; }
+  done
+}
