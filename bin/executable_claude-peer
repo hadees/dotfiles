@@ -14,9 +14,9 @@
 #
 # Two more Workgroups, not extra peers on the builtin Claude Code one: peers
 # spawn eagerly when a workgroup is entered, and the builtin is entered on
-# every claude job. `Claude Peers` is Lead and the panes Alpha, Beta, Gamma, Delta, Epsilon; a
-# pane waits (below), so entering it on every claude job costs five blocked
-# shells, not five Claudes. `Claude Peers + Hermes` is the same plus a Hermes
+# every claude job. `Claude Peers` is Lead and the panes Alpha, Beta, Gamma, Delta; a
+# pane waits (below), so entering it on every claude job costs four blocked
+# shells, not four Claudes. `Claude Peers + Hermes` is the same plus a Hermes
 # pane, a twin because a pane cannot remove itself from a workgroup: where no
 # Hermes profile routes the directory the other definition must be the one
 # entered. There is no Diff peer. Which one a tab enters is the claude()
@@ -152,7 +152,7 @@
 #   plan <branch>...         branch<TAB>worktree<TAB>create|reuse|conflict:<why>
 #                            per branch, exit 1 on any conflict
 #   workgroup                print the "Claude Peers" Workgroup definition JSON
-#                            (Lead, Alpha … Epsilon) that install would write
+#                            (Lead, Alpha … Delta) that install would write
 #   install                  write that and "Claude Peers + Hermes" (the same
 #                            plus a Hermes pane) into iTerm2's preferences;
 #                            iTerm2 must be quit. With private overlays on this
@@ -194,10 +194,12 @@
 #                            moves in fzf after the last key; 0 holds it still;
 #                            unset, and with `claude-peer look on`, it moves
 #                            while the pane is the one looked at)
-#   art --hermes [--at <n>] [--truecolor|--256] | art --hermes --wait
+#   art --hermes [--at <n>] [--truecolor|--256] | art --hermes --wait|--pick
 #                            the Hermes pane's figure, read from the installed
 #                            Hermes: one frame of its glint (0, the default, is
-#                            still), or the pane's wait (0 Return, 1 q, 3 none)
+#                            still), the pane's wait (0 Return, 1 q, 3 none), or
+#                            its picker (0 fresh, 4 continue, 5 resume, 1 shell,
+#                            6 Esc, 3 no picker here)
 #   art --screen [--slot <slot>]
 #                            the quiet waiting screen, padded as a pane pads it,
 #                            for this terminal or CLAUDE_PEER_SIZE
@@ -443,7 +445,7 @@ rname_of() { printf '%s' "${1##*/}" | tr -c 'A-Za-z0-9._-' '-'; }
 settle() { st=${CLAUDE_PEER_SETTLE:-2}; [ "$st" -gt 0 ] && sleep "$st"; return 0; }
 
 # The words of claude-peer.slots (read where the caller stands), else the default
-# pool. Its first five are the bar's names. Dies on a word that is not a slot.
+# pool. Its first four are the bar's names. Dies on a word that is not a slot.
 pool_words() {
   pw=$(git config --get claude-peer.slots 2>/dev/null) || pw=
   [ -n "$pw" ] || pw=$POOL_DEFAULT
@@ -452,7 +454,7 @@ pool_words() {
 }
 
 # repo own pool -> the slot line of the first slot that can be taken, claimed:
-# own, then the pool from its sixth name on, then its first five. A slot with a
+# own, then the pool from its fifth name on, then its first four. A slot with a
 # live claim is skipped; one that cannot be made says why (stderr) and is skipped.
 # Exit 3 and one line when none can. Under the repo lock, taken once.
 pool_checkout() {
@@ -468,7 +470,7 @@ pool_pick() {
   pk_order=$pk_own pk_i=0 pk_n=0 pk_first=
   for s in $3; do
     pk_n=$((pk_n + 1)); pk_i=$((pk_i + 1))
-    if [ "$pk_i" -le 5 ]; then pk_first="$pk_first $s"
+    if [ "$pk_i" -le 4 ]; then pk_first="$pk_first $s"
     elif [ "$s" != "$pk_own" ]; then pk_order="$pk_order $s"; fi
   done
   for s in $pk_first; do [ "$s" = "$pk_own" ] || pk_order="$pk_order $s"; done
@@ -512,7 +514,9 @@ waiters() {
     ww_p=${ww_b#*.}
     case $ww_p in ''|*[!0-9]*) continue;; esac
     kill -0 "$ww_p" 2>/dev/null || continue
-    printf '%s\t%s\t%s\n' "${ww_b%%.*}" "$ww_p" "$(sed -n 1p "$ww_f")"
+    ww_l=$(sed -n 1p "$ww_f")
+    case $ww_l in /*) ;; *) continue;; esac   # line 1 is the leader's directory, nothing else
+    printf '%s\t%s\t%s\n' "${ww_b%%.*}" "$ww_p" "$ww_l"
   done | LC_ALL=C sort
 }
 
@@ -524,6 +528,19 @@ pane_reap() {
     case $pr_p in ''|*[!0-9]*) rm -f "$pr_f"; continue;; esac
     kill -0 "$pr_p" 2>/dev/null || rm -f "$pr_f"
   done
+}
+
+# Can the pane's terminal be opened for reading? A character device is opened for real
+# (/dev/tty is readable by mode with no controlling terminal; the open is what fails);
+# the FIFO or file the tests use is a terminal while it exists.
+pane_tty_ok() {
+  if [ -c "$pn_tty" ]; then ( : <"$pn_tty" ) 2>/dev/null; else [ -r "$pn_tty" ]; fi
+}
+
+# A pane that had a terminal when it started and has lost it (iTerm2 quit and did not
+# reattach it) has nobody to wait for: it is ended, and its trap removes its files.
+pane_lost() {
+  [ "$pn_had" = 1 ] && ! pane_tty_ok
 }
 
 # The pane's blocker: a reader of one line from the terminal, else (no terminal)
@@ -551,7 +568,8 @@ pane_cleanup() {
   [ -n "${pn_me-}" ] || return 0
   jobs -p >"$pn_me.jobs" 2>/dev/null
   # shellcheck disable=SC2046
-  kill $(cat "$pn_me.jobs" 2>/dev/null) 2>/dev/null
+  # digits only: after a write to a dead tty, bash 3.2 may flush leftover output into this file
+  kill $(grep -x '[0-9][0-9]*' "$pn_me.jobs" 2>/dev/null) 2>/dev/null
   [ -z "${pn_rpid-}" ] || kill "$pn_rpid" 2>/dev/null
   [ -z "${pn_look-}" ] || rm -f "$pn_look"
   rm -f "$pn_me" "$pn_me".*
@@ -955,8 +973,8 @@ herm_levels() {
   done
 }
 
-# banner <at>|<dir> level×7 -> frame <at> (0 is still) on stdout, or every frame into
-# <dir>/0… and "<count> <columns>" on stdout. Status 3, silent, when there is no figure.
+# banner <at>|<dir>|-w level×7 -> frame <at> (0 is still) on stdout, every frame into
+# <dir>/0… and "<count> <columns>" on stdout, or (-w) the figure's columns, its pad in. Status 3, silent, when there is no figure.
 herm_py() {
   python3 -I - "$@" 2>/dev/null <<'PYEOF'
 import re, sys
@@ -996,6 +1014,8 @@ def frame(t):
 
 if out.isdigit():
     sys.stdout.write(frame(int(out)))
+elif out == "-w":
+    print(W + 2)
 else:
     n = H + W + 40
     for t in range(n):
@@ -1049,6 +1069,70 @@ herm_wait() {
   trap - HUP INT TERM
   rm -rf "$hw_d"
   [ -z "$hw_a" ]
+}
+
+# The Hermes pane's picker: the slot panes' fzf with the caduceus, still, where the
+# sleeper goes, and four rows. 0 fresh, 4 continue, 5 resume, 1 shell, 6 Esc (the
+# caller shows the quiet figure). 3, silent: not a terminal, claude-peer.picker list
+# or off, or no fzf 0.75 (the caller waits as before the picker).
+# ponytail: no numbered-list fallback and no contexts yet; Hermes takes no first prompt
+herm_pick() {
+  [ -t 0 ] && [ -t 1 ] || return 3
+  case $(git config --get claude-peer.picker 2>/dev/null) in list|off) return 3;; esac
+  command -v fzf >/dev/null 2>&1 && fzf_ok || return 3
+  # shellcheck disable=SC2046
+  set -- $(stty size 2>/dev/null)
+  [ $# -ge 2 ] || return 3
+  hp_r=$1 hp_c=$2
+  hp_fig=
+  if [ "$(git config --get claude-peer.art 2>/dev/null)" != false ]; then
+    # shellcheck disable=SC2046
+    hp_fig=$(herm_py "$(herm_banner)" 0 $(herm_levels) | sed '$d') || hp_fig=
+  fi
+  hp_hint=$(printf '\033[2m%s\033[0m' '↵ start · esc hide')
+  hp_fh=0
+  [ -z "$hp_fig" ] || hp_fh=$(printf '%s\n' "$hp_fig" | wc -l | tr -d ' ')
+  # the figure only when it, the hint and the four rows fit
+  [ $((hp_fh + 7)) -le "$hp_r" ] || { hp_fig= hp_fh=0; }
+  hp_h=6 hp_head=$hp_hint
+  [ -z "$hp_fig" ] || { hp_h=$((hp_fh + 7)); hp_head=$(printf '%s\n\n%s' "$hp_fig" "$hp_hint"); }
+  # columns from python: awk's length() counts bytes on macOS, three per braille cell
+  hp_w=58
+  if [ -n "$hp_fig" ]; then
+    # shellcheck disable=SC2046
+    hp_fw=$(herm_py "$(herm_banner)" -w $(herm_levels)) && [ "$hp_fw" -gt 58 ] && hp_w=$hp_fw
+  fi
+  hp_l=0 hp_rt=0
+  if [ "$hp_c" -ge 80 ] && [ $((hp_w + 2)) -le "$hp_c" ]; then
+    hp_l=$(( (hp_c - hp_w) / 2 )); hp_rt=$((hp_c - hp_w - hp_l))
+  fi
+  if [ "$(art_mode)" = truecolor ]; then hp_k='#ffd696' hp_s='38;2;255;214;150'
+  else hp_k=$(art_c256 '255 214 150') hp_s="38;5;$hp_k"; fi
+  hp_cols=$(fzf_colors)
+  # shellcheck disable=SC2086
+  hp_pick=$(printf '%s\n' \
+      "@fresh	fresh     A new session" \
+      "@continue	continue  Pick up the last conversation" \
+      "@resume	resume    Choose an earlier conversation" \
+      "@shell	shell     Drop to a shell" |
+    ( unset FZF_DEFAULT_OPTS FZF_DEFAULT_OPTS_FILE
+      exec fzf $hp_cols --color=header:-1 --color="pointer:$hp_k,prompt:$hp_k" \
+        --no-multi --no-sort --no-mouse --layout=reverse --header-first \
+        --height="$hp_h" --info=hidden --no-separator \
+        --margin="0,$hp_rt,0,$hp_l" --pointer='▸' --gutter=' ' \
+        --delimiter='\t' --with-nth=2 --prompt="$(printf '\033[%smHermes ▸\033[0m ' "$hp_s")" \
+        --header="$hp_head" ))
+  case $? in
+    0) ;;
+    1|130) return 6;;
+    *) return 3;;
+  esac
+  case ${hp_pick%%	*} in
+    @fresh) return 0;;
+    @continue) return 4;;
+    @resume) return 5;;
+    *) return 1;;
+  esac
 }
 
 # second-line [frame [z]] -> the art block: the frame (asleep, all z's) and, beside it on
@@ -1195,7 +1279,7 @@ pane_ask() {
   if [ -f "$pn_me.start" ]; then echo; pn_why=request; return 1; fi
   if [ -n "$pn_intr" ]; then pn_intr=; pn_why=intr; return 1; fi
   if [ ! -f "$pn_me.key" ]; then
-    [ "$pn_ended" != 1 ] || pn_reader=0
+    if [ "$pn_ended" = 1 ]; then pane_lost && exit 0; pn_reader=0; fi
     pn_why=eof; return 1
   fi
   pn_ans=$(cat "$pn_me.key"); rm -f "$pn_me.key"
@@ -1363,7 +1447,8 @@ pane_fzf() {
     case $pf_rc in
       0|1) ;;
       130) pn_state=quiet; return 0;;
-      *) echo "claude-peer: fzf failed (exit $pf_rc); using the list"; pn_pick=list; return 1;;
+      *) pane_lost && exit 0
+         echo "claude-peer: fzf failed (exit $pf_rc); using the list"; pn_pick=list; return 1;;
     esac
     pf_q=$(sed -n 1p "$pn_me.pick"); pf_k=$(sed -n 2p "$pn_me.pick"); pf_id=$(sed -n 3p "$pn_me.pick" | cut -f1)
     case $pf_k in
@@ -1477,6 +1562,7 @@ pane() {
   case $pn_it in w[0-9]*t[0-9]*p[0-9]*:*) pn_it=${pn_it#*:};; esac
   { printf '%s\n%s\n' "${pn_it:--}" "${IT2_SUITE:--}" >"$pn_me.term"; } 2>/dev/null || :
   pn_tty=${CLAUDE_PEER_TTY:-/dev/tty}
+  pn_had=0; ! pane_tty_ok || pn_had=1
   pn_rpid= pn_reader=1 pn_intr= pn_ended=0 pn_pad= pn_rows= pn_cols= pn_lay=none pn_al=0 pn_qn=0
   trap : USR1
   trap 'pn_intr=1' INT
@@ -1519,7 +1605,9 @@ pane() {
   pn_show=1 pn_state=picker
   while :; do
     pane_reap "$pn_wd"
-    printf '%s\n3\n' "$LEADER" >"$pn_me"
+    # env: a builtin printf would also flush into the file whatever this shell's earlier
+    # writes to a dead terminal left in its stdout buffer (bash keeps it after EIO)
+    env printf '%s\n3\n' "$LEADER" >"$pn_me"
     [ "$pn_pick" != off ] || pn_state=quiet
     pn_ev=
     while [ -z "$pn_ev" ]; do
@@ -1539,6 +1627,7 @@ pane() {
           *) if [ "$pn_pick" != off ] && pane_has_ctx "$pn_k"; then pn_ev=named; else pane_unquiet; pn_show=1; fi;;
         esac
       elif [ "$pn_ended" = 1 ] && [ "$pn_reader" = 1 ]; then
+        pane_lost && exit 0
         pn_reader=0   # the reader ended with no line: no terminal, only a request wakes this pane
       fi
     done
@@ -2180,9 +2269,34 @@ overlay_installed() {
   [ -n "$oi_n" ] && printf '%s\n' "$oi_n"
 }
 
-# names (space separated) -> one bar label per name, TAB separated, in order. The
-# label is the position: the names stay out of iTerm2's preferences.
-overlay_labels() { printf '%s\n' "$1" | awk '{ for (i = 1; i <= NF; i++) printf "%sOverlay %d", (i > 1 ? "\t" : ""), i; print "" }'; }
+# name -> what a person reads for that overlay: claude-peer.<owner>/<repo>.label of its
+# origin (an overlay sets it in the gitconfig it deploys), else the capitalised name
+overlay_display() {
+  od_l=
+  if od_r=$(overlay_root "$1") && od_s=$(origin_slug "$od_r" 2>/dev/null); then
+    od_l=$(git config --get "claude-peer.$od_s.label" 2>/dev/null | LC_ALL=C tr -d '\t\r\n') || od_l=
+  fi
+  [ -n "$od_l" ] || od_l=$(label_of "$1")
+  printf '%s\n' "$od_l"
+}
+
+# names (space separated) -> one bar label per name, TAB separated, in order. Where the
+# store is inside a git repository (a prefs folder in a clone, as the public source is
+# until iterm2-prefs install moves it) the label is the position, so no name reaches a tracked plist; elsewhere (the
+# domain, the composed store under ~/.local/state) it is the overlay's display label.
+overlay_labels() {
+  if [ "$skind" = folder ] && git -C "$(dirname -- "$spath")" rev-parse --git-dir >/dev/null 2>&1; then
+    printf '%s\n' "$1" | awk '{ for (i = 1; i <= NF; i++) printf "%sOverlay %d", (i > 1 ? "\t" : ""), i; print "" }'
+    return 0
+  fi
+  ol_out= ol_i=0
+  for ol_n in $1; do
+    ol_i=$((ol_i + 1))
+    [ "$ol_i" -eq 1 ] || ol_out="$ol_out	"
+    ol_out="$ol_out$(overlay_display "$ol_n")"
+  done
+  printf '%s\n' "$ol_out"
+}
 
 # stdin: rows with a pid in column 2 and a leader in column 3 -> leader<TAB>pid of
 # the first led from outside root (a pane of another repository's tab)
@@ -2235,7 +2349,7 @@ cmd_overlay() {
   repo=$co_root
   rname=$(rname_of "$repo")
   slot=overlay
-  label=$(label_of "$co_name")
+  label=$(overlay_display "$co_name")
   pane
 }
 
@@ -2313,13 +2427,13 @@ def session(ident, name, kind, command="", items=None, parent=None):
     return s
 
 def build_base(prefix):
-    """Lead and the five slot panes, ids under prefix. A pane waits (--wait):
+    """Lead and the four slot panes, ids under prefix. A pane waits (--wait):
     nothing starts in it until Return or `claude-peer start`."""
     root = prefix + ".main"
     return [session(root, "Lead", "root", items=[{"kind": "modeSwitcher"}, {"kind": "gitStatus"}])] + [
         session("%s.%s" % (prefix, slot), slot.capitalize(), "peer",
                 "claude-peer run --as %s --wait" % slot, parent=root)
-        for slot in ("alpha", "beta", "gamma", "delta", "epsilon")]
+        for slot in ("alpha", "beta", "gamma", "delta")]
 
 def with_hermes(group):
     """The twin of a definition with a Hermes pane: id <id>.h (claudePeer.h for
@@ -2504,7 +2618,9 @@ if mode == "status":
         ofile = sys.argv[6].split() if len(sys.argv) > 6 else []
         labels = labels_arg(7)
         def paired(bar, names):
-            return ", ".join("%s = %s" % (b, names[i].capitalize() if i < len(names) else "?") for i, b in enumerate(bar))
+            # a positional label says which overlay it is; a display label names itself
+            return ", ".join(("%s = %s" % (b, names[i].capitalize() if i < len(names) else "?"))
+                             if b.startswith("Overlay ") else b for i, b in enumerate(bar))
         have = [g for g in groups if g.get("uniqueIdentifier") in (OGROUP, OHGROUP)]
         nowl = ", ".join(o.capitalize() for o in ovs)
         if ovs and not have:
@@ -2741,7 +2857,7 @@ cmd_default() {
   f=$(enter_file)
   if [ "$1" = peers ]; then
     mkdir -p "${f%/*}" && printf 'peers\n' >"$f" || die "cannot write $f"
-    printf 'claude-peer: claude() now picks the workgroup of each tab (Claude Peers: Alpha to Epsilon wait until started); the claude job trigger is disabled; %s\n' "$r"
+    printf 'claude-peer: claude() now picks the workgroup of each tab (Claude Peers: Alpha to Delta wait until started); the claude job trigger is disabled; %s\n' "$r"
   else
     rm -f "$f"
     printf 'claude-peer: a claude job now enters Claude Code; the variable triggers are gone; %s\n' "$r"
@@ -2993,12 +3109,13 @@ cmd_context() {
 # [--slot <slot>] [--frame <name>] [--z all|near|near-mid|none] [--truecolor|--256]
 # | --screen [--slot <slot>]: the operator's preview of the sleeper, and the tests' handle.
 cmd_art() {
-  slot= ar_f=asleep ar_z=all ar_m= ar_s= ar_h= ar_at=0 ar_w=
+  slot= ar_f=asleep ar_z=all ar_m= ar_s= ar_h= ar_at=0 ar_w= ar_p=
   while [ $# -gt 0 ]; do
     case $1 in
       --hermes) ar_h=1;;
       --at) [ $# -ge 2 ] || usage; case $2 in ''|*[!0-9]*) usage;; esac; ar_at=$2; shift;;
       --wait) ar_w=1;;
+      --pick) ar_p=1;;
       --slot) [ $# -ge 2 ] || usage; slot=$2; shift;;
       --frame) [ $# -ge 2 ] || usage; ar_f=$2; shift;;
       --z) [ $# -ge 2 ] || usage; case $2 in all|near|near-mid|none) ar_z=$2;; *) usage;; esac; shift;;
@@ -3011,6 +3128,7 @@ cmd_art() {
   done
   if [ -n "$ar_h" ]; then
     [ -z "$ar_w" ] || { herm_wait; return; }
+    [ -z "$ar_p" ] || { herm_pick; return; }
     # shellcheck disable=SC2046
     herm_py "$(herm_banner)" "$ar_at" $(herm_levels "$ar_m"); return
   fi

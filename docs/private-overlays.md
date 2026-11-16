@@ -587,7 +587,7 @@ name an owner, a repository or a private skill, at lower levels:
 
 A machine with overlays gets one more pane in the peer bar of every `claude` tab
 opened in the public chezmoi source (the repository `chezmoi source-path` names,
-or a worktree of it), after Lead and Alpha to Epsilon (and Hermes, where it
+or a worktree of it), after Lead and Alpha to Delta (and Hermes, where it
 routes). Each pane belongs to one overlay: Return starts a Claude in
 `<overlay>/.claude/worktrees/overlay`, a worktree of the overlay's own clone, so the
 `claude()` wrapper picks the profile from that overlay's own origin and pin. Tabs
@@ -597,13 +597,14 @@ of any other repository are unchanged.
   `chezmoi --config <cfg> source-path` is a git checkout, the rule `dotfiles()`
   applies. `claude-peer overlays` lists them, with the checkout and whether a
   session runs there.
-- The bar shows a position, `Overlay 1`, `Overlay 2`, in name order of the
-  config files. Which overlay a pane belongs to is shown inside the pane and by
-  `claude-peer status`; the name (the config file's base name, lowercased, other
-  characters turned into `-`) is kept in a state file on the machine and is
-  never written into iTerm2's preferences. That matters when the prefs folder
-  is a git clone: the workgroup definitions are then in a tracked file, as a
-  base64 value a text search does not see.
+- The bar shows each overlay's label, in name order of the config files: git
+  config `claude-peer.<owner>/<repo>.label` for the overlay's origin (the
+  overlay's own gitconfig sets it), else the config file's base name
+  capitalised. Where iTerm2's preferences are a file inside a git repository
+  (a prefs folder in a clone) it shows a position, `Overlay 1`, `Overlay 2`,
+  instead: the workgroup definitions are then in a tracked file, as a base64
+  value a text search does not see, so no name is written there. Which overlay
+  a pane belongs to is always shown inside the pane and by `claude-peer status`.
 - One-time: `claude-peer install` with iTerm2 quit, as for the base peers, which
   also writes the two overlay workgroups. Run it again whenever an overlay is
   added or removed; until then `claude-peer status` says `overlays: installed,

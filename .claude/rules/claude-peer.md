@@ -36,9 +36,9 @@ iTerm2 verbs refuse off macOS.
 The definitions are **two more** Workgroups, never extra peers on the builtin:
 peers spawn at entry and the builtin is entered on every `claude` job.
 `Claude Peers` (`claudePeer.workgroup`) is Lead, the root, and the peers Alpha,
-Beta, Gamma, Delta and Epsilon, whose commands are `claude-peer run --as <slot> --wait`.
+Beta, Gamma and Delta (Epsilon left the bar 2026-11-15: too many panes), whose commands are `claude-peer run --as <slot> --wait`.
 `Claude Peers + Hermes` (`claudePeer.h`, session ids under `claudePeer.h.`) is
-the same six plus a Hermes peer running `claude-peer hermes --wait`. There are
+the same five plus a Hermes peer running `claude-peer hermes --wait`. There are
 two because a pane cannot remove itself: a member whose program exits stays as
 an ended pane with a restart offer, and closing a member exits the whole group,
 so a repo where no Hermes profile routes must be given the definition without
@@ -114,7 +114,7 @@ ever asked to type one. A trigger it did not write is never touched. The cost
 of disabling the job trigger: a `claude` not started through the wrapper
 (`command claude`, an editor terminal) enters no workgroup, and `claude
 --version` no longer does either. Because a slot pane waits, entering costs
-five blocked `sh` processes per tab and no Claude, row, registry record or
+four blocked `sh` processes per tab and no Claude, row, registry record or
 worktree until a peer is started; where Hermes routes, one idle shell more.
 `status` prints `default:` as `peers (<n> profiles, <k> workgroups by
 variable)`, `builtin` or `mixed`, and a second line when the enter file and the
@@ -170,9 +170,9 @@ starts a Claude here, c continues the last session, q leaves a shell`. At the
 quiet line Return starts (or picks), `c` continues with `--continue`, `q` (or
 Ctrl-C) removes its wait file and leaves a plain shell, anything else asks
 again; when the session ends for any reason the claim goes
-and the pane waits again, so a pane never ends. A waiting pane owns
+and the pane waits again, so a pane ends only by `q`, a TERM or HUP, or a lost terminal (`claude-peer-restore.md`). A waiting pane owns
 `<git common dir>/claude-peer.wait/<slot>.<pid>` (line 1 the leader's
-directory); the next pane to register deletes the files of dead pids. Right after
+directory; `waiters` skips a file whose line 1 is not an absolute path); the next pane to register deletes the files of dead pids. Right after
 it, a pane writes `<slot>.<pid>.term`, a sidecar of that file: line 1 is
 `ITERM_SESSION_ID` with its leading `w<n>t<n>p<n>:` removed, line 2 `IT2_SUITE`, each `-` when
 unset or empty. It stays while a session runs and goes with the pane, and `waiters`
@@ -197,12 +197,12 @@ stopping and the pane falls back to request-only waiting; its claude gets them
 back. TERM and HUP kill the reader and delete the wait file.
 
 **The pool.** A pane's slot is a preference. The pool is the words of `git
-config claude-peer.slots` (default the 24 Greek letters, `alpha` to `omega`); its first five are the bar's names. A configured pool of five or fewer
+config claude-peer.slots` (default the 24 Greek letters, `alpha` to `omega`); its first four are the bar's names. A configured pool of four or fewer
 has no spare names, so a second tab takes a free one from under the first. A pane takes its
 own slot when no Claude runs in it, else the first free name from the pool's
-sixth on, and only then a free one of the first five, so one tab is always
-Alpha to Epsilon under their labels and a second tab gets Zeta, Eta, Theta,
-Iota, Kappa, never a name from under the first. It prints the name it took, and `(this
+fifth on, and only then a free one of the first four, so one tab is always
+Alpha to Delta under their labels and a second tab gets Epsilon, Zeta, Eta,
+Theta, never a name from under the first. It prints the name it took, and `(this
 pane's Alpha is in use by the peers of <leader>)` when that differs. With every
 name taken it prints `all <n> slots are in use in <repo>` and `Return tries
 again`, and waits. `next` is not a slot name.
@@ -433,10 +433,13 @@ repository, sorted by name under `LC_ALL=C` (`overlay_list`; `claude-peer overla
 stderr and skipped: no source directory, not in a git repository, the public source itself,
 the same repository as an earlier config, a name already taken. The name is the config's base
 name lowercased, anything outside `a-z0-9_-` turned into `-`, `o-` in front when it does not
-start with a letter. No overlay name is a literal in the public source, and none is written into iTerm2's
-preferences either: where the prefs folder is a git clone the `Workgroups` value sits in a
-tracked plist, base64-encoded, where a text leak guard does not read. What is stored where: in
-the preferences a position (id `<gid>.o.<N>`, bar label `Overlay <N>`, command
+start with a letter. No overlay name is a literal in the public source, and none is written into a store inside a git
+repository: there (a prefs folder in a clone) the `Workgroups` value sits in a tracked plist,
+base64-encoded, where a text leak guard does not read, so the bar label is `Overlay <N>`. Elsewhere
+(the domain, the composed store under `~/.local/state`) it is the display label: git config
+`claude-peer.<owner>/<repo>.label` of its origin, set by the overlay's gitconfig, else the capitalised name;
+the pane's header uses it too. What is stored where: in
+the preferences a position (id `<gid>.o.<N>`, bar label as above, command
 `claude-peer overlay <N>`); in the state file the names in pane order; on the terminal the name
 (the pane's header, `status`, `overlays`). `claude-peer overlay <N>` is the pane command: N is
 the N-th name of the state file, resolved against the overlays the machine has now, so a changed
@@ -445,7 +448,7 @@ main checkout and then calls `pane` with slot `overlay`, so everything a slot pa
 reused: worktree `<overlay>/.claude/worktrees/overlay`, detached at `origin/HEAD` when new and
 reused as left, the `**/.claude/worktrees/` line in that repository's `.git/info/exclude`, the
 claim, the pool (a second tab of the public source finds `overlay` in use and takes the pool
-from its sixth name on, as Alpha does), Return/`c`/`q`, and `claude` through an interactive
+from its fifth name on, as Alpha does), Return/`c`/`q`, and `claude` through an interactive
 shell so the `claude()` wrapper resolves the profile from the overlay's own origin and pin,
 which are read and never written. It changes directory, and does not call `run`, because `run`
 takes the leader to be the directory it stands in: the claim must name the public source as
@@ -461,10 +464,9 @@ The two definitions are separate from the others because peers spawn at entry: p
 `Claude Peers` would appear in every repository's tab. The bar is the root plus the peers in
 session order and ⌥⇧⌘1…8 pick by position, so the Hermes twin of the overlay group is built from
 `claudePeer.h` plus the overlays, not by `with_hermes` of the first: Lead, Alpha, Beta, Gamma, Delta,
-Epsilon, then the overlays, or the same and Hermes, then the overlays. Hermes is ⌥⇧⌘7 (the
-operator's order, 2026-11-13: Hermes after Epsilon in both bars); ⌥⇧⌘9 is "last", so it becomes
-the last overlay, and with Hermes and three overlays the ninth pane (Overlay 2) has no
-number and ⌥⇧⌘9 still picks the last (iTerm2 3.7.7 source; not yet seen on a real tab). One
+then the overlays, or the same and Hermes, then the overlays. Hermes is ⌥⇧⌘6 (the
+operator's order, 2026-11-13: Hermes after the last slot in both bars); ⌥⇧⌘9 is "last", so it
+becomes the last overlay, and past eight panes the extra ones have no number (iTerm2 3.7.7 source). One
 pair is built at `install` time for the overlays the machine has then (none: neither, and a stale
 pair is removed with the state file); `install` needs iTerm2 quit, the one part of this that does.
 Between a change of the overlay set and the next `install` things degrade visibly: a pane whose
