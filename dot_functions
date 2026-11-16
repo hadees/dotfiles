@@ -1540,7 +1540,7 @@ function hermes() {
 # start — is the wrapper's.
 function hermes_peer() {
 	emulate -L zsh;
-	local prof ans;
+	local prof ans pk;
 	prof="$(hermes_profile)" || {
 		print -r -- "claude-peer: no Hermes profile for this account; plain shell (hermes-doctor explains)";
 		return 0;
@@ -1548,9 +1548,20 @@ function hermes_peer() {
 	if [[ ${CLAUDE_PEER_HERMES_WAIT-} == 1 ]]; then
 		while true; do
 			if [[ -t 0 && -t 1 ]] && (( $+commands[claude-peer] )); then
+				# the picker first; Esc leaves the quiet figure, whose Return opens it
+				# again. No picker here (3, or 2 from an older claude-peer): the
+				# figure's Return starts hermes, as before the picker.
+				claude-peer art --hermes --pick;
+				pk=$?;
+				case $pk in
+					0) hermes "$@"; continue;;
+					4) hermes --continue "$@"; continue;;
+					5) hermes sessions browse; continue;;
+					1) return 0;;
+				esac;
 				claude-peer art --hermes --wait;
 				case $? in
-					0) hermes "$@"; continue;;
+					0) (( pk == 6 )) || hermes "$@"; continue;;
 					3) ;;
 					*) return 0;;
 				esac;

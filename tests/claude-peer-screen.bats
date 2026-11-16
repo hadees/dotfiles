@@ -974,21 +974,23 @@ woke() {
 
 # The Hermes peer's wait as `claude-peer hermes --wait` runs it: hermes_peer from
 # dot_functions with the routing and hermes itself stubbed, claude-peer on PATH, and
-# an installed Hermes whose banner holds a small invented figure.
+# an installed Hermes whose banner holds a small invented figure, or the rows given.
 hermes_open() {
   local d=$HOME/.hermes/hermes-agent/hermes_cli
   mkdir -p "$d"
-  printf '%s\n' 'HERMES_CADUCEUS = """[#CD7F32]⢀⣀⣀⣀⣀⣀⡀[/]' '⣿⣿⣿⣿⣿⣿⣿' '⣿⣿⣿⣿⣿⣿⣿' '⠈⠉⠉⠉⠉⠉⠁"""' >"$d/banner.py"
+  if [ $# -gt 0 ]; then printf 'HERMES_CADUCEUS = """%s"""\n' "$(printf '%s\n' "$@")" >"$d/banner.py"
+  else printf '%s\n' 'HERMES_CADUCEUS = """[#CD7F32]⢀⣀⣀⣀⣀⣀⡀[/]' '⣿⣿⣿⣿⣿⣿⣿' '⣿⣿⣿⣿⣿⣿⣿' '⠈⠉⠉⠉⠉⠉⠁"""' >"$d/banner.py"; fi
   ln -sf "$BIN" "$BATS_TEST_TMPDIR/bin/claude-peer"
   screen_run 80 24 zsh -f -c "source '$BATS_TEST_DIRNAME/../dot_functions'
     hermes_profile() { print prof; }
-    hermes() { print HERMES-RAN; }
+    hermes() { print HERMES-RAN \$*; }
     CLAUDE_PEER_HERMES_WAIT=1 hermes_peer; print LEFT; sleep 30"
 }
 
 @test "hermes: the caduceus glints, then holds still; Return starts Hermes and it waits again; q leaves" {
   need tmux
   git config --global --unset claude-peer.art
+  git config --global claude-peer.picker list
   git config --global claude-peer.art-seconds 2
   hermes_open
   screen_wait 'waiting · ⏎ to start Hermes'
@@ -1009,6 +1011,7 @@ hermes_open() {
 
 @test "hermes: with claude-peer.art false the figure is not drawn" {
   need tmux
+  git config --global claude-peer.picker list
   hermes_open
   screen_wait 'Hermes \(prof\): Return starts hermes here, q leaves a shell'
   [ "$(count_lines 'waiting · ⏎')" -eq 0 ] || { screen_show; false; }
@@ -1017,6 +1020,7 @@ hermes_open() {
 @test "hermes: with no Hermes figure installed the pane asks as it always has" {
   need tmux
   git config --global --unset claude-peer.art
+  git config --global claude-peer.picker list
   ln -sf "$BIN" "$BATS_TEST_TMPDIR/bin/claude-peer"
   screen_run 80 24 zsh -f -c "source '$BATS_TEST_DIRNAME/../dot_functions'
     hermes_profile() { print prof; }
@@ -1025,4 +1029,49 @@ hermes_open() {
   screen_wait 'Hermes \(prof\): Return starts hermes here, q leaves a shell'
   screen_keys Enter
   screen_wait '^HERMES-RAN'
+}
+
+@test "hermes picker: the caduceus over four rows; continue and resume run their commands" {
+  need tmux
+  need fzf
+  git config --global --unset claude-peer.art
+  git config --global claude-peer.art-seconds 0
+  hermes_open
+  screen_wait 'shell +Drop to a shell'
+  [ "$(count_lines '⣿⣿⣿⣿⣿⣿⣿')" -eq 2 ] && [ "$(count_lines 'Hermes ▸')" -eq 1 ] || { screen_show; false; }
+  [ "$(count_lines 'fresh +A new session')" -eq 1 ] && [ "$(count_lines 'resume +Choose')" -eq 1 ] || { screen_show; false; }
+  screen_keys Down; screen_keys Enter
+  screen_wait '^HERMES-RAN --continue'
+  screen_wait 'shell +Drop to a shell'
+  screen_keys Down; screen_keys Down; screen_keys Enter
+  screen_wait '^HERMES-RAN sessions browse'
+}
+
+@test "hermes picker: Esc shows the figure, Return opens the picker again, shell leaves" {
+  need tmux
+  need fzf
+  git config --global --unset claude-peer.art
+  git config --global claude-peer.art-seconds 0
+  hermes_open
+  screen_wait 'shell +Drop to a shell'
+  screen_keys Escape
+  screen_wait 'waiting · ⏎ to start Hermes'
+  [ "$(count_lines 'Drop to a shell')" -eq 0 ] || { screen_show; false; }
+  screen_keys Enter
+  screen_wait 'shell +Drop to a shell'
+  [ "$(count_lines '^HERMES-RAN')" -eq 0 ] || { screen_show; false; }
+  screen_keys Down; screen_keys Down; screen_keys Down; screen_keys Enter
+  screen_wait '^LEFT'
+}
+
+@test "hermes picker: a figure of 30 braille cells is measured in columns, and the picker is centred" {
+  need tmux
+  need fzf
+  git config --global --unset claude-peer.art
+  git config --global claude-peer.art-seconds 0
+  local row; row=$(printf '⣿%.0s' $(seq 30))
+  hermes_open "$row" "$row"
+  screen_wait 'shell +Drop to a shell'
+  # 58 wide at 80 columns: 11 columns of margin, as the slot picker's
+  [ "$(count_lines '^           Hermes ▸')" -eq 1 ] || { screen_show; false; }
 }
