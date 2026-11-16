@@ -514,7 +514,9 @@ waiters() {
     ww_p=${ww_b#*.}
     case $ww_p in ''|*[!0-9]*) continue;; esac
     kill -0 "$ww_p" 2>/dev/null || continue
-    printf '%s\t%s\t%s\n' "${ww_b%%.*}" "$ww_p" "$(sed -n 1p "$ww_f")"
+    ww_l=$(sed -n 1p "$ww_f")
+    case $ww_l in /*) ;; *) continue;; esac   # line 1 is the leader's directory, nothing else
+    printf '%s\t%s\t%s\n' "${ww_b%%.*}" "$ww_p" "$ww_l"
   done | LC_ALL=C sort
 }
 
@@ -526,6 +528,19 @@ pane_reap() {
     case $pr_p in ''|*[!0-9]*) rm -f "$pr_f"; continue;; esac
     kill -0 "$pr_p" 2>/dev/null || rm -f "$pr_f"
   done
+}
+
+# Can the pane's terminal be opened for reading? A character device is opened for real
+# (/dev/tty is readable by mode with no controlling terminal; the open is what fails);
+# the FIFO or file the tests use is a terminal while it exists.
+pane_tty_ok() {
+  if [ -c "$pn_tty" ]; then ( : <"$pn_tty" ) 2>/dev/null; else [ -r "$pn_tty" ]; fi
+}
+
+# A pane that had a terminal when it started and has lost it (iTerm2 quit and did not
+# reattach it) has nobody to wait for: it is ended, and its trap removes its files.
+pane_lost() {
+  [ "$pn_had" = 1 ] && ! pane_tty_ok
 }
 
 # The pane's blocker: a reader of one line from the terminal, else (no terminal)
@@ -553,7 +568,8 @@ pane_cleanup() {
   [ -n "${pn_me-}" ] || return 0
   jobs -p >"$pn_me.jobs" 2>/dev/null
   # shellcheck disable=SC2046
-  kill $(cat "$pn_me.jobs" 2>/dev/null) 2>/dev/null
+  # digits only: after a write to a dead tty, bash 3.2 may flush leftover output into this file
+  kill $(grep -x '[0-9][0-9]*' "$pn_me.jobs" 2>/dev/null) 2>/dev/null
   [ -z "${pn_rpid-}" ] || kill "$pn_rpid" 2>/dev/null
   [ -z "${pn_look-}" ] || rm -f "$pn_look"
   rm -f "$pn_me" "$pn_me".*
@@ -1263,7 +1279,7 @@ pane_ask() {
   if [ -f "$pn_me.start" ]; then echo; pn_why=request; return 1; fi
   if [ -n "$pn_intr" ]; then pn_intr=; pn_why=intr; return 1; fi
   if [ ! -f "$pn_me.key" ]; then
-    [ "$pn_ended" != 1 ] || pn_reader=0
+    if [ "$pn_ended" = 1 ]; then pane_lost && exit 0; pn_reader=0; fi
     pn_why=eof; return 1
   fi
   pn_ans=$(cat "$pn_me.key"); rm -f "$pn_me.key"
@@ -1431,7 +1447,8 @@ pane_fzf() {
     case $pf_rc in
       0|1) ;;
       130) pn_state=quiet; return 0;;
-      *) echo "claude-peer: fzf failed (exit $pf_rc); using the list"; pn_pick=list; return 1;;
+      *) pane_lost && exit 0
+         echo "claude-peer: fzf failed (exit $pf_rc); using the list"; pn_pick=list; return 1;;
     esac
     pf_q=$(sed -n 1p "$pn_me.pick"); pf_k=$(sed -n 2p "$pn_me.pick"); pf_id=$(sed -n 3p "$pn_me.pick" | cut -f1)
     case $pf_k in
@@ -1545,6 +1562,7 @@ pane() {
   case $pn_it in w[0-9]*t[0-9]*p[0-9]*:*) pn_it=${pn_it#*:};; esac
   { printf '%s\n%s\n' "${pn_it:--}" "${IT2_SUITE:--}" >"$pn_me.term"; } 2>/dev/null || :
   pn_tty=${CLAUDE_PEER_TTY:-/dev/tty}
+  pn_had=0; ! pane_tty_ok || pn_had=1
   pn_rpid= pn_reader=1 pn_intr= pn_ended=0 pn_pad= pn_rows= pn_cols= pn_lay=none pn_al=0 pn_qn=0
   trap : USR1
   trap 'pn_intr=1' INT
@@ -1587,7 +1605,9 @@ pane() {
   pn_show=1 pn_state=picker
   while :; do
     pane_reap "$pn_wd"
-    printf '%s\n3\n' "$LEADER" >"$pn_me"
+    # env: a builtin printf would also flush into the file whatever this shell's earlier
+    # writes to a dead terminal left in its stdout buffer (bash keeps it after EIO)
+    env printf '%s\n3\n' "$LEADER" >"$pn_me"
     [ "$pn_pick" != off ] || pn_state=quiet
     pn_ev=
     while [ -z "$pn_ev" ]; do
@@ -1607,6 +1627,7 @@ pane() {
           *) if [ "$pn_pick" != off ] && pane_has_ctx "$pn_k"; then pn_ev=named; else pane_unquiet; pn_show=1; fi;;
         esac
       elif [ "$pn_ended" = 1 ] && [ "$pn_reader" = 1 ]; then
+        pane_lost && exit 0
         pn_reader=0   # the reader ended with no line: no terminal, only a request wakes this pane
       fi
     done
