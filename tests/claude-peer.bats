@@ -4227,6 +4227,7 @@ PY
 @test "tracked plists: every overlay pane in a tracked Workgroups value is labelled by position" {
   # install decides at install time; a store moved into a clone afterwards would carry the
   # names into git, base64-encoded where no text guard reads. This reads every tracked one.
+  git config --file "$GIT_CONFIG_GLOBAL" safe.directory '*'  # a CI container checkout is owned by another uid
   local top; top=$(git -C "$BATS_TEST_DIRNAME" rev-parse --show-toplevel)
   git -C "$top" ls-files -z -- '*.plist' | python3 -I -c '
 import json, plistlib, re, sys, os
