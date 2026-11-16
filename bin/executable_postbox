@@ -1087,11 +1087,11 @@ cmd_hook() {
       [ "$tell" = 1 ] && printf ' Tell the operator before starting work.'
       printf '\n'
       # Who is Lead: the session whose name is the leader's (claude-peer name
-      # lead). The meaning of the line is the shared memory's Lead section.
+      # lead). The meaning of the line is the shared memory's Lead topic.
       if ! is_peer "$sdir"; then
         PEERCMD=${POSTBOX_CLAUDE_PEER:-$HOME/bin/claude-peer}
         if is_lead "$sdir"; then
-          printf 'postbox: you are Lead of %s (session %s). The Lead section of your memory applies to this session and to no other.\n' "$sdir" "$LEAD_TITLE"
+          printf 'postbox: you are Lead of %s (session %s). Read ~/.claude-shared/topics/lead.md if it is not already in this conversation: it applies to this session and to no other.\n' "$sdir" "$LEAD_TITLE"
           sl_v="yes ($LEAD_TITLE)"
         else sl_v="no (${LEAD_TITLE:--})"; fi
         mkdir -p "$STATE/logs" 2>/dev/null

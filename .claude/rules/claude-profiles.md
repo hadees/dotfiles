@@ -20,7 +20,7 @@ Two profiles are deployed:
 | --- | --- | --- |
 | `~/.claude` | work (the default config dir; keeps the existing login, plugins, and session history) | `dot_claude/` here + the work overlay's `settings.json` and `CLAUDE.work.md` |
 | `~/.claude-hadees` | personal | `private_dot_claude-hadees/` here + the personal overlay's `settings.json` |
-| `~/.claude-shared` | memory imported by both (an index, `CLAUDE.md`, importing one file per topic from `topics/`), plus the agent definitions an overlay-owned profile symlinks at | `dot_claude-shared/` here |
+| `~/.claude-shared` | memory imported by both (an index, `CLAUDE.md`, importing the always-loaded topics from `topics/` and listing the rest, which `shared-memory` adds by hook or a session reads on demand), plus the agent definitions an overlay-owned profile symlinks at | `dot_claude-shared/` here |
 
 Overlays may add further profiles (mapping, pins, and config dir all their
 own); this repo neither knows nor cares which — with one exception that cost

@@ -1606,7 +1606,7 @@ lead_start() { # title (may be empty)
   [ -z "$1" ] || t=',"session_title":"'"$1"'"'
   run payload '{"cwd":"'"$WORK"'","session_id":"s1"'"$t"'}' hook start
 }
-leadline() { printf 'postbox: you are Lead of %s (session proj-lead). The Lead section of your memory applies to this session and to no other.' "$WORK"; }
+leadline() { printf 'postbox: you are Lead of %s (session proj-lead). Read ~/.claude-shared/topics/lead.md if it is not already in this conversation: it applies to this session and to no other.' "$WORK"; }
 leadlog() { grep "lead: $WORK: " "$POSTBOX_STATE/logs/courier.log" | tail -n 1 | sed 's/.*: //'; }
 
 @test "hook start: the session titled with the leader's name is told it is Lead, and the log says yes" {

@@ -318,11 +318,20 @@ def shared_memory_path():
     return os.path.join(HOME, ".claude-shared", "CLAUDE.md")
 
 
-def shared_memory_files():
-    # The index, then each topic file it imports (`@topics/<slug>.md`, one per
-    # line), in import order.
+def shared_memory_imported():
+    # The topic files the index imports (`@topics/<slug>.md`, one per line), in
+    # import order.
     idx = shared_memory_path()
-    return [idx] + [os.path.join(os.path.dirname(idx), m) for m in re.findall(r"^@(\S+\.md)\s*$", read_text(idx) or "", re.M)]
+    return [os.path.join(os.path.dirname(idx), m) for m in re.findall(r"^@(\S+\.md)\s*$", read_text(idx) or "", re.M)]
+
+
+def shared_memory_files():
+    # The index, the topics it imports in import order, then every other
+    # `topics/*.md` (loaded on demand, not by import), sorted; no duplicates.
+    idx = shared_memory_path()
+    tdir = os.path.join(os.path.dirname(idx), "topics")
+    rest = sorted(os.path.join(tdir, f) for f in os.listdir(tdir) if f.endswith(".md")) if os.path.isdir(tdir) else []
+    return list(dict.fromkeys([idx] + shared_memory_imported() + rest))
 
 
 def headings(path, levels):
@@ -357,9 +366,12 @@ def rule_paths(text):
 def outline(root, shared_paths):
     # place id -> description, at most OUTLINE_MAX entries, in this order.
     out = {}
+    loaded = set([shared_memory_path()] + shared_memory_imported())
     for sp in shared_paths:
+        text = ('Section "%s" of the shared memory every session loads.' if sp in loaded
+                else 'Section "%s" of the shared memory, read when its topic applies.')
         for h in headings(sp, ("##",)):
-            out.setdefault("shared:" + h, 'Section "%s" of the shared memory every session loads.' % h)
+            out.setdefault("shared:" + h, text % h)
     if root:
         for h in headings(os.path.join(root, "CLAUDE.md"), ("##", "###")):
             out.setdefault("claude-md:" + h, 'Section "%s" of this repository\'s CLAUDE.md.' % h)
