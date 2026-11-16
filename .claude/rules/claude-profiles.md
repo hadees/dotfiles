@@ -158,6 +158,22 @@ line shows the same sentence or `matches the skill's notes`. The mechanism is in
 `iterm2-skill.md`; `tests/claude-profiles.bats` sets `ITERM2_APP` to a missing
 path in `setup`.
 
+**The wrapper routes a launch through claude-codex when it is installed.**
+Inside the launch subshell, `claude_proxy_decide` picks routed (the proxy on
+`127.0.0.1:18765`, installed and answering `/healthz`), direct, or external (a
+caller's own base URL, socket or provider, left alone), and exports
+`CLAUDE_CODEX_ROUTE` and `CLAUDE_CODEX_REASON` so the session knows how it
+started. `CLAUDE_CODEX_PROXY=0 claude` is the per-launch opt-out for Remote
+Control, which does not work through a custom base URL. A declined route prints
+one stderr line, only on an attended launch and only to somebody who opted in
+(the executable exists or `CLAUDE_CODEX_PROXY` is set; `not-installed` is never
+said; `git config claude.proxy-check false` silences it). It never fails the
+launch, and help/version flags skip all of it.
+`claude_gpt_ready` and `claude-doctor` read the session's markers and never
+decide again. The order, the lines and the helpers are in `docs/claude-proxy.md`;
+`tests/claude-profiles.bats` runs bare, like a stranger's clone, with one test
+that plants a healthy stub proxy; `tests/claude-proxy.bats` meets the lines.
+
 **Each profile must be logged in once** with `claude auth login`; credentials
 live in the macOS Keychain and cannot be copied between profiles — verified,
 copying `.claude.json` does not carry a session.
