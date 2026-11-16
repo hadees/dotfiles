@@ -496,6 +496,16 @@ press() {
   PANES="$PANES $!"
 }
 
+# hold_tty <tag>: keep a writer on that pane's FIFO terminal until teardown, for a
+# test that types more than one line. A pane opens its terminal afresh for each
+# line; a reopen that finds only the last press's writer still there reads end of
+# input once that writer exits, and a real terminal never does. Not for typeline,
+# whose writer must block until the pane opens the FIFO.
+hold_tty() {
+  ( exec sleep 600 ) <>"$BATS_TEST_TMPDIR/tty-$1" 3>&- &
+  PANES="$PANES $!"
+}
+
 shell_runs() { [ -f "$FAKE_SHELL_LOG" ] && grep -c . "$FAKE_SHELL_LOG" || echo 0; }
 
 # hold <slot> [<dir>]: a session in <slot> from another leader, for a while
@@ -556,6 +566,7 @@ hold() {
 
 @test "run --as --wait: c continues, q leaves a shell, anything else asks again" {
   FAKE_SHELL_SLEEP=1 pane alpha
+  hold_tty alpha
   press alpha c
   until_ok 'grep -q "claude-peer proj-alpha --continue\$" "$FAKE_SHELL_LOG"'
   until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
@@ -624,6 +635,7 @@ no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
   no_wait_files
   run sh "$BIN" start alpha
   [ "$status" -eq 4 ]
+  hold_tty alpha
   press alpha 'x'
   until_ok '[ "$(grep -c "Return if this tab" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 2 ]'
   no_wait_files
