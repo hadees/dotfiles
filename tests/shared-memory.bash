@@ -22,3 +22,19 @@ for line in open(index, encoding="utf-8").read().split("\n"):
 sys.stdout.write("\n".join(out))
 PY
 }
+
+# The expansion, then each topic the index does not import (sorted) after a
+# blank line: the text of the whole memory, whether a session loads it at
+# start, a hook adds it, or Claude reads it when the task comes up.
+shared_memory_all() {
+  shared_memory_expanded
+  python3 -I - "$SHARED_MEMORY" <<'PY'
+import glob, os, re, sys
+index = sys.argv[1]
+imported = set(re.findall(r"^@(\S+)$", open(index, encoding="utf-8").read(), re.M))
+here = os.path.dirname(index)
+for f in sorted(glob.glob(os.path.join(here, "topics", "*.md"))):
+    if os.path.relpath(f, here) not in imported:
+        sys.stdout.write("\n\n" + open(f, encoding="utf-8").read().rstrip("\n"))
+PY
+}

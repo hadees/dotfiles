@@ -2,24 +2,57 @@
 
 # The shared Claude memory is split into per-topic files so that no one file
 # grows past what a session can read in one piece (Anthropic's guidance is
-# under 200 lines per file). The index imports each topic with `@topics/...`;
-# an import written inside backticks is not an import, and one written outside
-# them by accident would pull a file in that nobody listed.
+# under 200 lines per file). The index imports the topics every session needs
+# with `@topics/...` and lists the rest in one paragraph; bin/shared-memory adds
+# some of those by hook. An import written inside backticks is not an import,
+# and one written outside them by accident would pull a file in that nobody
+# listed.
 
 load shared-memory
 
 TOPICS="$BATS_TEST_DIRNAME/../dot_claude-shared/topics"
+SM="$BATS_TEST_DIRNAME/../bin/executable_shared-memory"
 LINES_MAX=200
 
-@test "the index imports every topic file exactly once, and every import resolves" {
-  local f imports listed
+@test "every topic is imported once or listed in the on-demand paragraph, and every import resolves" {
+  local f imports
   imports="$(grep -E '^@' "$SHARED_MEMORY" | sort)"
-  listed="$(cd "$TOPICS" && for f in *.md; do echo "@topics/$f"; done | sort)"
-  [ -n "$listed" ]
-  [ "$imports" = "$listed" ] || { echo "index imports differ from topics/:"; diff <(echo "$imports") <(echo "$listed"); false; }
+  [ -n "$imports" ]
   [ -z "$(echo "$imports" | uniq -d)" ] || { echo "an import appears twice"; false; }
   for f in $imports; do
     [ -f "$(dirname "$SHARED_MEMORY")/${f#@}" ] || { echo "unresolved import: $f"; false; }
+  done
+  run sh "$SM" topics "$(dirname "$SHARED_MEMORY")"
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  [[ "$output" != *unreachable* ]] || { echo "$output"; false; }
+  [[ "$output" != *$'\tno'* ]] || { echo "$output"; false; }
+}
+
+@test "the topics a start hook adds fit in one hook output" {
+  local out slug
+  export XDG_STATE_HOME="$BATS_TEST_TMPDIR/state" CLAUDE_CONFIG_DIR="$BATS_TEST_TMPDIR/profile"
+  export SHARED_MEMORY_DIR="$(dirname "$SHARED_MEMORY")" SHARED_MEMORY_CLAUDE_PEER=/nonexistent CLAUDE_PEER_WORKTREE=/x
+  out="$(printf '%s' '{"session_id":"s1","source":"startup","session_title":"x-lead","cwd":"/x"}' | sh "$SM" hook start)"
+  [ "${#out}" -lt 9000 ] || { echo "start hook output is ${#out} characters"; false; }
+  for slug in talking-to-sessions claude-peers lead; do
+    grep -qxF "$(head -1 "$TOPICS/$slug.md")" <<< "$out" || { echo "start hook output lacks $slug"; false; }
+  done
+}
+
+@test "each topic a tool hook adds fits in one hook output" {
+  local out slug payload
+  export XDG_STATE_HOME="$BATS_TEST_TMPDIR/state" CLAUDE_CONFIG_DIR="$BATS_TEST_TMPDIR/profile"
+  export SHARED_MEMORY_DIR="$(dirname "$SHARED_MEMORY")"
+  for slug in commit-signing tailnet-routed-ssh claude-in-chrome; do
+    case "$slug" in
+    commit-signing) payload='{"hook_event_name":"PostToolUseFailure","session_id":"s-'$slug'","tool_name":"Bash","tool_input":{"command":"git commit"},"error":"Exit code 128\nerror: 1Password: failed to fill whole buffer"}' ;;
+    tailnet-routed-ssh) payload='{"hook_event_name":"PostToolUseFailure","session_id":"s-'$slug'","tool_name":"Bash","tool_input":{"command":"ssh h"},"error":"Exit code 255\nssh: Could not resolve hostname h"}' ;;
+    claude-in-chrome) payload='{"hook_event_name":"PostToolUse","session_id":"s-'$slug'","tool_name":"mcp__claude-in-chrome__tabs_context_mcp","tool_input":{},"tool_response":"ok"}' ;;
+    esac
+    out="$(printf '%s' "$payload" | sh "$SM" hook tool)"
+    [ -n "$out" ] || { echo "tool hook added nothing for $slug"; false; }
+    [ "${#out}" -lt 9000 ] || { echo "tool hook output for $slug is ${#out} characters"; false; }
+    grep -qF "$(head -1 "$TOPICS/$slug.md")" <<< "$out" || { echo "tool hook output lacks $slug"; false; }
   done
 }
 
@@ -29,14 +62,16 @@ LINES_MAX=200
     [[ "$(head -1 "$f")" == '## '* ]] || { echo "$f: first line is not a ## heading"; false; }
   done
   # A bare @path outside backticks is an import (inside a code span or a
-  # code block it is not). Neither the topics nor the
-  # expansion may hold one beyond the index's own lines.
-  python3 -I - "$TOPICS" <<'PY' || { echo "a topic holds a bare @ import"; false; }
+  # code block it is not). Neither the topics nor the index's own prose may
+  # hold one beyond the index's import lines.
+  python3 -I - "$TOPICS" "$SHARED_MEMORY" <<'PY' || { echo "a topic or the index holds a bare @ import"; false; }
 import glob, re, sys
 bad = []
-for f in sorted(glob.glob(sys.argv[1] + "/*.md")):
+for f in sorted(glob.glob(sys.argv[1] + "/*.md")) + [sys.argv[2]]:
     fenced = False
     for n, line in enumerate(open(f, encoding="utf-8").read().split("\n"), 1):
+        if f == sys.argv[2] and re.fullmatch(r"@topics/\S+\.md", line):
+            continue
         if line.lstrip().startswith("```"):
             fenced = not fenced
         elif not fenced and re.search(r"(^|\s)@\S", re.sub(r"`[^`]*`", "", line)):
