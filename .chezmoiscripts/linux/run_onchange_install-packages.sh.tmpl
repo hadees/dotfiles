@@ -28,7 +28,10 @@ fi
 if [ "$(id -u)" -ne 0 ] && ! sudo -n true 2> /dev/null; then
 	echo "No root and no passwordless sudo — skipping package install.";
 	for list in "$@"; do
-		echo "Run manually: xargs -a $list sudo apt-get install -y --no-remove";
+		# Comments are filtered first (their apostrophes abort xargs), and -n1
+		# installs one package per call like the loop below, so one bad name
+		# or conflict does not sink the rest.
+		echo "Run manually: grep -vE '^[[:space:]]*(#|\$)' '$list' | xargs -n1 sudo apt-get install -y --no-remove";
 	done
 	exit 0;
 fi

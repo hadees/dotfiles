@@ -193,6 +193,10 @@ teardown() {
   # -y must never let apt remove an installed package to make room for one.
   [ "$(grep -E 'apt-get install' "$rendered" | grep -vc -- '--no-remove')" -eq 0 ] \
     || { echo "an apt-get install line lacks --no-remove"; false; }
+  # The no-sudo hint must drop comment lines (apostrophes abort xargs) and
+  # install one package per call.
+  grep -F 'Run manually:' "$rendered" | grep -F "grep -vE" | grep -qF 'xargs -n1' \
+    || { echo "the manual-install hint does not filter comments one package at a time"; false; }
 }
 
 @test "the wsl class renders the install script with both lists" {
