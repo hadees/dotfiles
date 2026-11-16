@@ -5,6 +5,7 @@ paths:
   - "**/dot_claude-shared/**"
   - "**/private_dot_claude-*/**"
   - "**/.chezmoitemplates/claude-agents/**"
+  - "**/.chezmoitemplates/claude-agent-bodies/**"
   - "**/tests/claude-profiles.bats"
   - "**/tests/claude-agents.bats"
 ---
@@ -35,6 +36,14 @@ JSON object read by `memoryguard`, so it ends with a `## Decision contract`
 instead of `## Report`. `tools: Read` exists only because the allowlist may not
 be empty; the caller runs it with no tools. It is never spawned from a
 conversation.
+A body shared by more than one seat lives in `.chezmoitemplates/claude-agent-bodies/`
+(today `planner.md`, taking `seatName`, which `plan-fable` invokes with
+`{{ template "claude-agent-bodies/planner.md" (dict "seatName" "plan-fable") -}}`
+after its frontmatter). It sits outside `claude-agents/` because every `*.md`
+there is a definition that needs a stub; a fragment placed there would be a bogus
+agent. `tests/claude-agents.bats` renders each definition through its stub once
+per file and lints the rendered text, so a seat whose body is a fragment is
+checked as deployed, and it fails (not skips) when chezmoi is missing.
 `tests/claude-agents.bats` discovers the stub directories rather than listing
 them, and pins the shared copy's existence, because a hardcoded list is what
 hid an overlay profile having no `agents` directory at all. Each profile's `CLAUDE.md` is
@@ -148,6 +157,22 @@ made only when at least one has something to say. `claude-doctor`'s `iterm2:`
 line shows the same sentence or `matches the skill's notes`. The mechanism is in
 `iterm2-skill.md`; `tests/claude-profiles.bats` sets `ITERM2_APP` to a missing
 path in `setup`.
+
+**The wrapper routes a launch through claude-codex when it is installed.**
+Inside the launch subshell, `claude_proxy_decide` picks routed (the proxy on
+`127.0.0.1:18765`, installed and answering `/healthz`), direct, or external (a
+caller's own base URL, socket or provider, left alone), and exports
+`CLAUDE_CODEX_ROUTE` and `CLAUDE_CODEX_REASON` so the session knows how it
+started. `CLAUDE_CODEX_PROXY=0 claude` is the per-launch opt-out for Remote
+Control, which does not work through a custom base URL. A declined route prints
+one stderr line, only on an attended launch and only to somebody who opted in
+(the executable exists or `CLAUDE_CODEX_PROXY` is set; `not-installed` is never
+said; `git config claude.proxy-check false` silences it). It never fails the
+launch, and help/version flags skip all of it.
+`claude_gpt_ready` and `claude-doctor` read the session's markers and never
+decide again. The order, the lines and the helpers are in `docs/claude-proxy.md`;
+`tests/claude-profiles.bats` runs bare, like a stranger's clone, with one test
+that plants a healthy stub proxy; `tests/claude-proxy.bats` meets the lines.
 
 **Each profile must be logged in once** with `claude auth login`; credentials
 live in the macOS Keychain and cannot be copied between profiles — verified,

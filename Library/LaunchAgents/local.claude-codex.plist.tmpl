@@ -1,0 +1,41 @@
+{{- /* The claude-codex proxy as a user LaunchAgent. Shipped Disabled: nothing
+     here loads it; the operator enables and loads it with launchctl (see
+     docs/claude-proxy.md). .chezmoiignore limits it to macOS on the mac class. */ -}}
+{{- $home := .chezmoi.homeDir | html -}}
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>local.claude-codex</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>{{ $home }}/.cargo/bin/claude-codex</string>
+		<string>serve</string>
+		<string>--port</string>
+		<string>18765</string>
+		<string>--no-monitor</string>
+	</array>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Disabled</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>WorkingDirectory</key>
+	<string>{{ $home }}</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>{{ $home }}</string>
+		<key>CCP_BIND_ADDRESS</key>
+		<string>127.0.0.1</string>
+		<key>CCP_ALIAS_PROVIDER</key>
+		<string>anthropic</string>
+		<key>CCP_ANTHROPIC_BASE_URL</key>
+		<string>https://api.anthropic.com</string>
+		<key>CCP_CONFIG_DIR</key>
+		<string>{{ $home }}/.config/claude-codex</string>
+	</dict>
+</dict>
+</plist>

@@ -73,10 +73,20 @@ fi
 typeset -gU path PATH
 # HOMEBREW_PREFIX is what `brew shellenv` exports; .zshrc reuses it rather than
 # asking brew again, since every `brew --prefix` is a ruby start-up.
+_brew_dirs=()
 if (( $+commands[brew] )); then
 	export HOMEBREW_PREFIX="$(brew --prefix)"
-	path=("$HOMEBREW_PREFIX/bin" "$HOMEBREW_PREFIX/sbin" $path)
+	_brew_dirs=("$HOMEBREW_PREFIX/bin" "$HOMEBREW_PREFIX/sbin")
 fi
+# Rust toolchain, right behind Homebrew's dirs so it never shadows a tool they
+# carry: `cargo install` puts binaries in ~/.cargo/bin, and Homebrew's rustup
+# is keg-only, so its rustup/cargo/rustc shims are not linked into <prefix>/bin.
+# A directory joins only when it exists.
+_rust_dirs=()
+[[ -d $HOME/.cargo/bin ]] && _rust_dirs+=("$HOME/.cargo/bin")
+[[ -n ${HOMEBREW_PREFIX:-} && -d $HOMEBREW_PREFIX/opt/rustup/bin ]] && _rust_dirs+=("$HOMEBREW_PREFIX/opt/rustup/bin")
+path=($_brew_dirs $_rust_dirs $path)
+unset _brew_dirs _rust_dirs
 export PATH
 export HOMEBREW_CASK_OPTS='--appdir=/Applications'
 

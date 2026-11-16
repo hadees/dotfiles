@@ -62,6 +62,12 @@ bin/pane-read
 bin/pane-shot
 {{ end -}}
 
+{{ if or (ne .chezmoi.os "darwin") (ne .machineClass "mac") (not (stat (joinPath .chezmoi.homeDir ".cargo/bin/claude-codex"))) -}}
+# The claude-codex LaunchAgent is for the mac class on macOS only, and only
+# once the proxy is installed: a Mac that never opts in gets no plist at all
+Library/LaunchAgents/local.claude-codex.plist
+{{ end -}}
+
 {{ if eq .machineClass "ephemeral" -}}
 # Disposable boxes get shell config only: no package installs and no tooling
 # that assumes a long-lived machine. Identity and secrets need no entry here
@@ -70,6 +76,7 @@ bin/pane-shot
 .claude-shared
 .claude-hadees
 .config/claude-peer
+.config/claude-codex
 .config/iterm2
 .chezmoiscripts/**
 {{ end -}}
