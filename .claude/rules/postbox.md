@@ -101,9 +101,9 @@ start` reads its title (`own_title`: the payload's `session_title`, else the
 `name` of `sessions/$CLAUDE_PID.json` when its `nameSource` is `user`) and,
 only when it ends in `-lead`, asks `claude-peer name lead <dir>`; when the two
 agree (`is_lead`) it prints, right after the first line, `postbox: you are
-Lead of <dir> (session <title>). The Lead section of your memory applies to
-this session and to no other.` SessionStart runs at every source, compaction
-included, so the line survives `/compact`. Every non-peer start logs `<time>
+Lead of <dir> (session <title>). Read ~/.claude-shared/topics/lead.md if it is
+not already in this conversation: it applies to this session and to no other.`
+SessionStart runs at every source, compaction included, so the line survives `/compact`. Every non-peer start logs `<time>
 lead: <dir>: yes (<title>)` or `no (<title or ->)` to `courier.log`, the count
 of every decline. Nothing is added to `prompt` or `stop`; what the line means
 is the shared memory's.

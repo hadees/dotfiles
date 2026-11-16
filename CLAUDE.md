@@ -256,6 +256,7 @@ rule first.
 | `browser-routing` | `open-as`, `chrome-pairing`, the iTerm2 browser tab, Finicky |
 | `denyguard` | the Bash deny hook, what it cannot see, why it fails closed |
 | `memoryguard` | the memory-write hook, the placement decision and its seat, stopgaps, the audit |
+| `shared-memory` | which shared-memory topics load always, by hook, or on demand; the hooks and their wiring |
 | `loginguard` | the org pin per profile, the prompt hook, the removal after a wrong login, why it fails closed |
 | `worktabs` | the iTerm2 tab launcher, `workspace.*` config, the Alfred workflow |
 | `claude-peer` | Workgroup peers, named slot worktrees, claims, the Hermes peer, overlay peers |
@@ -291,7 +292,9 @@ This repo deploys the default profile (`dot_claude/`), the personal one
 (`dot_claude-shared/`). No profile's `settings.json` lives here; each
 comes from its overlay. `claude()` picks the directory: `CLAUDE_PROFILE`,
 then `claude.<owner>/<repo>.profile`, then `claude.profile.<account>`,
-then `claude.profile.default`, then bare `claude`.
+then `claude.profile.default`, then bare `claude`. The shared memory imports
+the topics every session needs and lists the rest, which `shared-memory`'s
+hooks add when they apply.
 
 ### Machine-local secrets (~/.extra)
 

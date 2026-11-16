@@ -17,7 +17,8 @@ alfred
 # Guidance for working on THIS repo. Deployed to $HOME it was read by every
 # session in every project under it — Claude Code walks cwd upwards — and
 # appeared twice in a session in this clone. Cross-machine guidance belongs
-# in .claude-shared/CLAUDE.md, which both profiles import.
+# in .claude-shared/CLAUDE.md (and its topics/ files), which both
+# profiles import.
 CLAUDE.md
 # iTerm2 reads its prefs from the clone (PrefsCustomFolder), never from
 # $HOME, so a copy here is read by nothing. Worse, iTerm2 writes to that

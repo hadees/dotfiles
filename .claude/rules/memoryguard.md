@@ -33,7 +33,8 @@ builds the note's resulting text (for an Edit, the replacement applied to
 the file on disk), asks two typed questions in one request, *which of
 seven homes does this text belong in* and *does it name anything private*
 (`yes` or `no`), and either lets the write through or refuses it with the
-destination file and section in the reason, so the session writes it
+destination file and section in the reason (for shared memory, the topic file
+under `topics/` that holds the section, whether the index imports it or not), so the session writes it
 there by a normal edit. The refusal carries the answer because
 a bare "this looks wrong" left the session to work out the right place,
 which is the step that kept failing. The hook never writes anything but

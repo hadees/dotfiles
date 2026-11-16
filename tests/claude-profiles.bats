@@ -277,6 +277,65 @@ JSON
   [[ "$output" == *"decisions logged: ? (memoryguard log failed)"* ]]
 }
 
+@test "claude-doctor: topics line reports the hook wiring, the script, the on-demand topics and the log" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  # shared-memory itself needs a real python3 (see setup).
+  [ -n "$REAL_PYTHON3" ] || skip "python3 not installed"
+  mkdir -p "$HOME/bin" "$HOME/.claude-personal"
+  unset SHARED_MEMORY_DIR
+  export XDG_STATE_HOME="$HOME/.local/state"
+  # A shared-memory already deployed on this machine would answer for the fake
+  # HOME: keep only PATH entries that hold none.
+  local d dirs clean=
+  IFS=: read -ra dirs <<< "$PATH"
+  for d in "${dirs[@]}"; do [ -x "$d/shared-memory" ] || clean="$clean:$d"; done
+  export SM_PATH="$HOME/bin$clean"
+  doctor() { run zsh -c "export PATH=\"\$SM_PATH\"; source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"; }
+
+  # Nothing deployed, nothing wired: "?" rather than a healthy zero.
+  doctor
+  [[ "$output" == *"topics:  hook: not wired in $HOME/.claude-personal/settings.json; ~/bin/shared-memory: missing; on demand: ?; injected: ?"* ]]
+
+  # Deployed, one of the two commands wired: one always-loaded topic, one
+  # topic per hook class and one pointer; a log of 3 injections, 2 already
+  # told, an error and a nopython row (a skipped topic and an oversize one
+  # are neither).
+  ln -s "$BATS_TEST_DIRNAME/../bin/executable_shared-memory" "$HOME/bin/shared-memory"
+  mkdir -p "$HOME/.claude-shared/topics" "$HOME/.local/state/shared-memory"
+  printf '# Memory\n\n@topics/always-one.md\n\n- `seeing-pane.md`: a pane.\n' > "$HOME/.claude-shared/CLAUDE.md"
+  for t in always-one claude-peers commit-signing tailnet-routed-ssh seeing-pane; do
+    printf '## %s\n\ntext\n' "$t" > "$HOME/.claude-shared/topics/$t.md"
+  done
+  printf '{"hooks": {"SessionStart": [{"hooks": [{"command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook start || true"}]}]}}\n' \
+    > "$HOME/.claude-personal/settings.json"
+  {
+    printf '2026-11-12T10:00:00Z\t.claude-personal\tstart\tclaude-peers\tinjected\n'
+    printf '2026-11-12T10:00:00Z\t.claude-personal\ttool\tcommit-signing\tinjected\n'
+    printf '2026-11-12T10:01:00Z\t.claude-personal\ttool\ttailnet-routed-ssh\tinjected\n'
+    printf '2026-11-12T10:02:00Z\t.claude-personal\ttool\tcommit-signing\ttold\n'
+    printf '2026-11-12T10:03:00Z\t.claude-personal\ttool\tcommit-signing\ttold\n'
+    printf '2026-11-12T10:04:00Z\t.claude-personal\tstart\tlead\terror\n'
+    printf '2026-11-12T10:05:00Z\t.claude-personal\tstart\t-\tnopython\n'
+    printf '2026-11-12T10:06:00Z\t.claude-personal\tstart\tlead\timported\n'
+    printf '2026-11-12T10:07:00Z\t.claude-personal\tstart\tlead\toversize\n'
+  } > "$HOME/.local/state/shared-memory/injections.tsv"
+  doctor
+  [[ "$output" == *"topics:  hook: partly wired in $HOME/.claude-personal/settings.json; ~/bin/shared-memory: present; on demand: 4 (start 1, tool 2, pointer 1); injected: 3 (2 already told, 2 errors)"* ]]
+
+  # Both commands wired.
+  printf '{"hooks": {"x": "shared-memory hook start", "y": "shared-memory hook tool"}}\n' > "$HOME/.claude-personal/settings.json"
+  doctor
+  [[ "$output" == *"topics:  hook: wired in $HOME/.claude-personal/settings.json; "* ]]
+
+  # A shared-memory that fails (no python3 makes it print nothing and exit 1)
+  # must not read as an empty, healthy log.
+  rm "$HOME/bin/shared-memory"
+  printf '#!/bin/sh\nexit 1\n' > "$HOME/bin/shared-memory"
+  chmod +x "$HOME/bin/shared-memory"
+  doctor
+  [[ "$output" == *"~/bin/shared-memory: present; on demand: ?; injected: ?"* ]]
+}
+
 @test "claude-doctor: tabstatus counts events on the shim, on iTerm2's own hook, on neither" {
   repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
   command -v python3 >/dev/null || skip "python3 not installed"

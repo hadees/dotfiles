@@ -8,6 +8,8 @@
 # is parsed with awk rather than a YAML library — PyYAML is not on every CI
 # image. Documented rules and this repo's own conventions are marked as such.
 
+load shared-memory
+
 TEMPLATES="$BATS_TEST_DIRNAME/../.chezmoitemplates/claude-agents"
 # Every directory in THIS source that deploys the shared set. Discovered, not
 # listed: a hardcoded pair is what hid an overlay-owned profile having no
@@ -289,7 +291,7 @@ shared_templates() {
   d="$(fmval "$TEMPLATES/plan-fable.md" description)"
   grep -q 'fleshed out in chat' <<< "$d" || { echo "plan-fable: description does not name the hand-off"; false; }
   grep -q 'by name' <<< "$d" || { echo "plan-fable: the explicit by-name route is gone"; false; }
-  shared="$(tr '\n' ' ' < "$BATS_TEST_DIRNAME/../dot_claude-shared/CLAUDE.md" | tr -s ' ')"
+  shared="$(shared_memory_expanded | tr '\n' ' ' | tr -s ' ')"
   grep -q 'fleshed out in chat' <<< "$shared" || { echo "shared memory: no big-idea hand-off rule"; false; }
 }
 
@@ -301,21 +303,24 @@ shared_templates() {
   # bullets, then 1900 more for the Lead section, then 600 more for Seeing
   # another pane, then 450 more for the iTerm2 relaunch section).
   local shared
-  shared="$(tr '\n' ' ' < "$BATS_TEST_DIRNAME/../dot_claude-shared/CLAUDE.md" | tr -s ' ')"
+  shared="$(shared_memory_all | tr '\n' ' ' | tr -s ' ')"
   grep -q 'only when I ask' <<< "$shared" || { echo "shared memory: no ask-first rule for start/stop"; false; }
   grep -q 'Warn, never block' <<< "$shared" || { echo "shared memory: no warn-never-block rule"; false; }
   grep -q 'log claim' "$BATS_TEST_DIRNAME/../.claude/rules/claude-peer.md" || { echo "claude-peer.md: no log claim"; false; }
   # Code points, counted by python: wc -m counts bytes under the C locale of
   # the Rocky CI container.
-  n="$(python3 -c 'import sys; print(len(open(sys.argv[1], encoding="utf-8").read()))' "$BATS_TEST_DIRNAME/../dot_claude-shared/CLAUDE.md")"
-  [ "$n" -le 31700 ] || { echo "shared memory is $n characters, limit 31700"; false; }
+  # The ceiling is a total over the expansion (the index plus the topic files it
+  # imports): the always-loaded part. On-demand topics are bounded per hook
+  # output by tests/claude-shared-memory.bats. Lower it, never raise it.
+  n="$(shared_memory_expanded | python3 -c 'import sys; print(len(sys.stdin.read()))')"
+  [ "$n" -le 21600 ] || { echo "shared memory is $n characters, limit 21600"; false; }
 }
 
 @test "the shared memory carries the Lead rule, and names the line postbox prints" {
   # Two statements of one trigger must say the same thing: the memory names
   # the line, and postbox prints it.
   local shared p
-  shared="$(tr '\n' ' ' < "$BATS_TEST_DIRNAME/../dot_claude-shared/CLAUDE.md" | tr -s ' ')"
+  shared="$(shared_memory_all | tr '\n' ' ' | tr -s ' ')"
   for p in 'postbox: you are Lead of' 'Unless you are Lead' 'only when I ask' 'One at a time' \
     'gh pr update-branch' 'Never `--admin`' 'Never `stop --force`' 'Lead still asks before' \
     'see or feel' 'reaches beyond this machine' 'cannot be undone' 'spends money'; do
