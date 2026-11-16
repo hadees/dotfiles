@@ -48,3 +48,31 @@ qualifier `(N.mh+24)`, so a launch forks nothing for it.
 
 Tests: `tests/claude-peer.bats` ("restore check: ...") and, for the record,
 `tests/claude-profiles.bats` ("workgroup key: a launch that sends ...").
+
+## A pane whose terminal is gone ends
+
+When `KillJobsInServersOnQuit` is off, iTerm2 keeps jobs alive across a quit, but a relaunch
+can make fresh panes instead of reattaching, leaving the old `claude-peer run --wait`
+processes with no terminal (`ps` tty `??`). They ignore HUP, so they live on: fzf fails
+(exit 2), the list falls back, and they stay registered as waiting panes beside the new
+ones, so `slots` showed two Betas and `start` could wake a Claude nobody sees.
+
+`pane` records at its start whether it had a terminal (`pn_had`: `${CLAUDE_PEER_TTY:-/dev/tty}`
+opens for reading, `pane_tty_ok`: a character device is opened for real, since `/dev/tty`
+is readable by mode with no controlling terminal; the tests' FIFO or file counts while it
+exists). `pane_lost` is that record with the terminal no longer opening, and it is asked
+where the pane learns it: the line reader ended with no line (the quiet wait and
+`pane_ask`, so the list and every question), and fzf failed. Then the pane exits 0
+without a word and its EXIT trap removes the wait file and sidecars. A pane that never
+had a terminal (tests, a detached start) keeps request-only waiting.
+
+The wait file's line 1 once held the picker's output. bash keeps what a write to a dead
+terminal could not deliver (EIO) in its stdout buffer and flushes it into whatever
+descriptor 1 is redirected to next, here `printf >"$pn_me"`. The pane writes that file
+with `env printf`, a process of its own whose buffer is empty. As a second line of
+defence `waiters`, which `slots`, `panes`, `start` and the overlay roll-call read,
+skips a file whose line 1 does not start with `/`; `pane_reap` already deletes any file
+whose pid is dead.
+
+Tests: `tests/claude-peer.bats` ("a waiting pane whose terminal is gone ...", "a pane
+with no terminal from the start ...", "slots, panes and start skip a wait file ...").
