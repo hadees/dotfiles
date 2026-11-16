@@ -5,6 +5,7 @@ paths:
   - "**/dot_claude-shared/**"
   - "**/private_dot_claude-*/**"
   - "**/.chezmoitemplates/claude-agents/**"
+  - "**/.chezmoitemplates/claude-agent-bodies/**"
   - "**/tests/claude-profiles.bats"
   - "**/tests/claude-agents.bats"
 ---
@@ -35,6 +36,14 @@ JSON object read by `memoryguard`, so it ends with a `## Decision contract`
 instead of `## Report`. `tools: Read` exists only because the allowlist may not
 be empty; the caller runs it with no tools. It is never spawned from a
 conversation.
+A body shared by more than one seat lives in `.chezmoitemplates/claude-agent-bodies/`
+(today `planner.md`, taking `seatName`, which `plan-fable` invokes with
+`{{ template "claude-agent-bodies/planner.md" (dict "seatName" "plan-fable") -}}`
+after its frontmatter). It sits outside `claude-agents/` because every `*.md`
+there is a definition that needs a stub; a fragment placed there would be a bogus
+agent. `tests/claude-agents.bats` renders each definition through its stub once
+per file and lints the rendered text, so a seat whose body is a fragment is
+checked as deployed, and it fails (not skips) when chezmoi is missing.
 `tests/claude-agents.bats` discovers the stub directories rather than listing
 them, and pins the shared copy's existence, because a hardcoded list is what
 hid an overlay profile having no `agents` directory at all. Each profile's `CLAUDE.md` is
