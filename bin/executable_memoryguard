@@ -812,10 +812,8 @@ def main_checkout(root):
     return root
 
 
-def shared_source(sect=None):
-    # Where the deployed shared memory comes from, for the session to edit:
-    # the topic file that holds the section, else the index.
-    path = next((f for f in shared_memory_files() if sect and sect in headings(f, ("##",))), shared_memory_path())
+def source_of(path):
+    # The chezmoi source of a deployed shared-memory path, for the session to edit.
     fallback = "the chezmoi source of ~/.claude-shared/" + os.path.relpath(path, os.path.dirname(shared_memory_path()))
     try:
         r = subprocess.run(["chezmoi", "source-path", path],
@@ -825,11 +823,27 @@ def shared_source(sect=None):
     return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else fallback
 
 
+def shared_source(sect=None):
+    # The topic file that holds the section. A section no topic holds is a
+    # new topic file plus its import line in the index (a heading added to
+    # the index itself would sit outside every topic); an old single-file
+    # deploy has no topics directory and keeps everything in the index.
+    hit = next((f for f in shared_memory_files() if sect and sect in headings(f, ("##",))), None)
+    if hit:
+        return source_of(hit)
+    index = shared_memory_path()
+    topics = os.path.join(os.path.dirname(index), "topics")
+    if os.path.isdir(topics):
+        return "a new topic file in %s, imported by a line in %s" % (source_of(topics), source_of(index))
+    return source_of(index)
+
+
 def describe_home(choice, place, root):
     sect = place.split(":", 1)[1] if place else None
     repo = root or "the repository"
     if choice == "shared-memory":
-        return "shared memory, %s%s" % (shared_source(sect), ', section "%s"' % sect if sect else "")
+        return "shared memory (public: nothing account-, org- or employer-specific), %s%s" % (
+            shared_source(sect), ', section "%s"' % sect if sect else "")
     if choice == "rule":
         return "%s/.claude/rules/%s.md" % (repo, sect) if sect else "a path-scoped rule file under %s/.claude/rules/" % repo
     if choice == "claude-md":
