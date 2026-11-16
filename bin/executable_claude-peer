@@ -566,7 +566,8 @@ pane_cleanup() {
   [ -n "${pn_me-}" ] || return 0
   jobs -p >"$pn_me.jobs" 2>/dev/null
   # shellcheck disable=SC2046
-  kill $(cat "$pn_me.jobs" 2>/dev/null) 2>/dev/null
+  # digits only: after a write to a dead tty, bash 3.2 may flush leftover output into this file
+  kill $(grep -x '[0-9][0-9]*' "$pn_me.jobs" 2>/dev/null) 2>/dev/null
   [ -z "${pn_rpid-}" ] || kill "$pn_rpid" 2>/dev/null
   [ -z "${pn_look-}" ] || rm -f "$pn_look"
   rm -f "$pn_me" "$pn_me".*

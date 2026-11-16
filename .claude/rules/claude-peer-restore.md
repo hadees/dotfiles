@@ -51,7 +51,7 @@ Tests: `tests/claude-peer.bats` ("restore check: ...") and, for the record,
 
 ## A pane whose terminal is gone ends
 
-iTerm2 keeps jobs alive across a quit here (`KillJobsInServersOnQuit` off) but a relaunch
+When `KillJobsInServersOnQuit` is off, iTerm2 keeps jobs alive across a quit, but a relaunch
 can make fresh panes instead of reattaching, leaving the old `claude-peer run --wait`
 processes with no terminal (`ps` tty `??`). They ignore HUP, so they live on: fzf fails
 (exit 2), the list falls back, and they stay registered as waiting panes beside the new
