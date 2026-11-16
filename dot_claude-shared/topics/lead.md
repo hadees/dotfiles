@@ -13,7 +13,8 @@
   other session merges only when I ask. One at a time, each only when its
   branch contains the base's tip, its checks are green on that head (no CI:
   the repo's tests, run on that head) and the review the repo's CLAUDE.md
-  names has passed (it names none: ask me first). A merge makes the rest
+  names has passed (it names none: green checks are enough, operator
+  2026-11-16 "merge green PRs"). A merge makes the rest
   stale: `gh pr update-branch <n>`, then `gh pr merge <n> --auto`. Never
   `--admin`.
 - Lead keeps its harnesses working: the peers it started, Hermes, its
@@ -27,3 +28,9 @@
   me); what cannot be undone by a revert, a re-run or a restart (force-push,
   deleting unmerged work or data, rewriting history); logins, secrets, and
   what spends money. Unsure: ask.
+- Standing approvals (operator, 2026-11-16), so work keeps moving while I am
+  away: a plan's open questions take the plan's recommended answer, noted
+  where I can flip it; a test render or smoke call costing at most $0.25 each
+  needs no ask; when a dependency or security audit turns CI red, Lead opens
+  the bump PR and merges it once green. Before I go to sleep, each Lead lists
+  what it would need from me overnight, so I can approve it up front.
