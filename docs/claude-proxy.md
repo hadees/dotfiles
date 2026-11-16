@@ -8,9 +8,8 @@ the default, and the tools that check it. Pinned release: `claude-codex`
 **0.8.0**, built from source commit
 `ead919ff0d8993696a496cce19ef31becf90260b`.
 
-Only this contract, its harness, the installation steps and the service
-definition exist so far. The `claude()` routing arrives in a later change,
-which extends this file.
+This file holds the contract, its harness, the installation steps, the
+service definition and how `claude()` routes (below).
 
 ## Installation
 
@@ -80,6 +79,92 @@ env CCP_BIND_ADDRESS=127.0.0.1 CCP_ALIAS_PROVIDER=anthropic \
 
 `~/.config/claude-codex/config.json` deploys on every class except
 `ephemeral`.
+
+## Routing
+
+`claude()` decides the endpoint for every launch, inside the subshell that
+already picks the profile, so the profile, its credentials, the arguments and
+the exit status are unchanged. It sets nothing in the calling shell. The
+decision (`claude_proxy_decide`) is made afresh each time, in this order:
+
+1. A caller's own route stays: a nonlocal `ANTHROPIC_BASE_URL`, an
+   `ANTHROPIC_UNIX_SOCKET`, or `CLAUDE_CODE_USE_BEDROCK`, `_VERTEX`,
+   `_FOUNDRY` or `_ANTHROPIC_AWS` set to `1`, `true`, `yes` or `on`. Mode
+   **external**. It outranks the opt-out: switching this proxy off must not
+   dismantle an independent provider. `http://127.0.0.1:18765`, with at most
+   one trailing slash, counts as ours only when the inherited
+   `CLAUDE_CODEX_ROUTE=routed` marker comes with it (a parent session of ours
+   launched this one); without the marker it is somebody's own proxy and is
+   left alone.
+2. `CLAUDE_CODEX_PROXY=0` goes direct (**opt-out**) and drops an inherited
+   loopback URL.
+3. `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` set: direct, reason
+   `credential-override`, credentials untouched. The wrapper never sets
+   either; they would break the subscription route.
+4. Any `CLAUDE_CODEX_PROXY` value other than unset, empty, `0` or `1` goes
+   direct (`invalid-mode`).
+5. Otherwise it routes when `~/.cargo/bin/claude-codex` is executable and
+   `GET http://127.0.0.1:18765/healthz` answers `200` with `{"ok":true}`.
+   The probe is `command curl -q --noproxy '*'` with one-second connect and
+   total limits, no redirects and no credentials. No executable is
+   `not-installed`; no curl `missing-curl`; no answer `unreachable`; any other
+   answer `unexpected-health`. A missing helper is `helper-error`.
+
+A **routed** launch sets `ANTHROPIC_BASE_URL=http://127.0.0.1:18765` and, only
+where the caller has not set them, `CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING=1`,
+`ENABLE_TOOL_SEARCH=true` and `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`, which
+Claude Code switches off behind a custom base URL. A **direct** launch has no
+`ANTHROPIC_BASE_URL`. Every launch exports `CLAUDE_CODEX_ROUTE`
+(`routed`, `direct`, `external`) and `CLAUDE_CODEX_REASON`, so a session can
+say how it started. `--help`, `-h`, `--version` and `-v` anywhere in the
+arguments skip all of it: no probe, no markers, no line.
+
+Failing open is the point: a missing, stopped or confused proxy only ever
+costs the GPT agents, and an attended launch says so in one line on stderr
+(stdout is never touched):
+
+```text
+claude: direct by opt-out for Remote Control; GPT agents unavailable in this session.
+claude: direct because proxy is unreachable; GPT agents unavailable in this session.
+claude: external base URL preserved; GPT routing is unverified in this session.
+```
+
+(`missing-curl`, `unexpected-health`, `credential-override`, `invalid-mode`
+and `helper-error` have their own wording; an external provider says
+`external provider preserved`.) A routed launch prints nothing. Neither does a
+clone that never opted in: a line is printed only when
+`~/.cargo/bin/claude-codex` exists or `CLAUDE_CODEX_PROXY` is set (the opt-out
+always counts), never for `not-installed`, and only on an attended launch (a
+terminal, no `-p`, no subcommand), the gate of the wrapper's other notes.
+`git config claude.proxy-check false` silences it. A launch is
+the only moment the route changes: a daemon that dies later leaves the
+session routed with its health unavailable, and one that recovers does not
+turn a direct session into a routed one.
+
+**Remote Control** needs a direct launch, the one accepted difference: start
+it with `CLAUDE_CODEX_PROXY=0 claude`. The line above says why GPT agents are
+absent from that session.
+
+Helpers (all in `dot_functions`, all print nothing unless noted, all start
+with `emulate -L zsh`):
+
+| Helper | Does |
+| --- | --- |
+| `claude_proxy_probe` | Sets `REPLY` to `ok`, `missing-curl`, `unreachable` or `unexpected-health`; returns 0 only for `ok`. |
+| `claude_proxy_decide` | Sets `reply=(route reason endpoint)` for a new launch; returns 2 when a helper it needs is gone. |
+| `claude_proxy_session` | Reads the markers and the actual environment of the running session into the same array, never probing and never deciding. No markers is `unmarked-session` (route empty, returns 0); markers the environment contradicts are `state-mismatch` (route empty, returns 2). |
+| `claude_gpt_ready MODEL` | Preflight for a `gpt-*` agent, from `claude_proxy_session` plus a probe. Prints `GPT_ROUTE_READY model=<id> auth=untested`, `GPT_ROUTE_UNAVAILABLE reason=<reason>` or `GPT_ROUTE_ERROR reason=invalid-model|helper-error`; returns 0, 1 or 2. Ready means routed and answering, not logged in or within quota. |
+| `claude_proxy_external`, `claude_proxy_notice` | The external test shared by the two decisions, and the stderr line above. |
+
+`claude-doctor` prints a `proxy:` line and a `proxybin:` line. In a session the
+launch marked, `proxy:` reports that session (`scope=session`); in a Claude
+Code session with no markers it says `unverified`; anywhere else it labels a
+prediction `scope=next-launch`. Modes: `routed` (with `health=`), `direct` (with
+its reason; the opt-out line names Remote Control), `external`, or `unknown`.
+`proxybin:` gives the fixed path, the pinned version and the installed version
+read from `~/.cargo/.crates.toml` (`unknown` when unreadable), without running the
+executable; it proves neither that the executable works nor that the service
+runs.
 
 ## Why transport alone is not parity
 
