@@ -1,0 +1,355 @@
+#!/bin/sh
+# shared-memory — adds the shared Claude memory's on-demand topics to a
+# session when they apply.
+#
+# ~/.claude-shared/CLAUDE.md imports the topics every session needs and lists
+# the rest. An import is loaded whether or not it is used, so the rest are
+# added by hooks instead: `hook start` (SessionStart) for the topics about
+# the kind of session this is. Each profile's settings.json is owned by its
+# overlay, so this script ships the block to paste (`settings`) and never
+# edits one.
+#
+# Every `hook` route exits 0 and fails open: a broken hook must never block a
+# session (there is deliberately no way to exit non-zero from one, and none
+# may be added). A topic the index still imports is never added, so nothing
+# is loaded twice. The log holds counts of what was added, never a session id,
+# tool input or output, or topic text: the state directory is readable by
+# every profile.
+#
+# Usage:
+#   shared-memory topics [DIR]      one line per topic: slug, load class
+#                                   (always|start|tool|pointer|unreachable),
+#                                   listed in the index (yes|no|-); exits 1
+#                                   unless every topic is imported or listed
+#   shared-memory settings          the hooks block each overlay pastes
+#   shared-memory hook start        SessionStart JSON on stdin; always exits 0
+#   shared-memory hook tool         PostToolUse/PostToolUseFailure JSON on stdin; always exits 0
+#   shared-memory log [--since DAYS]
+# env:
+#   SHARED_MEMORY_DIR          the memory directory (else ~/.claude-shared).
+#   SHARED_MEMORY_CLAUDE_PEER  the claude-peer executable (else ~/bin/claude-peer).
+#   CLAUDE_CONFIG_DIR          the profile directory (else $HOME/.claude).
+#   XDG_STATE_HOME             where the log and the told files live.
+set -eu
+
+# A profile label and an event are all a log row needs from sh, so a session
+# on a box without python3 still leaves a trace.
+nopython() {
+  np_dir=${XDG_STATE_HOME:-${HOME:-}/.local/state}/shared-memory
+  np_cfg=${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}
+  np_cfg=${np_cfg%/}
+  mkdir -p "$np_dir" 2>/dev/null &&
+    printf '%s\t%s\t%s\t-\tnopython\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${np_cfg##*/}" "$1" >>"$np_dir/injections.tsv" 2>/dev/null
+  return 0
+}
+
+# The payload reaches python on fd 3 through an already-unlinked file, because
+# python's stdin carries its program.
+case "${1:-}" in
+hook)
+  [ -z "${MEMORYGUARD_DEPTH:-}" ] || exit 0
+  case "${2:-}" in start | tool) ;; *) exit 0 ;; esac
+  command -v python3 >/dev/null 2>&1 || {
+    nopython "$2"
+    exit 0
+  }
+  payload=$(cat) || exit 0
+  tmp=$(mktemp "${TMPDIR:-/tmp}/shared-memory.XXXXXX") || exit 0
+  printf '%s' "$payload" >"$tmp" || exit 0
+  exec 3<"$tmp"
+  rm -f "$tmp"
+  ;;
+*)
+  command -v python3 >/dev/null 2>&1 || {
+    printf 'shared-memory: python3 not found\n' >&2
+    exit 1
+  }
+  ;;
+esac
+
+rc=0
+python3 -I - "$@" <<'PY' || rc=$?
+import json
+import os
+import re
+import signal
+import stat
+import subprocess
+import sys
+import time
+
+# slug -> when it is added: at session start, or by a tool event (a later
+# hook route). Every other topic file is imported by the index, or a pointer.
+TRIGGERS = {
+    "talking-to-sessions": "start",
+    "claude-peers": "start",
+    "lead": "start",
+    "commit-signing": "tool",
+    "tailnet-routed-ssh": "tool",
+    "claude-in-chrome": "tool",
+}
+# Claude Code caps one hook output at 10,000 characters and, over it, hands
+# Claude a file path and a short preview instead. Stay under it.
+INJECT_MAX = 9000
+PEER_TIMEOUT = 3
+TOLD_MAX_DAYS = 14
+START_ORDER = ("talking-to-sessions", "claude-peers", "lead")
+
+HOME = os.environ.get("HOME", "")
+DIR = os.environ.get("SHARED_MEMORY_DIR") or os.path.join(HOME, ".claude-shared")
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local", "state"), "shared-memory")
+LOG = os.path.join(STATE, "injections.tsv")
+TOLD = os.path.join(STATE, "told")
+DAY = 86400
+
+
+def read_text(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def import_re(slug):
+    return re.compile(r"^@topics/%s\.md\s*$" % re.escape(slug))
+
+
+def is_imported(index, slug):
+    return any(import_re(slug).match(line) for line in index.split("\n"))
+
+
+def is_listed(index, slug):
+    # Named in backticks on a line that is not itself an import.
+    needle = "`%s.md`" % slug
+    return any(needle in line and not import_re(slug).match(line) for line in index.split("\n"))
+
+
+def log_row(event, slug, outcome):
+    try:
+        cfg = (os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")).rstrip("/")
+        os.makedirs(STATE, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with open(LOG, "a", encoding="utf-8") as f:
+            f.write("\t".join((stamp, os.path.basename(cfg) or ".claude", event, slug, outcome)) + "\n")
+    except OSError:
+        pass
+
+
+def cmd_topics(argv):
+    if len(argv) > 1:
+        return usage()
+    root = argv[0] if argv else DIR
+    tdir = os.path.join(root, "topics")
+    if not os.path.isdir(tdir):
+        sys.stderr.write("shared-memory: no topics directory at %s\n" % tdir)
+        return 1
+    index = read_text(os.path.join(root, "CLAUDE.md"))
+    rc = 0
+    for name in sorted(os.listdir(tdir)):
+        if not name.endswith(".md"):
+            continue
+        slug = name[:-3]
+        listed = "yes" if is_listed(index, slug) else "no"
+        if is_imported(index, slug):
+            load, listed = "always", "-"
+        elif slug in TRIGGERS:
+            load = TRIGGERS[slug]
+        else:
+            load = "pointer" if listed == "yes" else "unreachable"
+        if listed == "no":
+            rc = 1
+        print("%s\t%s\t%s" % (slug, load, listed))
+    return rc
+
+
+def cmd_log(argv):
+    cutoff = ""
+    if argv:
+        if len(argv) != 2 or argv[0] != "--since" or not argv[1].isdigit():
+            return usage()
+        cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - int(argv[1]) * DAY))
+    counts = {}
+    for line in read_text(LOG).split("\n"):
+        f = line.split("\t")
+        if len(f) != 5 or f[0] < cutoff:
+            continue
+        counts[(f[4], f[3])] = counts.get((f[4], f[3]), 0) + 1
+    for (outcome, slug), n in sorted(counts.items()):
+        print("%s\t%s\t%d" % (outcome, slug, n))
+    return 0
+
+
+SETTINGS = """shared-memory does not edit settings.json — each profile's file is owned by
+its overlay. Add these to that file's "hooks" (merging with what is there):
+
+  "SessionStart": [
+    { "hooks": [{ "type": "command", "timeout": 10, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook start || true" }] }
+  ],
+  "PostToolUse": [
+    { "matcher": "Bash|Skill|mcp__claude-in-chrome__.*",
+      "hooks": [{ "type": "command", "timeout": 5, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook tool || true" }] }
+  ],
+  "PostToolUseFailure": [
+    { "matcher": "Bash|Skill|mcp__claude-in-chrome__.*",
+      "hooks": [{ "type": "command", "timeout": 5, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook tool || true" }] }
+  ]
+
+SessionStart adds the messaging, Claude Peers and Lead topics to a session
+they apply to; the two tool events add the commit-signing, tailnet and
+Claude in Chrome topics once per session when their trigger appears. Every
+entry fails open, and a topic the shared index still imports is never added."""
+
+
+def cmd_settings(argv):
+    if argv:
+        return usage()
+    print(SETTINGS)
+    return 0
+
+
+def read_payload():
+    try:
+        with os.fdopen(3, encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def told_path(session_id):
+    return os.path.join(TOLD, re.sub(r"[^A-Za-z0-9._-]", "_", session_id))
+
+
+def tidy_told(payload):
+    # A cleared or compacted session has lost what the tool events told it.
+    # Housekeeping only: a failure here must not cost the injection.
+    try:
+        sid = payload.get("session_id")
+        if payload.get("source") in ("clear", "compact") and isinstance(sid, str) and sid:
+            path = told_path(sid)
+            if os.path.isfile(path):
+                os.remove(path)
+        old = time.time() - TOLD_MAX_DAYS * DAY
+        for name in os.listdir(TOLD) if os.path.isdir(TOLD) else ():
+            path = os.path.join(TOLD, name)
+            if os.path.isfile(path) and os.path.getmtime(path) < old:
+                os.remove(path)
+    except OSError:
+        pass
+
+
+def peers_here(payload):
+    exe = os.environ.get("SHARED_MEMORY_CLAUDE_PEER") or os.path.join(HOME, "bin", "claude-peer")
+    if not (os.path.isfile(exe) and os.access(exe, os.X_OK)):
+        return False
+    where = os.environ.get("CLAUDE_PROJECT_DIR", "")
+    if not os.path.isdir(where):
+        where = payload.get("cwd") if isinstance(payload.get("cwd"), str) else ""
+    if not where:
+        return False
+    # Its own session, so a stub that outlives the timeout dies with its children.
+    proc = subprocess.Popen([exe, "slots", where], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, start_new_session=True)
+    try:
+        out, _ = proc.communicate(timeout=PEER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        return False
+    return bool(out.strip())
+
+
+def postbox_wired():
+    exe = os.path.join(HOME, "bin", "postbox")
+    if not (os.path.isfile(exe) and os.access(exe, os.X_OK)):
+        return False
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
+    return "postbox hook start" in read_text(os.path.join(cfg, "settings.json"))
+
+
+def has_inbox():
+    sock = os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET", "")
+    try:
+        return bool(sock) and stat.S_ISSOCK(os.stat(sock).st_mode)
+    except OSError:
+        return False
+
+
+def hook_start():
+    payload = read_payload()
+    if payload is None:
+        return
+    tidy_told(payload)
+    title = payload.get("session_title")
+    why = {
+        "a Claude Peers tab": bool(os.environ.get("CLAUDE_PEER_WORKTREE")),
+        "the Lead session": isinstance(title, str) and title.endswith("-lead"),
+        "a repo with Claude Peers": peers_here(payload),
+        "postbox wired": postbox_wired(),
+        "a native inbox": has_inbox(),
+    }
+    flags = list(why.values())
+    wanted = set()
+    if any(flags[:3]):
+        wanted |= {"claude-peers", "lead"}
+    if any(flags):
+        wanted.add("talking-to-sessions")
+    index = read_text(os.path.join(DIR, "CLAUDE.md"))
+    slugs, texts = [], []
+    for slug in START_ORDER:
+        path = os.path.join(DIR, "topics", slug + ".md")
+        if slug not in wanted or not os.path.isfile(path):
+            continue
+        if is_imported(index, slug):
+            log_row("start", slug, "imported")
+            continue
+        slugs.append(slug)
+        texts.append(read_text(path).rstrip())
+    if not slugs:
+        return
+    header = "shared-memory: these shared-memory topics apply to this session (%s), so they are added here:" % ", ".join(k for k, v in why.items() if v)
+    out, outcome = header + "\n\n" + "\n\n".join(texts), "injected"
+    if len(out) > INJECT_MAX:
+        out = header + "\n" + "\n".join("read ~/.claude-shared/topics/%s.md now: it applies to this session and is too long to add here." % s for s in slugs)
+        outcome = "oversize"
+    sys.stdout.write(out + "\n")
+    sys.stdout.flush()
+    for slug in slugs:
+        log_row("start", slug, outcome)
+
+
+def hook(argv):
+    # Every route returns 0: a hook that fails must not block a session.
+    # `tool` is accepted and does nothing until its route is written.
+    if os.environ.get("MEMORYGUARD_DEPTH"):
+        return 0
+    try:
+        if argv[:1] == ["start"]:
+            hook_start()
+    except BaseException:
+        log_row(argv[0], "-", "error")
+    return 0
+
+
+def usage():
+    sys.stderr.write(
+        "usage: shared-memory topics [DIR]\n"
+        "       shared-memory settings\n"
+        "       shared-memory hook start|tool\n"
+        "       shared-memory log [--since DAYS]\n")
+    return 64
+
+
+def main():
+    cmds = {"topics": cmd_topics, "settings": cmd_settings, "hook": hook, "log": cmd_log}
+    argv = sys.argv[1:]
+    if not argv or argv[0] not in cmds:
+        return usage()
+    return cmds[argv[0]](argv[1:])
+
+
+sys.exit(main())
+PY
+[ "${1:-}" = hook ] && exit 0
+exit "$rc"
