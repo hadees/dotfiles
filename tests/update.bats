@@ -18,7 +18,7 @@ setup() {
   cd "$BATS_TEST_TMPDIR"
 
   mkdir -p "$BATS_TEST_TMPDIR/bin"
-  for cmd in brew npm uv ruby gem; do
+  for cmd in brew npm uv ruby gem cargo rustup rustup-init claude-codex; do
     cat > "$BATS_TEST_TMPDIR/bin/$cmd" <<'STUB'
 #!/bin/sh
 printf '%s\t%s\n' "$(pwd -P 2>/dev/null || echo DEAD)" "$(basename "$0") $*" >> "$BATS_TEST_TMPDIR/calls.log"
@@ -79,6 +79,16 @@ run_update() {
   grep -qF "sudo gem update --system" calls.log
   grep -qF "sudo gem cleanup" calls.log
   ! grep -q "no longer exists" err || { echo "warned on a live cwd"; false; }
+}
+
+@test "update never installs or upgrades the Rust toolchain or claude-codex" {
+  # claude-codex is installed by hand at a pinned version (docs/claude-proxy.md)
+  # and upgraded deliberately; the cargo/rustup/claude-codex stubs log any call.
+  start="$BATS_TEST_TMPDIR/start"; mkdir -p "$start"
+  run_update "cd -q -- '$start'"
+  grep -q "^RC=0 " out
+  grep -qF "brew bundle" calls.log
+  ! grep -qE $'\t(cargo|rustup|rustup-init|claude-codex)( |$)' calls.log || { echo "update ran Rust or proxy tooling:"; cat calls.log; false; }
 }
 
 @test "a cwd that no longer exists is reported once, the tools still run from \$HOME, and the shell ends in \$HOME" {
