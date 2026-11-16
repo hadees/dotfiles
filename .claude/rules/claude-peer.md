@@ -170,9 +170,9 @@ starts a Claude here, c continues the last session, q leaves a shell`. At the
 quiet line Return starts (or picks), `c` continues with `--continue`, `q` (or
 Ctrl-C) removes its wait file and leaves a plain shell, anything else asks
 again; when the session ends for any reason the claim goes
-and the pane waits again, so a pane never ends. A waiting pane owns
+and the pane waits again, so a pane ends only by `q`, a TERM or HUP, or a lost terminal (`claude-peer-restore.md`). A waiting pane owns
 `<git common dir>/claude-peer.wait/<slot>.<pid>` (line 1 the leader's
-directory); the next pane to register deletes the files of dead pids. Right after
+directory; `waiters` skips a file whose line 1 is not an absolute path); the next pane to register deletes the files of dead pids. Right after
 it, a pane writes `<slot>.<pid>.term`, a sidecar of that file: line 1 is
 `ITERM_SESSION_ID` with its leading `w<n>t<n>p<n>:` removed, line 2 `IT2_SUITE`, each `-` when
 unset or empty. It stays while a session runs and goes with the pane, and `waiters`

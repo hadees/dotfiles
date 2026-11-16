@@ -69,6 +69,10 @@ teardown() {
   case ${CLAUDE_PEER_LOOK-} in /tmp/cpl.*) rm -rf "$CLAUDE_PEER_LOOK";; esac
 }
 
+# no <command>...: fails when the command succeeds. A bare `! cmd` never fails a bats
+# test mid-body (errexit ignores a negated command).
+no() { if "$@"; then return 1; fi; }
+
 @test "run: creates the worktree, cd's into it, execs an interactive shell" {
   run sh "$BIN" run feat/x
   [ "$status" -eq 0 ]
@@ -185,7 +189,7 @@ remote_head() {
   [[ "$output" == *"pwd=$REPO/.claude/worktrees/alpha"* ]]
   [[ "$output" == *"peer=$REPO/.claude/worktrees/alpha"* ]]
   [[ "$output" == *'claude -n "$n" "$@" claude-peer proj-alpha' ]]
-  ! git -C "$REPO/.claude/worktrees/alpha" symbolic-ref -q HEAD
+  no git -C "$REPO/.claude/worktrees/alpha" symbolic-ref -q HEAD
   [ "$(git -C "$REPO/.claude/worktrees/alpha" rev-parse HEAD)" = "$(git rev-parse origin/HEAD)" ]
   [ "$(git branch --list | wc -l)" -eq 1 ]
   [ "$(grep -cxF '**/.claude/worktrees/' "$REPO/.git/info/exclude")" -eq 1 ]
@@ -561,7 +565,7 @@ hold() {
   press alpha q
   until_ok '[ "$(tail -n 1 "$FAKE_SHELL_LOG")" = "pwd=$REPO args=-i" ]'
   [ -z "$(sh "$BIN" slots)" ]
-  ! ls "$REPO/.git/claude-peer.wait/" | grep .
+  if ls "$REPO/.git/claude-peer.wait/" | grep .; then return 1; fi
 }
 
 @test "run --as --wait: outside a repository it is one line and a plain shell" {
@@ -608,7 +612,7 @@ no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
   check_on
   enter_record 5
   pane alpha
-  ! grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  no grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-alpha.out"
   [ "$(sh "$BIN" slots | cut -f2)" = waiting ]
 }
 
@@ -656,13 +660,13 @@ no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
   check_on
   rm "$XDG_STATE_HOME/claude-peer/enter"
   pane alpha
-  ! grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  no grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-alpha.out"
   [ "$(sh "$BIN" slots | cut -f2)" = waiting ]
   kill "$LAST_PANE"
   echo peers >"$XDG_STATE_HOME/claude-peer/enter"
   unset ITERM_SESSION_ID
   pane beta
-  ! grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-beta.out"
+  no grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-beta.out"
   [ "$(sh "$BIN" slots | cut -f2 | sort -u)" = waiting ]
 }
 
@@ -672,7 +676,7 @@ no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
   echo junk >"$d/junk"
   check_on
   pane alpha
-  ! grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  no grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-alpha.out"
   [ "$(ls "$d" | wc -l)" -eq 2 ]
 }
 
@@ -744,7 +748,7 @@ modelfix() {
   run sh "$BIN" start alpha --context a
   [ "$status" -eq 0 ]
   until_ok 'grep -q "claude-peer proj-alpha --agent plan-fable a\$" "$FAKE_SHELL_LOG"'
-  ! grep -q -- "opus" "$FAKE_SHELL_LOG"
+  no grep -q -- "opus" "$FAKE_SHELL_LOG"
   # the key is live: a plain start takes it
   until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
   run sh "$BIN" start alpha plain
@@ -758,7 +762,7 @@ modelfix() {
   run sh "$BIN" start alpha --continue go on
   [ "$status" -eq 0 ]
   until_ok 'grep -q "claude-peer proj-alpha --continue go on\$" "$FAKE_SHELL_LOG"'
-  ! grep -q -- "--model" "$FAKE_SHELL_LOG"
+  no grep -q -- "--model" "$FAKE_SHELL_LOG"
   # the key is live: a plain start takes it
   until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
   run sh "$BIN" start alpha plain
@@ -777,13 +781,13 @@ modelfix() {
   [ "$status" -eq 0 ]
   until_ok 'grep -q "claude-peer proj-alpha fix the thing\$" "$FAKE_SHELL_LOG"'
   [ "$(grep -c "claude-peer: claude-peer.model '-x' is not a model name; ignored" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 1 ]
-  ! grep -q -- "--model" "$FAKE_SHELL_LOG"
+  no grep -q -- "--model" "$FAKE_SHELL_LOG"
   until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
   git -C "$REPO" config claude-peer.model 'a b'
   run sh "$BIN" start alpha again
   until_ok 'grep -q "claude-peer proj-alpha again\$" "$FAKE_SHELL_LOG"'
   grep -q "claude-peer.model 'a b' is not a model name; ignored" "$BATS_TEST_TMPDIR/pane-alpha.out"
-  ! grep -q -- "--model" "$FAKE_SHELL_LOG"
+  no grep -q -- "--model" "$FAKE_SHELL_LOG"
 }
 
 @test "start: no waiting pane is 4, a running slot is 3, a prompt that begins with - is 2" {
@@ -827,6 +831,76 @@ modelfix() {
   [[ "$output" == *$'\t'"started"$'\t'"proj-alpha" ]]
 }
 
+# A pane iTerm2 did not reattach after a quit keeps running with no terminal. One that
+# had a terminal and lost it ends; one that never had one waits for a request.
+
+# lose_tty <tag>: the terminal goes away as iTerm2's does: the reader is cut short with
+# no line, and what it read from no longer exists
+lose_tty() {
+  local t=$BATS_TEST_TMPDIR/tty-$1
+  ( exec 3>"$t"; rm -f "$t"; exec 3>&- ) &
+  PANES="$PANES $!"
+}
+
+pane_ended() { until_ok "! kill -0 '$1' 2>/dev/null"; }
+
+@test "a waiting pane whose terminal is gone ends and leaves no wait file" {
+  pane alpha
+  lose_tty alpha
+  pane_ended "$LAST_PANE"
+  no_wait_files
+  [ -z "$(sh "$BIN" slots)" ]
+}
+
+@test "a pane at the numbered list whose terminal is gone ends too" {
+  git config --global claude-peer.picker list
+  pane alpha
+  pane_says alpha "$LISTHINT"
+  lose_tty alpha
+  pane_ended "$LAST_PANE"
+  no_wait_files
+}
+
+@test "a pane whose fzf fails after the terminal is gone ends instead of using the list" {
+  fzfstub
+  git config --global claude-peer.picker fzf
+  FAKE_FZF_RC=2 FAKE_FZF_SLEEP=2 pane alpha
+  rm -f "$BATS_TEST_TMPDIR/tty-alpha"   # no reader is open while fzf runs, so nothing to cut short
+  pane_ended "$LAST_PANE"
+  no_wait_files
+  no grep -qF 'fzf failed' "$BATS_TEST_TMPDIR/pane-alpha.out"
+}
+
+@test "a pane with no terminal from the start keeps waiting, and start still wakes it" {
+  FAKE_SHELL_SLEEP=1 PANE_TTY=/nonexistent pane alpha
+  sleep 1
+  kill -0 "$LAST_PANE"
+  [ "$(sh "$BIN" slots | cut -f2)" = waiting ]
+  run sh "$BIN" start alpha
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha\$" "$FAKE_SHELL_LOG"'
+}
+
+@test "slots, panes and start skip a wait file whose first line is not a directory" {
+  sleep 30 & sp=$!
+  PANES="$PANES $sp"
+  w=$REPO/.git/claude-peer.wait
+  mkdir -p "$w"
+  printf '%s\n%s\n%s\n' 'claude-peer: fzf failed (exit 2); using the list' "$LISTHINT" 'Beta ▸ /tmp' >"$w/beta.$sp"
+  [ -z "$(sh "$BIN" slots)" ]
+  [ -z "$(sh "$BIN" panes)" ]
+  run sh "$BIN" start beta
+  [ "$status" -eq 4 ]
+}
+
+@test "a wait file with a dead pid is reaped by the next pane even when its first line is not a directory" {
+  w=$REPO/.git/claude-peer.wait
+  mkdir -p "$w"
+  printf 'junk\n3\n' >"$w/beta.2147483646"
+  pane alpha
+  no ls "$w/beta.2147483646" 2>/dev/null
+}
+
 @test "start: a slot the pane did not start with is still started in it" {
   FAKE_SHELL_SLEEP=2 pane alpha
   run sh "$BIN" start beta
@@ -858,7 +932,7 @@ modelfix() {
   run sh "$BIN" stop alpha
   [ "$status" -eq 0 ]
   [ "$output" = "alpha"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"stopped" ]
-  ! kill -0 "$sp" 2>/dev/null
+  no kill -0 "$sp" 2>/dev/null
   until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
   [ -d "$REPO/.claude/worktrees/alpha" ]
 }
@@ -874,7 +948,7 @@ modelfix() {
   run sh "$BIN" stop alpha
   [ "$status" -eq 0 ]
   [[ "$output" == *$'\t'"stopped" ]]
-  ! kill -0 "$sp" 2>/dev/null
+  no kill -0 "$sp" 2>/dev/null
 }
 
 @test "stop --force: no registry record, every process under the claim is stopped" {
@@ -886,7 +960,7 @@ modelfix() {
   run sh "$BIN" stop alpha --force
   [ "$status" -eq 0 ]
   [[ "$output" == *$'\t'"stopped" ]]
-  ! kill -0 "$sp" 2>/dev/null
+  no kill -0 "$sp" 2>/dev/null
 }
 
 @test "claude-peer.start = auto: the pane starts a session after the settle delay, then waits" {
@@ -915,7 +989,7 @@ modelfix() {
   FAKE_SHELL_SLEEP=3 pane gamma
   press gamma ''
   until_ok 'grep -q "claude-peer proj-gamma\$" "$FAKE_SHELL_LOG"'
-  ! grep -q "Gamma (" "$BATS_TEST_TMPDIR/pane-gamma.out"
+  no grep -q "Gamma (" "$BATS_TEST_TMPDIR/pane-gamma.out"
 }
 
 @test "the pool: with every name held the pane says so and goes on waiting" {
@@ -928,7 +1002,7 @@ modelfix() {
   until_ok '[ "$(grep -c "Return tries again" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 1 ]'
   [ "$(sh "$BIN" slots | grep -c waiting)" -eq 1 ]
   [ "$(shell_runs)" -eq 0 ]
-  ! grep -q "	end	" "$REPO/$LOG" 2>/dev/null
+  no grep -q "	end	" "$REPO/$LOG" 2>/dev/null
 }
 
 @test "the pool: a configured pool falls back to a free one of the first four" {
@@ -959,7 +1033,7 @@ modelfix() {
   w=$REPO/.git/claude-peer.wait
   : >"$w/alpha.2147483646"; : >"$w/alpha.2147483646.key"; : >"$w/beta.2147483646.start"
   pane gamma
-  ! ls "$w" | grep 2147483646
+  if ls "$w" | grep 2147483646; then return 1; fi
   [ "$(sh "$BIN" slots | cut -f1)" = gamma ]
 }
 
@@ -1273,7 +1347,7 @@ pb_wait() { # count
   run sh "$BIN" log --as Beta claim other -- some
   [ "$status" -eq 0 ]
   [ -z "$output" ]
-  ! sh "$BIN" log show | grep -q "	Alpha	claim	"
+  if sh "$BIN" log show | grep -q "	Alpha	claim	"; then return 1; fi
 }
 
 # --- workgroup / install / status ----------------------------------------------
@@ -2040,8 +2114,8 @@ LISTHINT='c continue · r resume · n task · s task, saved · q shell'
   FAKE_SHELL_SLEEP=2 pane alpha
   pane_says alpha "$LISTHINT"
   o=$BATS_TEST_TMPDIR/pane-alpha.out
-  ! grep -q 'Return picks' "$o"
-  ! grep -qF ' (asks:' "$o"
+  no grep -q 'Return picks' "$o"
+  no grep -qF ' (asks:' "$o"
   [ "$(grep -E '^ ?[0-9]+  ' "$o" | sed -E 's/^ ?[0-9]+  ([a-z]+) +.*/\1/' | tr '\n' ' ')" = "fresh plain hello say greet mine deploy continue resume task shell " ]
   grep -qx ' 1  fresh     A new session, no prompt' "$o"
   grep -qx ' 3  hello     Hello' "$o"
@@ -2204,7 +2278,7 @@ LISTHINT='c continue · r resume · n task · s task, saved · q shell'
   typeline o same
   until_ok '[ -f "$CLAUDE_PEER_CONTEXTS/octo/proj/90-same.ctx" ] && [ -f "$CLAUDE_PEER_CONTEXTS/octo/other/90-same.ctx" ]'
   until_ok 'grep -q "args=.*in other\$" "$FAKE_SHELL_LOG" && grep -q "args=.*in proj\$" "$FAKE_SHELL_LOG"'
-  ! grep -qF 'not saved' "$BATS_TEST_TMPDIR/pane-alpha.out" "$BATS_TEST_TMPDIR/pane-o.out"
+  no grep -qF 'not saved' "$BATS_TEST_TMPDIR/pane-alpha.out" "$BATS_TEST_TMPDIR/pane-o.out"
   run sh "$BIN" context list
   [[ "$output" == *"same"$'\t'"in proj"* ]]
   [[ "$output" != *"in other"* ]]
@@ -2225,7 +2299,7 @@ LISTHINT='c continue · r resume · n task · s task, saved · q shell'
   until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
   [ "$(cat "$BATS_TEST_TMPDIR/last")" = "no home for this" ]
   grep -qF "not saved: this repository has no origin remote, so it has no context directory" "$BATS_TEST_TMPDIR/pane-b.out"
-  ! grep -q 'Save as' "$BATS_TEST_TMPDIR/pane-b.out"
+  no grep -q 'Save as' "$BATS_TEST_TMPDIR/pane-b.out"
   [ ! -e "$CLAUDE_PEER_CONTEXTS/90-no-home-for-this.ctx" ]
 }
 
@@ -2258,7 +2332,7 @@ LISTHINT='c continue · r resume · n task · s task, saved · q shell'
   git config --global claude-peer.picker fzf
   FAKE_FZF_OUT=$'\n\nhello\thello     Hello\n' FAKE_SHELL_SLEEP=2 pane alpha
   until_ok '[ -f "$FAKE_FZF_LOG.rows" ]'
-  ! grep -q 'Return picks' "$BATS_TEST_TMPDIR/pane-alpha.out"
+  no grep -q 'Return picks' "$BATS_TEST_TMPDIR/pane-alpha.out"
   for a in --expect=ctrl-t,ctrl-s --print-query --no-multi --no-sort --no-mouse --layout=reverse \
       --header-first --info=hidden --no-separator '--delimiter=\t' --with-nth=2 '--prompt=Alpha ▸ ' \
       --height=13 --margin=0,0,0,0 --color=header:-1 '--pointer=▸' '--gutter= '; do
@@ -2266,8 +2340,8 @@ LISTHINT='c continue · r resume · n task · s task, saved · q shell'
   done
   grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -qF 'esc hide'
   grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -qF '^S …and save it'
-  ! grep -q -- '--preview' "$FAKE_FZF_LOG"
-  ! grep -qxF -- '--height=100%' "$FAKE_FZF_LOG"
+  no grep -q -- '--preview' "$FAKE_FZF_LOG"
+  no grep -qxF -- '--height=100%' "$FAKE_FZF_LOG"
   [ "$(cut -f1 "$FAKE_FZF_LOG.rows" | tr '\n' ' ')" = "@fresh plain hello say greet mine deploy @continue @resume @task @shell " ]
   [ "$(sed -n 3p "$FAKE_FZF_LOG.rows")" = $'hello\thello     Hello' ]
   pane_says alpha 'Who: '
@@ -2300,7 +2374,7 @@ fzfsize() {
   grep -qxF -- --height=10 "$FAKE_FZF_LOG"
   fzfsize '40 50'
   grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -qF 'esc hide'
-  ! grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -qF '^S'
+  if grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -qF '^S'; then return 1; fi
 }
 
 @test "picker fzf: the short hint under 56 columns, and a block wide enough for the widest row" {
@@ -2326,10 +2400,10 @@ fzfsize() {
   until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
   [ "$(cat "$FAKE_FZF_LOG.opts")" = unset ]
   grep -qxF -- '--color=bg:#1a1a1a' "$FAKE_FZF_LOG"
-  ! grep -qxF -- '--border' "$FAKE_FZF_LOG"
-  ! grep -q -- '--preview' "$FAKE_FZF_LOG"
-  ! grep -qF '$(' "$FAKE_FZF_LOG"
-  ! grep -qxF -- '40%' "$FAKE_FZF_LOG"
+  no grep -qxF -- '--border' "$FAKE_FZF_LOG"
+  no grep -q -- '--preview' "$FAKE_FZF_LOG"
+  no grep -qF '$(' "$FAKE_FZF_LOG"
+  no grep -qxF -- '40%' "$FAKE_FZF_LOG"
 }
 
 @test "picker fzf: older than 0.75 is the list, said once; list and off never run fzf at all" {
@@ -2438,7 +2512,7 @@ fzfsize() {
   [ "$(cat "$BATS_TEST_TMPDIR/last")" = hello ]
   until_ok '[ -f "$FAKE_FZF_LOG.term" ]'
   grep -qx "Alpha · started by Lead · hello" "$BATS_TEST_TMPDIR/pane-alpha.out"
-  ! grep -q "picker closed" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  no grep -q "picker closed" "$BATS_TEST_TMPDIR/pane-alpha.out"
   [ "$(grep -c "Preparing worktree" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 0 ]
   [ "$(grep -cx '' "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 0 ]
 }
@@ -2548,7 +2622,7 @@ fzf_header() { sed -n '/^--header=/,/^--print-query$/p' "$FAKE_FZF_LOG" | sed '$
   fzfsize '17 120'
   grep -qxF -- --height=17 "$FAKE_FZF_LOG"
   fzfsize '15 120'
-  ! fzf_header | grep -qF '▬'
+  if fzf_header | grep -qF '▬'; then return 1; fi
   grep -qxF -- --height=13 "$FAKE_FZF_LOG"
   fzfsize '40 60'
   [ "$(fzf_header | wc -l | tr -d ' ')" -eq 13 ]
@@ -2558,7 +2632,7 @@ fzf_header() { sed -n '/^--header=/,/^--print-query$/p' "$FAKE_FZF_LOG" | sed '$
   grep -qxF -- --margin=0,0,0,0 "$FAKE_FZF_LOG"
   git config --global claude-peer.art false
   fzfsize '40 120'
-  ! fzf_header | grep -qF '▬'
+  if fzf_header | grep -qF '▬'; then return 1; fi
   grep -qxF -- --height=13 "$FAKE_FZF_LOG"
 }
 
@@ -3144,7 +3218,7 @@ PY
   run sh "$BIN" look off
   [ "$status" -eq 0 ]
   [[ "$output" == *"2 of 2 profiles changed" ]]
-  ! grep -q 'look gained' "$CLAUDE_PEER_PREFS"
+  no grep -q 'look gained' "$CLAUDE_PEER_PREFS"
   grep -q 'echo hi' "$CLAUDE_PEER_PREFS"
   [ ! -e "$CLAUDE_PEER_LOOK/kind" ]; [ ! -e "$CLAUDE_PEER_LOOK/focus" ]; [ ! -e "$CLAUDE_PEER_LOOK/unlocked" ]
   [ -e "$CLAUDE_PEER_LOOK/lock" ]
@@ -3270,7 +3344,7 @@ PY
   until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
   # 78 wide, 75 of header, 46 beside the figure: `✻ Alpha · ` and 36 of the name
   fzf_header | grep -F '✻ ' | grep -qF "Alpha${ESC}[0m · ${long:0:36}"
-  ! fzf_header | grep -qF "${long:0:37}"
+  if fzf_header | grep -qF "${long:0:37}"; then return 1; fi
 }
 
 @test "sleeper above the list: the figure's lines start at the block's text, then an empty line, then row 1" {
@@ -3293,7 +3367,7 @@ PY
   pane_says alpha '⏎ picker · c continue · q shell'
   local out="$BATS_TEST_TMPDIR/pane-alpha.out"
   [ "$(grep -o '▬' "$out" | wc -l | tr -d ' ')" -eq 4 ]
-  ! grep -q 'Alpha: Return picks' "$out"
+  no grep -q 'Alpha: Return picks' "$out"
   [ "$(CLAUDE_PEER_SIZE='40 120' sh "$BIN" art --screen --slot alpha)" = "$(cat "$out")" ]
 }
 
@@ -3324,10 +3398,10 @@ quiet_erases() {
   quiet_erases '40 60' ''
   [ "$(pane_count alpha "${ESC}[13A"$'\r'"${ESC}[J")" -eq 1 ]
   quiet_erases '' ''
-  ! grep -qE "${ESC}\[[0-9]+A" "$out"
+  no grep -qE "${ESC}\[[0-9]+A" "$out"
   git config --global claude-peer.art false
   quiet_erases '40 120' ''
-  ! grep -qE "${ESC}\[[0-9]+A" "$out"
+  no grep -qE "${ESC}\[[0-9]+A" "$out"
 }
 
 # hermes_banner [body]: an installed Hermes whose banner holds a small invented
@@ -3884,7 +3958,7 @@ obg() {
   FAKE_SHELL_SLEEP=2 opane fake1 "$OV1"
   press fake1 ''
   until_ok 'grep -q "claude-peer ov1-overlay\$" "$FAKE_SHELL_LOG"'
-  ! git -C "$OV1/.claude/worktrees/overlay" symbolic-ref -q HEAD
+  no git -C "$OV1/.claude/worktrees/overlay" symbolic-ref -q HEAD
   [ "$(git -C "$OV1/.claude/worktrees/overlay" rev-parse HEAD)" = "$(git -C "$OV1" rev-parse origin/HEAD)" ]
   [ "$(git -C "$OV1" rev-parse HEAD)" != "$(git -C "$OV1" rev-parse origin/HEAD)" ]
 }
