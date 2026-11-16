@@ -831,6 +831,76 @@ modelfix() {
   [[ "$output" == *$'\t'"started"$'\t'"proj-alpha" ]]
 }
 
+# A pane iTerm2 did not reattach after a quit keeps running with no terminal. One that
+# had a terminal and lost it ends; one that never had one waits for a request.
+
+# lose_tty <tag>: the terminal goes away as iTerm2's does: the reader is cut short with
+# no line, and what it read from no longer exists
+lose_tty() {
+  local t=$BATS_TEST_TMPDIR/tty-$1
+  ( exec 3>"$t"; rm -f "$t"; exec 3>&- ) &
+  PANES="$PANES $!"
+}
+
+pane_ended() { until_ok "! kill -0 '$1' 2>/dev/null"; }
+
+@test "a waiting pane whose terminal is gone ends and leaves no wait file" {
+  pane alpha
+  lose_tty alpha
+  pane_ended "$LAST_PANE"
+  no_wait_files
+  [ -z "$(sh "$BIN" slots)" ]
+}
+
+@test "a pane at the numbered list whose terminal is gone ends too" {
+  git config --global claude-peer.picker list
+  pane alpha
+  pane_says alpha "$LISTHINT"
+  lose_tty alpha
+  pane_ended "$LAST_PANE"
+  no_wait_files
+}
+
+@test "a pane whose fzf fails after the terminal is gone ends instead of using the list" {
+  fzfstub
+  git config --global claude-peer.picker fzf
+  FAKE_FZF_RC=2 FAKE_FZF_SLEEP=2 pane alpha
+  rm -f "$BATS_TEST_TMPDIR/tty-alpha"   # no reader is open while fzf runs, so nothing to cut short
+  pane_ended "$LAST_PANE"
+  no_wait_files
+  no grep -qF 'fzf failed' "$BATS_TEST_TMPDIR/pane-alpha.out"
+}
+
+@test "a pane with no terminal from the start keeps waiting, and start still wakes it" {
+  FAKE_SHELL_SLEEP=1 PANE_TTY=/nonexistent pane alpha
+  sleep 1
+  kill -0 "$LAST_PANE"
+  [ "$(sh "$BIN" slots | cut -f2)" = waiting ]
+  run sh "$BIN" start alpha
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha\$" "$FAKE_SHELL_LOG"'
+}
+
+@test "slots, panes and start skip a wait file whose first line is not a directory" {
+  sleep 30 & sp=$!
+  PANES="$PANES $sp"
+  w=$REPO/.git/claude-peer.wait
+  mkdir -p "$w"
+  printf '%s\n%s\n%s\n' 'claude-peer: fzf failed (exit 2); using the list' "$LISTHINT" 'Beta ▸ /tmp' >"$w/beta.$sp"
+  [ -z "$(sh "$BIN" slots)" ]
+  [ -z "$(sh "$BIN" panes)" ]
+  run sh "$BIN" start beta
+  [ "$status" -eq 4 ]
+}
+
+@test "a wait file with a dead pid is reaped by the next pane even when its first line is not a directory" {
+  w=$REPO/.git/claude-peer.wait
+  mkdir -p "$w"
+  printf 'junk\n3\n' >"$w/beta.2147483646"
+  pane alpha
+  no ls "$w/beta.2147483646" 2>/dev/null
+}
+
 @test "start: a slot the pane did not start with is still started in it" {
   FAKE_SHELL_SLEEP=2 pane alpha
   run sh "$BIN" start beta
