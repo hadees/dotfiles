@@ -81,9 +81,9 @@ print(eval(sys.argv[2]))' "$BATS_TEST_TMPDIR/out.plist" "$1"
 
 @test "the plist names no credential, no other endpoint and no traffic capture" {
   render_plist
-  ! grep -Ei 'token|api_key|secret|password|capture|CCP_AUTH' "$BATS_TEST_TMPDIR/out.plist"
+  ! grep -Ei 'token|api_key|secret|password|capture|CCP_AUTH' "$BATS_TEST_TMPDIR/out.plist" || { echo "the plist carries a credential or capture setting"; false; }
   grep -q '<string>127.0.0.1</string>' "$BATS_TEST_TMPDIR/out.plist"
-  ! grep -q '0\.0\.0\.0' "$BATS_TEST_TMPDIR/out.plist"
+  ! grep -q '0\.0\.0\.0' "$BATS_TEST_TMPDIR/out.plist" || { echo "the plist binds all interfaces"; false; }
 }
 
 @test "the managed proxy configuration is exactly an empty JSON object" {
@@ -156,5 +156,5 @@ print(eval(sys.argv[2]))' "$BATS_TEST_TMPDIR/out.plist" "$1"
 
 @test "no systemd unit is shipped, and no chezmoi script or wrapper loads the service" {
   [ -z "$(git -C "$SRC" ls-files '*.service' '*systemd*')" ]
-  ! grep -rn 'launchctl' "$SRC/.chezmoiscripts" "$SRC/dot_functions" "$SRC/dot_zshrc" "$SRC/dot_exports"
+  ! grep -rn 'launchctl' "$SRC/.chezmoiscripts" "$SRC/dot_functions" "$SRC/dot_zshrc" "$SRC/dot_exports" || { echo "something loads the service with launchctl"; false; }
 }
