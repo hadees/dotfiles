@@ -994,6 +994,41 @@ function claude-doctor() {
 		fi;
 	fi;
 	print -r -- "memguard: hook: $mg_wired in $settings; ~/bin/memoryguard: $mg_bin; seat: $mg_seat; decisions logged: $mg_counts";
+	# The shared-memory topic hooks: wired (both commands in the settings
+	# file's own text, the SessionStart one and the tool one), the script, how
+	# many topics load on demand and what the hooks have added. A script that
+	# is missing or fails prints "?" rather than a healthy zero. See
+	# .claude/rules/shared-memory.md.
+	local sm_wired='not wired' sm_bin=missing sm_demand='?' sm_inj='?' sm_out sm_log sm_n=0;
+	if [[ -r $settings ]]; then
+		command grep -q 'shared-memory hook start' "$settings" 2>/dev/null && (( ++sm_n ));
+		command grep -q 'shared-memory hook tool' "$settings" 2>/dev/null && (( ++sm_n ));
+		(( sm_n == 2 )) && sm_wired=wired;
+		(( sm_n == 1 )) && sm_wired='partly wired';
+	fi;
+	[[ -x $HOME/bin/shared-memory ]] && sm_bin=present;
+	if (( $+commands[shared-memory] )); then
+		# `topics` exits 1 for an unreachable topic but still prints its lines;
+		# only no output at all means it failed (no python3, no topics directory).
+		sm_out="$(command shared-memory topics 2>/dev/null)";
+		if [[ -n $sm_out ]]; then
+			sm_demand="$(print -r -- "$sm_out" | command awk -F'\t' '
+				$2 != "always" { n++ }
+				$2 == "start" { a++ }
+				$2 == "tool" { b++ }
+				$2 == "pointer" { c++ }
+				END { printf "%d (start %d, tool %d, pointer %d)", n, a, b, c }')";
+		fi;
+		# `log` prints nothing when there is no log, and exits non-zero without python3.
+		if sm_log="$(command shared-memory log 2>/dev/null)"; then
+			sm_inj="$(print -r -- "$sm_log" | command awk -F'\t' '
+				$1 == "injected" { n += $3 }
+				$1 == "told" { t += $3 }
+				$1 == "error" || $1 == "nopython" { e += $3 }
+				END { printf "%d (%d already told, %d errors)", n, t, e }')";
+		fi;
+	fi;
+	print -r -- "topics:  hook: $sm_wired in $settings; ~/bin/shared-memory: $sm_bin; on demand: $sm_demand; injected: $sm_inj";
 	# Session Status wiring, read by tabstatus_wiring: how many of the eleven
 	# events run the cc-status shim (the one this repo deploys), on how many the
 	# handler runs first, how many still run iTerm2's own hook (a Reinstall puts
