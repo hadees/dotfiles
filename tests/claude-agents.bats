@@ -66,10 +66,32 @@ has_heading() {
   grep -q -- " ## $2" <<< "$1"
 }
 
-# Every definition the lint rules apply to: the shared templates plus this
-# repo's own seats.
+# The shared definitions are templates: a seat's body may live in a fragment
+# under .chezmoitemplates/claude-agent-bodies (outside claude-agents/, whose
+# *.md files are all discovered as definitions), so a raw template can be just
+# frontmatter and one `template` call. The lint rules therefore read what the
+# stub renders, once per file, into a sandbox HOME. A missing chezmoi fails the
+# file here rather than silently skipping every body check.
+setup_file() {
+  command -v chezmoi > /dev/null 2>&1 || { echo "chezmoi is required: the lint reads the rendered definitions"; return 1; }
+  local home="$BATS_FILE_TMPDIR/home" src="$BATS_TEST_DIRNAME/.." t
+  export RENDERED="$BATS_FILE_TMPDIR/rendered"
+  mkdir -p "$home" "$RENDERED"
+  chez() {
+    HOME="$home" XDG_CONFIG_HOME="$home/.config" XDG_DATA_HOME="$home/.local/share" \
+    XDG_STATE_HOME="$home/.local/state" XDG_CACHE_HOME="$home/.cache" chezmoi "$@"
+  }
+  chez init --source "$src" --promptString machineClass=linux > /dev/null || return 1
+  for t in "$TEMPLATES"/*.md; do
+    chez execute-template --source "$src" < "$src/dot_claude/agents/$(basename "$t").tmpl" \
+      > "$RENDERED/$(basename "$t")" || return 1
+  done
+}
+
+# Every definition the lint rules apply to: the shared definitions as rendered
+# plus this repo's own seats.
 templates() {
-  ls "$TEMPLATES"/*.md "$LOCAL_AGENTS"/*.md 2>/dev/null
+  ls "$RENDERED"/*.md "$LOCAL_AGENTS"/*.md 2>/dev/null
 }
 
 # Only the shared ones are deployed into the profiles, so only they need stubs.
@@ -217,22 +239,30 @@ shared_templates() {
   done
 }
 
-@test "stubs render through chezmoi to the template's own frontmatter" {
-  command -v chezmoi > /dev/null 2>&1 || skip "chezmoi not installed"
-  cd "$BATS_TEST_DIRNAME/.."
-  TMPHOME="$(mktemp -d)"
-  chez() {
-    HOME="$TMPHOME" XDG_CONFIG_HOME="$TMPHOME/.config" XDG_DATA_HOME="$TMPHOME/.local/share" \
-    XDG_STATE_HOME="$TMPHOME/.local/state" XDG_CACHE_HOME="$TMPHOME/.cache" chezmoi "$@"
-  }
-  chez init --source "$PWD" --promptString machineClass=linux
+@test "stubs render through chezmoi to the template's own frontmatter, fully expanded" {
   for t in $(shared_templates); do
     stem="$(basename "$t" .md)"
-    rendered="$(chez execute-template --source "$PWD" < "dot_claude/agents/$stem.md.tmpl")"
-    [ "$(printf '%s\n' "$rendered" | awk 'index($0,"name:")==1 {sub("^name:[ \t]*",""); print; exit}')" = "$stem" ] \
-      || { echo "$stem: stub did not render the template"; false; }
+    [ "$(fmval "$RENDERED/$stem.md" name)" = "$stem" ] || { echo "$stem: stub did not render the template"; false; }
+    ! grep -qF '{{' "$RENDERED/$stem.md" || { echo "$stem: unresolved template delimiters"; false; }
   done
-  rm -rf "$TMPHOME"
+}
+
+@test "body fragments stay outside the discovered definitions and no stub deploys one" {
+  # A *.md under claude-agents/ is a definition: it needs a stub, a name and a
+  # report contract. A fragment there would be a bogus agent.
+  local f
+  for f in "$BATS_TEST_DIRNAME/../.chezmoitemplates/claude-agent-bodies"/*.md; do
+    [ -f "$f" ]
+    [ ! -e "$TEMPLATES/$(basename "$f")" ] || { echo "$f: fragment sits among the definitions"; false; }
+    ! grep -q '^---$' "$f" || { echo "$f: a fragment has no frontmatter"; false; }
+  done
+  for d in "${STUB_DIRS[@]}"; do
+    ! grep -rq 'claude-agent-bodies' "$d" || { echo "$d: a stub deploys a body fragment"; false; }
+  done
+}
+
+@test "plan-fable's report path carries its own seat name" {
+  grep -q 'claude-reports/<repository name>/plan-fable-<short slug>.md' "$RENDERED/plan-fable.md"
 }
 
 @test "the neutral shared copy exists, because an overlay-owned profile can only symlink at it" {
