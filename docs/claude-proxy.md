@@ -8,9 +8,9 @@ the default, and the tools that check it. Pinned release: `claude-codex`
 **0.8.0**, built from source commit
 `ead919ff0d8993696a496cce19ef31becf90260b`.
 
-Only this contract, its harness and the installation steps exist so far. The
-service definition and the `claude()` routing arrive in later changes; each
-extends this file.
+Only this contract, its harness, the installation steps and the service
+definition exist so far. The `claude()` routing arrives in a later change,
+which extends this file.
 
 ## Installation
 
@@ -34,9 +34,52 @@ cargo install claude-codex --version 0.8.0 --locked --root "$HOME/.cargo"
 
 `--version 0.8.0` pins the release; `--locked` only makes the build use the
 crate's own lockfile. `--root "$HOME/.cargo"` fixes the executable at
-`~/.cargo/bin/claude-codex`, the path the service definition will name. Moving
+`~/.cargo/bin/claude-codex`, the path the service definition names. Moving
 to a newer release means changing the pinned version here and in the parity
 contract, then repeating acceptance.
+
+## The service
+
+On the `mac` class, on macOS, chezmoi deploys a user LaunchAgent,
+`~/Library/LaunchAgents/local.claude-codex.plist`, that runs
+`~/.cargo/bin/claude-codex serve --port 18765 --no-monitor` under
+`KeepAlive`, 30 seconds between restarts. It binds `127.0.0.1` only, forwards
+Claude requests to `https://api.anthropic.com`, and reads its configuration
+from `~/.config/claude-codex`, whose managed `config.json` is `{}`: no model
+aliases, effort overrides, review routing, endpoints or credentials. Provider
+logins are another matter: when one is missing there, the proxy falls back to
+its own default directory, so a login made with a standalone install is still
+used. No other class gets the plist, a Mac without `claude-codex` installed
+gets none either (it lands on the first apply after the install), and there
+is no systemd unit.
+
+It ships **inactive**: the plist has `Disabled` set, so a public-only apply,
+or one before the proxy is installed, starts nothing. No chezmoi script and no
+wrapper loads or starts it. The operator does that, after acceptance:
+
+```sh
+launchctl enable "gui/$(id -u)/local.claude-codex"
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/local.claude-codex.plist
+launchctl bootout "gui/$(id -u)/local.claude-codex"    # stop it again
+```
+
+The proxy writes its request log, as JSON lines, to
+`~/.local/state/claude-code-proxy/proxy.log`. A failure before logging begins
+(a missing binary, a bad path) shows in
+`launchctl print "gui/$(id -u)/local.claude-codex"` (last exit status) and
+`launchctl list local.claude-codex`. Traffic capture stays off.
+
+Where there is no launchd (Linux, WSL), run the same service by hand:
+
+```sh
+env CCP_BIND_ADDRESS=127.0.0.1 CCP_ALIAS_PROVIDER=anthropic \
+    CCP_ANTHROPIC_BASE_URL=https://api.anthropic.com \
+    CCP_CONFIG_DIR="$HOME/.config/claude-codex" \
+    "$HOME/.cargo/bin/claude-codex" serve --port 18765 --no-monitor
+```
+
+`~/.config/claude-codex/config.json` deploys on every class except
+`ephemeral`.
 
 ## Why transport alone is not parity
 
