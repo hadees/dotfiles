@@ -7,6 +7,8 @@
 #                    (iTerm2 not running: the items run and it is left closed; --open starts it afterwards)
 #   iterm2-relaunch items            one row per item: item<TAB>ready|nothing|refused<TAB>detail
 #   iterm2-relaunch status           runner:, last:, log: lines
+#   iterm2-relaunch prefetch         brew update and download the ready brew items, nothing quit;
+#                    a relaunch within 30 minutes then skips both and only installs
 #   iterm2-relaunch cancel           call a relaunch off before iTerm2 has been asked to quit
 #   iterm2-relaunch alfred           Alfred Script Filter JSON, one row per item
 #   iterm2-relaunch alfred-install [<dir>]   zip the Alfred workflow and hand it to Alfred
@@ -160,6 +162,12 @@ ensure_state() {
 
 # log_line <text>: one line of run.log, stamped.
 log_line() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$log"; }
+# prep <text>: a slow step before the countdown, logged and, from Alfred (no
+# terminal), shown as a notification, so a run that is downloading does not look dead.
+prep() {
+  ensure_state; log_line "prep: $*"
+  [ -t 0 ] || osascript -e 'on run a' -e 'display notification (item 1 of a) with title "iTerm2 relaunch"' -e 'end run' "$*" >/dev/null 2>&1 || :
+}
 
 # pid of the running iTerm2, or nothing and exit 1. ps, not pgrep: pgrep cannot see
 # processes of the caller's own session under some sandboxes.
@@ -750,6 +758,29 @@ cmd_items() {
 
 say() { printf 'iterm2-relaunch: %s\n' "$*"; }
 
+# prefetch: the slow half of a brew item, done while everything keeps running.
+# brew caches the download, so the relaunch's own fetch finds it at once, and the
+# stamp lets the front skip its brew update for 30 minutes.
+cmd_prefetch() {
+  [ -n "$brew" ] || { say "no Homebrew; nothing to prefetch"; exit 0; }
+  prep "updating Homebrew"
+  # the stamp only after an update that worked: a stale tap must not skip the front's
+  if brew_cmd update; then date +%s >"$state/prefetched"; else warn "brew update failed; using the cached state"; fi
+  n=0
+  for it in $(cmd_items | awk -F'\t' '$1 ~ /^brew:/ && $2 == "ready" { print $1 }'); do
+    prep "downloading ${it#brew:}"
+    if brew_cmd fetch --cask "${it#brew:}"; then n=$((n + 1)); else warn "$it: download failed"; fi
+  done
+  say "downloaded $n cask(s); a relaunch in the next 30 minutes only installs"
+}
+
+# fresh_prefetch: a prefetch stamp younger than 30 minutes.
+fresh_prefetch() {
+  ts=$(cat "$state/prefetched" 2>/dev/null) || return 1
+  case $ts in ''|*[!0-9]*) return 1;; esac
+  [ $(( $(date +%s) - ts )) -lt 1800 ]
+}
+
 # alfred: the Script Filter JSON, always one line.
 cmd_alfred() { relaunch_py alfred "$(cmd_items)"; }
 
@@ -841,7 +872,9 @@ cmd_front() {
     *" brew:"*)
       if [ -z "$brew" ]; then :
       elif [ "$dry" = 1 ]; then echo "would: brew update first"
-      else brew_cmd update || warn "brew update failed; using the cached state"
+      elif fresh_prefetch; then ensure_state; log_line "prep: Homebrew updated by prefetch less than 30m ago; not again"
+      else prep "updating Homebrew before the relaunch"
+        brew_cmd update || warn "brew update failed; using the cached state"
       fi;;
   esac
 
@@ -895,7 +928,7 @@ cmd_front() {
 
   # The download happens while the terminal is still up.
   for t in $items; do
-    case $t in brew:*) brew_cmd fetch --cask "${t#brew:}" || refuse "$t: download failed";; esac
+    case $t in brew:*) prep "downloading ${t#brew:} before the relaunch"; brew_cmd fetch --cask "${t#brew:}" || refuse "$t: download failed";; esac
   done
   if [ "$(defaults read com.googlecode.iterm2 KillJobsInServersOnQuit 2>/dev/null)" = 0 ]; then
     for t in $items; do
@@ -949,6 +982,7 @@ cmd_front() {
 
 case ${1:-} in
   status) need_macos status; cmd_status;;
+  prefetch) need_macos prefetch; cmd_prefetch;;
   items) need_macos items; cmd_items;;
   cancel) need_macos cancel; cmd_cancel;;
   alfred) need_macos alfred; cmd_alfred;;

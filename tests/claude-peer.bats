@@ -69,6 +69,10 @@ teardown() {
   case ${CLAUDE_PEER_LOOK-} in /tmp/cpl.*) rm -rf "$CLAUDE_PEER_LOOK";; esac
 }
 
+# no <command>...: fails when the command succeeds. A bare `! cmd` never fails a bats
+# test mid-body (errexit ignores a negated command).
+no() { if "$@"; then return 1; fi; }
+
 @test "run: creates the worktree, cd's into it, execs an interactive shell" {
   run sh "$BIN" run feat/x
   [ "$status" -eq 0 ]
@@ -185,7 +189,7 @@ remote_head() {
   [[ "$output" == *"pwd=$REPO/.claude/worktrees/alpha"* ]]
   [[ "$output" == *"peer=$REPO/.claude/worktrees/alpha"* ]]
   [[ "$output" == *'claude -n "$n" "$@" claude-peer proj-alpha' ]]
-  ! git -C "$REPO/.claude/worktrees/alpha" symbolic-ref -q HEAD
+  no git -C "$REPO/.claude/worktrees/alpha" symbolic-ref -q HEAD
   [ "$(git -C "$REPO/.claude/worktrees/alpha" rev-parse HEAD)" = "$(git rev-parse origin/HEAD)" ]
   [ "$(git branch --list | wc -l)" -eq 1 ]
   [ "$(grep -cxF '**/.claude/worktrees/' "$REPO/.git/info/exclude")" -eq 1 ]
@@ -492,6 +496,16 @@ press() {
   PANES="$PANES $!"
 }
 
+# hold_tty <tag>: keep a writer on that pane's FIFO terminal until teardown, for a
+# test that types more than one line. A pane opens its terminal afresh for each
+# line; a reopen that finds only the last press's writer still there reads end of
+# input once that writer exits, and a real terminal never does. Not for typeline,
+# whose writer must block until the pane opens the FIFO.
+hold_tty() {
+  ( exec sleep 600 ) <>"$BATS_TEST_TMPDIR/tty-$1" 3>&- &
+  PANES="$PANES $!"
+}
+
 shell_runs() { [ -f "$FAKE_SHELL_LOG" ] && grep -c . "$FAKE_SHELL_LOG" || echo 0; }
 
 # hold <slot> [<dir>]: a session in <slot> from another leader, for a while
@@ -552,6 +566,7 @@ hold() {
 
 @test "run --as --wait: c continues, q leaves a shell, anything else asks again" {
   FAKE_SHELL_SLEEP=1 pane alpha
+  hold_tty alpha
   press alpha c
   until_ok 'grep -q "claude-peer proj-alpha --continue\$" "$FAKE_SHELL_LOG"'
   until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
@@ -561,7 +576,7 @@ hold() {
   press alpha q
   until_ok '[ "$(tail -n 1 "$FAKE_SHELL_LOG")" = "pwd=$REPO args=-i" ]'
   [ -z "$(sh "$BIN" slots)" ]
-  ! ls "$REPO/.git/claude-peer.wait/" | grep .
+  if ls "$REPO/.git/claude-peer.wait/" | grep .; then return 1; fi
 }
 
 @test "run --as --wait: outside a repository it is one line and a plain shell" {
@@ -608,7 +623,7 @@ no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
   check_on
   enter_record 5
   pane alpha
-  ! grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  no grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-alpha.out"
   [ "$(sh "$BIN" slots | cut -f2)" = waiting ]
 }
 
@@ -620,6 +635,7 @@ no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
   no_wait_files
   run sh "$BIN" start alpha
   [ "$status" -eq 4 ]
+  hold_tty alpha
   press alpha 'x'
   until_ok '[ "$(grep -c "Return if this tab" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 2 ]'
   no_wait_files
@@ -656,13 +672,13 @@ no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
   check_on
   rm "$XDG_STATE_HOME/claude-peer/enter"
   pane alpha
-  ! grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  no grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-alpha.out"
   [ "$(sh "$BIN" slots | cut -f2)" = waiting ]
   kill "$LAST_PANE"
   echo peers >"$XDG_STATE_HOME/claude-peer/enter"
   unset ITERM_SESSION_ID
   pane beta
-  ! grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-beta.out"
+  no grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-beta.out"
   [ "$(sh "$BIN" slots | cut -f2 | sort -u)" = waiting ]
 }
 
@@ -672,7 +688,7 @@ no_wait_files() { [ -z "$(ls "$REPO/.git/claude-peer.wait" 2>/dev/null)" ]; }
   echo junk >"$d/junk"
   check_on
   pane alpha
-  ! grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  no grep -q "no workgroup entry was recorded" "$BATS_TEST_TMPDIR/pane-alpha.out"
   [ "$(ls "$d" | wc -l)" -eq 2 ]
 }
 
@@ -744,7 +760,7 @@ modelfix() {
   run sh "$BIN" start alpha --context a
   [ "$status" -eq 0 ]
   until_ok 'grep -q "claude-peer proj-alpha --agent plan-fable a\$" "$FAKE_SHELL_LOG"'
-  ! grep -q -- "opus" "$FAKE_SHELL_LOG"
+  no grep -q -- "opus" "$FAKE_SHELL_LOG"
   # the key is live: a plain start takes it
   until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
   run sh "$BIN" start alpha plain
@@ -758,7 +774,7 @@ modelfix() {
   run sh "$BIN" start alpha --continue go on
   [ "$status" -eq 0 ]
   until_ok 'grep -q "claude-peer proj-alpha --continue go on\$" "$FAKE_SHELL_LOG"'
-  ! grep -q -- "--model" "$FAKE_SHELL_LOG"
+  no grep -q -- "--model" "$FAKE_SHELL_LOG"
   # the key is live: a plain start takes it
   until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
   run sh "$BIN" start alpha plain
@@ -777,13 +793,13 @@ modelfix() {
   [ "$status" -eq 0 ]
   until_ok 'grep -q "claude-peer proj-alpha fix the thing\$" "$FAKE_SHELL_LOG"'
   [ "$(grep -c "claude-peer: claude-peer.model '-x' is not a model name; ignored" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 1 ]
-  ! grep -q -- "--model" "$FAKE_SHELL_LOG"
+  no grep -q -- "--model" "$FAKE_SHELL_LOG"
   until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
   git -C "$REPO" config claude-peer.model 'a b'
   run sh "$BIN" start alpha again
   until_ok 'grep -q "claude-peer proj-alpha again\$" "$FAKE_SHELL_LOG"'
   grep -q "claude-peer.model 'a b' is not a model name; ignored" "$BATS_TEST_TMPDIR/pane-alpha.out"
-  ! grep -q -- "--model" "$FAKE_SHELL_LOG"
+  no grep -q -- "--model" "$FAKE_SHELL_LOG"
 }
 
 @test "start: no waiting pane is 4, a running slot is 3, a prompt that begins with - is 2" {
@@ -827,6 +843,76 @@ modelfix() {
   [[ "$output" == *$'\t'"started"$'\t'"proj-alpha" ]]
 }
 
+# A pane iTerm2 did not reattach after a quit keeps running with no terminal. One that
+# had a terminal and lost it ends; one that never had one waits for a request.
+
+# lose_tty <tag>: the terminal goes away as iTerm2's does: the reader is cut short with
+# no line, and what it read from no longer exists
+lose_tty() {
+  local t=$BATS_TEST_TMPDIR/tty-$1
+  ( exec 3>"$t"; rm -f "$t"; exec 3>&- ) &
+  PANES="$PANES $!"
+}
+
+pane_ended() { until_ok "! kill -0 '$1' 2>/dev/null"; }
+
+@test "a waiting pane whose terminal is gone ends and leaves no wait file" {
+  pane alpha
+  lose_tty alpha
+  pane_ended "$LAST_PANE"
+  no_wait_files
+  [ -z "$(sh "$BIN" slots)" ]
+}
+
+@test "a pane at the numbered list whose terminal is gone ends too" {
+  git config --global claude-peer.picker list
+  pane alpha
+  pane_says alpha "$LISTHINT"
+  lose_tty alpha
+  pane_ended "$LAST_PANE"
+  no_wait_files
+}
+
+@test "a pane whose fzf fails after the terminal is gone ends instead of using the list" {
+  fzfstub
+  git config --global claude-peer.picker fzf
+  FAKE_FZF_RC=2 FAKE_FZF_SLEEP=2 pane alpha
+  rm -f "$BATS_TEST_TMPDIR/tty-alpha"   # no reader is open while fzf runs, so nothing to cut short
+  pane_ended "$LAST_PANE"
+  no_wait_files
+  no grep -qF 'fzf failed' "$BATS_TEST_TMPDIR/pane-alpha.out"
+}
+
+@test "a pane with no terminal from the start keeps waiting, and start still wakes it" {
+  FAKE_SHELL_SLEEP=1 PANE_TTY=/nonexistent pane alpha
+  sleep 1
+  kill -0 "$LAST_PANE"
+  [ "$(sh "$BIN" slots | cut -f2)" = waiting ]
+  run sh "$BIN" start alpha
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha\$" "$FAKE_SHELL_LOG"'
+}
+
+@test "slots, panes and start skip a wait file whose first line is not a directory" {
+  sleep 30 & sp=$!
+  PANES="$PANES $sp"
+  w=$REPO/.git/claude-peer.wait
+  mkdir -p "$w"
+  printf '%s\n%s\n%s\n' 'claude-peer: fzf failed (exit 2); using the list' "$LISTHINT" 'Beta ▸ /tmp' >"$w/beta.$sp"
+  [ -z "$(sh "$BIN" slots)" ]
+  [ -z "$(sh "$BIN" panes)" ]
+  run sh "$BIN" start beta
+  [ "$status" -eq 4 ]
+}
+
+@test "a wait file with a dead pid is reaped by the next pane even when its first line is not a directory" {
+  w=$REPO/.git/claude-peer.wait
+  mkdir -p "$w"
+  printf 'junk\n3\n' >"$w/beta.2147483646"
+  pane alpha
+  no ls "$w/beta.2147483646" 2>/dev/null
+}
+
 @test "start: a slot the pane did not start with is still started in it" {
   FAKE_SHELL_SLEEP=2 pane alpha
   run sh "$BIN" start beta
@@ -858,7 +944,7 @@ modelfix() {
   run sh "$BIN" stop alpha
   [ "$status" -eq 0 ]
   [ "$output" = "alpha"$'\t'"$REPO/.claude/worktrees/alpha"$'\t'"stopped" ]
-  ! kill -0 "$sp" 2>/dev/null
+  no kill -0 "$sp" 2>/dev/null
   until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
   [ -d "$REPO/.claude/worktrees/alpha" ]
 }
@@ -874,7 +960,7 @@ modelfix() {
   run sh "$BIN" stop alpha
   [ "$status" -eq 0 ]
   [[ "$output" == *$'\t'"stopped" ]]
-  ! kill -0 "$sp" 2>/dev/null
+  no kill -0 "$sp" 2>/dev/null
 }
 
 @test "stop --force: no registry record, every process under the claim is stopped" {
@@ -886,7 +972,7 @@ modelfix() {
   run sh "$BIN" stop alpha --force
   [ "$status" -eq 0 ]
   [[ "$output" == *$'\t'"stopped" ]]
-  ! kill -0 "$sp" 2>/dev/null
+  no kill -0 "$sp" 2>/dev/null
 }
 
 @test "claude-peer.start = auto: the pane starts a session after the settle delay, then waits" {
@@ -902,12 +988,12 @@ modelfix() {
   [ "$(shell_runs)" -eq 1 ]
 }
 
-@test "the pool: a taken name sends the pane to the pool's sixth, and says so" {
+@test "the pool: a taken name sends the pane to the pool's fifth, and says so" {
   hold alpha
   pane alpha
   press alpha ''
-  until_ok 'grep -q "claude-peer proj-zeta\$" "$FAKE_SHELL_LOG"'
-  grep -qF "Zeta (this pane's Alpha is in use by the peers of $REPO/sub)" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  until_ok 'grep -q "claude-peer proj-epsilon\$" "$FAKE_SHELL_LOG"'
+  grep -qF "Epsilon (this pane's Alpha is in use by the peers of $REPO/sub)" "$BATS_TEST_TMPDIR/pane-alpha.out"
   [ ! -e "$REPO/.claude/worktrees/beta" ]
 }
 
@@ -915,7 +1001,7 @@ modelfix() {
   FAKE_SHELL_SLEEP=3 pane gamma
   press gamma ''
   until_ok 'grep -q "claude-peer proj-gamma\$" "$FAKE_SHELL_LOG"'
-  ! grep -q "Gamma (" "$BATS_TEST_TMPDIR/pane-gamma.out"
+  no grep -q "Gamma (" "$BATS_TEST_TMPDIR/pane-gamma.out"
 }
 
 @test "the pool: with every name held the pane says so and goes on waiting" {
@@ -928,13 +1014,13 @@ modelfix() {
   until_ok '[ "$(grep -c "Return tries again" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 1 ]'
   [ "$(sh "$BIN" slots | grep -c waiting)" -eq 1 ]
   [ "$(shell_runs)" -eq 0 ]
-  ! grep -q "	end	" "$REPO/$LOG" 2>/dev/null
+  no grep -q "	end	" "$REPO/$LOG" 2>/dev/null
 }
 
-@test "the pool: a configured pool falls back to a free one of the first five" {
-  git config claude-peer.slots 'alpha beta gamma delta epsilon zeta'
+@test "the pool: a configured pool falls back to a free one of the first four" {
+  git config claude-peer.slots 'alpha beta gamma delta epsilon'
   hold alpha
-  hold zeta
+  hold epsilon
   pane alpha
   press alpha ''
   until_ok 'grep -q "claude-peer proj-beta\$" "$FAKE_SHELL_LOG"'
@@ -959,7 +1045,7 @@ modelfix() {
   w=$REPO/.git/claude-peer.wait
   : >"$w/alpha.2147483646"; : >"$w/alpha.2147483646.key"; : >"$w/beta.2147483646.start"
   pane gamma
-  ! ls "$w" | grep 2147483646
+  if ls "$w" | grep 2147483646; then return 1; fi
   [ "$(sh "$BIN" slots | cut -f1)" = gamma ]
 }
 
@@ -1273,7 +1359,7 @@ pb_wait() { # count
   run sh "$BIN" log --as Beta claim other -- some
   [ "$status" -eq 0 ]
   [ -z "$output" ]
-  ! sh "$BIN" log show | grep -q "	Alpha	claim	"
+  if sh "$BIN" log show | grep -q "	Alpha	claim	"; then return 1; fi
 }
 
 # --- workgroup / install / status ----------------------------------------------
@@ -1337,41 +1423,41 @@ groups() {
 # pyget <json> <python expression over g>
 pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(eval(sys.argv[2]))' "$1" "$2"; }
 
-@test "workgroup: Claude Peers is six sessions in order, Lead the root, no Diff, no Hermes" {
+@test "workgroup: Claude Peers is five sessions in order, Lead the root, no Diff, no Hermes" {
   mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist" run sh "$BIN" workgroup
   [ "$status" -eq 0 ]
   [ "$(pyget "$output" '[g["uniqueIdentifier"], g["name"]]')" = "['claudePeer.workgroup', 'Claude Peers']" ]
-  [ "$(pyget "$output" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.main', 'claudePeer.alpha', 'claudePeer.beta', 'claudePeer.gamma', 'claudePeer.delta', 'claudePeer.epsilon']" ]
-  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon']" ]
+  [ "$(pyget "$output" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.main', 'claudePeer.alpha', 'claudePeer.beta', 'claudePeer.gamma', 'claudePeer.delta']" ]
+  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta']" ]
   [ "$(pyget "$output" 'g["sessions"][0]["kind"]')" = "{'kind': 'root'}" ]
-  [ "$(pyget "$output" '[s["command"] for s in g["sessions"]]')" = "['', 'claude-peer run --as alpha --wait', 'claude-peer run --as beta --wait', 'claude-peer run --as gamma --wait', 'claude-peer run --as delta --wait', 'claude-peer run --as epsilon --wait']" ]
+  [ "$(pyget "$output" '[s["command"] for s in g["sessions"]]')" = "['', 'claude-peer run --as alpha --wait', 'claude-peer run --as beta --wait', 'claude-peer run --as gamma --wait', 'claude-peer run --as delta --wait']" ]
   # the fixture builtin's root has a third item; nothing is copied from it
   [ "$(pyget "$output" '[i["kind"] for i in g["sessions"][0]["toolbarItems"]]')" = "['modeSwitcher', 'gitStatus']" ]
-  [ "$(pyget "$output" '[s["toolbarItems"] for s in g["sessions"][1:]]')" = "[[{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}]]" ]
-  [ "$(pyget "$output" '[s["kind"]["kind"] for s in g["sessions"][1:]]')" = "['peer', 'peer', 'peer', 'peer', 'peer']" ]
-  [ "$(pyget "$output" '[s["parentID"] for s in g["sessions"][1:]]')" = "['claudePeer.main', 'claudePeer.main', 'claudePeer.main', 'claudePeer.main', 'claudePeer.main']" ]
+  [ "$(pyget "$output" '[s["toolbarItems"] for s in g["sessions"][1:]]')" = "[[{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}]]" ]
+  [ "$(pyget "$output" '[s["kind"]["kind"] for s in g["sessions"][1:]]')" = "['peer', 'peer', 'peer', 'peer']" ]
+  [ "$(pyget "$output" '[s["parentID"] for s in g["sessions"][1:]]')" = "['claudePeer.main', 'claudePeer.main', 'claudePeer.main', 'claudePeer.main']" ]
   [ "$(pyget "$output" 'any(s["mode"] != "regular" or "profileGUID" in s or s["urlString"] or s["perFileCommand"] or "hermes" in s["command"] for s in g["sessions"])')" = False ]
 }
 
 @test "workgroup: reads no store, so none needs to exist" {
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/absent.plist" run sh "$BIN" workgroup
   [ "$status" -eq 0 ]
-  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon']" ]
+  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta']" ]
 }
 
-@test "install: Claude Peers + Hermes is the same six under claudePeer.h plus Hermes last" {
+@test "install: Claude Peers + Hermes is the same five under claudePeer.h plus Hermes last" {
   stubs
   mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist" sh "$BIN" install >/dev/null
   g=$(groups "$BATS_TEST_TMPDIR/prefs.plist")
   h=$(python3 -I -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1])[2]))' "$g")
   [ "$(pyget "$h" '[g["uniqueIdentifier"], g["name"]]')" = "['claudePeer.h', 'Claude Peers + Hermes']" ]
-  [ "$(pyget "$h" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.h.main', 'claudePeer.h.alpha', 'claudePeer.h.beta', 'claudePeer.h.gamma', 'claudePeer.h.delta', 'claudePeer.h.epsilon', 'claudePeer.h.hermes']" ]
-  [ "$(pyget "$h" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Hermes']" ]
+  [ "$(pyget "$h" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.h.main', 'claudePeer.h.alpha', 'claudePeer.h.beta', 'claudePeer.h.gamma', 'claudePeer.h.delta', 'claudePeer.h.hermes']" ]
+  [ "$(pyget "$h" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Hermes']" ]
   [ "$(pyget "$h" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.h.main'}" ]
   [ "$(pyget "$h" 'g["sessions"][-1]["command"]')" = "claude-peer hermes --wait" ]
-  [ "$(pyget "$h" '[s["command"] for s in g["sessions"][1:6]]')" = "['claude-peer run --as alpha --wait', 'claude-peer run --as beta --wait', 'claude-peer run --as gamma --wait', 'claude-peer run --as delta --wait', 'claude-peer run --as epsilon --wait']" ]
+  [ "$(pyget "$h" '[s["command"] for s in g["sessions"][1:5]]')" = "['claude-peer run --as alpha --wait', 'claude-peer run --as beta --wait', 'claude-peer run --as gamma --wait', 'claude-peer run --as delta --wait']" ]
   [ "$(pyget "$h" 'g["sessions"][0]["kind"]')" = "{'kind': 'root'}" ]
 }
 
@@ -1446,8 +1532,8 @@ pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(ev
   [[ "$output" == *"iterm2: running"* ]]
   sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (6 sessions: Lead, Alpha, Beta, Gamma, Delta, Epsilon)"* ]]
-  [[ "$output" == *"hermes: installed (7 sessions: Lead, Alpha, Beta, Gamma, Delta, Epsilon, Hermes)"* ]]
+  [[ "$output" == *"workgroup: installed (5 sessions: Lead, Alpha, Beta, Gamma, Delta)"* ]]
+  [[ "$output" == *"hermes: installed (6 sessions: Lead, Alpha, Beta, Gamma, Delta, Hermes)"* ]]
   FAKE_OS=Linux run sh "$BIN" status
   [[ "$output" == *"status needs macOS"* ]]
   FAKE_OS=Linux run sh "$BIN" install
@@ -1470,12 +1556,12 @@ pl["Workgroups"] = json.dumps(groups).encode()
 plistlib.dump(pl, open(sys.argv[1], "wb"))
 PY
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed, out of date (6 sessions: Chat, Diff, Chat 2, Chat 3, Chat 4, Hermes); this version defines 6 (Lead, Alpha, Beta, Gamma, Delta, Epsilon)"* ]]
+  [[ "$output" == *"workgroup: installed, out of date (6 sessions: Chat, Diff, Chat 2, Chat 3, Chat 4, Hermes); this version defines 5 (Lead, Alpha, Beta, Gamma, Delta)"* ]]
   [[ "$output" == *"hermes: not installed"* ]]
   CLAUDE_PEER_PREFS="$FAKE_DOMAIN" sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (6 sessions: "* ]]
-  [[ "$output" == *"hermes: installed (7 sessions: "* ]]
+  [[ "$output" == *"workgroup: installed (5 sessions: "* ]]
+  [[ "$output" == *"hermes: installed (6 sessions: "* ]]
   [[ "$output" != *"out of date"* ]]
 }
 
@@ -1488,7 +1574,7 @@ PY
   # install into the folder with iTerm2 quit; the domain stays as it was
   sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (6 sessions: Lead, Alpha, Beta, Gamma, Delta, Epsilon)"* ]]
+  [[ "$output" == *"workgroup: installed (5 sessions: Lead, Alpha, Beta, Gamma, Delta)"* ]]
   FAKE_PROCS=iTerm2 run sh "$BIN" status
   [[ "$output" == *"workgroup: not installed"* ]]
   [[ "$output" == *"hermes: not installed"* ]]
@@ -2040,8 +2126,8 @@ LISTHINT='c continue · r resume · n task · s task, saved · q shell'
   FAKE_SHELL_SLEEP=2 pane alpha
   pane_says alpha "$LISTHINT"
   o=$BATS_TEST_TMPDIR/pane-alpha.out
-  ! grep -q 'Return picks' "$o"
-  ! grep -qF ' (asks:' "$o"
+  no grep -q 'Return picks' "$o"
+  no grep -qF ' (asks:' "$o"
   [ "$(grep -E '^ ?[0-9]+  ' "$o" | sed -E 's/^ ?[0-9]+  ([a-z]+) +.*/\1/' | tr '\n' ' ')" = "fresh plain hello say greet mine deploy continue resume task shell " ]
   grep -qx ' 1  fresh     A new session, no prompt' "$o"
   grep -qx ' 3  hello     Hello' "$o"
@@ -2204,7 +2290,7 @@ LISTHINT='c continue · r resume · n task · s task, saved · q shell'
   typeline o same
   until_ok '[ -f "$CLAUDE_PEER_CONTEXTS/octo/proj/90-same.ctx" ] && [ -f "$CLAUDE_PEER_CONTEXTS/octo/other/90-same.ctx" ]'
   until_ok 'grep -q "args=.*in other\$" "$FAKE_SHELL_LOG" && grep -q "args=.*in proj\$" "$FAKE_SHELL_LOG"'
-  ! grep -qF 'not saved' "$BATS_TEST_TMPDIR/pane-alpha.out" "$BATS_TEST_TMPDIR/pane-o.out"
+  no grep -qF 'not saved' "$BATS_TEST_TMPDIR/pane-alpha.out" "$BATS_TEST_TMPDIR/pane-o.out"
   run sh "$BIN" context list
   [[ "$output" == *"same"$'\t'"in proj"* ]]
   [[ "$output" != *"in other"* ]]
@@ -2225,7 +2311,7 @@ LISTHINT='c continue · r resume · n task · s task, saved · q shell'
   until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
   [ "$(cat "$BATS_TEST_TMPDIR/last")" = "no home for this" ]
   grep -qF "not saved: this repository has no origin remote, so it has no context directory" "$BATS_TEST_TMPDIR/pane-b.out"
-  ! grep -q 'Save as' "$BATS_TEST_TMPDIR/pane-b.out"
+  no grep -q 'Save as' "$BATS_TEST_TMPDIR/pane-b.out"
   [ ! -e "$CLAUDE_PEER_CONTEXTS/90-no-home-for-this.ctx" ]
 }
 
@@ -2258,7 +2344,7 @@ LISTHINT='c continue · r resume · n task · s task, saved · q shell'
   git config --global claude-peer.picker fzf
   FAKE_FZF_OUT=$'\n\nhello\thello     Hello\n' FAKE_SHELL_SLEEP=2 pane alpha
   until_ok '[ -f "$FAKE_FZF_LOG.rows" ]'
-  ! grep -q 'Return picks' "$BATS_TEST_TMPDIR/pane-alpha.out"
+  no grep -q 'Return picks' "$BATS_TEST_TMPDIR/pane-alpha.out"
   for a in --expect=ctrl-t,ctrl-s --print-query --no-multi --no-sort --no-mouse --layout=reverse \
       --header-first --info=hidden --no-separator '--delimiter=\t' --with-nth=2 '--prompt=Alpha ▸ ' \
       --height=13 --margin=0,0,0,0 --color=header:-1 '--pointer=▸' '--gutter= '; do
@@ -2266,8 +2352,8 @@ LISTHINT='c continue · r resume · n task · s task, saved · q shell'
   done
   grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -qF 'esc hide'
   grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -qF '^S …and save it'
-  ! grep -q -- '--preview' "$FAKE_FZF_LOG"
-  ! grep -qxF -- '--height=100%' "$FAKE_FZF_LOG"
+  no grep -q -- '--preview' "$FAKE_FZF_LOG"
+  no grep -qxF -- '--height=100%' "$FAKE_FZF_LOG"
   [ "$(cut -f1 "$FAKE_FZF_LOG.rows" | tr '\n' ' ')" = "@fresh plain hello say greet mine deploy @continue @resume @task @shell " ]
   [ "$(sed -n 3p "$FAKE_FZF_LOG.rows")" = $'hello\thello     Hello' ]
   pane_says alpha 'Who: '
@@ -2300,7 +2386,7 @@ fzfsize() {
   grep -qxF -- --height=10 "$FAKE_FZF_LOG"
   fzfsize '40 50'
   grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -qF 'esc hide'
-  ! grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -qF '^S'
+  if grep -F -- '--header=' "$FAKE_FZF_LOG" | grep -qF '^S'; then return 1; fi
 }
 
 @test "picker fzf: the short hint under 56 columns, and a block wide enough for the widest row" {
@@ -2326,10 +2412,10 @@ fzfsize() {
   until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
   [ "$(cat "$FAKE_FZF_LOG.opts")" = unset ]
   grep -qxF -- '--color=bg:#1a1a1a' "$FAKE_FZF_LOG"
-  ! grep -qxF -- '--border' "$FAKE_FZF_LOG"
-  ! grep -q -- '--preview' "$FAKE_FZF_LOG"
-  ! grep -qF '$(' "$FAKE_FZF_LOG"
-  ! grep -qxF -- '40%' "$FAKE_FZF_LOG"
+  no grep -qxF -- '--border' "$FAKE_FZF_LOG"
+  no grep -q -- '--preview' "$FAKE_FZF_LOG"
+  no grep -qF '$(' "$FAKE_FZF_LOG"
+  no grep -qxF -- '40%' "$FAKE_FZF_LOG"
 }
 
 @test "picker fzf: older than 0.75 is the list, said once; list and off never run fzf at all" {
@@ -2438,7 +2524,7 @@ fzfsize() {
   [ "$(cat "$BATS_TEST_TMPDIR/last")" = hello ]
   until_ok '[ -f "$FAKE_FZF_LOG.term" ]'
   grep -qx "Alpha · started by Lead · hello" "$BATS_TEST_TMPDIR/pane-alpha.out"
-  ! grep -q "picker closed" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  no grep -q "picker closed" "$BATS_TEST_TMPDIR/pane-alpha.out"
   [ "$(grep -c "Preparing worktree" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 0 ]
   [ "$(grep -cx '' "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 0 ]
 }
@@ -2548,7 +2634,7 @@ fzf_header() { sed -n '/^--header=/,/^--print-query$/p' "$FAKE_FZF_LOG" | sed '$
   fzfsize '17 120'
   grep -qxF -- --height=17 "$FAKE_FZF_LOG"
   fzfsize '15 120'
-  ! fzf_header | grep -qF '▬'
+  if fzf_header | grep -qF '▬'; then return 1; fi
   grep -qxF -- --height=13 "$FAKE_FZF_LOG"
   fzfsize '40 60'
   [ "$(fzf_header | wc -l | tr -d ' ')" -eq 13 ]
@@ -2558,7 +2644,7 @@ fzf_header() { sed -n '/^--header=/,/^--print-query$/p' "$FAKE_FZF_LOG" | sed '$
   grep -qxF -- --margin=0,0,0,0 "$FAKE_FZF_LOG"
   git config --global claude-peer.art false
   fzfsize '40 120'
-  ! fzf_header | grep -qF '▬'
+  if fzf_header | grep -qF '▬'; then return 1; fi
   grep -qxF -- --height=13 "$FAKE_FZF_LOG"
 }
 
@@ -3144,7 +3230,7 @@ PY
   run sh "$BIN" look off
   [ "$status" -eq 0 ]
   [[ "$output" == *"2 of 2 profiles changed" ]]
-  ! grep -q 'look gained' "$CLAUDE_PEER_PREFS"
+  no grep -q 'look gained' "$CLAUDE_PEER_PREFS"
   grep -q 'echo hi' "$CLAUDE_PEER_PREFS"
   [ ! -e "$CLAUDE_PEER_LOOK/kind" ]; [ ! -e "$CLAUDE_PEER_LOOK/focus" ]; [ ! -e "$CLAUDE_PEER_LOOK/unlocked" ]
   [ -e "$CLAUDE_PEER_LOOK/lock" ]
@@ -3270,7 +3356,7 @@ PY
   until_ok '[ -f "$FAKE_FZF_LOG.calls" ]'
   # 78 wide, 75 of header, 46 beside the figure: `✻ Alpha · ` and 36 of the name
   fzf_header | grep -F '✻ ' | grep -qF "Alpha${ESC}[0m · ${long:0:36}"
-  ! fzf_header | grep -qF "${long:0:37}"
+  if fzf_header | grep -qF "${long:0:37}"; then return 1; fi
 }
 
 @test "sleeper above the list: the figure's lines start at the block's text, then an empty line, then row 1" {
@@ -3293,7 +3379,7 @@ PY
   pane_says alpha '⏎ picker · c continue · q shell'
   local out="$BATS_TEST_TMPDIR/pane-alpha.out"
   [ "$(grep -o '▬' "$out" | wc -l | tr -d ' ')" -eq 4 ]
-  ! grep -q 'Alpha: Return picks' "$out"
+  no grep -q 'Alpha: Return picks' "$out"
   [ "$(CLAUDE_PEER_SIZE='40 120' sh "$BIN" art --screen --slot alpha)" = "$(cat "$out")" ]
 }
 
@@ -3324,10 +3410,10 @@ quiet_erases() {
   quiet_erases '40 60' ''
   [ "$(pane_count alpha "${ESC}[13A"$'\r'"${ESC}[J")" -eq 1 ]
   quiet_erases '' ''
-  ! grep -qE "${ESC}\[[0-9]+A" "$out"
+  no grep -qE "${ESC}\[[0-9]+A" "$out"
   git config --global claude-peer.art false
   quiet_erases '40 120' ''
-  ! grep -qE "${ESC}\[[0-9]+A" "$out"
+  no grep -qE "${ESC}\[[0-9]+A" "$out"
 }
 
 # hermes_banner [body]: an installed Hermes whose banner holds a small invented
@@ -3884,7 +3970,7 @@ obg() {
   FAKE_SHELL_SLEEP=2 opane fake1 "$OV1"
   press fake1 ''
   until_ok 'grep -q "claude-peer ov1-overlay\$" "$FAKE_SHELL_LOG"'
-  ! git -C "$OV1/.claude/worktrees/overlay" symbolic-ref -q HEAD
+  no git -C "$OV1/.claude/worktrees/overlay" symbolic-ref -q HEAD
   [ "$(git -C "$OV1/.claude/worktrees/overlay" rev-parse HEAD)" = "$(git -C "$OV1" rev-parse origin/HEAD)" ]
   [ "$(git -C "$OV1" rev-parse HEAD)" != "$(git -C "$OV1" rev-parse origin/HEAD)" ]
 }
@@ -3913,8 +3999,8 @@ obg() {
   until_ok 'grep -q "claude-peer ov1-overlay\$" "$FAKE_SHELL_LOG"'
   FAKE_SHELL_SLEEP=2 opane fake1 "$OV1" "$REPO/sub" b
   press b ''
-  until_ok 'grep -q "claude-peer ov1-zeta\$" "$FAKE_SHELL_LOG"'
-  grep -qF "Zeta (this pane's Fake1 is in use by the peers of $REPO)" "$BATS_TEST_TMPDIR/pane-b.out"
+  until_ok 'grep -q "claude-peer ov1-epsilon\$" "$FAKE_SHELL_LOG"'
+  grep -qF "Epsilon (this pane's Fake1 is in use by the peers of $REPO)" "$BATS_TEST_TMPDIR/pane-b.out"
 }
 
 @test "overlay: an unknown name, and an overlay deleted after listing, are one line and a plain shell" {
@@ -4000,12 +4086,17 @@ STUB
   grep -qx "pwd=$REPO" "$BATS_TEST_TMPDIR/bg-gone.out"
 }
 
-# ov_prefs: the stubs, a chezmoi stub and a fixture store with iTerm2 quit
+# ov_prefs [outside]: the stubs, a chezmoi stub and a fixture store with iTerm2 quit. The
+# store sits in a git repository (a prefs folder in a clone), so bar labels are positions;
+# `outside` puts it outside every repository, where they are the overlays' display labels.
 ov_prefs() {
   stubs
   overlay_stub
-  mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
-  export CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist"
+  local d="$BATS_TEST_TMPDIR/prefsclone"
+  if [ "${1-}" = outside ]; then d="$BATS_TEST_TMPDIR/prefsstate"; mkdir -p "$d"
+  else mkdir -p "$d" && git -C "$d" init -q; fi
+  mkprefs "$d/prefs.plist"
+  export CLAUDE_PEER_PREFS="$d/prefs.plist"
   OV_STATE="$XDG_STATE_HOME/claude-peer/overlays"
 }
 
@@ -4032,16 +4123,16 @@ ov_prefs() {
   o=$(pyget "$g" 'json.dumps(g[3])'); oh=$(pyget "$g" 'json.dumps(g[4])'); h=$(pyget "$g" 'json.dumps(g[2])')
   [ "$(pyget "$o" 'g["name"]')" = "Claude Peers + Overlays" ]
   [ "$(pyget "$oh" 'g["name"]')" = "Claude Peers + Hermes + Overlays" ]
-  [ "$(pyget "$o" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Overlay 1', 'Overlay 2']" ]
-  [ "$(pyget "$oh" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Hermes', 'Overlay 1', 'Overlay 2']" ]
+  [ "$(pyget "$o" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Overlay 1', 'Overlay 2']" ]
+  [ "$(pyget "$oh" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Hermes', 'Overlay 1', 'Overlay 2']" ]
   [ "$(pyget "$o" 'all(s["uniqueIdentifier"].startswith(g["uniqueIdentifier"] + ".") for s in g["sessions"])')" = True ]
   [ "$(pyget "$oh" 'all(s["uniqueIdentifier"].startswith(g["uniqueIdentifier"] + ".") for s in g["sessions"])')" = True ]
   [ "$(pyget "$o" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.v.overlays.main'}" ]
   [ "$(pyget "$oh" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.v.overlays.h.main'}" ]
-  [ "$(pyget "$oh" '[s["uniqueIdentifier"] for s in g["sessions"]][6:]')" = "['claudePeer.v.overlays.h.hermes', 'claudePeer.v.overlays.h.o.1', 'claudePeer.v.overlays.h.o.2']" ]
-  [ "$(pyget "$oh" '[s["command"] for s in g["sessions"]][:7]')" = "$(pyget "$h" '[s["command"] for s in g["sessions"]]')" ]
-  [ "$(pyget "$o" '[s["command"] for s in g["sessions"]][6:]')" = "['claude-peer overlay 1', 'claude-peer overlay 2']" ]
-  [ "$(pyget "$oh" '[s["command"] for s in g["sessions"]][7:]')" = "['claude-peer overlay 1', 'claude-peer overlay 2']" ]
+  [ "$(pyget "$oh" '[s["uniqueIdentifier"] for s in g["sessions"]][5:]')" = "['claudePeer.v.overlays.h.hermes', 'claudePeer.v.overlays.h.o.1', 'claudePeer.v.overlays.h.o.2']" ]
+  [ "$(pyget "$oh" '[s["command"] for s in g["sessions"]][:6]')" = "$(pyget "$h" '[s["command"] for s in g["sessions"]]')" ]
+  [ "$(pyget "$o" '[s["command"] for s in g["sessions"]][5:]')" = "['claude-peer overlay 1', 'claude-peer overlay 2']" ]
+  [ "$(pyget "$oh" '[s["command"] for s in g["sessions"]][6:]')" = "['claude-peer overlay 1', 'claude-peer overlay 2']" ]
   [ "$(pyget "$o" 'set(s["kind"]["kind"] for s in g["sessions"][1:])')" = "{'peer'}" ]
   [ "$(pyget "$o" 'g["sessions"][-1]["toolbarItems"]')" = "[{'kind': 'modeSwitcher'}]" ]
   [ "$(cat "$OV_STATE")" = "fake1 fake2" ]
@@ -4052,7 +4143,7 @@ ov_prefs() {
   [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" 'len(g)')" = 5 ]
   # the plain definitions are what they were
   run sh "$BIN" workgroup
-  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon']" ]
+  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta']" ]
 }
 
 @test "install overlays: a smaller set rebuilds the pair, none removes it and the state file" {
@@ -4066,7 +4157,7 @@ ov_prefs() {
   [ "$status" -eq 0 ]
   [[ "$output" == *'"Claude Peers + Overlays" replaced'* ]]
   g=$(groups "$CLAUDE_PEER_PREFS")
-  [ "$(pyget "$g" '[s["displayName"] for s in g[3]["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Overlay 1']" ]
+  [ "$(pyget "$g" '[s["displayName"] for s in g[3]["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Overlay 1']" ]
   [ "$(cat "$OV_STATE")" = fake2 ]
   rm "$HOME/.config/chezmoi/fake2.toml"
   run sh "$BIN" install
@@ -4183,6 +4274,90 @@ PY
   until_ok 'grep -q "^Fake2: Return" "$BATS_TEST_TMPDIR/pane-2.out"'
   ov_status
   [[ "$output" == *"overlays: installed, out of date (Overlay 1 = Fake1, Overlay 2 = Fake2); this machine has 3 (Overlay 1 = Fake0, Overlay 2 = Fake1, Overlay 3 = Fake2) — claude-peer install (with iTerm2 quit)"* ]]
+}
+
+@test "install overlays: a store outside git gets display labels, from the origin's git config label or the name" {
+  ov_prefs outside
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  git -C "$OV1" remote add origin git@github.com:Fk/One.git
+  git -C "$OV2" remote add origin https://github.com/fk/two
+  overlay_cfg fake1.toml "$OV1"
+  overlay_cfg fake2.toml "$OV2"
+  git config --global claude-peer.fk/one.label "FK 1"
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  g=$(groups "$CLAUDE_PEER_PREFS")
+  [ "$(pyget "$g" '[s["displayName"] for s in g[3]["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'FK 1', 'Fake2']" ]
+  [ "$(pyget "$g" 'g[3]["sessions"][-2]["command"]')" = "claude-peer overlay 1" ]
+  ov_status
+  [[ "$output" == *"overlays: installed (2 panes: FK 1, Fake2)"* ]]
+  [[ "$output" != *"out of date"* ]]
+  git config --global claude-peer.fk/two.label Other
+  ov_status
+  [[ "$output" == *"overlays: installed, out of date (FK 1, Fake2); this machine has 2 (FK 1, Other)"* ]]
+}
+
+@test "install overlays: a store in a subdirectory of a clone keeps positions despite a label" {
+  ov_prefs
+  local d="$BATS_TEST_TMPDIR/prefsclone/sub"
+  mkdir -p "$d" && mkprefs "$d/prefs.plist"
+  export CLAUDE_PEER_PREFS="$d/prefs.plist"
+  OV1=$(overlay_repo ov1)
+  git -C "$OV1" remote add origin git@github.com:fk/one.git
+  overlay_cfg fake1.toml "$OV1"
+  git config --global claude-peer.fk/one.label "FK 1"
+  sh "$BIN" install >/dev/null
+  [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" 'g[3]["sessions"][-1]["displayName"]')" = "Overlay 1" ]
+}
+
+@test "tracked plists: every overlay pane in a tracked Workgroups value is labelled by position" {
+  # install decides at install time; a store moved into a clone afterwards would carry the
+  # names into git, base64-encoded where no text guard reads. This reads every tracked one.
+  git config --file "$GIT_CONFIG_GLOBAL" safe.directory '*'  # a CI container checkout is owned by another uid
+  local top; top=$(git -C "$BATS_TEST_DIRNAME" rev-parse --show-toplevel)
+  git -C "$top" ls-files -z -- '*.plist' | python3 -I -c '
+import json, plistlib, re, sys, os
+top, bad = sys.argv[1], []
+for f in sys.stdin.read().split("\0"):
+    if not f: continue
+    try: pl = plistlib.load(open(os.path.join(top, f), "rb"))
+    except Exception: continue
+    wg = pl.get("Workgroups") if isinstance(pl, dict) else None
+    if wg is None: continue
+    for g in json.loads(wg):
+        for s in g.get("sessions", []):
+            m = re.search(r"\.o\.(\d+)$", str(s.get("uniqueIdentifier", "")))
+            if m and s.get("displayName") != "Overlay " + m.group(1):
+                bad.append("%s: %s" % (f, s.get("uniqueIdentifier")))
+if bad: print("\n".join(bad)); sys.exit(1)
+' "$top"
+}
+
+@test "overlay pane: the hat takes the colour of the pane's position, not the slot's" {
+  ov_prefs outside
+  hellofix
+  git config --global claude-peer.picker list
+  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
+  overlay_cfg fake1.toml "$OV1"
+  overlay_cfg fake2.toml "$OV2"
+  sh "$BIN" install >/dev/null
+  COLORTERM=truecolor CLAUDE_PEER_SIZE='40 120' opane 2 "$OV2"
+  until_ok 'grep -qF "$LISTHINT" "$BATS_TEST_TMPDIR/pane-2.out"'
+  grep -qF $'\033[38;2;90;120;200mFake2 ▸\033[0m ' "$BATS_TEST_TMPDIR/pane-2.out"
+  COLORTERM=truecolor CLAUDE_PEER_SIZE='40 120' opane fake1 "$OV1" "$REPO" b
+  until_ok 'grep -qF "$LISTHINT" "$BATS_TEST_TMPDIR/pane-b.out"'
+  grep -qF $'\033[38;2;153;204;153mFake1 ▸\033[0m ' "$BATS_TEST_TMPDIR/pane-b.out"
+}
+
+@test "overlay pane: the header is the display label from git config" {
+  ov_prefs outside
+  OV1=$(overlay_repo ov1)
+  git -C "$OV1" remote add origin git@github.com:fk/one.git
+  overlay_cfg fake1.toml "$OV1"
+  git config --global claude-peer.fk/one.label "FK 1"
+  sh "$BIN" install >/dev/null
+  opane 1 "$OV1"
+  until_ok 'grep -q "^FK 1: Return" "$BATS_TEST_TMPDIR/pane-1.out"'
 }
 
 # --- overlays: status ---------------------------------------------------------------
