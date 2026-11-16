@@ -84,6 +84,9 @@ imagemagick
 ffmpeg
 lynx
 apktool
+# rustup: Ubuntu packages it from noble on and Debian from trixie on; a release
+#   without it skips it, and the Rust toolchain is then installed by hand.
+rustup
 
 # transmission-cli is deliberately macOS-only, not missing from Ubuntu: the
 #   package exists here and does carry transmission-remote (as well as

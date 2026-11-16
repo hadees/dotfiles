@@ -103,6 +103,92 @@ setup() {
   [[ "$output" == *":/usr/bin:/bin"* ]]
 }
 
+# rust_path <env assignments...>: source dot_exports under a sandbox $HOME with a
+# stub brew whose prefix is $BATS_TEST_TMPDIR/fakebrew, print the PATH split one
+# directory per line. PATH holds only the stub dir (when wanted) and the system
+# dirs, so the result is exactly what dot_exports built.
+rust_path() {
+  local with_brew="$1"; shift
+  local stubs="$BATS_TEST_TMPDIR/nostub"
+  mkdir -p "$stubs" "$BATS_TEST_TMPDIR/fakebrew/bin" "$BATS_TEST_TMPDIR/fakebrew/sbin"
+  if [ "$with_brew" = brew ]; then
+    stubs="$BATS_TEST_TMPDIR/stub"
+    mkdir -p "$stubs"
+    printf '#!/bin/sh\necho "%s"\n' "$BATS_TEST_TMPDIR/fakebrew" > "$stubs/brew"
+    chmod +x "$stubs/brew"
+  fi
+  env -u HOMEBREW_PREFIX HOME="$BATS_TEST_TMPDIR/home" PATH="$stubs:/usr/bin:/bin" "$@" \
+    "$(command -v zsh)" -c "$RUST_PATH_SNIPPET" | tr ':' '\n'
+}
+
+@test "exports add ~/.cargo/bin and the keg-only rustup bin behind Homebrew's dirs, each only when it exists" {
+  cd "$BATS_TEST_DIRNAME/.."
+  fb="$BATS_TEST_TMPDIR/fakebrew"; h="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$h/.cargo/bin" "$fb/opt/rustup/bin"
+  RUST_PATH_SNIPPET='source ./dot_exports; print -r -- $PATH'
+  run rust_path brew
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "$fb/bin" ]
+  [ "${lines[1]}" = "$fb/sbin" ]
+  [ "${lines[2]}" = "$h/.cargo/bin" ]
+  [ "${lines[3]}" = "$fb/opt/rustup/bin" ]
+  [ "${lines[4]}" = "$BATS_TEST_TMPDIR/stub" ]
+}
+
+@test "exports add nothing for a missing ~/.cargo/bin or rustup keg" {
+  cd "$BATS_TEST_DIRNAME/.."
+  fb="$BATS_TEST_TMPDIR/fakebrew"; h="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$h"
+  RUST_PATH_SNIPPET='source ./dot_exports; print -r -- $PATH'
+  run rust_path brew
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "$fb/bin" ]
+  [ "${lines[1]}" = "$fb/sbin" ]
+  [ "${lines[2]}" = "$BATS_TEST_TMPDIR/stub" ]
+  [[ "$output" != *cargo* && "$output" != *rustup* ]] || { echo "absent dirs joined PATH: $output"; false; }
+  # Only the keg present: it joins on its own.
+  mkdir -p "$fb/opt/rustup/bin"
+  run rust_path brew
+  [ "${lines[2]}" = "$fb/opt/rustup/bin" ]
+  [[ "$output" != *cargo* ]] || { echo "absent cargo dir joined PATH: $output"; false; }
+}
+
+@test "exports without Homebrew still put an existing ~/.cargo/bin first and never name a keg" {
+  cd "$BATS_TEST_DIRNAME/.."
+  h="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$h/.cargo/bin"
+  RUST_PATH_SNIPPET='source ./dot_exports; print -r -- $PATH'
+  run rust_path none
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "$h/.cargo/bin" ]
+  [ "${lines[1]}" = "$BATS_TEST_TMPDIR/nostub" ]
+  [[ "$output" != *rustup* ]] || { echo "keg joined PATH without Homebrew: $output"; false; }
+}
+
+@test "a fresh keg-only layout with no cargo dir yet makes rustup resolvable" {
+  cd "$BATS_TEST_DIRNAME/.."
+  fb="$BATS_TEST_TMPDIR/fakebrew"
+  mkdir -p "$BATS_TEST_TMPDIR/home" "$fb/opt/rustup/bin"
+  printf '#!/bin/sh\n' > "$fb/opt/rustup/bin/rustup"; chmod +x "$fb/opt/rustup/bin/rustup"
+  RUST_PATH_SNIPPET='source ./dot_exports; command -v rustup'
+  run rust_path brew
+  [ "$status" -eq 0 ]
+  [ "$output" = "$fb/opt/rustup/bin/rustup" ]
+}
+
+@test "sourcing exports twice, or from inside a function, keeps each Rust dir once and keeps the order" {
+  cd "$BATS_TEST_DIRNAME/.."
+  fb="$BATS_TEST_TMPDIR/fakebrew"; h="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$h/.cargo/bin" "$fb/opt/rustup/bin"
+  RUST_PATH_SNIPPET='source ./dot_exports; source ./dot_exports; f() { source ./dot_exports; }; f; print -r -- $PATH'
+  run rust_path brew
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "$fb/bin" ]
+  [ "${lines[2]}" = "$h/.cargo/bin" ]
+  [ "${lines[3]}" = "$fb/opt/rustup/bin" ]
+  [ "$(printf '%s\n' "${lines[@]}" | sort | uniq -d)" = "" ]
+}
+
 @test "zshrc finds zsh plugins under Homebrew or /usr/share, Homebrew first" {
   cd "$BATS_TEST_DIRNAME/.."
   # The block is extracted and its system dir swapped for a fixture, so this

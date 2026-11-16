@@ -84,6 +84,15 @@ re-trigger: `chezmoi state delete-bucket --bucket=entryState` (re-applying
 files is idempotent), or edit the list, which changes the hash. First hit on
 a WSL box whose package install had skipped for want of sudo.
 
+**`rustup` is the Rust toolchain, and the one package whose PATH needs help.**
+Homebrew's formula is keg-only (nothing is linked into `<prefix>/bin`), so
+`dot_exports` adds `~/.cargo/bin` and `$HOMEBREW_PREFIX/opt/rustup/bin` right
+behind Homebrew's `bin` and `sbin`, each only when it exists. Ubuntu carries
+`rustup` from noble and Debian from trixie; an older release skips it. Rust
+comes from the package lists, not asdf. `claude-codex` is `cargo install`ed by
+hand at a pinned version (`docs/claude-proxy.md`) and `update()` never touches
+it or Cargo; `tests/update.bats` pins that with stubs.
+
 **`gh` is the one entry whose version matters.** The `gh()` wrapper and
 `bin/git-credential-gh-user` resolve every account through it, so a box
 without `gh` cannot route at all — and Ubuntu's build trails upstream badly

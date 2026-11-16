@@ -57,3 +57,25 @@
   done
   [ -z "$missing" ] || { echo "Brewfile formulae missing from packages-apt.txt:$missing"; false; }
 }
+
+@test "rustup is declared in the Brewfile and the shared apt list, once, and not in the WSL list" {
+  cd "$BATS_TEST_DIRNAME/.."
+  [ "$(grep -cE "^brew 'rustup'( |$)" Brewfile)" -eq 1 ]
+  [ "$(grep -cx 'rustup' packages-apt.txt)" -eq 1 ]
+  ! grep -qx 'rustup' packages-apt-wsl.txt || { echo "rustup repeated in the WSL list"; false; }
+}
+
+@test "the ephemeral class ignores the package-install scripts, so rustup never installs there" {
+  command -v chezmoi >/dev/null || skip "chezmoi not installed"
+  cd "$BATS_TEST_DIRNAME/.."
+  home="$BATS_TEST_TMPDIR/home"
+  mkdir -p "$home"
+  sandbox() {
+    HOME="$home" XDG_CONFIG_HOME="$home/.config" XDG_DATA_HOME="$home/.local/share" \
+      XDG_STATE_HOME="$home/.local/state" XDG_CACHE_HOME="$home/.cache" chezmoi "$@"
+  }
+  sandbox init --source "$PWD" --promptString machineClass=ephemeral
+  run sandbox execute-template --source "$PWD" < .chezmoiignore
+  [ "$status" -eq 0 ]
+  grep -qx '\.chezmoiscripts/\*\*' <<<"$output"
+}
