@@ -8,9 +8,35 @@ the default, and the tools that check it. Pinned release: `claude-codex`
 **0.8.0**, built from source commit
 `ead919ff0d8993696a496cce19ef31becf90260b`.
 
-Only this contract and its harness exist so far. Installing the proxy, the
+Only this contract, its harness and the installation steps exist so far. The
 service definition and the `claude()` routing arrive in later changes; each
 extends this file.
+
+## Installation
+
+The proxy is a Rust program installed by hand, at the pinned version, and
+upgraded deliberately. Nothing installs or upgrades it automatically:
+`update()` runs no Cargo or proxy command, and no chezmoi script does either.
+
+The toolchain comes from the package lists: `rustup` in the `Brewfile` and in
+`packages-apt.txt`, never on the `ephemeral` class. Homebrew's formula is
+keg-only, so `dot_exports` puts `$HOMEBREW_PREFIX/opt/rustup/bin` and
+`~/.cargo/bin` on `PATH` behind Homebrew's own `bin` and `sbin`, each only
+when the directory exists. A distro without a `rustup` package skips it
+(`packages-apt.txt` says which releases carry it) and gets the toolchain by
+hand from https://rustup.rs.
+
+```sh
+rustup default stable
+cargo install claude-codex --version 0.8.0 --locked --root "$HOME/.cargo"
+"$HOME/.cargo/bin/claude-codex" --version
+```
+
+`--version 0.8.0` pins the release; `--locked` only makes the build use the
+crate's own lockfile. `--root "$HOME/.cargo"` fixes the executable at
+`~/.cargo/bin/claude-codex`, the path the service definition will name. Moving
+to a newer release means changing the pinned version here and in the parity
+contract, then repeating acceptance.
 
 ## Why transport alone is not parity
 
