@@ -59,7 +59,7 @@ so the answer is the pairing whose window this session's links open in.
 `list` is the whole table. A session then calls `select_browser` with that
 id — which does not broadcast a Connect prompt — instead of asking; the
 standing instruction for that lives in the shared Claude memory
-(`dot_claude-shared/CLAUDE.md`). Two refinements sit on top. A **per-repo
+(`dot_claude-shared/topics/claude-in-chrome.md`). Two refinements sit on top. A **per-repo
 pin**, `claude.<owner>/<repo>.browser`, outranks the profile's — a project
 whose own logins live in a Chrome profile of their own, whichever Claude
 profile runs it, and it holds even under `CLAUDE_PROFILE`: which login is at

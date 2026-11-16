@@ -591,6 +591,14 @@ Until: when the fix lands")"
   STUB_ANSWER='{"answers":{"destination":{"choice":"shared-memory","confidence":0.9},"private":{"choice":"no","confidence":0.9},"place":{"choice":"none","confidence":0.9}}}'
   hook_pre "$(inrepo "one b")"
   [[ "$(field "$output" permissionDecisionReason)" == *"in shared memory, the chezmoi source of ~/.claude-shared/CLAUDE.md."* ]]
+  # A section that lives in a topic file the index imports is named by that file.
+  mkdir -p "$HOME/.claude-shared/topics"
+  printf '# S\n\n@topics/delegation.md\n' > "$HOME/.claude-shared/CLAUDE.md"
+  printf '## Delegation\n\ntext\n' > "$HOME/.claude-shared/topics/delegation.md"
+  printf '#!/bin/sh\necho /src/dot_claude-shared/$(basename "$2")\n' > "$BIN/chezmoi"; chmod +x "$BIN/chezmoi"
+  STUB_ANSWER='{"answers":{"destination":{"choice":"shared-memory","confidence":0.9},"private":{"choice":"no","confidence":0.9},"place":{"choice":"shared:Delegation","confidence":0.9}}}'
+  hook_pre "$(inrepo "one c")"
+  [[ "$(field "$output" permissionDecisionReason)" == *'shared memory, /src/dot_claude-shared/delegation.md, section "Delegation"'* ]]
   STUB_ANSWER='{"answers":{"destination":{"choice":"rule","confidence":0.9},"private":{"choice":"no","confidence":0.9},"place":{"choice":"rule:frobnicate","confidence":0.9}}}'
   hook_pre "$(inrepo "two")"
   reason="$(field "$output" permissionDecisionReason)"
