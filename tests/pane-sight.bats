@@ -465,6 +465,15 @@ U5=55555555-5555-5555-5555-555555555555
   [ ! -s "$TABNAME_LOG" ]
 }
 
+@test "status starts no python3 from PATH: iterm2-doctor runs it on every Mac" {
+  printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/py"; chmod +x "$BATS_TEST_TMPDIR/py"
+  export PANE_SIGHT_PYTHON="$BATS_TEST_TMPDIR/py"
+  : > "$PY_LOG"
+  run pane-sight status --line
+  [ "$status" -eq 0 ]
+  [ ! -s "$PY_LOG" ]
+}
+
 @test "status --line: ready, and each not-ready reason" {
   printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/py"; chmod +x "$BATS_TEST_TMPDIR/py"
   export PANE_SIGHT_PYTHON="$BATS_TEST_TMPDIR/py"

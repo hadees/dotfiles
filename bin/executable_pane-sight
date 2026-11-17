@@ -67,18 +67,22 @@ TABNAME=$HOME/bin/tabname
 FUNCS=$HOME/.functions
 ZSH=zsh
 LISTING=
-# python3 from PATH, resolved once: behind a version manager's shim (asdf, pyenv)
-# every call is several processes more, and list makes dozens of calls.
-PY=$(python3 -c 'import sys; print(sys.executable)' 2>/dev/null </dev/null)
-[ -x "$PY" ] || PY=python3
-# The helpers this runs (denyguard, the wrapper's zsh) call python3 too: the same
-# interpreter goes first on their PATH, through a link in a directory of our own,
-# under /tmp and not $TMPDIR: a ':' in that name would put another directory on PATH.
-if [ "$PY" != python3 ] && PYDIR=$(mktemp -d /tmp/pane-sight-py.XXXXXX 2>/dev/null) && ln -s "$PY" "$PYDIR/python3"; then
-  trap 'rm -rf "$PYDIR"' EXIT
-  trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
-  PATH=$PYDIR:$PATH; export PATH
-fi
+PY=python3
+# use_py: python3 from PATH, resolved once (init calls it; status needs no Python):
+# behind a version manager's shim (asdf, pyenv) every call is several processes
+# more, and list makes dozens of calls.
+use_py() {
+  PY=$(python3 -I -c 'import sys; print(sys.executable)' 2>/dev/null </dev/null)
+  [ -x "$PY" ] || PY=python3
+  # The helpers this runs (denyguard, the wrapper's zsh) call python3 too: the same
+  # interpreter goes first on their PATH, through a link in a directory of our own,
+  # under /tmp and not $TMPDIR: a ':' in that name would put another directory on PATH.
+  if [ "$PY" != python3 ] && PYDIR=$(mktemp -d /tmp/pane-sight-py.XXXXXX 2>/dev/null) && ln -s "$PY" "$PYDIR/python3"; then
+    trap 'rm -rf "$PYDIR"' EXIT
+    trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+    PATH=$PYDIR:$PATH; export PATH
+  fi
+}
 SUPPORT="$HOME/Library/Application Support"
 AUDIT_DIR=$HOME/.local/state/pane-sight
 AUDIT=$AUDIT_DIR/audit.log
@@ -799,6 +803,7 @@ EOF_ANC
 
 # init: the caller, its repository's panes, and the registry.
 init() {
+  use_py
   CLAIM=$(norm "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
   ANC=$(ancestors)
   EXTRA_DIRS=$(printf '%s\n' "$CLAIM"; printf '%s\n' "$ANC" | awk -F'\t' 'NF && $3 != "-" { print $3 }')

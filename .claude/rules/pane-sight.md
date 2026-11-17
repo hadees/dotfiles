@@ -98,7 +98,8 @@ the script to learn where it is deployed from `HOME`, the environment it is
 trying not to trust. The tests run in a sandboxed `HOME` with every judge at its
 real place inside it, so none is needed, and a test fails if the script's text
 names one again. Only `PANE_SIGHT_PYTHON` and `PANE_SIGHT_TIMEOUT` are read;
-neither judges. `python3` comes from `PATH`, is resolved once and runs with `-I`,
+neither judges. `python3` comes from `PATH`, is resolved once (by `init`, so
+`status`, which `iterm2-doctor` runs on every Mac, starts none) and runs with `-I`,
 so no `PYTHON*` variable and no module in the caller's directory reaches the
 verdict; the link that hands the same interpreter to the helpers lives in a
 `mktemp` directory under `/tmp`, never under `$TMPDIR`. Every exported variable whose name starts with `GIT_`
