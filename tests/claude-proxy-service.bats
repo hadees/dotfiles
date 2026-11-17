@@ -66,6 +66,10 @@ print(eval(sys.argv[2]))' "$BATS_TEST_TMPDIR/out.plist" "$1"
   [ "$(plist_get 'p["Disabled"]')" = True ]
   [ "$(plist_get 'p["KeepAlive"]')" = True ]
   [ "$(plist_get 'p["ThrottleInterval"]')" = 30 ]
+  # Its own stdout/stderr go to ~/Library/Logs, a directory macOS always has
+  # (launchd creates the file, never its parent).
+  [ "$(plist_get 'p["StandardOutPath"]')" = "$TMPHOME/Library/Logs/claude-codex.log" ]
+  [ "$(plist_get 'p["StandardErrorPath"]')" = "$TMPHOME/Library/Logs/claude-codex.log" ]
   [ "$(plist_get 'p["WorkingDirectory"]')" = "$TMPHOME" ]
   # One element per argument, so the space in the home cannot split the path.
   [ "$(plist_get 'len(p["ProgramArguments"])')" = 5 ]

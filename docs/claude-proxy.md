@@ -63,10 +63,20 @@ launchctl bootout "gui/$(id -u)/local.claude-codex"    # stop it again
 ```
 
 The proxy writes its request log, as JSON lines, to
-`~/.local/state/claude-code-proxy/proxy.log`. A failure before logging begins
-(a missing binary, a bad path) shows in
+`~/.local/state/claude-code-proxy/proxy.log`; launchd sends the process's own
+stdout and stderr to `~/Library/Logs/claude-codex.log`. A failure before
+either (a missing binary, a bad path) shows in
 `launchctl print "gui/$(id -u)/local.claude-codex"` (last exit status) and
 `launchctl list local.claude-codex`. Traffic capture stays off.
+
+**Slow first bind (observed with 0.8.0).** Under launchd the proxy loads the
+macOS native root certificates before it binds, and the first activation took
+about 43 seconds between `native_certificate_load_errors` (one certificate
+failed to load) and `server listening` in `proxy.log`; a manual start had bound
+at once. Until it binds, `claude()` finds `/healthz` unreachable and launches
+direct, so each login or restart has a short direct window and nothing worse.
+Watch whether it repeats on later restarts before changing anything (such as
+pointing it at a CA bundle); if it does, note the timings here.
 
 Where there is no launchd (Linux, WSL), run the same service by hand:
 
