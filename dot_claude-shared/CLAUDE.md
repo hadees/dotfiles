@@ -29,6 +29,8 @@ in the conversation, read its file before the work it covers:
   that ended in failure, incomplete output or on a substituted model, or before
   accepting or revising a `plan-gpt` report; it adds GPT routing, handover and
   Opus advice to the delegation rules.
+- `delegation-reference.md`: before changing a Claude Code setting, agent
+  definition, model, effort or cache behaviour, or reading `/usage`.
 
 @topics/github-accounts.md
 
