@@ -593,6 +593,16 @@ audit_rows() { cat "$HOME/.local/state/pane-sight/audit.log"; }
   gh2="github""_pat_""abcdefghij0123456789abcd"
   sk="sk-""abcdefghij0123456789abcd"
   sl="xox""b-""1234567890-abcdef"
+@test "a cell the program skipped with the cursor reads as a space, not as nothing" {
+  # iTerm2 hands an untouched cell over as U+0000; Claude Code moves the cursor
+  # instead of writing spaces, so its words and indents are such cells
+  peer_alpha
+  printf '\0\0Ran\0a\0command\nit2\0is\0a\0binary\n' > "$FAKE_SCREEN"
+  run rd alpha
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf '  Ran a command\nit2 is a binary')" ]
+}
+
   aws="AKI""A""ABCDEFGHIJKLMNOP"
   jwt="eyJ""hbGciOiJI.eyJzdWIiOiIx.c2lnbmF0dXJl1"
   {

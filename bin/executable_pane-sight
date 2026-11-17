@@ -460,7 +460,7 @@ except subprocess.TimeoutExpired:
     os.killpg(p.pid, signal.SIGKILL)
     p.communicate()
     sys.exit(124)
-sys.stdout.buffer.write(out)
+sys.stdout.buffer.write(out.replace(b"\0", b" "))
 sys.exit(p.returncode)'
 
 # The environment iTerm2's API wants, for a subshell about to talk to it.
@@ -486,6 +486,9 @@ it2_call() {
   ic_dom=com.googlecode.iterm2
   [ "$t_suite" = - ] || ic_dom=$t_suite
   [ "$(defaults read "$ic_dom" EnableAPIServer 2>/dev/null </dev/null)" = 1 ] ||
+# A NUL becomes a space: iTerm2 hands a cell nothing was written to as U+0000 (Claude
+# Code moves the cursor instead of writing spaces), and a shell's $(...) drops NULs,
+# which ran words together and took indents away.
     { say "iTerm2's API is off (Settings > General > Magic > Enable Python API)"; return 125; }
   ic_lim=${PANE_SIGHT_TIMEOUT:-10}
   case $ic_lim in ''|*[!0-9]*|0) ic_lim=10 ;; esac

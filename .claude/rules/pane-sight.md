@@ -195,7 +195,12 @@ verdict was about.
 ## `read` and `shot`
 
 **`read`** takes the whole screen from `it2 session read` (never `--lines`: it
-counts trailing blank rows), strips trailing whitespace and blank lines, masks
+counts trailing blank rows). iTerm2 hands a cell nothing was written to as
+U+0000 (`ExpandScreenChar`, `sources/ScreenChar/ScreenChar.m`), and Claude Code
+moves the cursor over blanks instead of writing spaces. A shell's `$(...)` drops
+NUL bytes, which once ran words together and took indents away, so the time-limit
+wrapper (`RUN_PY`) turns every NUL from `it2` into a space. Then it strips
+trailing whitespace and blank lines, masks
 the whole screen, then keeps the last `--lines` (default 60, 1 to 500).
 Scrollback is never read: it would hand over more than the operator sees on
 that pane. **The masks are a counting net, not a refusal and not a guarantee**:
