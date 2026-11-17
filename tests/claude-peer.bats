@@ -3483,7 +3483,7 @@ NOTE_END='A report left only in this pane reaches nobody.'
   until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
   last=$(cat "$BATS_TEST_TMPDIR/last")
   [[ "$last" == "fix thing"$'\n\n'"Hand-off from Lead. "*"$NOTE_END" ]]
-  [[ "$last" == *'${TMPDIR:-/tmp}/claude-reports/'* ]]
+  [[ "$last" == *'${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/'* ]]
   cl=$(claim_of "$REPO/.claude/worktrees/alpha")
   [ "$(wc -l <"$cl" | tr -d ' ')" -eq 10 ]
   [ "$(sed -n '8,10p' "$cl" | tr '\n' ' ')" = "handoff 4242 aaaa-bbbb " ]

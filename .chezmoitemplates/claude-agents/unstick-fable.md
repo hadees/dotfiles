@@ -40,7 +40,7 @@ the same direction.
 ## Report
 
 Write the full account to
-`${TMPDIR:-/tmp}/claude-reports/<repository name>/unstick-fable-<short slug>.md`,
+`${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<repository name>/unstick-fable-<short slug>.md`,
 creating the directory if needed: **Root cause** with `file:line`; **Why the
 earlier attempts missed it** — the wrong assumption they shared; **The fix**, one
 line per file; **Verification**, commands and actual output; **Handed back**,

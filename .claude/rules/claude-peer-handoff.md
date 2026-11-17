@@ -46,7 +46,7 @@ claim gains lines 8-10, `handoff` or `-`, the pid or `-`, the session id or `-`
 (a start from the pane writes `-` three times). With `PG_HANDOFF` and a
 prompt, `pane_go` appends an empty line and `handoff_note`, a fixed paragraph
 telling the peer to write its report under
-`${TMPDIR:-/tmp}/claude-reports/<repo>/` and end with `claude-peer log done
+`${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<repo>/` and end with `claude-peer log done
 "<STATUS>: …"`; a context's body gets it after substitution. A plain start
 with a prompt or context from a Claude session warns on stderr `not a
 hand-off: nobody is told when <Label> finishes (--handoff)`; stdout and the
