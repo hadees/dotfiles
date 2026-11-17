@@ -63,9 +63,12 @@ launchctl bootout "gui/$(id -u)/local.claude-codex"    # stop it again
 ```
 
 The proxy writes its request log, as JSON lines, to
-`~/.local/state/claude-code-proxy/proxy.log`; launchd sends the process's own
-stdout and stderr to `~/Library/Logs/claude-codex.log`. A failure before
-either (a missing binary, a bad path) shows in
+`~/.local/state/claude-code-proxy/proxy.log` (rotated at 20 MB); launchd sends
+the process's own stdout and stderr to `~/Library/Logs/claude-codex.log`. That
+file holds only warn and error lines and panics, copies of what `proxy.log`
+already has, and is not rotated: a crash loop under `KeepAlive` adds to it on
+every restart, so truncate it whenever you like (`: > ~/Library/Logs/claude-codex.log`).
+A failure before either (a missing binary, a bad path) shows in
 `launchctl print "gui/$(id -u)/local.claude-codex"` (last exit status) and
 `launchctl list local.claude-codex`. Traffic capture stays off.
 
