@@ -120,3 +120,26 @@ PY
     grep -qF -- "$p" <<< "$flat" || { echo "gpt-seats: no '$p'"; false; }
   done
 }
+
+@test "the delegation rules stay always loaded; the reference half is a pointer-only topic with its trigger" {
+  local ref="$TOPICS/delegation-reference.md" exp flat p
+  [ "$(grep -c '^- `delegation-reference.md`:' "$SHARED_MEMORY")" -eq 1 ]
+  ! grep -q '^@topics/delegation-reference.md' "$SHARED_MEMORY" || { echo "delegation-reference is imported"; false; }
+  [ "$(sh "$SM" topics "$(dirname "$SHARED_MEMORY")" | awk '$1=="delegation-reference" {print $2}')" = pointer ]
+  [ "$(head -1 "$ref")" = '## Delegation and model routing: reference' ]
+  ! grep -q 'delegation-reference' "$SM" || { echo "a hook trigger names delegation-reference"; false; }
+  exp="$(shared_memory_expanded | tr '\n' ' ' | tr -s ' ')"
+  flat="$(tr '\n' ' ' < "$ref" | tr -s ' ')"
+  grep -qF 'before changing a Claude Code setting, agent definition, model, effort or cache behaviour, or reading `/usage`' <<< "$exp" || { echo "index: no delegation-reference trigger"; false; }
+  # Every rule that steers the main conversation stays in every session.
+  for p in 'is the orchestrator and, for a dependent chain, the implementer' '**Five shared definitions**' \
+    '**A big idea is chit-chat first' 'builds it:** read the plan here' '**Escalation is a rule, not a mood.**' \
+    '**Every seat reports the same way**' '**Do not change what is being researched.**'; do
+    grep -qF -- "$p" <<< "$exp" || { echo "always loaded: no '$p'"; false; }
+  done
+  for p in '**Effort is fixed in the agent file' "**Each profile's \`settings.json\` is owned" '**The wrapper exports four defaults**' \
+    '**Cache discipline.**' '**Metering on Max**' '**Lever order, Anthropic' 'Measurements behind these rules'; do
+    grep -qF -- "$p" <<< "$flat" || { echo "delegation-reference: no '$p'"; false; }
+    ! grep -qF -- "$p" <<< "$exp" || { echo "always loaded still holds '$p'"; false; }
+  done
+}

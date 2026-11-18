@@ -379,7 +379,7 @@ raw_body() {
   # imports): the always-loaded part. On-demand topics are bounded per hook
   # output by tests/claude-shared-memory.bats. Lower it, never raise it.
   n="$(shared_memory_expanded | python3 -c 'import sys; print(len(sys.stdin.read()))')"
-  [ "$n" -le 21600 ] || { echo "shared memory is $n characters, limit 21600"; false; }
+  [ "$n" -le 17200 ] || { echo "shared memory is $n characters, limit 17200"; false; }
 }
 
 @test "the shared memory carries the Lead rule, and names the line postbox prints" {
