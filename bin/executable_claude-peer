@@ -590,7 +590,7 @@ dur_of() {
 # What a hand-off adds to the peer's prompt, printed literally.
 handoff_note() {
   # shellcheck disable=SC2016
-  printf '%s\n' 'Hand-off from Lead. When you finish, or cannot go on, write your report to a file under ${TMPDIR:-/tmp}/claude-reports/<this repository'"'"'s directory name>/ and then run: claude-peer log done "<DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT>: <one line; the commit or pull request; the report'"'"'s path>". That line reaches Lead by itself. A report left only in this pane reaches nobody.'
+  printf '%s\n' 'Hand-off from Lead. When you finish, or cannot go on, write your report to a file under ${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<this repository'"'"'s directory name>/ and then run: claude-peer log done "<DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT>: <one line; the commit or pull request; the report'"'"'s path>". That line reaches Lead by itself. A report left only in this pane reaches nobody.'
 }
 
 # One line of at most 80 characters, tabs as spaces, for a claim and the pane's

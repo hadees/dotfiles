@@ -1093,7 +1093,7 @@ PLACED = ("allow-memory", "audit-memory", "kept-by-audit", "allow-keep", "allow-
 KEPT = ("allow-keep", "kept-by-audit")
 PROCEDURE = """# memoryguard audit: proposals only. Nothing below has been changed.
 1. For every row whose home is not `memory`, read the note and the proposed home, and correct the row if it is wrong. When in doubt whether a note names something private, it does.
-2. Write the corrected table to ${TMPDIR:-/tmp}/claude-reports/<repository directory name>/memory-audit-<date>.md and give the operator its path.
+2. Write the corrected table to ${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<repository directory name>/memory-audit-<date>.md and give the operator its path.
 3. Change nothing until the operator has said yes, to a row or to the whole table.
 4. For each approved move: write the note's general point in its home by a normal edit on that repository's usual branch and pull request, leaving out whatever names a person, an account, an organisation, a host, a private repository, a machine-specific path or port, or where a secret is kept. What names such things stays in memory as a shorter note (then `memoryguard audit --mark-kept <file>`) or goes to a private overlay, never to a public repository. Then delete the original note and its MEMORY.md line. For each approved delete: delete the note and its line. For each note the operator keeps: `memoryguard audit --mark-kept <file>`.
 5. Shorten MEMORY.md to one line of at most 200 characters per remaining note."""

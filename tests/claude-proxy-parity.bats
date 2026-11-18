@@ -9,6 +9,12 @@
 # against the fixture. Nothing leaves loopback, no credential exists anywhere,
 # and the package is never needed: without claude-codex (CI has none) only
 # the last test skips and the rest still run; without python3 all skip.
+#
+# `live` (real client, real accounts, real quota) and tests/helpers/
+# claude-proxy-mcp.py have fixture-level tests below: the MCP server is driven
+# over stdio, the Fable-limit upstream is driven over loopback, the route-mode
+# cases run against stub curl and claude, and the evidence-directory and
+# merge rules are called in-process. No test starts `live` itself.
 
 setup() {
   # python3 is resolved to its real interpreter before anything else: an asdf
@@ -19,6 +25,17 @@ setup() {
   export HOME="$BATS_TEST_TMPDIR/home"
   mkdir -p "$HOME"
   REPORT="$BATS_TEST_TMPDIR/report.json"
+  MCP="$BATS_TEST_DIRNAME/helpers/claude-proxy-mcp.py"
+  DOTFUNCTIONS="$BATS_TEST_DIRNAME/../dot_functions"
+
+  # Run the python statements in $2 with the helper loaded as `m`.
+  cat > "$BATS_TEST_TMPDIR/withm.py" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("parity", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+exec(sys.argv[2])
+PY
 
   # A complete, eligible acceptance report, changed by the python statement in
   # $1 (it sees `r`, the report, and `m`, the helper) and written to $REPORT.
@@ -264,4 +281,213 @@ MODES
   [[ "$output" == *'"pass": 8'* ]]
   [[ "$output" == *'"scope": "transport"'* ]]
   [[ "$output" == *'"eligible": false'* ]]
+}
+
+# ---------------------------------------------------------------------------
+# claude-proxy-mcp.py: the harmless MCP server
+# ---------------------------------------------------------------------------
+
+# Feed the lines in $1 to the server; the replies land in $output, one per line.
+mcp() {
+  run "$PY" -I "$MCP" <<< "$1"
+  [ "$status" -eq 0 ]
+}
+
+@test "mcp: initialize answers with the client's protocol version and a tools capability" {
+  mcp '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}'
+  [ "$output" = '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"parity","version":"1"}}}' ]
+  mcp '{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}'
+  [[ "$output" == *'"protocolVersion":"2025-11-25"'* ]]
+}
+
+@test "mcp: ping, tools/list and tools/call, with notifications answered by silence" {
+  mcp '{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"ping"}
+{"jsonrpc":"2.0","method":"anything/unknown"}
+
+{"jsonrpc":"2.0","id":3,"method":"tools/list"}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"parity_echo","arguments":{"text":"héllo"}}}'
+  [ "${#lines[@]}" -eq 3 ]
+  [ "${lines[0]}" = '{"jsonrpc":"2.0","id":2,"result":{}}' ]
+  [[ "${lines[1]}" == *'"name":"parity_echo"'* && "${lines[1]}" == *'"required":["text"]'* ]]
+  [ "${lines[2]}" = '{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"h\u00e9llo"}],"isError":false}}' ]
+}
+
+@test "mcp: unknown methods, unknown tools, bad arguments and bad JSON are protocol errors" {
+  mcp '{"jsonrpc":"2.0","id":1,"method":"resources/list"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"nope","arguments":{}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"parity_echo","arguments":{"text":7}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"parity_echo","arguments":{"text":"a","extra":1}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"parity_echo"}}
+{not json
+{"id":6,"method":"ping"}'
+  [ "${#lines[@]}" -eq 7 ]
+  [[ "${lines[0]}" == *'"id":1'*'"code":-32601'* ]]
+  [[ "${lines[1]}" == *'"id":2'*'"code":-32602'* ]]
+  [[ "${lines[2]}" == *'"id":3'*'"code":-32602'* ]]
+  [[ "${lines[3]}" == *'"id":4'*'"code":-32602'* ]]
+  [[ "${lines[4]}" == *'"id":5'*'"code":-32602'* ]]
+  [[ "${lines[5]}" == *'"id":null'*'"code":-32700'* ]]
+  [[ "${lines[6]}" == *'"id":6'*'"code":-32600'* ]]
+}
+
+@test "mcp: the server imports nothing that could reach a network, a file or a model" {
+  run grep -E '^\s*(import|from)\s' "$MCP"
+  [ "$output" = $'import json\nimport sys' ]
+}
+
+# ---------------------------------------------------------------------------
+# live: the pieces that run without a client, an account or a network
+# ---------------------------------------------------------------------------
+
+@test "live: the documented command line parses, and every flag it names is required" {
+  run "$PY" "$HELPER" live --help
+  [ "$status" -eq 0 ]
+  for flag in --claude-bin --proxy-bin --functions --evidence-dir; do [[ "$output" == *"$flag"* ]]; done
+  run "$PY" "$HELPER" live --claude-bin x --proxy-bin y --functions z
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'--evidence-dir'* ]]
+}
+
+@test "live: it refuses an evidence directory inside the repository or already holding files, before doing anything" {
+  mkdir -p "$BATS_TEST_TMPDIR/full" "$BATS_TEST_TMPDIR/ok"
+  : > "$BATS_TEST_TMPDIR/full/leftover"
+  : > "$BATS_TEST_TMPDIR/stub"; chmod +x "$BATS_TEST_TMPDIR/stub"
+  run "$PY" "$BATS_TEST_TMPDIR/withm.py" "$HELPER" '
+import argparse
+def probe(d, bin="'"$BATS_TEST_TMPDIR"'/stub", fn="'"$DOTFUNCTIONS"'"):
+    return m._live_problems(argparse.Namespace(claude_bin=bin, proxy_bin=bin, functions=fn, evidence_dir=d))
+print(probe("'"$BATS_TEST_TMPDIR"'/ok"))
+print(probe(m.REPO_ROOT + "/evidence"))
+print(probe("'"$BATS_TEST_TMPDIR"'/full"))
+print(probe("'"$BATS_TEST_TMPDIR"'/ok", bin="'"$BATS_TEST_TMPDIR"'/absent"))
+print(probe("'"$BATS_TEST_TMPDIR"'/ok", fn="'"$BATS_TEST_TMPDIR"'/absent"))
+'
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = '[]' ]
+  [[ "${lines[1]}" == *'inside the repository'* ]]
+  [[ "${lines[2]}" == *'must be new or empty'* ]]
+  [[ "${lines[3]}" == *'--claude-bin not found'* && "${lines[3]}" == *'--proxy-bin not found'* ]]
+  [[ "${lines[4]}" == *'--functions file not found'* ]]
+}
+
+@test "live: it refuses an evidence directory inside any git work tree, existing or not" {
+  mkdir -p "$BATS_TEST_TMPDIR/tree" "$BATS_TEST_TMPDIR/plain"
+  git init -q "$BATS_TEST_TMPDIR/tree"
+  : > "$BATS_TEST_TMPDIR/stub"; chmod +x "$BATS_TEST_TMPDIR/stub"
+  run "$PY" "$BATS_TEST_TMPDIR/withm.py" "$HELPER" '
+import argparse
+def probe(d):
+    b = "'"$BATS_TEST_TMPDIR"'/stub"
+    return m._live_problems(argparse.Namespace(claude_bin=b, proxy_bin=b, functions="'"$DOTFUNCTIONS"'", evidence_dir=d))
+print(probe("'"$BATS_TEST_TMPDIR"'/tree"))
+print(probe("'"$BATS_TEST_TMPDIR"'/tree/not/yet/there"))
+print(probe("'"$BATS_TEST_TMPDIR"'/plain/not/yet/there"))
+'
+  [ "$status" -eq 0 ]
+  [[ "${lines[0]}" == *'inside a git work tree'* ]]
+  [[ "${lines[1]}" == *'inside a git work tree'* ]]
+  [ "${lines[2]}" = '[]' ]
+}
+
+@test "live: evidence paths in the report are relative to the evidence directory" {
+  run "$PY" "$BATS_TEST_TMPDIR/withm.py" "$HELPER" '
+checks = [m._check("cli.x", "pass", "ok", ["/ev/runs/a.jsonl", "upstream-request:1", "/elsewhere/b", "/evidence/c"])]
+m._relative_evidence(checks, "/ev")
+print(checks[0]["evidence"])
+'
+  [ "$output" = "['runs/a.jsonl', 'upstream-request:1', '/elsewhere/b', '/evidence/c']" ]
+}
+
+@test "live: a refused start reports every required check blocked, never passed" {
+  run "$PY" "$BATS_TEST_TMPDIR/withm.py" "$HELPER" '
+r = m._blocked_report("because")
+print(r["counts"]["blocked"] == len(m.REQUIRED_IDS), r["counts"]["pass"], r["eligible"])
+'
+  [ "$output" = "True 0 False" ]
+}
+
+@test "live: the Fable-limit upstream forwards everything except Fable, which it limits as told" {
+  run "$PY" "$BATS_TEST_TMPDIR/withm.py" "$HELPER" '
+up = m.Upstream()
+tap = m.TapUpstream(up.url)
+port = tap.server_address[1]
+hdr = m.REQUEST_HEADERS + [("x-parity-scenario", "ok")]
+plain, fable = b"{\"model\":\"claude-haiku-4-5\"}", b"{\"model\":\"claude-fable-5-2\"}"
+status, _, body = m._post(port, m.MESSAGES_TARGET, plain, hdr)
+assert (status, body) == (200, m.OK_BODY), (status, body)
+assert up.requests[-1]["body"] == plain and up.requests[-1]["target"] == m.MESSAGES_TARGET
+assert not m._lost(m.REQUEST_HEADERS, up.requests[-1]["headers"])
+seen = len(up.requests)
+tap.mode = "quota"
+status, headers, body = m._post(port, m.MESSAGES_TARGET, fable, hdr)
+assert status == 429 and b"hit your Fable limit" in body
+assert ("anthropic-ratelimit-unified-representative-claim", "seven_day_overage_included") in headers
+assert m._post(port, m.MESSAGES_TARGET, plain, hdr)[0] == 200  # Claude traffic is preserved
+tap.mode = "throttle"
+status, headers, body = m._post(port, m.MESSAGES_TARGET, fable, hdr)
+assert status == 429 and b"Fable" not in body and ("retry-after", "2") in headers
+tap.mode = "quota-partial"
+status, _, body = m._post(port, m.MESSAGES_TARGET, fable, hdr)
+assert status == 200 and b"A partial plan" in body and b"event: error" in body and b"hit your Fable limit" in body
+assert len(up.requests) == seen + 1  # only the second plain request got through
+assert [e["served"] for e in tap.log if "fable" in e["model"]] == ["quota", "throttle", "quota-partial"]
+assert "dummy-token" not in json.dumps(tap.log)  # metadata only, never a header
+print("ok")
+'
+  [ "$status" -eq 0 ]
+  [ "$output" = "ok" ]
+}
+
+@test "live: the route-mode cases hold against the real wrapper, with stub curl and claude only" {
+  command -v zsh >/dev/null || skip "zsh not installed"
+  run "$PY" "$BATS_TEST_TMPDIR/withm.py" "$HELPER" '
+failed, cases = m.route_modes("'"$DOTFUNCTIONS"'", "'"$BATS_TEST_TMPDIR"'/rm")
+print(len(cases), failed)
+for c in cases:
+    if not c["ok"]: print(json.dumps(c))
+'
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "13 []" ]
+}
+
+@test "live: the route-mode cases fail, case by case, against a wrapper that does not route" {
+  command -v zsh >/dev/null || skip "zsh not installed"
+  printf 'claude() { echo nothing; }\nclaude_gpt_ready() { echo GPT_ROUTE_READY; }\n' > "$BATS_TEST_TMPDIR/fake-functions"
+  run "$PY" "$BATS_TEST_TMPDIR/withm.py" "$HELPER" '
+failed, cases = m.route_modes("'"$BATS_TEST_TMPDIR"'/fake-functions", "'"$BATS_TEST_TMPDIR"'/rm")
+print(len(cases), len(failed), "routed" in failed, "daemon lost mid-session" in failed)
+'
+  [ "$output" = "13 13 True True" ]
+}
+
+# `merge` supplies attended results; it never overwrites an observed one and
+# never makes a report eligible (assess does that).
+@test "merge: attended results fill blocked checks and assess then accepts the report" {
+  assess_with 'next(c for c in r["checks"] if c["id"] == "service.lifecycle").update(status="blocked", evidence=[]); r["eligible"] = False'
+  [ "$status" -eq 2 ]
+  cat > "$BATS_TEST_TMPDIR/attended.json" <<'JSON'
+[{"id": "service.lifecycle", "status": "pass", "reason": "operator verified", "evidence": ["operator-notes"]},
+ {"id": "interactive.feature.hooks", "status": "pass", "reason": "operator verified", "evidence": ["operator-notes"]}]
+JSON
+  run "$PY" "$HELPER" merge --report "$REPORT" --attended "$BATS_TEST_TMPDIR/attended.json"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"eligible": false'* ]]
+  printf '%s' "$output" > "$BATS_TEST_TMPDIR/merged.json"
+  run "$PY" "$HELPER" assess --report "$BATS_TEST_TMPDIR/merged.json"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"eligible": true'* ]]
+  [[ "$output" == *'"hooks"'* ]]
+}
+
+@test "merge: automated layers and observed results cannot be overwritten" {
+  assess_with 'pass'
+  echo '[{"id": "cli.cache-read", "status": "pass", "reason": "x", "evidence": ["e"]}]' > "$BATS_TEST_TMPDIR/attended.json"
+  run "$PY" "$HELPER" merge --report "$REPORT" --attended "$BATS_TEST_TMPDIR/attended.json"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *'only interactive.* and service.* results may be supplied'* ]]
+  echo '[{"id": "interactive.usage", "status": "fail", "reason": "x", "evidence": []}]' > "$BATS_TEST_TMPDIR/attended.json"
+  run "$PY" "$HELPER" merge --report "$REPORT" --attended "$BATS_TEST_TMPDIR/attended.json"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *'interactive.usage already has an observed result (pass)'* ]]
 }
