@@ -74,7 +74,9 @@ jobs:
         # for now: across files it failed every run since TESTS_WAIT_SCALE went
         # in (3 of 3, 5 of 5 overall), on differing timing waits (claude-peer
         # wake, remote-mcp's forwarder start), so the scale does not rescue it.
-        timeout-minutes: 30
+        # Serial macOS reached 28-30 min on main by 2026-11-17, so 30 min cut
+        # off healthy runs; 45 min still turns a hang into a red job.
+        timeout-minutes: 45
         run: |
           # bats refuses --no-parallelize-within-files below --jobs 2
           par="--jobs $(getconf _NPROCESSORS_ONLN) --no-parallelize-within-files"
