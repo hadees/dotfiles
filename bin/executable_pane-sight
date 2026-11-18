@@ -66,6 +66,23 @@ DENY=$HOME/bin/denyguard
 TABNAME=$HOME/bin/tabname
 FUNCS=$HOME/.functions
 ZSH=zsh
+LISTING=
+PY=python3
+# use_py: python3 from PATH, resolved once (init calls it; status needs no Python):
+# behind a version manager's shim (asdf, pyenv) every call is several processes
+# more, and list makes dozens of calls.
+use_py() {
+  PY=$(python3 -I -c 'import sys; print(sys.executable)' 2>/dev/null </dev/null)
+  [ -x "$PY" ] || PY=python3
+  # The helpers this runs (denyguard, the wrapper's zsh) call python3 too: the same
+  # interpreter goes first on their PATH, through a link in a directory of our own,
+  # under /tmp and not $TMPDIR: a ':' in that name would put another directory on PATH.
+  if [ "$PY" != python3 ] && PYDIR=$(mktemp -d /tmp/pane-sight-py.XXXXXX 2>/dev/null) && ln -s "$PY" "$PYDIR/python3"; then
+    trap 'rm -rf "$PYDIR"' EXIT
+    trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+    PATH=$PYDIR:$PATH; export PATH
+  fi
+}
 SUPPORT="$HOME/Library/Application Support"
 AUDIT_DIR=$HOME/.local/state/pane-sight
 AUDIT=$AUDIT_DIR/audit.log
@@ -76,7 +93,7 @@ need_macos() {
 
 # --- profiles and the registry -------------------------------------------------
 
-norm() { python3 -c 'import os,sys; print(os.path.normpath(os.path.expanduser(sys.argv[1])))' "$1"; }
+norm() { "$PY" -I -c 'import os,sys; print(os.path.normpath(os.path.expanduser(sys.argv[1])))' "$1"; }
 
 # Every Claude profile directory that exists, one per line, normalised and
 # de-duplicated: the caller's, the default one, each `claude.profile.*` value (as
@@ -100,11 +117,11 @@ profile_dirs() {
     git config --get-regexp '^claude\.profile\.' 2>/dev/null | cut -d' ' -f2-
     git config --get-regexp '^claude\..+\.profile$' 2>/dev/null | cut -d' ' -f2- | grep -E '^(/|~/)'
     printf '%s\n' "${EXTRA_DIRS-}"
-  } | python3 -c "$PD_PY"
+  } | "$PY" -I -c "$PD_PY"
 }
 
 profile_label() {
-  b=$(basename "$1")
+  b=${1##*/}
   case $b in
     .claude) printf 'default\n' ;;
     .claude-*) printf '%s\n' "${b#.claude-}" ;;
@@ -114,7 +131,7 @@ profile_label() {
 
 # Live sessions of every profile: pid, profile dir, cwd, name ("-" for empty).
 registry() {
-  PANE_SIGHT_DIRS=$(profile_dirs) python3 - <<'REG'
+  PANE_SIGHT_DIRS=$(profile_dirs) "$PY" -I - <<'REG'
 import glob, json, os, re
 def field(v):
     s = re.sub(r"[\t\r\n]", " ", str(v)).strip()
@@ -152,10 +169,11 @@ tty_of() {
   printf '/dev/%s\n' "${t#/dev/}"
 }
 
-# The last word of a process's environment that starts with <sed prefix>,
+# The last word of a process's environment that starts with <ERE prefix>,
 # the prefix removed. Only a claude process shows its environment to ps.
 env_word() {
-  ps -Eww -o command= -p "$1" 2>/dev/null | tr ' ' '\n' | sed -n "s/^$2//p" | tail -n 1
+  ps -Eww -o command= -p "$1" 2>/dev/null </dev/null |
+    awk -v p="^$2" '{ for (i = 1; i <= NF; i++) if (match($i, p)) { v = substr($i, RLENGTH + 1); f = 1 } } END { if (f) print v }'
 }
 
 same_dir() { a=$(cd "$1" 2>/dev/null && pwd -P) && b=$(cd "$2" 2>/dev/null && pwd -P) && [ "$a" = "$b" ]; }
@@ -170,6 +188,9 @@ cap() { printf '%s' "$1" | awk '{ print toupper(substr($0, 1, 1)) substr($0, 2) 
 # The ucomm column can hold spaces. ps hides some environments, so scope does not
 # rest on this alone. A CLAUDE_CONFIG_DIR whose value holds a space is read cut at
 # the space; cut, it matches nothing known and refuses.
+# With the arguments `scope <caller> <target pid>` and the registry in SC_REG it
+# prints scope's evidence instead (see scope), so one process does what was once a
+# python and nine awk and cut calls per pane.
 TTYP_PY='import os, re, sys
 names, envs = {}, {}
 for l in os.environ.get("PS_NAMES", "").split("\n"):
@@ -185,14 +206,41 @@ for l in os.environ.get("PS_ENVS", "").split("\n"):
     if v is not None and not v:
         v = os.path.join(os.environ["HOME"], ".claude")
     envs[m.group(1)] = os.path.normpath(os.path.expanduser(v)) if v is not None else "-"
-for pid in list(names) + [p for p in envs if p not in names]:
-    print("%s\t%s\t%s" % (pid, names.get(pid) or "-", envs.get(pid, "-")))'
-# Fails, printing nothing, when either ps call fails or prints nothing or python fails.
-tty_procs() { # <tty>
+rows = [(pid, names.get(pid) or "-", envs.get(pid, "-")) for pid in list(names) + [p for p in envs if p not in names]]
+if sys.argv[1:2] != ["scope"]:
+    for r in rows:
+        print("%s\t%s\t%s" % r)
+    sys.exit(0)
+caller, target = sys.argv[2], sys.argv[3]
+pids = [r[0] for r in rows]
+if not rows or (target != "-" and target not in pids):
+    print("no-processes")
+    sys.exit(0)
+reg = [l.split("\t") for l in os.environ.get("SC_REG", "").split("\n") if l]
+on = [r for r in reg if len(r) >= 3 and r[0] in pids]
+other = [r[1] for r in on if r[1] != caller] or [r[2] for r in rows if r[2] != "-" and r[2] != caller]
+if other:
+    print("other-profile\t" + other[0])
+    sys.exit(0)
+mine = [r for r in on if r[1] == caller]
+mine_pids = [r[0] for r in mine]
+unknown = [r[0] for r in rows if r[1] == "claude" and r[0] not in mine_pids]
+if unknown:
+    print("unknown-session\t" + unknown[0])
+elif mine:
+    print("mine")
+    for r in mine:
+        print(r[2])
+else:
+    print("none")'
+# tty_procs <tty> <target pid>: scope's evidence for that terminal (TTYP_PY's scope
+# mode). Fails, printing nothing, when either ps call fails or prints nothing or
+# python fails.
+tty_procs() {
   tp_names=$(ps -o pid=,ucomm= -t "${1#/dev/}" 2>/dev/null </dev/null) || return 1
   tp_envs=$(ps -Eww -o pid=,command= -t "${1#/dev/}" 2>/dev/null </dev/null) || return 1
   [ -n "$tp_names" ] && [ -n "$tp_envs" ] || return 1
-  PS_NAMES=$tp_names PS_ENVS=$tp_envs python3 -c "$TTYP_PY" || return 1
+  PS_NAMES=$tp_names PS_ENVS=$tp_envs SC_REG=$REG "$PY" -I -c "$TTYP_PY" scope "$CALLER" "$2" || return 1
 }
 
 # The command's own ancestors, nearest first, as pid TAB ucomm TAB the directory its
@@ -206,7 +254,7 @@ ancestors() {
     an_n=$((an_n + 1))
     an_uc=$(ps -o ucomm= -p "$an_pid" 2>/dev/null </dev/null)
     an_cm=$(ps -Eww -o command= -p "$an_pid" 2>/dev/null </dev/null)
-    PS_NAMES="$an_pid $an_uc" PS_ENVS="$an_pid $an_cm" python3 -c "$TTYP_PY"
+    PS_NAMES="$an_pid $an_uc" PS_ENVS="$an_pid $an_cm" "$PY" -I -c "$TTYP_PY"
   done
 }
 
@@ -239,9 +287,10 @@ session_target() { # <arg> <pid> <pdir> <cwd> <name>
   s_sid=$(env_word "$2" 'ITERM_SESSION_ID=[^:]*:')
   [ -n "$s_sid" ] || fail4 "pid $2 is not in an iTerm2 session pane-sight can address"
   s_suite=$(env_word "$2" 'IT2_SUITE=')
-  s_lab=$(dir_label "$4")
+  # list prints no label, and tabname is a process of its own per row
+  s_lab=; [ -n "$LISTING" ] || s_lab=$(dir_label "$4")
   [ -n "$s_lab" ] || { [ "$5" != - ] && s_lab=$5; }
-  [ -n "$s_lab" ] || s_lab=$(basename "$4")
+  [ -n "$s_lab" ] || s_lab=${4##*/}
   t_kind=session t_label=$s_lab t_sid=$s_sid t_suite=${s_suite:--} t_tty=$s_tty
   t_dir=$4 t_pid=$2
   [ "$t_dir" != - ] || t_dir=
@@ -254,7 +303,7 @@ $2
 EOF_ROW
   p_tty=$(tty_of "$p_pid") || fail4 "$1 (pid $p_pid) has no terminal"
   if [ "$p_state" = running ]; then
-    p_lab=$("$TABNAME" --role "$p_wt" 2>/dev/null </dev/null | sed -n 1p | cut -f2)
+    p_lab=; [ -n "$LISTING" ] || p_lab=$("$TABNAME" --role "$p_wt" 2>/dev/null </dev/null | sed -n 1p | cut -f2)
     [ -n "$p_lab" ] || p_lab=$(cap "$p_slot")
     p_dir=$p_wt
   else
@@ -371,34 +420,25 @@ refuse() { s_code=$1 s_text="refused: $t_label: $2"; return 3; }
 # claude process's own); a process named exactly claude that M does not hold.
 scope() {
   s_code= s_text= s_prof=-
-  PROCS=$(tty_procs "$t_tty") || PROCS=
-  # who is on the terminal must be knowable: the target's own pid has to be in the list
-  if [ -z "$PROCS" ] || { [ "$t_pid" != - ] && ! printf '%s\n' "$PROCS" | awk -F'\t' -v p="$t_pid" '$1 == p { f = 1 } END { exit !f }'; }; then
-    refuse no-processes "cannot tell who is on its terminal"
-    return 3
-  fi
-  p_pids=$(printf '%s\n' "$PROCS" | awk -F'\t' 'NF { printf " %s", $1 } END { print " " }')
-  ON=$(printf '%s\n' "$REG" | awk -F'\t' -v p="$p_pids" 'NF && index(p, " " $1 " ")')
-  M=$(printf '%s\n' "$ON" | awk -F'\t' -v c="$CALLER" 'NF && $2 == c')
-  other=$(printf '%s\n' "$ON" | awk -F'\t' -v c="$CALLER" 'NF && $2 != c { print $2; exit }')
-  [ -n "$other" ] || other=$(printf '%s\n' "$PROCS" | awk -F'\t' -v c="$CALLER" 'NF && $3 != "-" && $3 != c { print $3; exit }')
-  if [ -n "$other" ]; then
-    s_prof=$(profile_label "$other")
-    refuse other-profile "its pane runs a Claude session of the $s_prof profile; this session is $OWN"
-    return 3
-  fi
-  m_pids=$(printf '%s\n' "$M" | awk -F'\t' 'NF { printf " %s", $1 } END { print " " }')
-  unknown=$(printf '%s\n' "$PROCS" | awk -F'\t' -v m="$m_pids" 'NF && $2 == "claude" && !index(m, " " $1 " ") { print $1; exit }')
-  if [ -n "$unknown" ]; then
-    refuse unknown-session "its pane runs a Claude process (pid $unknown) that is not a session of this profile ($OWN)"
-    return 3
-  fi
-  if [ -n "$M" ]; then
-    s_prof=$OWN
-    D=$(printf '%s\n' "$M" | cut -f3)
-  else
-    D=$t_dir
-  fi
+  # the evidence: who is on the terminal must be knowable (the target's own pid has
+  # to be in the list), then another profile's Claude, then an unknown claude, then
+  # the cwds of this profile's own sessions there (mine) or none
+  sc=$(tty_procs "$t_tty" "$t_pid") || sc=
+  IFS=$TAB read -r sc_kind sc_val <<EOF_SC
+$sc
+EOF_SC
+  case $sc_kind in
+    other-profile)
+      s_prof=$(profile_label "$sc_val")
+      refuse other-profile "its pane runs a Claude session of the $s_prof profile; this session is $OWN"
+      return 3 ;;
+    unknown-session)
+      refuse unknown-session "its pane runs a Claude process (pid $sc_val) that is not a session of this profile ($OWN)"
+      return 3 ;;
+    mine) s_prof=$OWN; D=${sc#mine?} ;;
+    none) D=$t_dir ;;
+    *) refuse no-processes "cannot tell who is on its terminal"; return 3 ;;
+  esac
   [ -n "$D" ] || { refuse no-directory "cannot tell which directory its pane is in"; return 3; }
   while IFS= read -r d; do
     case $d in /*) ;; *) refuse no-directory "cannot tell which directory its pane is in"; return 3 ;; esac
@@ -411,7 +451,7 @@ scope() {
   done <<EOF_D
 $D
 EOF_D
-  if [ -z "$M" ]; then
+  if [ "$sc_kind" = none ]; then
     ans=$(route_of "$t_dir") || ans=
     case $ans in
       same) ;;
@@ -450,6 +490,9 @@ find_it2() {
 }
 
 # it2 under a time limit, in a process group of its own so the limit can kill all of it.
+# A NUL becomes a space: iTerm2 hands a cell nothing was written to as U+0000 (Claude
+# Code moves the cursor instead of writing spaces), and a shell's $(...) drops NULs,
+# which ran words together and took indents away.
 RUN_PY='import os, signal, subprocess, sys
 it2, limit, args = sys.argv[1], int(sys.argv[2]), sys.argv[3:]
 p = subprocess.Popen([it2] + args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -460,7 +503,7 @@ except subprocess.TimeoutExpired:
     os.killpg(p.pid, signal.SIGKILL)
     p.communicate()
     sys.exit(124)
-sys.stdout.buffer.write(out)
+sys.stdout.buffer.write(out.replace(b"\0", b" "))
 sys.exit(p.returncode)'
 
 # The environment iTerm2's API wants, for a subshell about to talk to it.
@@ -491,7 +534,7 @@ it2_call() {
   case $ic_lim in ''|*[!0-9]*|0) ic_lim=10 ;; esac
   (
     api_env
-    exec python3 -c "$RUN_PY" "$ic_it2" "$ic_lim" "$@"
+    exec "$PY" -I -c "$RUN_PY" "$ic_it2" "$ic_lim" "$@"
   )
   ic_rc=$?
   [ "$ic_rc" -ne 124 ] || say "iTerm2 did not answer within ${ic_lim}s (an API permission prompt may be waiting in iTerm2)"
@@ -518,7 +561,7 @@ if s.startswith(chr(34)):
     if not isinstance(s, str):
         s = ""
 print(s)'
-var_value() { printf '%s' "$1" | python3 -c "$VAR_PY"; }
+var_value() { printf '%s' "$1" | "$PY" -I -c "$VAR_PY"; }
 
 # The scope was judged on the terminal and content is fetched by id: the two
 # must be the same pane.
@@ -579,7 +622,7 @@ sys.stdout.buffer.write(("%d\t%d\t%d\n" % (total, len(kept), count) + "".join(l 
 
 # note_due <verb>: 0 unless a row with noted=1 for this caller, label and verb is under 600 s old.
 note_due() {
-  nd_cut=$(python3 -c 'import time; print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 600)))') || return 0
+  nd_cut=$("$PY" -I -c 'import time; print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 600)))') || return 0
   nd_lab=$(clean_label)
   ! awk -F'\t' -v v="$1" -v l="$nd_lab" -v c="${CLAUDE_CODE_SESSION_ID:--}" -v cut="$nd_cut" \
     '$2 == v && $5 == l && $6 == c && $7 ~ /noted=1/ && $1 >= cut { f = 1 } END { exit !f }' "$AUDIT" 2>/dev/null
@@ -611,7 +654,7 @@ cmd_read() {
   r_txt=$(it2_call session read --session "$t_sid"); r_rc=$?
   it2_dead "$r_rc"
   [ "$r_rc" -eq 0 ] || { audit read failed:read ""; say "it2 could not read $t_label's pane"; exit 1; }
-  r_res=$(printf '%s\n' "$r_txt" | python3 -c "$MASK_PY" "$r_n")
+  r_res=$(printf '%s\n' "$r_txt" | "$PY" -I -c "$MASK_PY" "$r_n")
   r_stats=$(printf '%s\n' "$r_res" | sed -n 1p)
   [ -n "$r_stats" ] || { audit read failed:mask ""; say "could not mask the text; nothing was shown"; exit 1; }
   r_total=$(printf '%s' "$r_stats" | cut -f1)
@@ -760,6 +803,7 @@ EOF_ANC
 
 # init: the caller, its repository's panes, and the registry.
 init() {
+  use_py
   CLAIM=$(norm "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
   ANC=$(ancestors)
   EXTRA_DIRS=$(printf '%s\n' "$CLAIM"; printf '%s\n' "$ANC" | awk -F'\t' 'NF && $3 != "-" { print $3 }')
@@ -801,6 +845,7 @@ shown() {
 
 cmd_list() {
   [ $# -eq 0 ] || usage
+  LISTING=1
   init
   printf '%s\n' "$PANES" | while IFS=$TAB read -r sl st p l w _; do
     [ -n "$sl" ] || continue

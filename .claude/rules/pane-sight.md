@@ -98,7 +98,11 @@ the script to learn where it is deployed from `HOME`, the environment it is
 trying not to trust. The tests run in a sandboxed `HOME` with every judge at its
 real place inside it, so none is needed, and a test fails if the script's text
 names one again. Only `PANE_SIGHT_PYTHON` and `PANE_SIGHT_TIMEOUT` are read;
-neither judges. Every exported variable whose name starts with `GIT_`
+neither judges. `python3` comes from `PATH`, is resolved once (by `init`, so
+`status`, which `iterm2-doctor` runs on every Mac, starts none) and runs with `-I`,
+so no `PYTHON*` variable and no module in the caller's directory reaches the
+verdict; the link that hands the same interpreter to the helpers lives in a
+`mktemp` directory under `/tmp`, never under `$TMPDIR`. Every exported variable whose name starts with `GIT_`
 (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_COUNT` and the
 rest) is unset at the top of the script, before `git` is first asked, so the
 repository and the pins the route question reads are the machine's own. The
@@ -192,10 +196,26 @@ binding check compares the terminal iTerm2 reports for the session id with the
 one scope judged (`failed:binding`, exit 1), so the content is of the pane the
 verdict was about.
 
+**`list` judges every pane, so its cost is per pane.** On a loaded machine every
+process start costs tenths of a second (2026-11-16, load average 260: an `awk`
+0.3 s, `tabname` 1.5 s; `list` of 27 panes took over two minutes and outran the
+Bash tool's limit). So `python3` is resolved once from `PATH` to the interpreter
+it runs (`PY`; a version manager's shim is a few processes per call), scope's
+evidence (the target on its terminal, another profile, an unknown `claude`, this
+profile's own cwds) comes from the one Python call that already parses the two
+`ps` listings (`TTYP_PY`'s `scope` mode), and `list` runs no `tabname`, since it
+prints no label. One `ps` of every process is not the way: `ps -A -Eww` read for
+14 s under that load.
+
 ## `read` and `shot`
 
 **`read`** takes the whole screen from `it2 session read` (never `--lines`: it
-counts trailing blank rows), strips trailing whitespace and blank lines, masks
+counts trailing blank rows). iTerm2 hands a cell nothing was written to as
+U+0000 (`ExpandScreenChar`, `sources/ScreenChar/ScreenChar.m`), and Claude Code
+moves the cursor over blanks instead of writing spaces. A shell's `$(...)` drops
+NUL bytes, which once ran words together and took indents away, so the time-limit
+wrapper (`RUN_PY`) turns every NUL from `it2` into a space. Then it strips
+trailing whitespace and blank lines, masks
 the whole screen, then keeps the last `--lines` (default 60, 1 to 500).
 Scrollback is never read: it would hand over more than the operator sees on
 that pane. **The masks are a counting net, not a refusal and not a guarantee**:
