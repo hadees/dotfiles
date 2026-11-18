@@ -69,7 +69,7 @@
   design problem. Handing a half-done fix back to a cheaper seat costs a fresh
   context that shares no cache — the split measured as a loss.
 - **Every seat reports the same way**: the full account goes to a file under
-  `${TMPDIR:-/tmp}/claude-reports/<repo>/`, and the reply to the orchestrator
+  `${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<repo>/`, and the reply to the orchestrator
   is under 15 lines, first line one of `DONE` / `DONE_WITH_CONCERNS` /
   `BLOCKED` / `NEEDS_CONTEXT`. Read the file only when the status warrants it;
   never paste a report into the conversation — what lands here is re-sent on
