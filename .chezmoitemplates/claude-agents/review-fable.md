@@ -42,7 +42,7 @@ repository.
 ## Report
 
 Write the full review to
-`${TMPDIR:-/tmp}/claude-reports/<repository name>/review-fable-<short slug>.md`,
+`${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<repository name>/review-fable-<short slug>.md`,
 creating the directory if needed: findings most severe first, each as `file:line`,
 one-sentence defect, failure scenario, reachability, CONFIRMED or PLAUSIBLE; then
 **Questions** for the author's intent; then **Not reviewed**. Reply in under 15

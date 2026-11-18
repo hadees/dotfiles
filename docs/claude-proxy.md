@@ -9,7 +9,7 @@ the default, and the tools that check it. Pinned release: `claude-codex`
 `ead919ff0d8993696a496cce19ef31becf90260b`.
 
 This file holds the contract, its harness, the installation steps, the
-service definition and how `claude()` routes (below).
+service definition, how `claude()` routes and the acceptance runbook (below).
 
 ## Installation
 
@@ -284,9 +284,13 @@ effort, usage reporting or any other direct workflow still fails acceptance.
 ```sh
 python3 tests/helpers/claude-proxy-parity.py transport --proxy-bin PATH
 python3 tests/helpers/claude-proxy-parity.py assess --report PATH
+python3 tests/helpers/claude-proxy-parity.py live --claude-bin PATH --proxy-bin PATH \
+    --functions PATH --evidence-dir PATH
+python3 tests/helpers/claude-proxy-parity.py merge --report PATH --attended PATH
 ```
 
-Both print one JSON object. Exit `0` passed, `1` an observed failure, `2`
+Each prints one JSON object. `live` and `merge` are described under
+[Running acceptance](#running-acceptance). Exit `0` passed, `1` an observed failure, `2`
 missing prerequisites, malformed or incomplete evidence, or a required check
 that is blocked or skipped.
 
@@ -325,7 +329,9 @@ eligible: boolean
   first segment of `id`.
 - `status` is `pass`, `fail`, `blocked`, `skipped` or `accepted_difference`.
 - `evidence` lists paths or identifiers of artifacts kept outside the
-  repository. A `pass` needs at least one entry. Credentials, transcripts,
+  repository. A path is relative to the directory holding the report
+  (`live` writes them that way, so the report names no home directory);
+  `merge` and `assess` never open evidence files. A `pass` needs at least one entry. Credentials, transcripts,
   headers and captures never enter this repository.
 - Acceptance reports need non-null `claude_version` and `codex_version`.
 - `eligible` is true only when every required check passes, except that
@@ -358,7 +364,8 @@ is excluded from header equality. Only valid Claude histories are tested:
 the proxy repairs unsigned thinking left by an earlier Codex turn, which is
 documented behaviour, not a regression.
 
-Acceptance, filled in by later work against real sessions:
+Acceptance, filled in by `live` and the operator against real sessions
+(see [Running acceptance](#running-acceptance) for which is which):
 
 ```text
 cli.cache-read            cli.cache-ttl             cli.token-count
@@ -373,14 +380,171 @@ service.lifecycle
 An acceptance report holds all eight transport checks as well, plus one
 `interactive.feature.<slug>` per inventory entry.
 
+## Running acceptance
+
+Acceptance is the one thing in this repository that spends real quota and
+touches real logins, so nothing runs it but an operator's explicit command:
+not CI, not `bats`, not `update()`, not a chezmoi script. Its evidence stays
+outside the repository; only the runbook, the fixtures and an identity-free
+outcome summary (tested versions, source commit, final counts) are committed.
+
+**Order.**
+
+1. Run the repository gates and the transport layer (below). Render the
+   candidate service definition without loading it:
+   `chezmoi cat "$HOME/Library/LaunchAgents/local.claude-codex.plist" | plutil -lint -`.
+2. The operator agrees to the live work. Nothing below starts without that.
+3. Find what holds port 18765: `lsof -nP -iTCP:18765 -sTCP:LISTEN`. Do not kill
+   an arbitrary process. If it is the LaunchAgent, the operator stops it
+   (`launchctl bootout "gui/$(id -u)/local.claude-codex"`, then confirms it is
+   gone); an active session routed through it is the operator's to end first.
+4. Run `live` (below). It exits `2` for a report with unfinished checks, the
+   expected result of a first run, and `1` if any check failed.
+5. Do the attended checks, write them down, `merge` them in, `assess` the
+   result. Repeat from step 4 for anything `live` blocked or failed for a
+   reason that has been fixed.
+6. Only with every non-service check passing does the operator activate the
+   service (below); `service.lifecycle` stays blocked, and the report
+   ineligible, until that is verified. If activation exposes a failure the
+   operator disables the service and uses direct launches until a revision.
+
+**`live`.**
+
+```sh
+python3 tests/helpers/claude-proxy-parity.py live \
+  --claude-bin "$(whence -p claude)" \
+  --proxy-bin "$HOME/.cargo/bin/claude-codex" \
+  --functions "$(chezmoi source-path)/dot_functions" \
+  --evidence-dir "$HOME/.local/state/claude-proxy-acceptance/$(date +%Y%m%d-%H%M)"
+```
+
+Run it from a directory in the repository whose profile is being certified:
+`claude()` picks the profile from the working directory, and the real
+credential mechanism of that profile is used, never copied. It refuses to
+start, and says why, when the evidence directory is inside this repository or
+any other git work tree, or already has files, when either binary or the functions file is missing, or
+when `zsh` is. `--codex-bin` (default: `codex` on `PATH`) is read only for its
+version. A real proxy gets 90 seconds to become healthy (it loads the system
+certificates first); `CCP_PARITY_START_TIMEOUT=<seconds>` changes that. Every launch goes through the wrapper in `--functions`, so the
+wrapper under test is the one that decides, and before the first routed run
+`live` checks that it decides `routed healthy` and that `CLAUDE_CODEX_PROXY=0`
+decides `direct opt-out`.
+
+What it does, and what it leaves for people:
+
+| Stage | Produces | Notes |
+| --- | --- | --- |
+| Transport | the eight `transport.*` checks | The same fixtures as `transport`, against `--proxy-bin`. |
+| Route modes | `cli.route-modes` | Stub `curl` and `claude`, an empty home: routed, opt-out, missing proxy, down proxy, external URL, the preflight in a live session and after the daemon is lost, a direct session staying direct after recovery, the `claude-doctor` `proxy:` line and the three stderr lines above. Touches no port. |
+| Disposable proxy, real upstream | `cli.cache-read`, `cli.cache-ttl`, `cli.token-count`, `cli.tool-search`, `cli.effort`, `cli.provider-routing`, `cli.gpt-tool-roundtrip` and the feature checks `auth-profile`, `resume`, `tools`, `mcp`, `hooks-permissions` | Print mode, `--output-format stream-json`, direct against routed, with `CCP_TRAFFIC_LOG=1` and the proxy's state in the evidence directory (never the deployed service's). The Codex login is used by reference (`CCP_CODEX_AUTH_FILE`), not copied. |
+| Disposable proxy, rehearsal upstream | `cli.fable-handover` | A loopback upstream forwards every Claude request to Anthropic untouched and limits only requests for a Fable model, once as a quota rejection before any output, once as a quota rejection after partial output, once as a transient throttle. It keeps request metadata only, never a header. |
+| Attended | `interactive.*`, `service.lifecycle`, `interactive.feature.web` | Always `blocked` in the `live` report, each with what to do. |
+
+The MCP checks use `tests/helpers/claude-proxy-mcp.py`, a stdio server that
+speaks newline-delimited JSON-RPC (`initialize`, `ping`, `tools/list`,
+`tools/call`) and offers one tool, `parity_echo`, returning its `text`
+argument. It imports only `json` and `sys`, so it has no network, file or
+model access; `live` points `--mcp-config` at it with `--strict-mcp-config`.
+
+The proxies bind port 18765 because the wrapper, `claude_proxy_decide` and
+`claude_gpt_ready` all name exactly that endpoint. If something already
+listens there, `live` neither kills it nor works around it: every check that
+needs a routed run is `blocked` with that reason, and the transport and
+route-mode checks still run. It never enables launchd, drives iTerm2, edits a
+profile's settings, approves spend or counts an unattended check as passed.
+A crash inside a stage blocks the checks that stage owns instead of failing
+them: a harness error is not an observed defect.
+
+Evidence is under the evidence directory: `report.json` (the schema-v2
+acceptance report, also printed), `transport.json`, `route-modes.json`,
+`runs/` (each `claude` invocation's stream and stderr), `proxy-a/` and
+`proxy-b/` (each proxy's log and traffic capture), `handover-tap.json` and
+`fixtures/`. Captures hold request content, including this clone's own memory
+files, and the streams hold prompts and answers: they never leave the machine
+and never enter a repository.
+
+What each automated check counts as a pass, and what makes it `blocked`:
+
+| Check | Pass | Blocked rather than inferred |
+| --- | --- | --- |
+| `cli.cache-read` | Per route, one run creates cache and an identical-prefix second run reads it. | A run fails or reports no usage. |
+| `cli.cache-ttl` | Usage shows one-hour creation on both routes; the routed request capture has `"ttl": "1h"` and the `extended-cache-ttl` beta. | No per-TTL usage breakdown, no capture, or a capture that records no beta header. |
+| `cli.token-count` | A routed `count_tokens` request completed `200` during the routed runs. | None was observed; the attended `/context` check corroborates or supplies it. |
+| `cli.tool-search` | Both routes call the deferred fixture tool after a `ToolSearch` call. | The direct baseline did not search; a routed failure with a good baseline is `fail`. |
+| `cli.effort` | The selected Claude effort is in the routed Anthropic request, and every captured `plan-gpt` Codex turn, tool-return turn included, carries `high`. | The capture records no effort field, or fewer than two Codex turns. |
+| `cli.provider-routing` | Anthropic requests for the main model and Codex requests for `gpt-6-astra` in one correlated run. | The orchestrator never dispatched `plan-gpt` (that is a `fail`). |
+| `cli.gpt-tool-roundtrip` | `plan-gpt` read a synthetic file with its own tool and answered with its contents in a later Codex turn. | No Codex login. |
+| `cli.fable-handover` | Quota rejection before output, and after partial output: exactly one `plan-gpt` dispatch, brief unchanged, no model override, `GPT_HANDOVER ... reason=fable-limit`. Transient throttle: no dispatch, `reason=not-fable-limit`. No Fable request reached Anthropic. | `plan-fable` never ran, or the counts are right but the decision line is missing. |
+
+The Fable rehearsal is the check most likely to need a report revision: if the
+client's own fallback or consent path stops the failure reaching the
+orchestrator, the run shows what it received. Return that evidence to the
+planner; do not change the fixture until it agrees. Whether the orchestrator
+follows the topic at all is part of what is being measured.
+
+**Attended checks.** Do them in iTerm2 sessions launched on purpose, never in
+a working session: `/usage` and `/context` routed (and `/usage` direct),
+`/fast` direct and routed under the same account without enabling paid use,
+Remote Control direct, refused routed and restored by
+`CLAUDE_CODEX_PROXY=0 claude`, WebSearch and WebFetch direct and routed, the
+operator's active integrations, and a review of the direct baseline. Write
+the results as a JSON list and fold them in:
+
+```json
+[
+  {"id": "interactive.usage", "status": "pass", "reason": "usage panel shows subscription limits routed and direct", "evidence": ["notes/usage.txt"]},
+  {"id": "interactive.remote-control", "status": "accepted_difference", "reason": "routed refuses",
+   "evidence": ["direct:notes/rc-direct.txt", "routed-refused:notes/rc-routed.txt", "opt-out:notes/rc-optout.txt"]},
+  {"id": "interactive.feature.web", "status": "pass", "reason": "both routes", "evidence": ["notes/web.txt"]}
+]
+```
+
+```sh
+python3 tests/helpers/claude-proxy-parity.py merge --report "$EVIDENCE/report.json" \
+    --attended "$EVIDENCE/attended.json" > "$EVIDENCE/merged.json"
+python3 tests/helpers/claude-proxy-parity.py assess --report "$EVIDENCE/merged.json"
+```
+
+`merge` fills only `interactive.*` and `service.*` checks that are still
+`blocked`, adds `interactive.feature.<slug>` entries for further integrations,
+recomputes the counts and always writes `eligible=false`; it never overwrites
+an observed result, so a result `live` got wrong is fixed by running it again.
+`assess` is the only thing that grants eligibility.
+
+**Activation** (the operator's, once every check but `service.lifecycle`
+passes):
+
+```sh
+plutil -lint "$HOME/Library/LaunchAgents/local.claude-codex.plist"
+launchctl enable "gui/$(id -u)/local.claude-codex"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/local.claude-codex.plist"
+launchctl print "gui/$(id -u)/local.claude-codex"
+```
+
+A changed plist that is already loaded needs `bootout`, confirmation that it
+is gone, then `bootstrap`; `kickstart -k` restarts the process but does not
+re-read the definition. Then verify that the listener is exactly loopback
+(`lsof -nP -iTCP:18765 -sTCP:LISTEN` shows `127.0.0.1`), supervised recovery
+with a disposable routed session (never a working one), the down-proxy and
+direct launches, and the doctor lines. Record those as `service.lifecycle` in
+the attended file.
+
+Repeat acceptance after any Claude Code or proxy update; repeat the GPT
+checks after a Codex authentication change. A report is valid only for the
+versions it names. Never run it, or upgrade the pinned proxy, from `update()`.
+
 ## Running the tests
 
 `tests/claude-proxy-parity.bats` tests the assessor with synthetic reports
 and the transport checks against an in-process reference proxy that is
 faithful, or tampers in one named way (re-serialised body, dropped query,
-dropped header, buffered stream, rewritten 429). It runs the real proxy
-against the fixture only when `claude-codex` is installed, and skips cleanly
-without it or without `python3`. Run it under bash 4 or newer, as the rest of
+dropped header, buffered stream, rewritten 429). It also drives
+`tests/helpers/claude-proxy-mcp.py` over stdio, the Fable-limit upstream over
+loopback, the route-mode cases against stub `curl` and `claude` (and against
+a wrapper that does not route, which must fail them all), and the
+evidence-directory and `merge` rules in-process. None of that starts `live`.
+It runs the real proxy against the fixture only when `claude-codex` is
+installed, and skips cleanly without it or without `python3`. Run it under bash 4 or newer, as the rest of
 the suite:
 
 ```sh

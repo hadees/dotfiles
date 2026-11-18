@@ -51,7 +51,7 @@ repository.
 ## Report
 
 Write the plan to
-`${TMPDIR:-/tmp}/claude-reports/<repository name>/{{ .seatName }}-<short slug>.md`,
+`${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<repository name>/{{ .seatName }}-<short slug>.md`,
 creating the directory if needed, with these sections: **The shape** (the approach
 and why this one); **Build sequence** (ordered steps, each sized as one
 `work-sonnet` brief — the files it touches, the interfaces it consumes and

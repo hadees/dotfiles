@@ -104,7 +104,7 @@ has been, or nearly been, pulled back across the line:
 ## Report
 
 Write the full review to
-`${TMPDIR:-/tmp}/claude-reports/dotfiles/public-clone-advocate-<short slug>.md`,
+`${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/dotfiles/public-clone-advocate-<short slug>.md`,
 creating the directory if needed: findings most severe first, each as
 `file:line` or "proposal" when there is no diff yet, the corner in one
 sentence, who is worse off, the shape to use instead, and which clone it

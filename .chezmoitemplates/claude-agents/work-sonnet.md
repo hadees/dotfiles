@@ -44,7 +44,7 @@ not being asked whether it is the right piece.
 ## Report
 
 Write the full account — every file touched, every command run with its output — to
-`${TMPDIR:-/tmp}/claude-reports/<repository name>/work-sonnet-<short slug>.md`,
+`${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<repository name>/work-sonnet-<short slug>.md`,
 creating the directory if needed. Then reply in under 15 lines, plain full sentences,
 no filler and no preamble:
 1. First line: `DONE`, `DONE_WITH_CONCERNS`, `BLOCKED` or `NEEDS_CONTEXT`.

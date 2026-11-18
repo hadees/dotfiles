@@ -40,8 +40,14 @@ setup() {
 
   BIN="$BATS_TEST_TMPDIR/bin"
   mkdir -p "$BIN"
-  # FAKE_TTYP_FAIL makes the python inside tty_procs (the one given PS_NAMES) fail
-  printf '#!/bin/sh\n[ -z "${FAKE_TTYP_FAIL-}" ] || [ -z "${PS_NAMES-}" ] || exit 1\nexec "%s" "$@"\n' "$REAL_PYTHON3" > "$BIN/python3"
+  # FAKE_TTYP_FAIL makes the python inside tty_procs (the one given PS_NAMES) fail.
+  # The python3 on PATH logs each call to PY_LOG and names the hook as the
+  # interpreter when the script asks which one it is.
+  export PY_LOG="$BATS_TEST_TMPDIR/py-log"
+  : > "$PY_LOG"
+  printf '#!/bin/sh\n[ -z "${FAKE_TTYP_FAIL-}" ] || [ -z "${PS_NAMES-}" ] || exit 1\nexec "%s" "$@"\n' "$REAL_PYTHON3" > "$BIN/py-hook"
+  printf '#!/bin/sh\necho call >> "$PY_LOG"\ncase "$*" in *sys.executable*) echo "%s"; exit 0 ;; esac\nexec "%s" "$@"\n' "$BIN/py-hook" "$BIN/py-hook" > "$BIN/python3"
+  chmod +x "$BIN/py-hook"
   ln -sf "$(command -v git)" "$BIN/git"
   cp "$BATS_TEST_DIRNAME/../bin/executable_pane-sight" "$BIN/pane-sight"
   ln -s pane-sight "$BIN/pane-read"
@@ -90,9 +96,12 @@ printf '%s\n' "$*" >> "$PEER_LOG"
 [ "$1" = panes ] && cat "$PANES_FILE"
 exit 0
 STUB
-  # tabname: the directory's base name; --role puts a role in front
+  # tabname: the directory's base name; --role puts a role in front; each call logged
+  export TABNAME_LOG="$BATS_TEST_TMPDIR/tabname-log"
+  : > "$TABNAME_LOG"
   cat > "$HOME/bin/tabname" <<'STUB'
 #!/bin/sh
+printf '%s\n' "$*" >> "$TABNAME_LOG"
 if [ "$1" = --role ]; then shift; printf 'peer\t%s\n' "$(basename "$1")"; exit 0; fi
 basename "$1"
 STUB
@@ -442,6 +451,29 @@ U5=55555555-5555-5555-5555-555555555555
   [ "$(printf '%s\n' "$output" | wc -l)" -eq 4 ]
 }
 
+@test "list is cheap per pane: python3 from PATH is asked once, tabname never" {
+  # behind a version manager's shim each python3 is several processes, and list
+  # judges every pane; a label list does not print is a tabname per pane
+  for i in 1 2 3 4; do
+    mk_session "$PERSONAL" "s$i" "$MAIN" "ttys04$i" "$U1"
+  done
+  : > "$PY_LOG"; : > "$TABNAME_LOG"
+  run pane-sight list
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | wc -l)" -eq 4 ]
+  [ "$(wc -l < "$PY_LOG")" -eq 1 ]
+  [ ! -s "$TABNAME_LOG" ]
+}
+
+@test "status starts no python3 from PATH: iterm2-doctor runs it on every Mac" {
+  printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/py"; chmod +x "$BATS_TEST_TMPDIR/py"
+  export PANE_SIGHT_PYTHON="$BATS_TEST_TMPDIR/py"
+  : > "$PY_LOG"
+  run pane-sight status --line
+  [ "$status" -eq 0 ]
+  [ ! -s "$PY_LOG" ]
+}
+
 @test "status --line: ready, and each not-ready reason" {
   printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/py"; chmod +x "$BATS_TEST_TMPDIR/py"
   export PANE_SIGHT_PYTHON="$BATS_TEST_TMPDIR/py"
@@ -568,6 +600,16 @@ audit_rows() { cat "$HOME/.local/state/pane-sight/audit.log"; }
   [ "$status" -eq 2 ]
   run pane-sight read
   [ "$status" -eq 2 ]
+}
+
+@test "a cell the program skipped with the cursor reads as a space, not as nothing" {
+  # iTerm2 hands an untouched cell over as U+0000; Claude Code moves the cursor
+  # instead of writing spaces, so its words and indents are such cells
+  peer_alpha
+  printf '\0\0Ran\0a\0command\nit2\0is\0a\0binary\n' > "$FAKE_SCREEN"
+  run rd alpha
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf '  Ran a command\nit2 is a binary')" ]
 }
 
 @test "the blank rows under the last line of the screen are not counted" {
