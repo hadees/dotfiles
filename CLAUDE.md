@@ -260,6 +260,7 @@ rule first.
 | `memoryguard` | the memory-write hook, the placement decision and its seat, stopgaps, the audit |
 | `shared-memory` | which shared-memory topics load always, by hook, or on demand; the hooks and their wiring |
 | `loginguard` | the org pin per profile, the prompt hook, the removal after a wrong login, why it fails closed |
+| `lsof-guard` | the opt-in `~/bin/lsof` guard, `lsof.guard`, the refusal tally |
 | `worktabs` | the iTerm2 tab launcher, `workspace.*` config, the Alfred workflow |
 | `claude-peer` | Workgroup peers, named slot worktrees, claims, the Hermes peer, overlay peers |
 | `claude-peer-handoff` | Lead and its name, `start --handoff`, `log idle`, the stop mark |
