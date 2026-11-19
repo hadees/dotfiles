@@ -50,6 +50,8 @@ com.googlecode.iterm2.plist
 .config/finicky
 # The worktabs launcher drives iTerm2, which is macOS-only
 bin/worktabs
+# The lsof guard shadows a macOS-only lsof
+bin/lsof
 # iTerm2's composed preferences are macOS-only
 bin/iterm2-prefs
 bin/iterm2-relaunch

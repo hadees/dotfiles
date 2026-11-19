@@ -1533,6 +1533,29 @@ cmd_handoff_check() {
 
 # --- status -------------------------------------------------------------------
 
+# Open descriptors of a pid, on stdout; nothing when they cannot be counted.
+# Not lsof: on macOS lsof also walks every mapped file, a kernel path that has
+# panicked, and the launchd limit counts descriptors only. POSTBOX_FD_COUNT is
+# the tests' seam, like POSTBOX_NOW.
+fd_count() { # pid
+  if [ -n "${POSTBOX_FD_COUNT:-}" ]; then printf '%s\n' "$POSTBOX_FD_COUNT"; return 0; fi
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$1" 2>/dev/null <<'PY' || true
+import ctypes, sys
+f = ctypes.CDLL("/usr/lib/libproc.dylib").proc_pidinfo
+f.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+f.restype = ctypes.c_int
+pid = int(sys.argv[1])
+n = f(pid, 1, 0, None, 0)  # PROC_PIDLISTFDS, NULL buffer: the size needed
+if n > 0:
+    buf = ctypes.create_string_buffer(n + 512)
+    n = f(pid, 1, 0, buf, n + 512)
+if n > 0:
+    print(n // 8)  # sizeof(struct proc_fdinfo)
+PY
+  return 0
+}
+
 cmd_status() {
   if v=$(installed_version); then
     printf 'binary:  %s (am %s' "$AM" "$v"
@@ -1549,11 +1572,12 @@ cmd_status() {
         # headroom is worth watching. The limit is what the INSTALLED plist
         # says — a plist from before the limit existed runs on launchd's 256.
         if [ -n "$pid" ]; then
-          open=$(lsof -p "$pid" 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')
+          open=$(fd_count "$pid")
           lim=$(grep -A3 '<key>SoftResourceLimits</key>' "$(plist_path)" 2>/dev/null | sed -n 's:.*<integer>\([0-9]*\)</integer>.*:\1:p')
-          printf 'files:   %s open of %s' "$open" "${lim:-256}"
+          if [ -n "$open" ]; then printf 'files:   %s open of %s' "$open" "${lim:-256}"
+          else printf 'files:   unknown of %s (python3 could not count them)' "${lim:-256}"; fi
           [ -z "$lim" ] && printf ' (launchd default: the installed plist predates the limit — postbox install)'
-          [ "$open" -ge $(( ${lim:-256} * 4 / 5 )) ] && printf ' — WARNING: over 80%%; postbox restart'
+          [ -n "$open" ] && [ "$open" -ge $(( ${lim:-256} * 4 / 5 )) ] && printf ' — WARNING: over 80%%; postbox restart'
           printf '\n'
         fi
       else

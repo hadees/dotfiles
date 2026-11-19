@@ -737,6 +737,19 @@ Land the overlay line first (`dotfiles`), then this repo's change: until both
 are in, the row shows Claude's titles between Stops at worst, and the shim's
 Stop rename still converges. `claude-doctor`'s `titles:` line shows the value.
 
+The `lsof` guard (`bin/lsof`, macOS only) is opt-in the same way, with one
+line in the overlay's gitconfig inside the same `mac` guard:
+
+```gitconfig
+[lsof]
+	guard = true
+```
+
+Unset, `~/bin/lsof` passes every call through to the system one, so a
+public-only clone is unchanged. Land this repo's change first (`dotfiles`, so
+the cc-status shim reads a refusal as unknown), then the overlay line. The
+refusal tally is in `~/.local/state/lsof-guard/`.
+
 ### Secrets — `~/.extra` from `private_dot_extra.tmpl` (personal overlay)
 
 Never a value, only a 1Password reference; chezmoi resolves it at apply time

@@ -1,0 +1,33 @@
+#!/bin/sh
+
+# lsof — an opt-in guard that shadows /usr/sbin/lsof on macOS (~/bin comes
+# first on PATH). On macOS lsof walks every process's mapped files, and a
+# kernel has panicked in that walk. With `git config lsof.guard true` set, a
+# call that no person typed (none of stdin, stdout, stderr is a terminal) is
+# refused with status 69, which cc-status reads as "unknown". Off by default:
+# a clone that never opts in runs the real lsof untouched.
+#
+# Each refusal is tallied per caller in $XDG_STATE_HOME/lsof-guard/:
+# <caller>.count is one byte per refusal, <caller>.last the latest one.
+# LSOF_GUARD=off passes one call through. LSOF_GUARD_REAL is for tests.
+
+real=${LSOF_GUARD_REAL:-/usr/sbin/lsof}
+
+[ "${LSOF_GUARD:-}" = off ] && exec "$real" "$@"
+if [ -t 0 ] || [ -t 1 ] || [ -t 2 ]; then exec "$real" "$@"; fi
+[ "$(git config --type=bool --get lsof.guard 2>/dev/null)" = true ] || exec "$real" "$@"
+
+# A failure to keep the tally never changes the outcome.
+(
+	umask 077
+	dir=${XDG_STATE_HOME:-$HOME/.local/state}/lsof-guard
+	mkdir -p "$dir" || exit
+	caller=$(basename "$(ps -o comm= -p "$PPID" 2>/dev/null)" | tr -c 'A-Za-z0-9._-' '_')
+	caller=${caller:-unknown}
+	parent=$(ps -o command= -p "$PPID" 2>/dev/null | tr '\t\n' '  ' | cut -c1-200)
+	printf x >> "$dir/$caller.count"
+	printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$parent" "$*" > "$dir/$caller.last"
+) 2>/dev/null || :
+
+echo "lsof: refused (git config lsof.guard): on macOS lsof walks every process's mapped files and a macOS kernel has panicked in that walk. For ports use: netstat -an -p tcp. To run it anyway: LSOF_GUARD=off lsof ..." >&2
+exit 69

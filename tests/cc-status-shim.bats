@@ -56,6 +56,8 @@ SH
   TASKS_FILE="$XDG_STATE_HOME/tabstatus/s1.tasks"
   mkdir -p "$HOME"
   : > "$GIT_CONFIG_GLOBAL"
+  # The stalled tests exercise the lsof branch on every OS; `auto` skips it on macOS.
+  git config -f "$GIT_CONFIG_GLOBAL" tabstatus.holder-probe lsof
   SESS="$BATS_TEST_TMPDIR/sess"
   mkdir -p "$SESS/scratchpad" "$SESS/tasks"
 }
@@ -726,6 +728,54 @@ question_payload() { payload Stop "${2:-[]}" "\"cwd\":\"/work/proj\",\"last_assi
   [ "$status" -eq 0 ]
   grep -qx 'idle' "$BATS_TEST_TMPDIR/argv"
   [ ! -e "$TASKS_FILE" ]
+}
+
+@test "stalled: with the probe off a quiet shell task is never stalled and lsof never runs" {
+  git config -f "$GIT_CONFIG_GLOBAL" tabstatus.holder-probe off
+  age_file a 7200
+  : > "$BATS_TEST_TMPDIR/lsof.out"
+  run_shim <<< "$(stall_payload)"
+  grep -qx 'idle' "$BATS_TEST_TMPDIR/argv"
+  [ ! -e "$BATS_TEST_TMPDIR/lsof_argv" ]
+  [ ! -e "$BATS_TEST_TMPDIR/ps_argv" ]
+  [ ! -e "$TASKS_FILE" ]
+}
+
+@test "stalled: auto probes with lsof everywhere but macOS" {
+  git config -f "$GIT_CONFIG_GLOBAL" --unset tabstatus.holder-probe
+  age_file a 7200
+  : > "$BATS_TEST_TMPDIR/lsof.out"
+  run_shim <<< "$(stall_payload)"
+  if [[ $OSTYPE == darwin* ]]; then
+    grep -qx 'idle' "$BATS_TEST_TMPDIR/argv"
+    [ ! -e "$BATS_TEST_TMPDIR/lsof_argv" ]
+  else
+    grep -qx 'waiting' "$BATS_TEST_TMPDIR/argv"
+    [ -e "$BATS_TEST_TMPDIR/lsof_argv" ]
+  fi
+}
+
+@test "stalled: an lsof that fails is unknown, never stalled" {
+  age_file a 7200
+  printf '#!/bin/sh\nexit 69\n' > "$STUB/lsof"
+  run_shim <<< "$(stall_payload)"
+  grep -qx 'idle' "$BATS_TEST_TMPDIR/argv"
+  [ ! -e "$TASKS_FILE" ]
+}
+
+@test "explain: says whether the holder probe is on" {
+  age_file a 7200
+  git config -f "$GIT_CONFIG_GLOBAL" tabstatus.holder-probe off
+  run sh "$SHIM" explain <<< "$(stall_payload)"
+  [[ $output == *"holder=unprobed cpu=- stalled=no"* ]]
+  [[ $output == *$'\nprobe=off (off)\n'* ]]
+  git config -f "$GIT_CONFIG_GLOBAL" tabstatus.holder-probe lsof
+  run sh "$SHIM" explain <<< "$(stall_payload)"
+  [[ $output == *$'\nprobe=lsof (lsof)\n'* ]]
+  git config -f "$GIT_CONFIG_GLOBAL" tabstatus.holder-probe bogus
+  run --separate-stderr sh "$SHIM" explain <<< "$(stall_payload)"
+  [[ $output == *$'\nprobe='*' (auto)'* ]]
+  [[ $stderr == *"tabstatus.holder-probe"* ]]
 }
 
 @test "stalled: the record is pruned to the payload's tasks, and SessionStart and SessionEnd delete it" {

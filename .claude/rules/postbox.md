@@ -266,8 +266,10 @@ inbox reads, so the plist sets 4096. That only buys time: `am` 0.3.36 leaks
 sqlite handles on its store (234 of 258 after five days, first seen
 2026-09-29), and a plist written before the limit existed keeps launchd's
 256 until `postbox install` rewrites it. `status` therefore prints a `files:`
-line — open handles against the *installed* plist's limit, naming a stale
-plist and warning past 80%. `install` waits for `bootout` to finish before
+line — open descriptors against the *installed* plist's limit, naming a stale
+plist and warning past 80%; the count is one `proc_pidinfo(PROC_PIDLISTFDS)`
+call through python3 ctypes (`fd_count`, descriptors only, `unknown` without
+python3), never `lsof`, whose macOS region walk has panicked the kernel. `install` waits for `bootout` to finish before
 `bootstrap` (`launchd_wait_gone`): launchd tears the job down after bootout
 returns, and a bootstrap in that window fails "5: Input/output error" and
 leaves nothing loaded. On macOS `stop` is a `bootout` too (a `kill` is undone
