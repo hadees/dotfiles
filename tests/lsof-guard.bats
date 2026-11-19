@@ -19,12 +19,14 @@ setup() {
   printf '#!/bin/sh\necho REAL "$@"\n' > "$LSOF_GUARD_REAL"
   chmod +x "$LSOF_GUARD_REAL"
   export GUARD
+  # macOS has no timeout(1) unless coreutils is installed; CI's runner lacks it.
+  TO=; if command -v timeout >/dev/null 2>&1; then TO="timeout 10"; fi
 }
 
 guard() {
   # A short timeout: a guard that re-executes lsof by name instead of the real
   # binary recurses until the process table fills.
-  run timeout 10 sh -c '"$GUARD" "$@" </dev/null' _ "$@"
+  run $TO sh -c '"$GUARD" "$@" </dev/null' _ "$@"
 }
 
 @test "off by default: the real lsof runs with its arguments intact" {
@@ -56,8 +58,10 @@ guard() {
 
 @test "lsof.guard true on a terminal: the real lsof runs" {
   command -v python3 >/dev/null || skip "python3 not installed"
+  # pty.spawn can wait forever on a runner with no terminal to hand out.
+  [ -n "$TO" ] || skip "no timeout(1) to bound pty.spawn"
   git config -f "$GIT_CONFIG_GLOBAL" lsof.guard true
-  run timeout 10 python3 -c 'import pty,sys; pty.spawn(sys.argv[1:])' "$GUARD" -p 1
+  run $TO python3 -c 'import pty,sys; pty.spawn(sys.argv[1:])' "$GUARD" -p 1
   [[ $output == *"REAL -p 1"* ]] || skip "no pty here"
 }
 
