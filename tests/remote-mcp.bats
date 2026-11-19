@@ -64,7 +64,28 @@ printf 'tailnet\t%s\n' "$*" >> "$CALLS"
 [ -z "${FAKE_TAILNET_MISSING:-}" ] || { printf "tailnet: tailnet '%s' is not installed\n" "$2" >&2; exit 1; }
 printf '%s\n' "$FAKE_TAILNET_PORT"
 STUB
-  chmod +x "$BIN/op" "$BIN/claude" "$BIN/tailnet"
+  # uname, netstat and lsof: the port picker asks netstat on macOS and lsof
+  # elsewhere. Each logs its argv and reports a listener only for the ports a
+  # test lists. The real lsof must never run on a Mac.
+  cat > "$BIN/uname" <<'STUB'
+#!/bin/sh
+echo "${FAKE_OS:-Darwin}"
+STUB
+  cat > "$BIN/netstat" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$BATS_TEST_TMPDIR/netstat.log"
+cat "$BATS_TEST_TMPDIR/netstat.out" 2>/dev/null
+exit 0
+STUB
+  cat > "$BIN/lsof" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$BATS_TEST_TMPDIR/lsof.log"
+for a in "$@"; do
+  case $a in -iTCP:*) grep -qx "${a#-iTCP:}" "$BATS_TEST_TMPDIR/lsof-listen" 2>/dev/null && exit 0;; esac
+done
+exit 1
+STUB
+  chmod +x "$BIN/op" "$BIN/claude" "$BIN/tailnet" "$BIN/uname" "$BIN/netstat" "$BIN/lsof"
   if [ -n "$REAL_PYTHON3" ]; then
     printf '#!/bin/sh\nexec "%s" "$@"\n' "$REAL_PYTHON3" > "$BIN/python3"
     chmod +x "$BIN/python3"
@@ -286,6 +307,24 @@ headers() {
   gc remote-mcp.web.port 18999
   run "$RM" status
   [[ "$output" == *"127.0.0.1:18999"* ]]
+}
+
+@test "connect: a forwarder port something listens on is skipped (netstat on macOS, lsof elsewhere)" {
+  need_python3
+  direct_server
+  gc remote-mcp.web.tailnet net-a
+  printf 'tcp4       0      0  127.0.0.1.8780         *.*                    LISTEN\n' > "$BATS_TEST_TMPDIR/netstat.out"
+  run "$RM" connect
+  [ "$status" -eq 0 ]
+  [ "$(cat "$REMOTE_MCP_STATE/web/port")" = 8781 ]
+  [ ! -e "$BATS_TEST_TMPDIR/lsof.log" ]
+
+  rm -rf "$REMOTE_MCP_STATE/web" "$BATS_TEST_TMPDIR/netstat.log"
+  echo 8780 > "$BATS_TEST_TMPDIR/lsof-listen"
+  FAKE_OS=Linux run "$RM" connect
+  [ "$status" -eq 0 ]
+  [ "$(cat "$REMOTE_MCP_STATE/web/port")" = 8781 ]
+  [ ! -e "$BATS_TEST_TMPDIR/netstat.log" ]
 }
 
 @test "connect: a tailnet that is not installed stops it with tailnet's own words" {

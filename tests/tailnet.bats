@@ -152,9 +152,21 @@ STUB
 #!/bin/sh
 echo Testbox.local
 STUB
+  # lsof and netstat log their argv; each reports a listener only for the
+  # ports a test lists, so a test can tell which of the two was asked.
   cat > "$BIN/lsof" <<'STUB'
 #!/bin/sh
+echo "$*" >> "$BATS_TEST_TMPDIR/lsof.log"
+for a in "$@"; do
+  case $a in -iTCP:*) grep -qx "${a#-iTCP:}" "$BATS_TEST_TMPDIR/lsof-listen" 2>/dev/null && exit 0;; esac
+done
 exit 1
+STUB
+  cat > "$BIN/netstat" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$BATS_TEST_TMPDIR/netstat.log"
+cat "$BATS_TEST_TMPDIR/netstat.out" 2>/dev/null
+exit 0
 STUB
   # ssh -G: resolve `hostname` from the first operand the way ssh would
   # (skipping option values), echo proxyjump/proxycommand when -J/-o set them;
@@ -436,6 +448,28 @@ CLAUDE_CODE_OPTS="no_bare_glob_qual no_case_glob glob_star_short no_extended_glo
   [ "$(cat "$STATE/third/port")" = 1057 ]
   [[ "$output" == *"WARNING: brew services has tailscale loaded"* ]]
   [[ "$output" == *"brew services stop tailscale"* ]]
+}
+
+@test "tailnet install (macOS): a port something listens on is skipped, read from netstat, never lsof" {
+  cat > "$BATS_TEST_TMPDIR/netstat.out" <<'OUT'
+Active Internet connections (including servers)
+Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)
+tcp4       0      0  127.0.0.1.1057         *.*                    LISTEN
+tcp46      0      0  *.1058                 *.*                    LISTEN
+tcp4       0      0  127.0.0.1.1059         127.0.0.1.50000        ESTABLISHED
+OUT
+  run tailnet install third
+  [ "$status" -eq 0 ]
+  [ "$(cat "$STATE/third/port")" = 1059 ]
+  [ ! -e "$BATS_TEST_TMPDIR/lsof.log" ]
+}
+
+@test "tailnet install (Linux): the listener check is still lsof" {
+  echo 1057 > "$BATS_TEST_TMPDIR/lsof-listen"
+  FAKE_OS=Linux run tailnet install third
+  [ "$status" -eq 0 ]
+  [ "$(cat "$STATE/third/port")" = 1058 ]
+  [ ! -e "$BATS_TEST_TMPDIR/netstat.log" ]
 }
 
 @test "tailnet install (Linux, systemd --user): writes and enables a user unit" {
