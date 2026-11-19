@@ -153,7 +153,21 @@ compile. It is measured without root: `lsof -t` names the holders, one `ps
 and first-seen-quiet time between Stops. With nothing active a stalled task
 paints `waiting` in red (`tabstatus.color.stalled`, default `#ff5f5f`),
 outranking the question and quiet paints; agent tasks are never probed, and a
-missing `lsof` means unknown, never stalled.
+missing `lsof`, or one that exits with a status other than 0 or 1 or dies on a
+signal, means unknown, never stalled.
+
+**On macOS the probe is off by default** (`tabstatus.holder-probe`: `auto`,
+the default, probes with lsof everywhere but macOS; `lsof` forces it; `off`
+disables it). On macOS lsof also walks every process's mapped files, and
+xnu-12377.161.14 panicked twice in that walk, in `fill_vnodeinfoforaddr`.
+`fuser` (a script around lsof) and `proc_listpidspath` do the same walk;
+network-only `lsof -i` does not. With the probe off a quiet shell task is
+quiet, never stalled and never `(cpu busy)`: it paints amber, and the row
+still shows how long it has been quiet. Neither lsof nor `ps` starts, and the
+`.tasks` record is left as it was. `git config tabstatus.holder-probe lsof`
+turns it back on once the kernel is fixed. `cc-status explain` prints
+`probe=<lsof|off> (<setting>)` after `marker=`, and a task row shows
+`holder=unprobed` while it is off.
 
 A turn end that nothing above painted dims a **peer** row: on Stop or
 StopFailure with nothing active, no question and no stalled or quiet task, the

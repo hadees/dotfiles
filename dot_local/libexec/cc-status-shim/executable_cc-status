@@ -90,7 +90,17 @@
 # With nothing active a stalled task paints "waiting" in red
 # (tabstatus.color.stalled, default #ff5f5f), outranking the question and quiet
 # paints; CPU that moved shows as "(cpu busy)" in the quiet paint. No lsof, or
-# a failed probe, means unknown, never stalled.
+# a failed probe (an exit status other than 0 or 1, or a signal), means unknown,
+# never stalled.
+#
+# On macOS the probe is off by default (tabstatus.holder-probe auto|lsof|off;
+# auto means lsof everywhere but macOS): lsof there also walks every process's
+# mapped files, and xnu-12377.161.14 panicked twice in that walk, in
+# fill_vnodeinfoforaddr. fuser and proc_listpidspath do the same walk; lsof
+# limited to network files (-i) does not. With the probe off a quiet shell task
+# is quiet, never stalled and never "(cpu busy)": it paints amber, with the
+# quiet minutes on the row. `tabstatus.holder-probe lsof` turns the probe back
+# on; explain prints probe= and holder=unprobed.
 #
 # Cost: python3 runs on every Stop and StopFailure (the rename needs it) and
 # once per session on UserPromptSubmit (the marker is written whether or not a
@@ -299,6 +309,8 @@ question_color = setting("color.question", "#ffd75f", HEX)
 stall_minutes = int(setting("stall-minutes", "15", r"[0-9]+"))
 stalled_color = setting("color.stalled", "#ff5f5f", HEX)
 peer_color = setting("color.peer", "#8a8a8a", HEX)
+holder_probe = setting("holder-probe", "auto", r"auto|lsof|off")
+probe_on = holder_probe == "lsof" or (holder_probe == "auto" and sys.platform != "darwin")
 lead_color = setting("color.lead", None, HEX)   # no default: a leader keeps cc-status's colour
 group_prefix = setting("group-prefix", "false", r"true|false") == "true"
 SEATS = {"plan-fable": "#d787ff", "unstick-fable": "#ff5faf", "review-fable": "#af87ff",
@@ -424,9 +436,18 @@ def ps_tree(pids):
     return sum(own.get(p, 0.0) for p in seen)
 
 def holders_of(path):
-    # pids holding path open: [] none, None unknown (no lsof, hung)
-    out = run_out(["lsof", "-t", "--", path])
-    return None if out is None else sorted({l for l in out.split() if l.isdigit()})
+    # pids holding path open: [] none, None unknown (probe off, no lsof, hung, or lsof failed).
+    # lsof documents only exit 0 (some holder) and 1 (none); anything else, or a signal, is unknown.
+    if not probe_on:
+        return None
+    try:
+        r = subprocess.run(["lsof", "-t", "--", path], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           stdin=subprocess.DEVNULL, text=True, errors="replace", timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode not in (0, 1):
+        return None
+    return sorted({l for l in r.stdout.split() if l.isdigit()})
 
 def tasks_read():
     recs = {}
@@ -500,7 +521,7 @@ if event in ("Stop", "StopFailure", "SubagentStop") and isinstance(tasks, list) 
                             keep[tid] = (mtime, cpu, now)
                     if stalled_min is not None:
                         stalled.append((t, stalled_min))
-                    probe = (f" holder={','.join(holders) if holders else 'none' if holders == [] else 'unknown'}"
+                    probe = (f" holder={','.join(holders) if holders else 'none' if holders == [] else 'unknown' if probe_on else 'unprobed'}"
                              f" cpu={'-' if cpu is None else f'{cpu:.2f}'} stalled={'no' if stalled_min is None else 'yes'}")
             except OSError:
                 if os.path.islink(p):   # an agent whose transcript is gone
@@ -631,6 +652,7 @@ if explain:
     print(f"colour={(peer_color if role == 'peer' else lead_color if role == 'lead' else None) or 'none'}")
     print(f"rename={'yes' if title else 'no'} ({why or 'ok'})")
     print(f"marker={'present' if nf and os.path.exists(nf) else 'none'}")
+    print(f"probe={'lsof' if probe_on else 'off'} ({holder_probe})")
     print(f"cookie={cookie}")
     print(f"cc-status={real or 'absent'}")
     print(f"it2={it2 or 'absent'}")
