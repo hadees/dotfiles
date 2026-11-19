@@ -239,7 +239,7 @@ port_in_use() { # port -> 0 if some tailnet already recorded it or something lis
     [ "$(port_of "$n")" = "$1" ] && return 0
   done
   # macOS: lsof also walks every process's mapped files, which has panicked
-  # this kernel; netstat reads the same socket table without that walk.
+  # a macOS kernel; netstat reads the same socket table without that walk.
   case $(os) in
   Darwin)
     netstat -an -p tcp 2>/dev/null | awk -v p="$1" '$NF == "LISTEN" { n = split($4, a, "."); if (a[n] == p) hit = 1 } END { exit !hit }' && return 0 ;;

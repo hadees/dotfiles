@@ -29,5 +29,5 @@ if [ -t 0 ] || [ -t 1 ] || [ -t 2 ]; then exec "$real" "$@"; fi
 	printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$parent" "$*" > "$dir/$caller.last"
 ) 2>/dev/null || :
 
-echo "lsof: refused (git config lsof.guard): on macOS lsof walks every process's mapped files and this kernel has panicked in that walk. For ports use: netstat -an -p tcp. To run it anyway: LSOF_GUARD=off lsof ..." >&2
+echo "lsof: refused (git config lsof.guard): on macOS lsof walks every process's mapped files and a macOS kernel has panicked in that walk. For ports use: netstat -an -p tcp. To run it anyway: LSOF_GUARD=off lsof ..." >&2
 exit 69
