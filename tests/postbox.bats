@@ -448,20 +448,47 @@ STUB
 [ "$1" = print ] && printf '\tpid = 4242\n'
 exit 0
 STUB
-  cat > "$BIN/lsof" <<'STUB'
-#!/bin/sh
-echo HEADER; i=0; while [ $i -lt "$FAKE_FDS" ]; do echo fd; i=$((i + 1)); done
-STUB
+  # lsof must never be started: the stub only logs, and the log must stay absent.
+  printf '#!/bin/sh\necho "$@" >> "%s/lsof.log"\n' "$BATS_TEST_TMPDIR" > "$BIN/lsof"
   chmod +x "$BIN/launchctl" "$BIN/lsof"
   "$PB" install >/dev/null
-  FAKE_FDS=40 run "$PB" status
+  POSTBOX_FD_COUNT=40 run "$PB" status
   [[ "$output" == *"files:   40 open of 4096"$'\n'* ]]
-  FAKE_FDS=3300 run "$PB" status
+  POSTBOX_FD_COUNT=3300 run "$PB" status
   [[ "$output" == *"files:   3300 open of 4096 — WARNING: over 80%; postbox restart"* ]]
   # A plist written before the limit existed runs on launchd's default.
   sed -i.bak '/ResourceLimits/,/<\/dict>/d' "$HOME/Library/LaunchAgents/local.postbox.plist"
-  FAKE_FDS=261 run "$PB" status
+  POSTBOX_FD_COUNT=261 run "$PB" status
   [[ "$output" == *"files:   261 open of 256 (launchd default: the installed plist predates the limit — postbox install) — WARNING"* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/lsof.log" ]
+}
+
+@test "status: the count is read from the process itself, and is unknown where it cannot be" {
+  printf '#!/bin/sh\n[ "$1" = print ] && printf "\\tpid = %s\\n"\nexit 0\n' "$$" > "$BIN/launchctl"
+  chmod +x "$BIN/launchctl"
+  "$PB" install >/dev/null
+  run "$PB" status
+  [ "$status" -eq 0 ]
+  if [[ $OSTYPE == darwin* ]]; then
+    [[ "$output" =~ files:\ +[0-9]+\ open\ of ]]
+  else
+    [[ "$output" == *"files:   unknown of 4096"* ]]
+  fi
+}
+
+@test "status: no python3 leaves the count unknown, exit 0" {
+  printf '#!/bin/sh\n[ "$1" = print ] && printf "\\tpid = 4242\\n"\nexit 0\n' > "$BIN/launchctl"
+  chmod +x "$BIN/launchctl"
+  "$PB" install >/dev/null
+  # Every command the stubbed PATH needs, but no python3.
+  NOPY="$BATS_TEST_TMPDIR/nopy"; mkdir -p "$NOPY"
+  for c in sh cat grep sed awk id uname cut tr head tail wc date curl sleep; do
+    p=$(command -v "$c" 2>/dev/null) && ln -sf "$p" "$NOPY/$c"
+  done
+  PATH="$BIN:$NOPY" run "$PB" status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"files:   unknown of 4096 (python3 could not count them)"* ]]
+  [[ "$output" != *"integer expression"* ]]
 }
 
 @test "status: an installed version other than the pinned one is a nudge to re-check the vocabulary" {
