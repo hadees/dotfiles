@@ -642,6 +642,63 @@ known_lan() {
   done
 }
 
+@test "tailnet lan: names the gateway and whether its MAC is a known LAN" {
+  fake_gateway 10.20.30.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5E:00:53:01
+  run tailnet lan
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "gateway: 10.20.30.1 at 00:00:5e:00:53:01 — known LAN homelan" ]
+  [ "${lines[1]}" = "known:   homelan = 00:00:5e:00:53:01" ]
+  [ "${#lines[@]}" -eq 2 ]
+}
+
+@test "tailnet lan: MAC spellings compare equal" {
+  fake_gateway 10.20.30.1 0:0:5e:0:53:1
+  known_lan homelan 00-00-5E-00-53-01
+  run tailnet lan
+  [ "${lines[0]}" = "gateway: 10.20.30.1 at 00:00:5e:00:53:01 — known LAN homelan" ]
+  [ "${lines[1]}" = "known:   homelan = 00:00:5e:00:53:01" ]
+}
+
+@test "tailnet lan: Linux reads ip route and ip neigh" {
+  export FAKE_OS=Linux
+  fake_gateway 10.20.30.1 00:00:5E:00:53:01
+  known_lan homelan 00:00:5e:00:53:01
+  run tailnet lan
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "gateway: 10.20.30.1 at 00:00:5e:00:53:01 — known LAN homelan" ]
+  [ ! -e "$BATS_TEST_TMPDIR/netstat.log" ]
+  # A FAILED neighbour entry has no address; with arp empty there is none.
+  rm "$BATS_TEST_TMPDIR/arp.out"
+  printf '10.20.30.1 dev eth0 FAILED\n' > "$BATS_TEST_TMPDIR/ip-neigh.out"
+  run tailnet lan
+  [ "${lines[0]}" = "gateway: 10.20.30.1 — no neighbour entry" ]
+  # No ip neigh entry at all: net-tools' arp answers.
+  : > "$BATS_TEST_TMPDIR/ip-neigh.out"
+  printf '? (10.20.30.1) at 0:0:5e:0:53:1 on eth0 [ether]\n' > "$BATS_TEST_TMPDIR/arp.out"
+  run tailnet lan
+  [ "${lines[0]}" = "gateway: 10.20.30.1 at 00:00:5e:00:53:01 — known LAN homelan" ]
+}
+
+@test "tailnet lan: no gateway, an unlisted gateway with its remediation line, nothing configured, an invalid value" {
+  run tailnet lan
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "gateway: <none — no default route through an IPv4 gateway>" ]
+  [[ "${lines[1]}" == "known:   <none — tailnet-lan.<label>.gateway in a machine-local gitconfig"* ]]
+  # link#N is a scope, not a gateway
+  printf 'default            link#20            UCSIg           en0       !\n' >> "$BATS_TEST_TMPDIR/netstat-routes.out"
+  run tailnet lan
+  [ "${lines[0]}" = "gateway: <none — no default route through an IPv4 gateway>" ]
+  fake_gateway 10.20.30.1 0:0:5e:0:53:9
+  known_lan homelan 00:00:5e:00:53:01
+  known_lan junk not-a-mac
+  run tailnet lan
+  [ "${lines[0]}" = "gateway: 10.20.30.1 at 00:00:5e:00:53:09 — not a known LAN" ]
+  [ "${lines[1]}" = '  to mark this network as known, in a machine-local gitconfig (overlay): [tailnet-lan "<label>"] gateway = 00:00:5e:00:53:09' ]
+  [ "${lines[2]}" = "known:   homelan = 00:00:5e:00:53:01" ]
+  [ "${lines[3]}" = "known:   junk = not-a-mac — INVALID (six hex octets expected)" ]
+}
+
 @test "tailnet route: an IPv4 in a peer's subnet route goes through that tailnet, unless this machine is on that subnet" {
   add_route work 10.20.30.0/24
   fake_ifconfig 192.0.2.5

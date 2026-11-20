@@ -56,6 +56,7 @@
 #                            mountpoint,rclone-args}
 #   umount <name>            unmount it (the rclone daemon exits with it)
 #   mounts                   configured mounts and whether each is mounted
+#   lan                      this network's default gateway and whether its MAC is a known LAN
 set -u
 
 TAILNET_STATE=${TAILNET_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/tailnet}
@@ -207,6 +208,107 @@ in_cidr() { # ipv4 a.b.c.d/n -> exit 0 if inside; a /0 never matches
 local_ipv4s() { # this machine's interface addresses
   { ifconfig 2>/dev/null || ip -4 addr 2>/dev/null; } |
     sed -n 's/^[[:space:]]*inet \([0-9.]*\).*/\1/p'
+}
+
+# --- which LAN is this? The default gateway's MAC, listed per known LAN in
+# machine-local git config (tailnet-lan.<label>.gateway, overlay-supplied). A
+# MAC is read for nothing (no permission, wired or wireless); the SSID is not.
+
+mac_norm() { # mac -> six lowercase two-digit octets joined by ':', or nothing
+  printf '%s\n' "$1" | awk '{
+    if (split(tolower($0), p, /[:-]/) != 6) exit
+    for (i = 1; i <= 6; i++) {
+      if (p[i] !~ /^[0-9a-f][0-9a-f]?$/) exit
+      o = o (i > 1 ? ":" : "") (length(p[i]) == 1 ? "0" : "") p[i]
+    }
+    print o }'
+}
+
+default_gateways() { # IPv4 gateways of the default routes, one per line
+  case $(os) in
+  Darwin) netstat -rn -f inet 2>/dev/null ;;
+  *)      ip -4 route show default 2>/dev/null ;;
+  esac | awk '$1 == "default" {
+    g = ($2 == "via") ? $3 : $2
+    if (g ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && !seen[g]++) print g }'
+}
+
+neighbour_mac() { # ipv4 -> its MAC (normalised), or nothing
+  nm_raw=
+  case $(os) in
+  Darwin) ;;
+  *) nm_raw=$(ip neigh show 2>/dev/null | awk -v ip="$1" '
+       $1 == ip { for (i = 2; i < NF; i++) if ($i == "lladdr") { print $(i + 1); exit } }') ;;
+  esac
+  # macOS, and Linux with only net-tools: `? (<ip>) at <mac> on en0 ...`
+  [ -n "$nm_raw" ] || nm_raw=$(arp -an 2>/dev/null | awk -v ip="($1)" '$2 == ip && $3 == "at" { print $4; exit }')
+  mac_norm "$nm_raw"
+}
+
+known_lans() { # one "<normalised mac> <label>" per configured gateway
+  command -v git >/dev/null 2>&1 || return 0
+  command git config --get-regexp '^tailnet-lan\..*\.gateway$' 2>/dev/null |
+    while read -r kl_key kl_val; do
+      kl_mac=$(mac_norm "$kl_val")
+      [ -n "$kl_mac" ] || continue
+      kl_label=${kl_key#tailnet-lan.}
+      printf '%s %s\n' "$kl_mac" "${kl_label%.gateway}"
+    done
+}
+
+# Prints the label and exits 0 when a default gateway inside <cidr> has a listed MAC.
+known_lan_in() { # cidr
+  kn_lans=$(known_lans)
+  [ -n "$kn_lans" ] || return 1
+  for kn_g in $(default_gateways); do
+    in_cidr "$kn_g" "$1" || continue
+    kn_m=$(neighbour_mac "$kn_g")
+    [ -n "$kn_m" ] || continue
+    kn_label=$(printf '%s\n' "$kn_lans" | awk -v m="$kn_m" '$1 == m { sub(/^[^ ]* /, ""); print; exit }')
+    [ -n "$kn_label" ] || continue
+    printf '%s\n' "$kn_label"
+    return 0
+  done
+  return 1
+}
+
+cmd_lan() {
+  lan_gws=$(default_gateways)
+  lan_known=$(known_lans)
+  if [ -z "$lan_gws" ]; then
+    printf 'gateway: <none — no default route through an IPv4 gateway>\n'
+  fi
+  for lan_g in $lan_gws; do
+    lan_m=$(neighbour_mac "$lan_g")
+    if [ -z "$lan_m" ]; then
+      printf 'gateway: %s — no neighbour entry\n' "$lan_g"
+      continue
+    fi
+    lan_label=$(printf '%s\n' "$lan_known" | awk -v m="$lan_m" '$1 == m { sub(/^[^ ]* /, ""); print; exit }')
+    if [ -n "$lan_label" ]; then
+      printf 'gateway: %s at %s — known LAN %s\n' "$lan_g" "$lan_m" "$lan_label"
+    else
+      printf 'gateway: %s at %s — not a known LAN\n' "$lan_g" "$lan_m"
+      printf '  to mark this network as known, in a machine-local gitconfig (overlay): [tailnet-lan "<label>"] gateway = %s\n' "$lan_m"
+    fi
+  done
+  # The raw config, so a value known_lans skips is shown.
+  lan_cfg=$(command -v git >/dev/null 2>&1 && command git config --get-regexp '^tailnet-lan\..*\.gateway$' 2>/dev/null)
+  if [ -z "$lan_cfg" ]; then
+    printf 'known:   <none — tailnet-lan.<label>.gateway in a machine-local gitconfig (overlay; see docs/private-overlays.md)>\n'
+  else
+    printf '%s\n' "$lan_cfg" | while read -r lan_key lan_val; do
+      lan_label=${lan_key#tailnet-lan.}
+      lan_label=${lan_label%.gateway}
+      lan_mac=$(mac_norm "$lan_val")
+      if [ -n "$lan_mac" ]; then
+        printf 'known:   %s = %s\n' "$lan_label" "$lan_mac"
+      else
+        printf 'known:   %s = %s — INVALID (six hex octets expected)\n' "$lan_label" "$lan_val"
+      fi
+    done
+  fi
+  return 0
 }
 
 via_subnet_route() { # status-json ipv4 -> exit 0 if a peer's subnet route holds it and we are not on that subnet
@@ -687,6 +789,7 @@ case $cmd in
   mount)      cmd_mount "$@";;
   umount)     cmd_umount "$@";;
   mounts)     cmd_mounts;;
+  lan)        cmd_lan;;
   -h|--help|help) usage;;
   *)          die "unknown command '$cmd' (tailnet help)";;
 esac
