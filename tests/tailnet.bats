@@ -165,9 +165,29 @@ STUB
   cat > "$BIN/netstat" <<'STUB'
 #!/bin/sh
 echo "$*" >> "$BATS_TEST_TMPDIR/netstat.log"
+for a in "$@"; do
+  [ "$a" = -rn ] && { cat "$BATS_TEST_TMPDIR/netstat-routes.out" 2>/dev/null; exit 0; }
+done
 cat "$BATS_TEST_TMPDIR/netstat.out" 2>/dev/null
 exit 0
 STUB
+  # arp and ip read this machine's neighbours and default route; the files a
+  # test fills (see fake_gateway) stand in for them, so the host's own network
+  # decides nothing. ifconfig defaults to an address outside every fixture route.
+  cat > "$BIN/arp" <<'STUB'
+#!/bin/sh
+cat "$BATS_TEST_TMPDIR/arp.out" 2>/dev/null
+exit 0
+STUB
+  cat > "$BIN/ip" <<'STUB'
+#!/bin/sh
+case "$*" in
+  "-4 route show default") cat "$BATS_TEST_TMPDIR/ip-route.out" 2>/dev/null; exit 0;;
+  "neigh show") cat "$BATS_TEST_TMPDIR/ip-neigh.out" 2>/dev/null; exit 0;;
+esac
+exit 1
+STUB
+  fake_ifconfig 192.0.2.5
   # ssh -G: resolve `hostname` from the first operand the way ssh would
   # (skipping option values), echo proxyjump/proxycommand when -J/-o set them;
   # anything else records the run.
@@ -588,10 +608,10 @@ OUT
   ! grep -q "$STATE/personal/tailscaled.sock" "$TS_LOG" || { echo "the personal tailscaled socket was used"; false; }
 }
 
-# add_route <tailnet> <cidr> — that tailnet's second peer advertises a subnet
-# route, in the layout status --json prints it.
+# add_route <tailnet> <cidr> [peer-id] — that tailnet's peer (default peer2)
+# advertises a subnet route, in the layout status --json prints it.
 add_route() {
-  awk -v c="$2" '{ print } /"ID": "peer2",/ { print "      \"PrimaryRoutes\": [\n        \"" c "\"\n      ]," }' \
+  awk -v c="$2" -v id="\"ID\": \"${3:-peer2}\"," '{ print } index($0, id) { print "      \"PrimaryRoutes\": [\n        \"" c "\"\n      ]," }' \
     "$TS_FIXTURES/$1.json" > "$TS_FIXTURES/$1.tmp" && mv "$TS_FIXTURES/$1.tmp" "$TS_FIXTURES/$1.json"
 }
 
@@ -599,6 +619,27 @@ add_route() {
 fake_ifconfig() {
   printf '#!/bin/sh\nprintf "lo0:\\n\\tinet 127.0.0.1 netmask 0xff000000\\nen0:\\n\\tinet %s netmask 0xffffff00\\n"\n' "$1" > "$BIN/ifconfig"
   chmod +x "$BIN/ifconfig"
+}
+
+# fake_gateway <ip> <mac> — this machine's default route runs through <ip>,
+# whose neighbour entry is <mac> exactly as written (so a test picks the
+# spelling), in the layout of macOS (netstat, arp) and Linux (ip route, ip neigh).
+fake_gateway() {
+  printf 'default            %s       UGScg          en0\n' "$1" >> "$BATS_TEST_TMPDIR/netstat-routes.out"
+  printf '? (%s) at %s on en0 ifscope [ethernet]\n' "$1" "$2" >> "$BATS_TEST_TMPDIR/arp.out"
+  printf 'default via %s dev eth0 proto dhcp metric 100\n' "$1" >> "$BATS_TEST_TMPDIR/ip-route.out"
+  printf '%s dev eth0 lladdr %s REACHABLE\n' "$1" "$2" >> "$BATS_TEST_TMPDIR/ip-neigh.out"
+}
+
+# known_lan <label> <mac> — the machine-local gitconfig lists <mac> as that LAN's gateway.
+known_lan() {
+  git config --file "$GIT_CONFIG_GLOBAL" --add "tailnet-lan.$1.gateway" "$2"
+}
+
+@test "tests: ifconfig, arp, ip and netstat are stubs, so the host's network decides nothing" {
+  for t in ifconfig arp ip netstat; do
+    [ "$(command -v $t)" = "$BIN/$t" ]
+  done
 }
 
 @test "tailnet route: an IPv4 in a peer's subnet route goes through that tailnet, unless this machine is on that subnet" {
