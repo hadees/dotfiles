@@ -649,7 +649,8 @@ known_lan() {
   [ "$status" -eq 0 ]
   [ "${lines[0]}" = "gateway: 10.20.30.1 at 00:00:5e:00:53:01 — known LAN homelan" ]
   [ "${lines[1]}" = "known:   homelan = 00:00:5e:00:53:01" ]
-  [ "${#lines[@]}" -eq 2 ]
+  [ "${lines[2]}" = "tally:   0" ]
+  [ "${#lines[@]}" -eq 3 ]
 }
 
 @test "tailnet lan: MAC spellings compare equal" {
@@ -829,6 +830,67 @@ known_lan() {
   run tailnet route 10.20.30.40
   [ "$status" -eq 0 ]
   [ "$output" = work ]
+}
+
+@test "tailnet route --explain: one reason line, never the name, same status" {
+  add_route work 10.20.30.0/24
+  # this machine is elsewhere
+  run tailnet route --explain 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = "10.20.30.0/24 on work: this machine is not on that subnet" ]
+  # an overlapping network that is not known
+  fake_ifconfig 10.20.30.7
+  run tailnet route --explain 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = "10.20.30.0/24 on work: this network overlaps it and is not a known LAN, so work carries it (tailnet lan shows how to mark a known LAN)" ]
+  # a known LAN keeps the exit status 3
+  fake_gateway 10.20.30.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5e:00:53:01
+  run tailnet route --explain 10.20.30.40
+  [ "$status" -eq 3 ]
+  [ "$output" = "10.20.30.0/24 on work: this machine is on it (known LAN homelan)" ]
+  # forced
+  run tailnet route --explain --force --prefer work 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = "10.20.30.0/24 on work: forced through work although this network overlaps it" ]
+  # no subnet route involved: a node and a stranger give no line
+  run tailnet route --explain workbox
+  [ "$status" -eq 0 ]
+  [ "$output" = "" ]
+  run tailnet route --explain 10.99.0.1
+  [ "$status" -eq 1 ]
+  [ "$output" = "" ]
+}
+
+@test "tailnet route: an unrecognised overlap is counted, an explained or forced one is not" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 10.20.30.7
+  count="$STATE/lan-unrecognised.count"
+  run tailnet route 10.20.30.40
+  run tailnet route 10.20.30.40
+  [ "$output" = work ]
+  [ "$(wc -c < "$count" | tr -d ' ')" -eq 2 ]
+  run tailnet route --explain 10.20.30.40
+  run tailnet route --force --prefer work 10.20.30.40
+  [ "$(wc -c < "$count" | tr -d ' ')" -eq 2 ]
+  run tailnet lan
+  [[ "${lines[-1]}" =~ ^"tally:   2 through a tailnet on an unrecognised overlapping network, last "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z" work 10.20.30.0/24"$ ]]
+  # a write that fails changes nothing
+  rm "$count"
+  mkdir "$count"
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
+}
+
+@test "tailnet names: the tally files are not tailnets" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 10.20.30.7
+  run tailnet route 10.20.30.40
+  [ -s "$STATE/lan-unrecognised.count" ]
+  [ -s "$STATE/lan-unrecognised.last" ]
+  run tailnet names
+  [ "$output" = $'personal\nwork' ]
 }
 
 @test "ssh: a LAN IP behind a subnet router is proxied without TAILNET" {

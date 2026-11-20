@@ -43,12 +43,15 @@
 #                            IPv4 inside a subnet route one of its nodes
 #                            advertises; exit 3 for such an IPv4 while this
 #                            machine is on that known LAN
-#   route [--force] [--prefer <name>] <host>
+#   route [--force] [--explain] [--prefer <name>] <host>
 #                            print the tailnet to proxy <host> through, nothing
 #                            when the system tailnet already reaches it (go
 #                            direct); exit 1 when it is a node nowhere; exit 3,
 #                            nothing printed, when <host> is on a known LAN this
-#                            machine is on (direct)
+#                            machine is on (direct). --explain keeps the exit
+#                            status but prints, instead of the tailnet, one line
+#                            on the subnet route involved (nothing when none),
+#                            and does not count an unrecognised overlap
 #   nc <name> <host> <port>  TCP to <host>:<port> inside that tailnet on
 #                            stdin/stdout — the ssh ProxyCommand
 #   mount <name> [rclone flags]  mount a configured remote directory over its
@@ -286,6 +289,17 @@ known_lan_in() { # cidr
   return 1
 }
 
+# One byte per route sent through a tailnet on a network that overlaps its
+# subnet route and is not a known LAN, and the latest one (UTC time, tailnet,
+# route, host; tab-separated), like the lsof guard's tally. Never an error.
+tally_unrecognised() { # tailnet cidr host
+  {
+    printf x >> "$TAILNET_STATE/lan-unrecognised.count" &&
+      printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" > "$TAILNET_STATE/lan-unrecognised.last"
+  } 2>/dev/null
+  return 0
+}
+
 cmd_lan() {
   lan_gws=$(default_gateways)
   lan_known=$(known_lans)
@@ -321,6 +335,14 @@ cmd_lan() {
         printf 'known:   %s = %s — INVALID (six hex octets expected)\n' "$lan_label" "$lan_val"
       fi
     done
+  fi
+  lan_n=0
+  [ -f "$TAILNET_STATE/lan-unrecognised.count" ] && lan_n=$(wc -c < "$TAILNET_STATE/lan-unrecognised.count" | tr -d ' ')
+  if [ "$lan_n" -gt 0 ] && [ -f "$TAILNET_STATE/lan-unrecognised.last" ]; then
+    IFS=$(printf '\t') read -r lan_t lan_tn lan_cidr lan_host < "$TAILNET_STATE/lan-unrecognised.last"
+    printf 'tally:   %s through a tailnet on an unrecognised overlapping network, last %s %s %s\n' "$lan_n" "$lan_t" "$lan_tn" "$lan_cidr"
+  else
+    printf 'tally:   %s\n' "$lan_n"
   fi
   return 0
 }
@@ -628,10 +650,11 @@ cmd_system() {
 }
 
 cmd_route() {
-  force=0 prefer=
+  force=0 explain=0 prefer=
   while [ $# -gt 0 ]; do
     case $1 in
       --force) force=1;;
+      --explain) explain=1;;
       --prefer) shift; prefer=${1-};;
       --prefer=*) prefer=${1#--prefer=};;
       --) shift; break;;
@@ -642,14 +665,16 @@ cmd_route() {
   done
   [ $# -eq 1 ] || usage
   host=$1
-  hit= rt_proxy=0
+  hit= rt_proxy=0 rt_st=
   if [ "$force" = 1 ]; then
     [ -n "$prefer" ] || die "route --force needs --prefer <name>"
     hit=$prefer
     # Forced on an overlapping network or a known LAN: the daemon's proxy, never the kernel route.
     case $host in
       ''|*[!0-9.]*) ;;
-      *) peer_in "$hit" "$host"; case $? in 3|4) rt_proxy=1;; esac;;
+      *) sc_route= sc_lan=
+         peer_in "$hit" "$host"; rt_st=$?
+         case $rt_st in 3|4) rt_proxy=1;; esac;;
     esac
   else
     prefer_done=
@@ -659,14 +684,35 @@ cmd_route() {
         [ "$prefer_done" = 1 ] && continue
         prefer_done=1
       fi
+      sc_route= sc_lan=
       peer_in "$n" "$host"
-      case $? in
-        0) hit=$n; break;;
-        4) hit=$n; rt_proxy=1; break;;
-        3) return 3;;   # on a known LAN: direct, later daemons are not asked
+      rt_st=$?
+      case $rt_st in
+        0|3|4) hit=$n; break;;   # 3: on a known LAN, later daemons are not asked
       esac
     done
     [ -n "$hit" ] || return 1
+    [ "$rt_st" != 4 ] || rt_proxy=1
+  fi
+  if [ "$explain" = 1 ]; then
+    rt_why=
+    if [ "$force" = 1 ]; then
+      case $rt_st in
+        3|4) rt_why="$sc_route on $hit: forced through $hit although this network overlaps it";;
+      esac
+    else
+      case $rt_st in
+        0) [ -z "$sc_route" ] || rt_why="$sc_route on $hit: this machine is not on that subnet";;
+        3) rt_why="$sc_route on $hit: this machine is on it (known LAN $sc_lan)";;
+        4) rt_why="$sc_route on $hit: this network overlaps it and is not a known LAN, so $hit carries it (tailnet lan shows how to mark a known LAN)";;
+      esac
+    fi
+    [ -z "$rt_why" ] || printf '%s\n' "$rt_why"
+  elif [ "$force" != 1 ] && [ "$rt_st" = 4 ]; then
+    tally_unrecognised "$hit" "$sc_route" "$host"
+  fi
+  if [ "$force" != 1 ] && [ "$rt_st" = 3 ]; then
+    return 3
   fi
   # Direct when the system daemon is on the very same tailnet: kernel
   # networking and the app's MagicDNS already reach the host. Not on an
@@ -678,7 +724,8 @@ cmd_route() {
       return 0
     fi
   fi
-  printf '%s\n' "$hit"
+  [ "$explain" = 1 ] || printf '%s\n' "$hit"
+  return 0
 }
 
 cmd_nc() {
