@@ -2303,8 +2303,9 @@ function tailnet_active() {
 
 # Could $1 be a node of some tailnet? Only shapes that can are worth asking the
 # daemons about: a bare label (MagicDNS short name), *.ts.net, a CGNAT
-# 100.64/10 IPv4, or a fd7a:115c:a1e0::/48 IPv6. Everything else — a public
-# FQDN, localhost, another IP — runs direct without a single tailscale call.
+# 100.64/10 IPv4, a private (RFC 1918) IPv4 — a subnet router may advertise
+# its LAN — or a fd7a:115c:a1e0::/48 IPv6. Everything else — a public FQDN,
+# localhost, another IP — runs direct without a single tailscale call.
 function tailnet_hostish() {
 	emulate -L zsh;
 	local h=${(L)1};
@@ -2314,6 +2315,7 @@ function tailnet_hostish() {
 		(localhost) return 1;;
 		(*.ts.net) return 0;;
 		(100.<64-127>.<0-255>.<0-255>) return 0;;
+		(10.<0-255>.<0-255>.<0-255>|172.<16-31>.<0-255>.<0-255>|192.168.<0-255>.<0-255>) return 0;;
 		(fd7a:115c:a1e0:*) return 0;;
 		(*[.:]*) return 1;;
 		(*) return 0;;

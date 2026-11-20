@@ -588,6 +588,46 @@ OUT
   ! grep -q "$STATE/personal/tailscaled.sock" "$TS_LOG" || { echo "the personal tailscaled socket was used"; false; }
 }
 
+# add_route <tailnet> <cidr> — that tailnet's second peer advertises a subnet
+# route, in the layout status --json prints it.
+add_route() {
+  awk -v c="$2" '{ print } /"ID": "peer2",/ { print "      \"PrimaryRoutes\": [\n        \"" c "\"\n      ]," }' \
+    "$TS_FIXTURES/$1.json" > "$TS_FIXTURES/$1.tmp" && mv "$TS_FIXTURES/$1.tmp" "$TS_FIXTURES/$1.json"
+}
+
+# fake_ifconfig <addr> — this machine's interfaces are loopback plus <addr>.
+fake_ifconfig() {
+  printf '#!/bin/sh\nprintf "lo0:\\n\\tinet 127.0.0.1 netmask 0xff000000\\nen0:\\n\\tinet %s netmask 0xffffff00\\n"\n' "$1" > "$BIN/ifconfig"
+  chmod +x "$BIN/ifconfig"
+}
+
+@test "tailnet route: an IPv4 in a peer's subnet route goes through that tailnet, unless this machine is on that subnet" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 192.0.2.5
+  run tailnet peer work 10.20.30.40
+  [ "$status" -eq 0 ]
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
+  run tailnet route 10.20.31.1
+  [ "$status" -eq 1 ]
+  # On that LAN already: direct, no hairpin through the router.
+  fake_ifconfig 10.20.30.7
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 1 ]
+  [ "$output" = "" ]
+}
+
+@test "ssh: a LAN IP behind a subnet router is proxied without TAILNET" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 192.0.2.5
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  in_repo "$repo" ssh 10.20.30.40
+  [ "$output" = "RAN ssh: -o ProxyCommand=$TAILNET_BIN nc work %h %p 10.20.30.40" ]
+  in_repo "$repo" ssh 10.99.0.1
+  [ "$output" = "RAN ssh: 10.99.0.1" ]
+}
+
 @test "tailnet route: when the system daemon is off, every node is routed through its daemon" {
   : > "$TS_FIXTURES/system.json"
   run tailnet route homebox
@@ -788,9 +828,9 @@ OUT
 }
 
 @test "tailnet_hostish: only shapes that can be a tailnet node" {
-  run zsh -c "source '$DOTFUNCTIONS'; for h in workbox WorkBox box.work-net.ts.net 100.102.3.4 100.64.0.1 100.127.255.255 fd7a:115c:a1e0::1; do tailnet_hostish \$h && echo \"yes \$h\"; done; for h in github.com localhost 10.0.0.1 100.128.0.1 192.168.1.1 printer.local 2001:db8::1 ''; do tailnet_hostish \"\$h\" || echo \"no \$h\"; done"
+  run zsh -c "source '$DOTFUNCTIONS'; for h in workbox WorkBox box.work-net.ts.net 100.102.3.4 100.64.0.1 100.127.255.255 fd7a:115c:a1e0::1 10.0.0.1 172.16.0.1 192.168.1.1; do tailnet_hostish \$h && echo \"yes \$h\"; done; for h in github.com localhost 100.128.0.1 172.32.0.1 11.0.0.1 printer.local 2001:db8::1 ''; do tailnet_hostish \"\$h\" || echo \"no \$h\"; done"
   [ "$status" -eq 0 ]
-  [ "$output" = $'yes workbox\nyes WorkBox\nyes box.work-net.ts.net\nyes 100.102.3.4\nyes 100.64.0.1\nyes 100.127.255.255\nyes fd7a:115c:a1e0::1\nno github.com\nno localhost\nno 10.0.0.1\nno 100.128.0.1\nno 192.168.1.1\nno printer.local\nno 2001:db8::1\nno ' ]
+  [ "$output" = $'yes workbox\nyes WorkBox\nyes box.work-net.ts.net\nyes 100.102.3.4\nyes 100.64.0.1\nyes 100.127.255.255\nyes fd7a:115c:a1e0::1\nyes 10.0.0.1\nyes 172.16.0.1\nyes 192.168.1.1\nno github.com\nno localhost\nno 100.128.0.1\nno 172.32.0.1\nno 11.0.0.1\nno printer.local\nno 2001:db8::1\nno ' ]
 }
 
 # --- functions: ssh / scp / sftp -------------------------------------------
@@ -1092,7 +1132,7 @@ ran() { echo "RAN ${1%% *}: ${1#* }"; }
   # reached for these destinations. The real script/state are all present.
   for shell_opts in "" "$CLAUDE_CODE_OPTS"; do
     for cmd in "curl -s http://127.0.0.1:8321/" "curl localhost:3000" "curl -sSL https://api.github.com/user" \
-               "curl http://10.0.0.5/" "ssh localhost" "ssh git@github.com" "ssh -p 22 admin@192.168.1.9" \
+               "curl http://203.0.113.5/" "ssh localhost" "ssh git@github.com" "ssh -p 22 admin@198.51.100.9" \
                "scp ./file.txt git@github.com:/srv/" "sftp user@example.org"; do
       : > "$TS_LOG"
       ZOPTS=$shell_opts in_repo "$repo" "tailnet_active() { $CRASH; }; $cmd"

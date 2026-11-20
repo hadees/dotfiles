@@ -38,15 +38,22 @@ daemon whose socket file is missing is skipped without a call (the CLI stalls
 is ssh's post-config HostName and stays unresolved, so MagicDNS resolves in
 that daemon), curl gets `--proxy socks5h://localhost:<port>`. A node of the
 app's own tailnet, or of no tailnet, runs untouched; so do hosts whose shape
-can't be a node (public FQDNs, non-CGNAT IPs, localhost — zero calls),
+can't be a node (public FQDNs, public IPs, localhost — zero calls), and
 anything with a ProxyJump/ProxyCommand already (config or `-J`/`-o`: a
 command-line `-o ProxyCommand` would silently override a configured
 ProxyJump), and curl with `-x`/`--noproxy`/proxy variables set. The
 destination comes from `ssh -G` (ssh's own parsing) — scp/sftp extract the
 `[user@]host:` operand first — and for curl the first URL / bare host
 argument, skipping the value of an option that takes one (a header or a form
-field can hold a URL). `TAILNET` forces its tailnet with the node check skipped (subnet
-routes the daemons can't vouch for); `tailnet-as <name> <cmd…>` does that and
+field can hold a URL). A private (RFC 1918) IPv4 is asked about too:
+`peer_in` counts it when it falls inside a subnet route a peer advertises
+(`PrimaryRoutes`; the daemons run `--accept-routes`), so a LAN behind a
+subnet router is reachable away from it, unless one of this machine's own
+addresses (`ifconfig`, else `ip -4 addr`) sits in that subnet: on that LAN,
+direct wins. A different network reusing the same prefix, or a Docker/VM
+bridge overlapping it, also reads as on it; under WSL2's NAT mode the real
+LAN is invisible, so it reads as away (`command ssh` for direct). `TAILNET` forces its tailnet with the node check skipped (subnet
+routes the daemons can't vouch for, or that prefix clash); `tailnet-as <name> <cmd…>` does that and
 exports `ALL_PROXY`/`HTTP(S)_PROXY`/`NO_PROXY` so any proxy-aware tool
 follows. `tailnet-doctor [host]` traces all of it. Without the script or an
 installed tailnet the wrappers are plain passthroughs. Order and failure
