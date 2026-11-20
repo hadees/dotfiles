@@ -1338,6 +1338,11 @@ known_lan() {
   [ "$output" = "node.example" ]
 }
 
+@test "tailnet_curl_host: an address given to --interface or --resolve is not the destination" {
+  run zsh -c "source '$DOTFUNCTIONS'; tailnet_curl_host --interface 10.20.30.7 --resolve nas:80:10.20.30.8 --connect-to ::10.20.30.9: --dns-servers 10.20.30.10 --dns-interface 10.20.30.11 --dns-ipv4-addr 10.20.30.12 --haproxy-clientip 10.20.30.13 workbox"
+  [ "$output" = "workbox" ]
+}
+
 # --- functions: tailnet-as / passthrough ------------------------------------
 
 @test "tailnet-as: runs one command with TAILNET and the proxy environment set; unknown names error out" {
@@ -1585,6 +1590,47 @@ STUB
   rm -rf "$STATE"
   in_repo "$repo" tailnet-doctor
   [[ "$output" == *"<no tailnet installed — tailnet install <name> && tailnet up <name>>"* ]]
+}
+
+@test "tailnet-doctor: a subnet route's verdict says which case it is" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  add_route work 10.20.30.0/24
+  in_repo "$repo" tailnet-doctor 10.20.30.40
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"route:   10.20.30.40 -> via work (ProxyCommand=$TAILNET_BIN nc work %h %p; curl --proxy socks5h://localhost:1056)"$'\n'"subnet:  10.20.30.0/24 on work: this machine is not on that subnet"* ]]
+  fake_ifconfig 10.20.30.7
+  in_repo "$repo" tailnet-doctor 10.20.30.40
+  [[ "$output" == *"route:   10.20.30.40 -> via work ("*$'\n'"subnet:  10.20.30.0/24 on work: this network overlaps it and is not a known LAN, so work carries it (tailnet lan shows how to mark a known LAN)"* ]]
+  fake_gateway 10.20.30.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5e:00:53:01
+  in_repo "$repo" tailnet-doctor 10.20.30.40
+  [[ "$output" == *"route:   10.20.30.40 -> direct (on a known LAN)"$'\n'"subnet:  10.20.30.0/24 on work: this machine is on it (known LAN homelan)"* ]]
+  # a route of the tailnet the app is on, this machine elsewhere: direct, with its reason
+  rm -f "$BIN/ifconfig"; fake_ifconfig 192.0.2.5
+  add_route personal 10.20.31.0/24
+  in_repo "$repo" tailnet-doctor 10.20.31.1
+  [[ "$output" == *"route:   10.20.31.1 -> direct (a subnet route of the tailnet the app is on)"$'\n'"subnet:  10.20.31.0/24 on personal: this machine is not on that subnet"* ]]
+  # a node has no reason line
+  in_repo "$repo" tailnet-doctor homebox
+  [[ "$output" == *"route:   homebox -> direct (a node of the tailnet the app is on)"* ]]
+  [[ "$output" != *"subnet:  "* ]]
+}
+
+@test "tailnet-doctor: the lan block appears with a known LAN or a tally, and not otherwise" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  in_repo "$repo" tailnet-doctor
+  [[ "$output" != *"lan:"* ]]
+  known_lan homelan 00:00:5e:00:53:01
+  fake_gateway 10.20.30.1 0:0:5e:0:53:1
+  in_repo "$repo" tailnet-doctor
+  [[ "$output" == *"lan:"$'\n'"  gateway: 10.20.30.1 at 00:00:5e:00:53:01 — known LAN homelan"$'\n'"  known:   homelan = 00:00:5e:00:53:01"$'\n'*"  tally:   0"$'\n'"cwd:"* ]]
+  git config --file "$GIT_CONFIG_GLOBAL" --unset-all tailnet-lan.homelan.gateway
+  in_repo "$repo" tailnet-doctor
+  [[ "$output" != *"lan:"* ]]
+  printf x > "$STATE/lan-unrecognised.count"
+  in_repo "$repo" tailnet-doctor
+  [[ "$output" == *"lan:"$'\n'"  gateway:"* ]]
+  [[ "$output" == *"  tally:   1"$'\n'"cwd:"* ]]
 }
 
 @test "tailnet-doctor: reports rclone and the mounts when any are configured" {
