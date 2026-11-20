@@ -699,9 +699,8 @@ known_lan() {
   [ "${lines[3]}" = "known:   junk = not-a-mac — INVALID (six hex octets expected)" ]
 }
 
-@test "tailnet route: an IPv4 in a peer's subnet route goes through that tailnet, unless this machine is on that subnet" {
+@test "tailnet route: an IPv4 in a peer's subnet route goes through that tailnet when this machine is elsewhere" {
   add_route work 10.20.30.0/24
-  fake_ifconfig 192.0.2.5
   run tailnet peer work 10.20.30.40
   [ "$status" -eq 0 ]
   run tailnet route 10.20.30.40
@@ -709,11 +708,127 @@ known_lan() {
   [ "$output" = work ]
   run tailnet route 10.20.31.1
   [ "$status" -eq 1 ]
-  # On that LAN already: direct, no hairpin through the router.
+  [ "$output" = "" ]
+}
+
+@test "tailnet route: an overlapping network with no known gateway still goes through the tailnet" {
+  add_route work 10.20.30.0/24
   fake_ifconfig 10.20.30.7
   run tailnet route 10.20.30.40
-  [ "$status" -eq 1 ]
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
+  fake_gateway 10.20.30.1 0:0:5e:0:53:9
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
+  known_lan otherlan 00:00:5e:00:53:02
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
+  run tailnet peer work 10.20.30.40
+  [ "$status" -eq 0 ]
+}
+
+@test "tailnet route: on a known LAN the subnet's addresses run direct" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 10.20.30.7
+  fake_gateway 10.20.30.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5E:00:53:01
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 3 ]
   [ "$output" = "" ]
+  run tailnet peer work 10.20.30.40
+  [ "$status" -eq 3 ]
+  run tailnet route 10.20.31.1
+  [ "$status" -eq 1 ]
+}
+
+@test "tailnet route: a known gateway outside the subnet route does not make this the LAN" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 10.20.30.7
+  fake_gateway 192.0.2.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5e:00:53:01
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
+}
+
+@test "tailnet route: a known LAN elsewhere changes nothing for a subnet this machine is not on" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 192.0.2.5
+  fake_gateway 192.0.2.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5e:00:53:01
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
+}
+
+@test "tailnet route: an unrecognised overlapping network is proxied even when the app is on that tailnet" {
+  add_route personal 10.20.30.0/24
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = "" ]
+  fake_ifconfig 10.20.30.7
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = personal ]
+}
+
+@test "tailnet route --force: an overlapping network is proxied even when the app is on that tailnet" {
+  add_route personal 10.20.30.0/24
+  fake_ifconfig 10.20.30.7
+  run tailnet route --force --prefer personal 10.20.30.40
+  [ "$output" = personal ]
+  fake_gateway 10.20.30.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5e:00:53:01
+  run tailnet route --force --prefer personal 10.20.30.40
+  [ "$output" = personal ]
+  fake_ifconfig 192.0.2.5
+  run tailnet route --force --prefer personal 10.20.30.40
+  [ "$output" = "" ]
+}
+
+@test "tailnet route: the most specific subnet route decides, and an exit node's /0 never counts" {
+  add_route work 10.20.0.0/16 peer1
+  add_route work 10.20.30.0/24 peer2
+  fake_ifconfig 10.20.99.7
+  fake_gateway 10.20.99.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5e:00:53:01
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
+  # a second fixture: only an exit node's default route
+  rm "$BATS_TEST_TMPDIR/netstat-routes.out" "$BATS_TEST_TMPDIR/arp.out"
+  fixture work work-net.ts.net workbox 100.102.3.4 shared 100.102.3.5
+  add_route work 0.0.0.0/0
+  run tailnet route 10.99.0.1
+  [ "$status" -eq 1 ]
+}
+
+@test "tailnet route (Linux): the gateway comes from ip route and ip neigh" {
+  export FAKE_OS=Linux
+  add_route work 10.20.30.0/24
+  fake_ifconfig 10.20.30.7
+  fake_gateway 10.20.30.1 00:00:5E:00:53:01
+  known_lan homelan 00:00:5e:00:53:01
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 3 ]
+  rm "$BATS_TEST_TMPDIR/arp.out"
+  printf '10.20.30.1 dev eth0 FAILED\n' > "$BATS_TEST_TMPDIR/ip-neigh.out"
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
+}
+
+@test "tailnet route: a broken arp or netstat means not known, never a failure" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 10.20.30.7
+  fake_gateway 10.20.30.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5e:00:53:01
+  printf '#!/bin/sh\necho garbage\nexit 1\n' > "$BIN/arp"
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
 }
 
 @test "ssh: a LAN IP behind a subnet router is proxied without TAILNET" {
@@ -724,6 +839,30 @@ known_lan() {
   [ "$output" = "RAN ssh: -o ProxyCommand=$TAILNET_BIN nc work %h %p 10.20.30.40" ]
   in_repo "$repo" ssh 10.99.0.1
   [ "$output" = "RAN ssh: 10.99.0.1" ]
+}
+
+@test "ssh/curl: on a known LAN the address runs direct" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 10.20.30.7
+  fake_gateway 10.20.30.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5E:00:53:01
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  in_repo "$repo" ssh 10.20.30.40
+  [ "$output" = "RAN ssh: 10.20.30.40" ]
+  in_repo "$repo" curl http://10.20.30.40/
+  [ "$output" = "RAN curl: http://10.20.30.40/" ]
+}
+
+@test "ssh/curl: an unrecognised overlapping network goes through the tailnet, the app's own included" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 10.20.30.7
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  in_repo "$repo" ssh 10.20.30.40
+  [ "$output" = "RAN ssh: -o ProxyCommand=$TAILNET_BIN nc work %h %p 10.20.30.40" ]
+  add_route personal 10.20.30.0/24
+  # work comes after personal in installed order, so personal answers first
+  in_repo "$repo" curl http://10.20.30.40/
+  [ "$output" = "RAN curl: --proxy socks5h://localhost:1055 http://10.20.30.40/" ]
 }
 
 @test "tailnet route: when the system daemon is off, every node is routed through its daemon" {
