@@ -46,9 +46,14 @@ STUB
   # query for a pid with no row answers FAKE_OWN_TTY, the tty restore runs on.
   export PS_TTY_DIR="$BATS_TEST_TMPDIR/ps-tty"
   mkdir -p "$PS_TTY_DIR"
+  # `ps eww -o command= -p <pid>` answers the file PS_ENV_DIR/<pid>, or nothing.
+  export PS_ENV_DIR="$BATS_TEST_TMPDIR/ps-env"
+  mkdir -p "$PS_ENV_DIR"
   cat > "$BIN/ps" <<'STUB'
 #!/bin/sh
 case "$*" in
+  *eww*) while [ $# -gt 0 ]; do case $1 in -p) pid=$2; shift 2;; *) shift;; esac; done
+         cat "$PS_ENV_DIR/$pid" 2>/dev/null; exit 0;;
   *-Ao*) for p in ${FAKE_PROCS:-}; do printf '%s\n' "$p"; done; exit 0;;
 esac
 fmt=3
@@ -105,6 +110,14 @@ make_session() {
   mkdir -p "$1/sessions"
   printf '{"pid":%s,"sessionId":"%s","cwd":"%s","kind":"%s","name":"%s","status":"%s"}\n' \
     "$2" "${6:-fixture}" "$3" "${7:-interactive}" "${4:-fixture-session}" "${5:-idle}" > "$1/sessions/$2.json"
+}
+
+# make_waiting <profile dir> <pid> <cwd> <since ms or ""> <reason or "">: a waiting
+# session; an empty since or reason leaves the field out of the record.
+make_waiting() {
+  mkdir -p "$1/sessions"
+  printf '{"pid":%s,"sessionId":"w%s","cwd":"%s","kind":"interactive","status":"waiting"%s%s}\n' \
+    "$2" "$2" "$3" "${4:+,\"statusUpdatedAt\":$4}" "${5:+,\"waitingFor\":\"$5\"}" > "$1/sessions/$2.json"
 }
 
 # make_repo <name> : a repo with one commit; prints its path.
@@ -847,4 +860,67 @@ $b|start Beta --continue -- pick up" ]
   # The stubbed osascript in these tests cannot see that, so pin the source.
   ! grep -n '& tab &' "$BATS_TEST_DIRNAME/../bin/executable_claude-tab" "$BATS_TEST_DIRNAME/../bin/executable_worktabs" || { echo "the source contains a '& tab &' concatenation"; false; }
   grep -q 'set sep to (character id 9)' "$BATS_TEST_DIRNAME/../bin/executable_claude-tab"
+}
+
+@test "attention lists waiting sessions only, longest wait first, with the nine columns" {
+  a=$(make_repo alpha); b=$(make_repo beta)
+  live_pid; pa=$LIVE; live_pid; pb=$LIVE; live_pid; pi=$LIVE; live_pid; pu=$LIVE
+  now=$(date +%s)
+  make_waiting "$HOME/.claude" "$pa" "$a" $(( (now - 30) * 1000 )) "permission prompt"
+  make_waiting "$HOME/.claude-personal" "$pb" "$b" $(( (now - 600) * 1000 )) "permission prompt"
+  make_session "$HOME/.claude" "$pi" "$a" one idle
+  make_session "$HOME/.claude" "$pu" "$a" two busy
+  dead=$(dead_pid); make_waiting "$HOME/.claude" "$dead" "$a" 1 x
+  printf '%s 1 ttys003\n%s 1 ttys004\n' "$pa" "$pb" > "$PS_TABLE"
+  export FAKE_TABS=$'42\t/dev/ttys003\talpha'
+  run sh "$CT" attention
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 2 ]
+  [ "$(printf '%s\n' "${lines[0]}" | awk -F'\t' '{ print NF }')" -eq 9 ]
+  [ "$(col 1,2,3,5,6,7 | head -1)" = "$(printf '%s\tpersonal\tbeta\tpermission prompt\t/dev/ttys004\tother' "$pb")" ]
+  [ "$(col 1,2,3,5,6,7 | tail -1)" = "$(printf '%s\tdefault\talpha\tpermission prompt\t/dev/ttys003\titerm2' "$pa")" ]
+  [ "$(col 4 | head -1)" -ge 600 ]
+  [ "$(col 4 | tail -1)" -ge 30 ]
+  [ "$(col 4 | tail -1)" -lt 600 ]
+  [ "$(col 9 | head -1)" = "$b" ]
+}
+
+@test "attention: nobody waiting is empty and exit 0; a missing time is 0 and a missing reason -" {
+  a=$(make_repo alpha)
+  live_pid
+  make_session "$HOME/.claude" "$LIVE" "$a" one idle
+  run sh "$CT" attention
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  live_pid
+  make_waiting "$HOME/.claude" "$LIVE" "$a" "" ""
+  run sh "$CT" attention
+  [ "$status" -eq 0 ]
+  [ "$(col 4)" = 0 ]
+  [ "$(col 5)" = - ]
+}
+
+@test "attention takes the guid from the environment line, - without one, and keeps it for a buried peer" {
+  a=$(make_repo alpha)
+  live_pid; pa=$LIVE; live_pid; pb=$LIVE
+  make_waiting "$HOME/.claude" "$pa" "$a" 5000 "permission prompt"
+  make_waiting "$HOME/.claude" "$pb" "$a" 9000 "permission prompt"
+  printf '%s 1 ttys003\n%s 1 ttys004\n' "$pa" "$pb" > "$PS_TABLE"
+  printf 'claude --flag HOME=/x ITERM_SESSION_ID=w0t1p0:ABCD-1234:5 TERM=xterm\n' > "$PS_ENV_DIR/$pa"
+  export FAKE_TABS=$'42\t/dev/ttys999\telsewhere'
+  run sh "$CT" attention
+  [ "$status" -eq 0 ]
+  [ "$(col 7 | sort -u)" = other ]
+  [ "$(col 1,8 | grep "^$pa")" = "$(printf '%s\tABCD-1234:5' "$pa")" ]
+  [ "$(col 1,8 | grep "^$pb")" = "$(printf '%s\t-' "$pb")" ]
+}
+
+@test "attention works off macOS: where is unknown and guid -" {
+  a=$(make_repo alpha)
+  live_pid
+  make_waiting "$HOME/.claude" "$LIVE" "$a" 5000 "permission prompt"
+  printf '%s 1 ttys003\n' "$LIVE" > "$PS_TABLE"
+  FAKE_OS=Linux run sh "$CT" attention
+  [ "$status" -eq 0 ]
+  [ "$(col 7,8)" = "$(printf 'unknown\t-')" ]
 }

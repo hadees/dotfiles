@@ -18,6 +18,10 @@
 #   list                     one row per live session, tab-separated: pid,
 #                            profile, label, place, status, name, tty, where,
 #                            window, title, cwd ("-" for empty)
+#   attention                one row per session waiting on you, longest wait
+#                            first, tab-separated: pid, profile, label,
+#                            waited seconds, reason, tty, where, iTerm2 session
+#                            guid, cwd ("-" for empty; nothing when none waits)
 #   tabs                     iTerm2's sessions: window, tty, title
 #   focus <pid>              bring that session's iTerm2 tab forward
 #   save [file]              write the live sessions to a file (default
@@ -151,6 +155,41 @@ REG
   done
 }
 
+# Live records of every profile that are waiting on the user: pid, profile,
+# since (statusUpdatedAt, epoch ms; 0 when missing or not a number), reason
+# (waitingFor), cwd. A third reader, for the same reason as registry_full.
+registry_waiting() {
+  profile_dirs | while IFS= read -r d; do
+    [ -d "$d/sessions" ] || continue
+    python3 - "$d" "$(profile_label "$d")" <<'REG'
+import glob, json, os, re, sys
+d, profile = sys.argv[1:3]
+def field(v):
+    s = "" if v is None else re.sub(r"[\t\r\n]", " ", str(v)).strip()
+    return s if s else "-"
+for f in sorted(glob.glob(os.path.join(d, "sessions", "*.json"))):
+    if not re.fullmatch(r"\d+\.json", os.path.basename(f)):
+        continue
+    try:
+        with open(f) as fh:
+            r = json.load(fh)
+        pid = r["pid"]
+        if type(pid) is not int or pid <= 0:
+            continue
+        os.kill(pid, 0)
+    except PermissionError:
+        pass  # alive, just not ours
+    except Exception:
+        continue
+    if r.get("status") != "waiting":
+        continue
+    since = r.get("statusUpdatedAt")
+    since = int(since) if type(since) in (int, float) and since > 0 else 0
+    print("\t".join(field(x) for x in (pid, profile, since, r.get("waitingFor"), r.get("cwd"))))
+REG
+  done
+}
+
 # --- pid -> tty --------------------------------------------------------------
 
 # "/dev/<tty>" for a ps tty column, nothing for "no terminal" (macOS "??",
@@ -186,6 +225,14 @@ tty_table() {
     [ -n "$t" ] || t=$(walk_tty "${ppid-}")
     printf '%s\t%s\n' "$pid" "$t"
   done
+}
+
+# The iTerm2 session GUID of process $1, from the ITERM_SESSION_ID in its
+# start-up environment (w0t0p0:<guid>); "-" when it has none.
+guid_of() {
+  g=$(ps eww -o command= -p "$1" 2>/dev/null |
+    awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^ITERM_SESSION_ID=/) { sub(/^[^:]*:/, "", $i); print $i; exit } }')
+  printf '%s\n' "${g:--}"
 }
 
 # --- the label ---------------------------------------------------------------
@@ -420,6 +467,40 @@ EOF_HIT
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$pid" "$profile" "${lp%"$TAB"*}" "${lp##*"$TAB"}" "$status" "$name" "$tty" "$where" "$win" "$title" "$cwd"
   done | LC_ALL=C sort -t"$TAB" -k3,3 -k1,1n
+}
+
+cmd_attention() {
+  [ $# -eq 0 ] || usage
+  need_python
+  rows=$(registry_waiting)
+  [ -n "$rows" ] || return 0
+  init_tabname
+  # shellcheck disable=SC2046
+  ttys=$(tty_table $(printf '%s\n' "$rows" | cut -f1))
+  tabs='' listed=0
+  if [ "$(os)" = Darwin ] && proc_running iTerm2; then
+    tabs=$(cmd_tabs 2>/dev/null) && listed=1
+  fi
+  now=$(date +%s)
+  printf '%s\n' "$rows" | while IFS=$TAB read -r pid profile since reason cwd; do
+    tty=$(printf '%s\n' "$ttys" | awk -F'\t' -v p="$pid" '$1 == p { print $2; exit }')
+    [ -n "$tty" ] || tty=-
+    where=unknown
+    if [ "$tty" = - ]; then
+      where=headless
+    elif [ "$listed" = 1 ]; then
+      where=other
+      printf '%s\n' "$tabs" | awk -F'\t' -v t="$tty" '$2 == t { f = 1 } END { exit !f }' && where=iterm2
+    fi
+    waited=0
+    [ "$since" -le 0 ] || waited=$((now - since / 1000))
+    [ "$waited" -ge 0 ] || waited=0
+    guid=-
+    [ "$(os)" != Darwin ] || guid=$(guid_of "$pid")
+    lp=$(label_of "$cwd" </dev/null)
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$pid" "$profile" "${lp%"$TAB"*}" "$waited" "$reason" "$tty" "$where" "$guid" "$cwd"
+  done | LC_ALL=C sort -t"$TAB" -k4,4nr -k1,1n
 }
 
 # Single-quoted for a POSIX shell.
@@ -657,6 +738,7 @@ cmd=$1
 shift
 case $cmd in
   list)      cmd_list;;
+  attention) cmd_attention "$@";;
   tabs)      cmd_tabs;;
   focus)     cmd_focus "$@";;
   save)      cmd_save "$@";;
