@@ -65,11 +65,55 @@ Nothing alive is started twice: a row whose session is live is `skip:live`.
 row per live Claude Code session across every profile (from each profile's
 `sessions/<pid>.json` registry, the files `claude_sessions_here` reads),
 labelled by `tabname`, with the iTerm2 window and title its tty belongs to;
-`focus <pid>` brings that tab forward. `list` works anywhere; `tabs` and
-`focus` need macOS. Tests: `tests/claude-tab.bats`, `tests/tabname.bats`.
+`focus <pid>` brings that tab forward. `list` and `attention` work anywhere; `tabs`,
+`focus` and `next` need macOS. Tests: `tests/claude-tab.bats`, `tests/tabname.bats`.
 `save` and `restore` bring the sessions back after an iTerm2 quit (see "Claude
 peers"). The tab bar reads `<repo> (claude)` during a session; the conversation topic no
 longer appears there.
+
+**Which session needs you, and the way to it.** Session Status, with *Merge
+workgroup statuses* off, shows every Claude but does not say which to visit;
+the registry already does. `claude-tab attention` prints one row per live
+session whose registry `status` is exactly `waiting`, longest wait first (then
+pid), nothing and exit 0 when none waits. **Nine columns**, tab-separated:
+`pid, profile, label, waited_s, reason, tty, where, guid, cwd`. `waited_s` is
+whole seconds since `statusUpdatedAt`, `reason` is `waitingFor` (`-` when
+empty), `where` and `label` are `list`'s, `guid` is the iTerm2 session id read
+from the process's `ITERM_SESSION_ID` with `ps eww` (`-` off macOS or when
+absent; a buried peer has one). `waitingFor` has been seen live as
+`permission prompt` and as `input needed`, and `attention` prints whatever is
+there. `list` is unchanged: `iterm2-relaunch` and the tests parse its eleven
+columns.
+
+`next [--dry-run]` (macOS) goes to the first `attention` row and prints
+`<label>: <reason>, waiting <dur>`; `--dry-run` prints
+`<label><TAB><where><TAB><guid>` and goes nowhere. Exit 0 focused, 1 failed, 2
+usage, 3 nobody waiting (`claude-tab: nobody is waiting` on stderr). `focus
+<pid>` goes through the same `focus_session`, which takes one of three routes
+and sets `FOCUS_ROUTE`: `tab` (the session is in front: AppleScript by tty),
+`swap` (it is a buried workgroup peer and `it2 session focus <guid>` exited 0;
+`$CLAUDE_TAB_IT2`, default `~/.config/iterm2/it2`, five seconds, the API cookie
+exported only when newer than iTerm2's socket), `group` (swap refused or `it2`
+absent: a visible member of the same workgroup, found through `claude-peer
+claim` and `peers --leader`, is brought forward and `next` adds ` (its tab is
+in front; pick it in the peer bar)`). `alfred` prints the `attention` rows as
+Script Filter JSON, and `alfred/claude-tab/info.plist` (keyword `cn`, a
+`focus` on the chosen row, a hotkey running `next`) is installed by hand with
+`worktabs alfred-install "$(chezmoi source-path)/alfred/claude-tab"`.
+
+**Not yet proven.** Plan step 1's live probe was skipped, so U1 to U3 are
+unverified on the running app: whether `it2 session focus` swaps a buried peer
+in (source says it is refused, `iTermAPIHelper.m:3190-3195`), so the `swap`
+route and the `group` fallback after it have only run against stubs. The Alfred
+workflow has never been imported; its hotkey and notification objects are
+written from memory of Alfred 5's format and may need a field changed on first
+import. The hotkey ships **unassigned**, the operator picks the key in Alfred.
+`next` run from that hotkey shows no notification when nobody waits or focus
+fails, because both messages go to stderr and Alfred shows only stdout.
+
+**The tell.** The registry is an observed layout. If Claude Code renames
+`status` or `waitingFor`, `attention` goes quiet while prompts are open; it is
+visible when `list` column 5 reads `waiting` for sessions `attention` lacks.
 
 `bin/tabname [--role] [dir]` (`~/bin/tabname`) is the label: the git toplevel's name, or
 for a linked worktree the repo, an `@`, then the worktree name, so the worktrees
