@@ -165,9 +165,29 @@ STUB
   cat > "$BIN/netstat" <<'STUB'
 #!/bin/sh
 echo "$*" >> "$BATS_TEST_TMPDIR/netstat.log"
+for a in "$@"; do
+  [ "$a" = -rn ] && { cat "$BATS_TEST_TMPDIR/netstat-routes.out" 2>/dev/null; exit 0; }
+done
 cat "$BATS_TEST_TMPDIR/netstat.out" 2>/dev/null
 exit 0
 STUB
+  # arp and ip read this machine's neighbours and default route; the files a
+  # test fills (see fake_gateway) stand in for them, so the host's own network
+  # decides nothing. ifconfig defaults to an address outside every fixture route.
+  cat > "$BIN/arp" <<'STUB'
+#!/bin/sh
+cat "$BATS_TEST_TMPDIR/arp.out" 2>/dev/null
+exit 0
+STUB
+  cat > "$BIN/ip" <<'STUB'
+#!/bin/sh
+case "$*" in
+  "-4 route show default") cat "$BATS_TEST_TMPDIR/ip-route.out" 2>/dev/null; exit 0;;
+  "neigh show") cat "$BATS_TEST_TMPDIR/ip-neigh.out" 2>/dev/null; exit 0;;
+esac
+exit 1
+STUB
+  fake_ifconfig 192.0.2.5
   # ssh -G: resolve `hostname` from the first operand the way ssh would
   # (skipping option values), echo proxyjump/proxycommand when -J/-o set them;
   # anything else records the run.
@@ -588,6 +608,325 @@ OUT
   ! grep -q "$STATE/personal/tailscaled.sock" "$TS_LOG" || { echo "the personal tailscaled socket was used"; false; }
 }
 
+# add_route <tailnet> <cidr> [peer-id] — that tailnet's peer (default peer2)
+# advertises a subnet route, in the layout status --json prints it.
+add_route() {
+  awk -v c="$2" -v id="\"ID\": \"${3:-peer2}\"," '{ print } index($0, id) { print "      \"PrimaryRoutes\": [\n        \"" c "\"\n      ]," }' \
+    "$TS_FIXTURES/$1.json" > "$TS_FIXTURES/$1.tmp" && mv "$TS_FIXTURES/$1.tmp" "$TS_FIXTURES/$1.json"
+}
+
+# fake_ifconfig <addr> — this machine's interfaces are loopback plus <addr>.
+fake_ifconfig() {
+  printf '#!/bin/sh\nprintf "lo0:\\n\\tinet 127.0.0.1 netmask 0xff000000\\nen0:\\n\\tinet %s netmask 0xffffff00\\n"\n' "$1" > "$BIN/ifconfig"
+  chmod +x "$BIN/ifconfig"
+}
+
+# fake_gateway <ip> <mac> — this machine's default route runs through <ip>,
+# whose neighbour entry is <mac> exactly as written (so a test picks the
+# spelling), in the layout of macOS (netstat, arp) and Linux (ip route, ip neigh).
+fake_gateway() {
+  printf 'default            %s       UGScg          en0\n' "$1" >> "$BATS_TEST_TMPDIR/netstat-routes.out"
+  printf '? (%s) at %s on en0 ifscope [ethernet]\n' "$1" "$2" >> "$BATS_TEST_TMPDIR/arp.out"
+  printf 'default via %s dev eth0 proto dhcp metric 100\n' "$1" >> "$BATS_TEST_TMPDIR/ip-route.out"
+  printf '%s dev eth0 lladdr %s REACHABLE\n' "$1" "$2" >> "$BATS_TEST_TMPDIR/ip-neigh.out"
+}
+
+# known_lan <label> <mac> — the machine-local gitconfig lists <mac> as that LAN's gateway.
+known_lan() {
+  git config --file "$GIT_CONFIG_GLOBAL" --add "tailnet-lan.$1.gateway" "$2"
+}
+
+@test "tests: ifconfig, arp, ip and netstat are stubs, so the host's network decides nothing" {
+  for t in ifconfig arp ip netstat; do
+    [ "$(command -v $t)" = "$BIN/$t" ]
+  done
+}
+
+@test "tailnet lan: names the gateway and whether its MAC is a known LAN" {
+  fake_gateway 10.20.30.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5E:00:53:01
+  run tailnet lan
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "gateway: 10.20.30.1 at 00:00:5e:00:53:01 — known LAN homelan" ]
+  [ "${lines[1]}" = "known:   homelan = 00:00:5e:00:53:01" ]
+  [ "${lines[2]}" = "tally:   0" ]
+  [ "${#lines[@]}" -eq 3 ]
+}
+
+@test "tailnet lan: MAC spellings compare equal" {
+  fake_gateway 10.20.30.1 0:0:5e:0:53:1
+  known_lan homelan 00-00-5E-00-53-01
+  run tailnet lan
+  [ "${lines[0]}" = "gateway: 10.20.30.1 at 00:00:5e:00:53:01 — known LAN homelan" ]
+  [ "${lines[1]}" = "known:   homelan = 00:00:5e:00:53:01" ]
+}
+
+@test "tailnet lan: Linux reads ip route and ip neigh" {
+  export FAKE_OS=Linux
+  fake_gateway 10.20.30.1 00:00:5E:00:53:01
+  known_lan homelan 00:00:5e:00:53:01
+  run tailnet lan
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "gateway: 10.20.30.1 at 00:00:5e:00:53:01 — known LAN homelan" ]
+  [ ! -e "$BATS_TEST_TMPDIR/netstat.log" ]
+  # A FAILED neighbour entry has no address; with arp empty there is none.
+  rm "$BATS_TEST_TMPDIR/arp.out"
+  printf '10.20.30.1 dev eth0 FAILED\n' > "$BATS_TEST_TMPDIR/ip-neigh.out"
+  run tailnet lan
+  [ "${lines[0]}" = "gateway: 10.20.30.1 — no neighbour entry" ]
+  # No ip neigh entry at all: net-tools' arp answers.
+  : > "$BATS_TEST_TMPDIR/ip-neigh.out"
+  printf '? (10.20.30.1) at 0:0:5e:0:53:1 on eth0 [ether]\n' > "$BATS_TEST_TMPDIR/arp.out"
+  run tailnet lan
+  [ "${lines[0]}" = "gateway: 10.20.30.1 at 00:00:5e:00:53:01 — known LAN homelan" ]
+}
+
+@test "tailnet lan: no gateway, an unlisted gateway with its remediation line, nothing configured, an invalid value" {
+  run tailnet lan
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "gateway: <none — no default route through an IPv4 gateway>" ]
+  [[ "${lines[1]}" == "known:   <none — tailnet-lan.<label>.gateway in a machine-local gitconfig"* ]]
+  # link#N is a scope, not a gateway
+  printf 'default            link#20            UCSIg           en0       !\n' >> "$BATS_TEST_TMPDIR/netstat-routes.out"
+  run tailnet lan
+  [ "${lines[0]}" = "gateway: <none — no default route through an IPv4 gateway>" ]
+  fake_gateway 10.20.30.1 0:0:5e:0:53:9
+  known_lan homelan 00:00:5e:00:53:01
+  known_lan junk not-a-mac
+  run tailnet lan
+  [ "${lines[0]}" = "gateway: 10.20.30.1 at 00:00:5e:00:53:09 — not a known LAN" ]
+  [ "${lines[1]}" = '  to mark this network as known, in a machine-local gitconfig (overlay): [tailnet-lan "<label>"] gateway = 00:00:5e:00:53:09' ]
+  [ "${lines[2]}" = "known:   homelan = 00:00:5e:00:53:01" ]
+  [ "${lines[3]}" = "known:   junk = not-a-mac — INVALID (six hex octets expected)" ]
+}
+
+@test "tailnet route: an IPv4 in a peer's subnet route goes through that tailnet when this machine is elsewhere" {
+  add_route work 10.20.30.0/24
+  run tailnet peer work 10.20.30.40
+  [ "$status" -eq 0 ]
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
+  run tailnet route 10.20.31.1
+  [ "$status" -eq 1 ]
+  [ "$output" = "" ]
+}
+
+@test "tailnet route: an overlapping network with no known gateway still goes through the tailnet" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 10.20.30.7
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
+  fake_gateway 10.20.30.1 0:0:5e:0:53:9
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
+  known_lan otherlan 00:00:5e:00:53:02
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
+  run tailnet peer work 10.20.30.40
+  [ "$status" -eq 0 ]
+}
+
+@test "tailnet route: on a known LAN the subnet's addresses run direct" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 10.20.30.7
+  fake_gateway 10.20.30.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5E:00:53:01
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 3 ]
+  [ "$output" = "" ]
+  run tailnet peer work 10.20.30.40
+  [ "$status" -eq 3 ]
+  run tailnet route 10.20.31.1
+  [ "$status" -eq 1 ]
+}
+
+@test "tailnet route: a known gateway outside the subnet route does not make this the LAN" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 10.20.30.7
+  fake_gateway 192.0.2.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5e:00:53:01
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
+}
+
+@test "tailnet route: a known LAN elsewhere changes nothing for a subnet this machine is not on" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 192.0.2.5
+  fake_gateway 192.0.2.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5e:00:53:01
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
+}
+
+@test "tailnet route: an unrecognised overlapping network is proxied even when the app is on that tailnet" {
+  add_route personal 10.20.30.0/24
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = "" ]
+  fake_ifconfig 10.20.30.7
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = personal ]
+}
+
+@test "tailnet route --force: an overlapping network is proxied even when the app is on that tailnet" {
+  add_route personal 10.20.30.0/24
+  fake_ifconfig 10.20.30.7
+  run tailnet route --force --prefer personal 10.20.30.40
+  [ "$output" = personal ]
+  fake_gateway 10.20.30.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5e:00:53:01
+  run tailnet route --force --prefer personal 10.20.30.40
+  [ "$output" = personal ]
+  fake_ifconfig 192.0.2.5
+  run tailnet route --force --prefer personal 10.20.30.40
+  [ "$output" = "" ]
+}
+
+@test "tailnet route: the most specific subnet route decides, and an exit node's /0 never counts" {
+  add_route work 10.20.0.0/16 peer1
+  add_route work 10.20.30.0/24 peer2
+  fake_ifconfig 10.20.99.7
+  fake_gateway 10.20.99.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5e:00:53:01
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
+  # a second fixture: only an exit node's default route
+  rm "$BATS_TEST_TMPDIR/netstat-routes.out" "$BATS_TEST_TMPDIR/arp.out"
+  fixture work work-net.ts.net workbox 100.102.3.4 shared 100.102.3.5
+  add_route work 0.0.0.0/0
+  run tailnet route 10.99.0.1
+  [ "$status" -eq 1 ]
+}
+
+@test "tailnet route (Linux): the gateway comes from ip route and ip neigh" {
+  export FAKE_OS=Linux
+  add_route work 10.20.30.0/24
+  fake_ifconfig 10.20.30.7
+  fake_gateway 10.20.30.1 00:00:5E:00:53:01
+  known_lan homelan 00:00:5e:00:53:01
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 3 ]
+  rm "$BATS_TEST_TMPDIR/arp.out"
+  printf '10.20.30.1 dev eth0 FAILED\n' > "$BATS_TEST_TMPDIR/ip-neigh.out"
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
+}
+
+@test "tailnet route: a broken arp or netstat means not known, never a failure" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 10.20.30.7
+  fake_gateway 10.20.30.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5e:00:53:01
+  printf '#!/bin/sh\necho garbage\nexit 1\n' > "$BIN/arp"
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
+}
+
+@test "tailnet route --explain: one reason line, never the name, same status" {
+  add_route work 10.20.30.0/24
+  # this machine is elsewhere
+  run tailnet route --explain 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = "10.20.30.0/24 on work: this machine is not on that subnet" ]
+  # an overlapping network that is not known
+  fake_ifconfig 10.20.30.7
+  run tailnet route --explain 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = "10.20.30.0/24 on work: this network overlaps it and is not a known LAN, so work carries it (tailnet lan shows how to mark a known LAN)" ]
+  # a known LAN keeps the exit status 3
+  fake_gateway 10.20.30.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5e:00:53:01
+  run tailnet route --explain 10.20.30.40
+  [ "$status" -eq 3 ]
+  [ "$output" = "10.20.30.0/24 on work: this machine is on it (known LAN homelan)" ]
+  # forced
+  run tailnet route --explain --force --prefer work 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = "10.20.30.0/24 on work: forced through work although this network overlaps it" ]
+  # no subnet route involved: a node and a stranger give no line
+  run tailnet route --explain workbox
+  [ "$status" -eq 0 ]
+  [ "$output" = "" ]
+  run tailnet route --explain 10.99.0.1
+  [ "$status" -eq 1 ]
+  [ "$output" = "" ]
+}
+
+@test "tailnet route: an unrecognised overlap is counted, an explained or forced one is not" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 10.20.30.7
+  count="$STATE/lan-unrecognised.count"
+  run tailnet route 10.20.30.40
+  run tailnet route 10.20.30.40
+  [ "$output" = work ]
+  [ "$(wc -c < "$count" | tr -d ' ')" -eq 2 ]
+  run tailnet route --explain 10.20.30.40
+  run tailnet route --force --prefer work 10.20.30.40
+  [ "$(wc -c < "$count" | tr -d ' ')" -eq 2 ]
+  run tailnet lan
+  [[ "${lines[-1]}" =~ ^"tally:   2 through a tailnet on an unrecognised overlapping network, last "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z" work 10.20.30.0/24"$ ]]
+  # a write that fails changes nothing
+  rm "$count"
+  mkdir "$count"
+  run tailnet route 10.20.30.40
+  [ "$status" -eq 0 ]
+  [ "$output" = work ]
+}
+
+@test "tailnet names: the tally files are not tailnets" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 10.20.30.7
+  run tailnet route 10.20.30.40
+  [ -s "$STATE/lan-unrecognised.count" ]
+  [ -s "$STATE/lan-unrecognised.last" ]
+  run tailnet names
+  [ "$output" = $'personal\nwork' ]
+}
+
+@test "ssh: a LAN IP behind a subnet router is proxied without TAILNET" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 192.0.2.5
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  in_repo "$repo" ssh 10.20.30.40
+  [ "$output" = "RAN ssh: -o ProxyCommand=$TAILNET_BIN nc work %h %p 10.20.30.40" ]
+  in_repo "$repo" ssh 10.99.0.1
+  [ "$output" = "RAN ssh: 10.99.0.1" ]
+}
+
+@test "ssh/curl: on a known LAN the address runs direct" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 10.20.30.7
+  fake_gateway 10.20.30.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5E:00:53:01
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  in_repo "$repo" ssh 10.20.30.40
+  [ "$output" = "RAN ssh: 10.20.30.40" ]
+  in_repo "$repo" curl http://10.20.30.40/
+  [ "$output" = "RAN curl: http://10.20.30.40/" ]
+}
+
+@test "ssh/curl: an unrecognised overlapping network goes through the tailnet, the app's own included" {
+  add_route work 10.20.30.0/24
+  fake_ifconfig 10.20.30.7
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  in_repo "$repo" ssh 10.20.30.40
+  [ "$output" = "RAN ssh: -o ProxyCommand=$TAILNET_BIN nc work %h %p 10.20.30.40" ]
+  add_route personal 10.20.30.0/24
+  # work comes after personal in installed order, so personal answers first
+  in_repo "$repo" curl http://10.20.30.40/
+  [ "$output" = "RAN curl: --proxy socks5h://localhost:1055 http://10.20.30.40/" ]
+}
+
 @test "tailnet route: when the system daemon is off, every node is routed through its daemon" {
   : > "$TS_FIXTURES/system.json"
   run tailnet route homebox
@@ -788,9 +1127,9 @@ OUT
 }
 
 @test "tailnet_hostish: only shapes that can be a tailnet node" {
-  run zsh -c "source '$DOTFUNCTIONS'; for h in workbox WorkBox box.work-net.ts.net 100.102.3.4 100.64.0.1 100.127.255.255 fd7a:115c:a1e0::1; do tailnet_hostish \$h && echo \"yes \$h\"; done; for h in github.com localhost 10.0.0.1 100.128.0.1 192.168.1.1 printer.local 2001:db8::1 ''; do tailnet_hostish \"\$h\" || echo \"no \$h\"; done"
+  run zsh -c "source '$DOTFUNCTIONS'; for h in workbox WorkBox box.work-net.ts.net 100.102.3.4 100.64.0.1 100.127.255.255 fd7a:115c:a1e0::1 10.0.0.1 172.16.0.1 192.168.1.1; do tailnet_hostish \$h && echo \"yes \$h\"; done; for h in github.com localhost 100.128.0.1 172.32.0.1 11.0.0.1 printer.local 2001:db8::1 ''; do tailnet_hostish \"\$h\" || echo \"no \$h\"; done"
   [ "$status" -eq 0 ]
-  [ "$output" = $'yes workbox\nyes WorkBox\nyes box.work-net.ts.net\nyes 100.102.3.4\nyes 100.64.0.1\nyes 100.127.255.255\nyes fd7a:115c:a1e0::1\nno github.com\nno localhost\nno 10.0.0.1\nno 100.128.0.1\nno 192.168.1.1\nno printer.local\nno 2001:db8::1\nno ' ]
+  [ "$output" = $'yes workbox\nyes WorkBox\nyes box.work-net.ts.net\nyes 100.102.3.4\nyes 100.64.0.1\nyes 100.127.255.255\nyes fd7a:115c:a1e0::1\nyes 10.0.0.1\nyes 172.16.0.1\nyes 192.168.1.1\nno github.com\nno localhost\nno 100.128.0.1\nno 172.32.0.1\nno 11.0.0.1\nno printer.local\nno 2001:db8::1\nno ' ]
 }
 
 # --- functions: ssh / scp / sftp -------------------------------------------
@@ -999,6 +1338,11 @@ OUT
   [ "$output" = "node.example" ]
 }
 
+@test "tailnet_curl_host: an address given to --interface or --resolve is not the destination" {
+  run zsh -c "source '$DOTFUNCTIONS'; tailnet_curl_host --interface 10.20.30.7 --resolve nas:80:10.20.30.8 --connect-to ::10.20.30.9: --dns-servers 10.20.30.10 --dns-interface 10.20.30.11 --dns-ipv4-addr 10.20.30.12 --haproxy-clientip 10.20.30.13 workbox"
+  [ "$output" = "workbox" ]
+}
+
 # --- functions: tailnet-as / passthrough ------------------------------------
 
 @test "tailnet-as: runs one command with TAILNET and the proxy environment set; unknown names error out" {
@@ -1092,7 +1436,7 @@ ran() { echo "RAN ${1%% *}: ${1#* }"; }
   # reached for these destinations. The real script/state are all present.
   for shell_opts in "" "$CLAUDE_CODE_OPTS"; do
     for cmd in "curl -s http://127.0.0.1:8321/" "curl localhost:3000" "curl -sSL https://api.github.com/user" \
-               "curl http://10.0.0.5/" "ssh localhost" "ssh git@github.com" "ssh -p 22 admin@192.168.1.9" \
+               "curl http://203.0.113.5/" "ssh localhost" "ssh git@github.com" "ssh -p 22 admin@198.51.100.9" \
                "scp ./file.txt git@github.com:/srv/" "sftp user@example.org"; do
       : > "$TS_LOG"
       ZOPTS=$shell_opts in_repo "$repo" "tailnet_active() { $CRASH; }; $cmd"
@@ -1246,6 +1590,47 @@ STUB
   rm -rf "$STATE"
   in_repo "$repo" tailnet-doctor
   [[ "$output" == *"<no tailnet installed — tailnet install <name> && tailnet up <name>>"* ]]
+}
+
+@test "tailnet-doctor: a subnet route's verdict says which case it is" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  add_route work 10.20.30.0/24
+  in_repo "$repo" tailnet-doctor 10.20.30.40
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"route:   10.20.30.40 -> via work (ProxyCommand=$TAILNET_BIN nc work %h %p; curl --proxy socks5h://localhost:1056)"$'\n'"subnet:  10.20.30.0/24 on work: this machine is not on that subnet"* ]]
+  fake_ifconfig 10.20.30.7
+  in_repo "$repo" tailnet-doctor 10.20.30.40
+  [[ "$output" == *"route:   10.20.30.40 -> via work ("*$'\n'"subnet:  10.20.30.0/24 on work: this network overlaps it and is not a known LAN, so work carries it (tailnet lan shows how to mark a known LAN)"* ]]
+  fake_gateway 10.20.30.1 0:0:5e:0:53:1
+  known_lan homelan 00:00:5e:00:53:01
+  in_repo "$repo" tailnet-doctor 10.20.30.40
+  [[ "$output" == *"route:   10.20.30.40 -> direct (on a known LAN)"$'\n'"subnet:  10.20.30.0/24 on work: this machine is on it (known LAN homelan)"* ]]
+  # a route of the tailnet the app is on, this machine elsewhere: direct, with its reason
+  rm -f "$BIN/ifconfig"; fake_ifconfig 192.0.2.5
+  add_route personal 10.20.31.0/24
+  in_repo "$repo" tailnet-doctor 10.20.31.1
+  [[ "$output" == *"route:   10.20.31.1 -> direct (a subnet route of the tailnet the app is on)"$'\n'"subnet:  10.20.31.0/24 on personal: this machine is not on that subnet"* ]]
+  # a node has no reason line
+  in_repo "$repo" tailnet-doctor homebox
+  [[ "$output" == *"route:   homebox -> direct (a node of the tailnet the app is on)"* ]]
+  [[ "$output" != *"subnet:  "* ]]
+}
+
+@test "tailnet-doctor: the lan block appears with a known LAN or a tally, and not otherwise" {
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  in_repo "$repo" tailnet-doctor
+  [[ "$output" != *"lan:"* ]]
+  known_lan homelan 00:00:5e:00:53:01
+  fake_gateway 10.20.30.1 0:0:5e:0:53:1
+  in_repo "$repo" tailnet-doctor
+  [[ "$output" == *"lan:"$'\n'"  gateway: 10.20.30.1 at 00:00:5e:00:53:01 — known LAN homelan"$'\n'"  known:   homelan = 00:00:5e:00:53:01"$'\n'*"  tally:   0"$'\n'"cwd:"* ]]
+  git config --file "$GIT_CONFIG_GLOBAL" --unset-all tailnet-lan.homelan.gateway
+  in_repo "$repo" tailnet-doctor
+  [[ "$output" != *"lan:"* ]]
+  printf x > "$STATE/lan-unrecognised.count"
+  in_repo "$repo" tailnet-doctor
+  [[ "$output" == *"lan:"$'\n'"  gateway:"* ]]
+  [[ "$output" == *"  tally:   1"$'\n'"cwd:"* ]]
 }
 
 @test "tailnet-doctor: reports rclone and the mounts when any are configured" {

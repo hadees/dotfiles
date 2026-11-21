@@ -427,6 +427,34 @@ the next boot (`sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs
 sometimes works without one, varying by macOS release). The symlink dangles
 harmlessly while nothing is mounted.
 
+### Tailnet known LANs — which networks are the subnet's own
+
+```gitconfig
+[tailnet-lan "<label>"]
+	gateway = <mac>     # that LAN's default gateway; repeat the line for a second router
+```
+
+A tailnet's subnet router advertises a LAN's prefix, and `~/bin/tailnet`
+routes an address in it through that tailnet. On the LAN itself that detour is
+unwanted, and on a *different* network that happens to reuse the prefix the
+kernel would send the address to a stranger's device. The one signal that tells
+them apart is the default gateway's MAC address, so each known LAN lists it.
+The config holds no address range and no tailnet name: the prefix comes from
+what the daemons advertise. The overlay whose tailnet advertises the LAN owns
+its entry (the personal overlay for the home LAN, a work overlay for a
+work LAN); the keys are inert until the public change is deployed.
+
+Read the MAC with `tailnet lan` while on that LAN: it prints the gateway, its
+MAC and, when unlisted, the exact line to add. From another host on that LAN,
+`arp -an` or `ip neigh` shows the same address for the gateway. A LAN reached
+by both Ethernet and Wi-Fi may present two MACs; list both, the key repeats.
+A network that is not listed still works, through its subnet router, but
+only while that router is up; listing the LAN is what keeps its own addresses
+reachable when it is down. A replaced router has a new MAC and needs a new line;
+`tailnet route --explain <ip>` says why an address went through the tailnet,
+and `tailnet-doctor` shows a `lan:` block (with a count of such routes) once
+any key exists.
+
 ### Remote MCP servers — a bearer-token server per profile
 
 ```gitconfig
@@ -845,7 +873,8 @@ npx", not "pin <side-company> to its profile").
    Hermes chats should run in throwaway worktrees instead of the live
    checkout; `tailnet.profile.<account>` if that account has a
    tailnet; `tailnet-mount.<name>.*` if that tailnet serves a directory
-   worth mounting; a `workspace.<name>.dir` for each of that account's
+   worth mounting; `tailnet-lan.<label>.gateway` for each LAN behind that
+   tailnet's subnet router; a `workspace.<name>.dir` for each of that account's
    projects you want reopened after a restart; Finicky rules.
    A profile other than the default lists the default directory's memory
    (`CLAUDE.md`, `CLAUDE.local.md`, `CLAUDE.work.md`, `rules/**`, as absolute
