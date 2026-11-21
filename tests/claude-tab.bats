@@ -46,9 +46,14 @@ STUB
   # query for a pid with no row answers FAKE_OWN_TTY, the tty restore runs on.
   export PS_TTY_DIR="$BATS_TEST_TMPDIR/ps-tty"
   mkdir -p "$PS_TTY_DIR"
+  # `ps eww -o command= -p <pid>` answers the file PS_ENV_DIR/<pid>, or nothing.
+  export PS_ENV_DIR="$BATS_TEST_TMPDIR/ps-env"
+  mkdir -p "$PS_ENV_DIR"
   cat > "$BIN/ps" <<'STUB'
 #!/bin/sh
 case "$*" in
+  *eww*) while [ $# -gt 0 ]; do case $1 in -p) pid=$2; shift 2;; *) shift;; esac; done
+         cat "$PS_ENV_DIR/$pid" 2>/dev/null; exit 0;;
   *-Ao*) for p in ${FAKE_PROCS:-}; do printf '%s\n' "$p"; done; exit 0;;
 esac
 fmt=3
@@ -105,6 +110,14 @@ make_session() {
   mkdir -p "$1/sessions"
   printf '{"pid":%s,"sessionId":"%s","cwd":"%s","kind":"%s","name":"%s","status":"%s"}\n' \
     "$2" "${6:-fixture}" "$3" "${7:-interactive}" "${4:-fixture-session}" "${5:-idle}" > "$1/sessions/$2.json"
+}
+
+# make_waiting <profile dir> <pid> <cwd> <since ms or ""> <reason or "">: a waiting
+# session; an empty since or reason leaves the field out of the record.
+make_waiting() {
+  mkdir -p "$1/sessions"
+  printf '{"pid":%s,"sessionId":"w%s","cwd":"%s","kind":"interactive","status":"waiting"%s%s}\n' \
+    "$2" "$2" "$3" "${4:+,\"statusUpdatedAt\":$4}" "${5:+,\"waitingFor\":\"$5\"}" > "$1/sessions/$2.json"
 }
 
 # make_repo <name> : a repo with one commit; prints its path.
@@ -847,4 +860,242 @@ $b|start Beta --continue -- pick up" ]
   # The stubbed osascript in these tests cannot see that, so pin the source.
   ! grep -n '& tab &' "$BATS_TEST_DIRNAME/../bin/executable_claude-tab" "$BATS_TEST_DIRNAME/../bin/executable_worktabs" || { echo "the source contains a '& tab &' concatenation"; false; }
   grep -q 'set sep to (character id 9)' "$BATS_TEST_DIRNAME/../bin/executable_claude-tab"
+}
+
+@test "attention lists waiting sessions only, longest wait first, with the nine columns" {
+  a=$(make_repo alpha); b=$(make_repo beta)
+  live_pid; pa=$LIVE; live_pid; pb=$LIVE; live_pid; pi=$LIVE; live_pid; pu=$LIVE
+  now=$(date +%s)
+  make_waiting "$HOME/.claude" "$pa" "$a" $(( (now - 30) * 1000 )) "permission prompt"
+  make_waiting "$HOME/.claude-personal" "$pb" "$b" $(( (now - 600) * 1000 )) "permission prompt"
+  make_session "$HOME/.claude" "$pi" "$a" one idle
+  make_session "$HOME/.claude" "$pu" "$a" two busy
+  dead=$(dead_pid); make_waiting "$HOME/.claude" "$dead" "$a" 1 x
+  printf '%s 1 ttys003\n%s 1 ttys004\n' "$pa" "$pb" > "$PS_TABLE"
+  export FAKE_TABS=$'42\t/dev/ttys003\talpha'
+  run sh "$CT" attention
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 2 ]
+  [ "$(printf '%s\n' "${lines[0]}" | awk -F'\t' '{ print NF }')" -eq 9 ]
+  [ "$(col 1,2,3,5,6,7 | head -1)" = "$(printf '%s\tpersonal\tbeta\tpermission prompt\t/dev/ttys004\tother' "$pb")" ]
+  [ "$(col 1,2,3,5,6,7 | tail -1)" = "$(printf '%s\tdefault\talpha\tpermission prompt\t/dev/ttys003\titerm2' "$pa")" ]
+  [ "$(col 4 | head -1)" -ge 600 ]
+  [ "$(col 4 | tail -1)" -ge 30 ]
+  [ "$(col 4 | tail -1)" -lt 600 ]
+  [ "$(col 9 | head -1)" = "$b" ]
+}
+
+@test "attention: nobody waiting is empty and exit 0; a missing time is 0 and a missing reason -" {
+  a=$(make_repo alpha)
+  live_pid
+  make_session "$HOME/.claude" "$LIVE" "$a" one idle
+  run sh "$CT" attention
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  live_pid
+  make_waiting "$HOME/.claude" "$LIVE" "$a" "" ""
+  run sh "$CT" attention
+  [ "$status" -eq 0 ]
+  [ "$(col 4)" = 0 ]
+  [ "$(col 5)" = - ]
+}
+
+@test "attention takes the guid from the environment line, - without one, and keeps it for a buried peer" {
+  a=$(make_repo alpha)
+  live_pid; pa=$LIVE; live_pid; pb=$LIVE
+  make_waiting "$HOME/.claude" "$pa" "$a" 5000 "permission prompt"
+  make_waiting "$HOME/.claude" "$pb" "$a" 9000 "permission prompt"
+  printf '%s 1 ttys003\n%s 1 ttys004\n' "$pa" "$pb" > "$PS_TABLE"
+  printf 'claude --flag HOME=/x ITERM_SESSION_ID=w0t1p0:ABCD-1234:5 TERM=xterm\n' > "$PS_ENV_DIR/$pa"
+  export FAKE_TABS=$'42\t/dev/ttys999\telsewhere'
+  run sh "$CT" attention
+  [ "$status" -eq 0 ]
+  [ "$(col 7 | sort -u)" = other ]
+  [ "$(col 1,8 | grep "^$pa")" = "$(printf '%s\tABCD-1234:5' "$pa")" ]
+  [ "$(col 1,8 | grep "^$pb")" = "$(printf '%s\t-' "$pb")" ]
+}
+
+@test "attention works off macOS: where is unknown and guid -" {
+  a=$(make_repo alpha)
+  live_pid
+  make_waiting "$HOME/.claude" "$LIVE" "$a" 5000 "permission prompt"
+  printf '%s 1 ttys003\n' "$LIVE" > "$PS_TABLE"
+  FAKE_OS=Linux run sh "$CT" attention
+  [ "$status" -eq 0 ]
+  [ "$(col 7,8)" = "$(printf 'unknown\t-')" ]
+}
+
+# stub_it2 <exit status> : an `it2` that logs its arguments and the cookie it was given.
+stub_it2() {
+  export CLAUDE_TAB_IT2="$BATS_TEST_TMPDIR/it2" IT2_LOG="$BATS_TEST_TMPDIR/it2-log"
+  : > "$IT2_LOG"
+  printf '#!/bin/sh\nprintf "%%s|%%s:%%s\\n" "$*" "${ITERM2_COOKIE-}" "${ITERM2_KEY-}" >> "$IT2_LOG"\nexit %s\n' "$1" > "$CLAUDE_TAB_IT2"
+  chmod +x "$CLAUDE_TAB_IT2"
+}
+
+# stub_group_peer <leader dir> <member dir>... : a claude-peer that answers `claim`
+# with that leader and `peers` with those members.
+stub_group_peer() {
+  export CLAUDE_TAB_PEER="$BATS_TEST_TMPDIR/claude-peer"
+  {
+    printf '#!/bin/sh\ncase "$1" in\n'
+    printf '  claim) printf "pid\\t1\\nleader\\t%s\\n";;\n' "$1"
+    shift
+    printf '  peers) '
+    for m in "$@"; do printf 'printf "%%s\\t1\\tL\\tAlpha\\n" "%s"; ' "$m"; done
+    printf ';;\nesac\n'
+  } > "$CLAUDE_TAB_PEER"
+  chmod +x "$CLAUDE_TAB_PEER"
+}
+
+# buried_peer : a lead (tty ttys003) and its waiting peer (ttys004) in two repos;
+# sets LEAD, PEERDIR, PL, PB. Only the lead's tty is in iTerm2's listing.
+buried_peer() {
+  LEAD=$(make_repo lead); PEERDIR=$(make_repo peerdir)
+  live_pid; PL=$LIVE; live_pid; PB=$LIVE
+  make_session "$HOME/.claude" "$PL" "$LEAD" lead busy
+  make_waiting "$HOME/.claude" "$PB" "$PEERDIR" $(( ($(date +%s) - 90) * 1000 )) "permission prompt"
+  printf '%s 1 ttys003\n%s 1 ttys004\n' "$PL" "$PB" > "$PS_TABLE"
+  printf 'claude ITERM_SESSION_ID=w0t0p1:GUID-PEER\n' > "$PS_ENV_DIR/$PB"
+  export FAKE_TABS=$'42\t/dev/ttys003\tlead'
+}
+
+@test "next: a visible session is focused by its tab, never through it2" {
+  a=$(make_repo alpha); live_pid
+  make_waiting "$HOME/.claude" "$LIVE" "$a" $(( ($(date +%s) - 90) * 1000 )) "permission prompt"
+  printf '%s 1 ttys003\n' "$LIVE" > "$PS_TABLE"
+  export FAKE_TABS=$'42\t/dev/ttys003\talpha'
+  stub_it2 0
+  run sh "$CT" next
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ ^"alpha: permission prompt, waiting "[0-9]+[smhd]$ ]]
+  grep -q 'is "/dev/ttys003"' "$OSA_SCRIPT"
+  [ ! -s "$IT2_LOG" ]
+}
+
+@test "next --dry-run prints label, where and guid and focuses nothing" {
+  buried_peer; stub_it2 0
+  : > "$OSA_ALL"
+  run sh "$CT" next --dry-run
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'peerdir\tother\tGUID-PEER')" ]
+  [ "$(grep -c 'select w' "$OSA_ALL")" -eq 0 ]
+  [ ! -s "$IT2_LOG" ]
+}
+
+@test "next: a buried peer is swapped in when it2 takes it" {
+  buried_peer; stub_it2 0
+  : > "$OSA_ALL"
+  run sh "$CT" next
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ ^"peerdir: permission prompt, waiting "[0-9]+[smhd]$ ]]
+  [[ "$(cat "$IT2_LOG")" == "session focus GUID-PEER|:" ]]
+  [ "$(grep -c 'select w' "$OSA_ALL")" -eq 0 ]
+}
+
+@test "next: when it2 refuses, a visible member of the workgroup comes forward and is named" {
+  buried_peer; stub_it2 1; stub_group_peer "$LEAD" "$PEERDIR"
+  run sh "$CT" next
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ ^"peerdir: permission prompt, waiting "[0-9]+[smhd]" (its tab is in front; pick it in the peer bar)"$ ]]
+  [ "$(wc -l < "$IT2_LOG" | tr -d ' ')" -eq 1 ]
+  grep -q 'is "/dev/ttys003"' "$OSA_SCRIPT"
+}
+
+@test "next: without it2 the group route still works; with no visible member it is exit 1 and one line" {
+  buried_peer; stub_group_peer "$LEAD" "$PEERDIR"
+  run sh "$CT" next
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"(its tab is in front; pick it in the peer bar)" ]]
+  export FAKE_TABS=$'42\t/dev/ttys999\telsewhere'
+  stub_it2 1
+  run --separate-stderr sh "$CT" next
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [ "${#stderr_lines[@]}" -eq 1 ]
+  [[ "$stderr" == "claude-tab: pid $PB is on /dev/ttys004, a buried peer, and no tab of its workgroup is in front" ]]
+}
+
+@test "next: nobody waiting is exit 3 with one line; off macOS it is exit 2" {
+  a=$(make_repo alpha); live_pid
+  make_session "$HOME/.claude" "$LIVE" "$a" one idle
+  run --separate-stderr sh "$CT" next
+  [ "$status" -eq 3 ]
+  [ "$stderr" = "claude-tab: nobody is waiting" ]
+  FAKE_OS=Linux run sh "$CT" next
+  [ "$status" -eq 2 ]
+  run sh "$CT" next --bogus
+  [ "$status" -eq 2 ]
+}
+
+@test "it2 gets the API cookie only when it is newer than iTerm2's socket" {
+  buried_peer; stub_it2 0
+  mkdir -p "$HOME/.local/state/iterm2" "$HOME/Library/Application Support/iTerm2/private"
+  ck=$HOME/.local/state/iterm2/api-cookie sock="$HOME/Library/Application Support/iTerm2/private/socket"
+  printf 'COOKIE KEY\n' > "$ck"; : > "$sock"
+  touch -t 202001010000 "$sock"
+  run sh "$CT" next
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$IT2_LOG")" == "session focus GUID-PEER|COOKIE:KEY" ]]
+  : > "$IT2_LOG"
+  touch -t 202001010000 "$ck"; touch "$sock"
+  run sh "$CT" next
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$IT2_LOG")" == "session focus GUID-PEER|:" ]]
+}
+
+@test "focus works for a buried peer: it2 swaps it in" {
+  buried_peer; stub_it2 0
+  FAKE_FOCUS="" run sh "$CT" focus "$PB"
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$IT2_LOG")" == "session focus GUID-PEER|:" ]]
+}
+
+@test "alfred: one Script Filter item per waiting session, longest first; none waiting is one invalid item" {
+  a=$(make_repo alpha); b=$(make_repo beta)
+  run sh "$CT" alfred
+  [ "$status" -eq 0 ]
+  [[ "$output" == '{"items": [{"title": "Nobody is waiting", "valid": false}]}' ]]
+  live_pid; pa=$LIVE; live_pid; pb=$LIVE
+  now=$(date +%s)
+  make_waiting "$HOME/.claude" "$pa" "$a" $(( (now - 30) * 1000 )) "permission prompt"
+  make_waiting "$HOME/.claude-personal" "$pb" "$b" $(( (now - 600) * 1000 )) "permission prompt"
+  printf '%s 1 ttys003\n%s 1 ttys004\n' "$pa" "$pb" > "$PS_TABLE"
+  run sh "$CT" alfred
+  [ "$status" -eq 0 ]
+  printf '%s' "$output" | python3 -I -c '
+import json, sys
+d = json.load(sys.stdin)["items"]
+assert [i["title"] for i in d] == ["beta", "alpha"], d
+assert [i["uid"] for i in d] == [i["arg"] for i in d] == [sys.argv[2], sys.argv[1]], d
+assert d[0]["subtitle"] == "permission prompt · waiting 10m · personal", d[0]
+assert d[1]["subtitle"].startswith("permission prompt · waiting ") and d[1]["subtitle"].endswith(" · default"), d[1]
+assert all(i["valid"] for i in d)
+' "$pa" "$pb"
+  run sh "$CT" alfred extra
+  [ "$status" -eq 2 ]
+}
+
+@test "the Alfred workflow calls ~/bin/claude-tab by absolute path, wires the filter to focus and an unassigned hotkey to next" {
+  run python3 -I - "$BATS_TEST_DIRNAME/../alfred/claude-tab/info.plist" <<'PY'
+import plistlib, sys
+p = plistlib.load(open(sys.argv[1], "rb"))
+assert p["bundleid"] == "local.claude-tab.alfred", p["bundleid"]
+o = {x["uid"]: x for x in p["objects"]}
+def kind(t): return [x for x in p["objects"] if x["type"] == t]
+sf, = kind("alfred.workflow.input.scriptfilter")
+hk, = kind("alfred.workflow.trigger.hotkey")
+note, = kind("alfred.workflow.output.notification")
+focus, nxt = sorted(kind("alfred.workflow.action.script"), key=lambda x: x["config"]["script"])
+assert sf["config"]["script"] == '"$HOME/bin/claude-tab" alfred\n'
+assert sf["config"]["keyword"] == "cn" and sf["config"]["alfredfiltersresults"] is True
+assert focus["config"]["script"] == '"$HOME/bin/claude-tab" focus "$1"\n'
+assert nxt["config"]["script"] == '"$HOME/bin/claude-tab" next\n'
+assert sf["config"]["scriptargtype"] == focus["config"]["scriptargtype"] == 1
+assert hk["config"]["hotkey"] == 0 and hk["config"]["hotmod"] == 0 and hk["config"]["hotstring"] == ""
+def to(a): return {c["destinationuid"] for c in p["connections"].get(a["uid"], [])}
+assert to(sf) == {focus["uid"]} and to(hk) == {nxt["uid"]} and to(nxt) == {note["uid"]}
+assert set(p["connections"]) <= set(o) and set(p["uidata"]) == set(o) and len(o) == 5
+PY
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
 }

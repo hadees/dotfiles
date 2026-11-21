@@ -267,7 +267,7 @@ rule first.
 | `claude-peer-restore` | the entry record, the restored-pane check |
 | `claude-peer-look` | the sleeper's motion: its timer, waking, and `look` with its trigger and lock |
 | `claude-peer-caduceus` | the Hermes pane's figure and glint, read from the installed Hermes |
-| `claude-tab` | `claude-tab` list, focus, save, restore; `tabname` |
+| `claude-tab` | `claude-tab` list, attention, next, focus, save, restore; `tabname` |
 | `pane-sight` | reading and picturing another pane, its scope gate and audit log, screen-heads-up |
 | `branchname` | the branch label a prompt or status line shows, the detached-slot base record |
 | `postbox` | cross-profile session mail, its hooks, the courier, the roll-call |
