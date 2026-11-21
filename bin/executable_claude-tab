@@ -27,6 +27,9 @@
 #                            the tab of a visible member of its workgroup
 #                            (macOS; exit 3 when nobody waits). --dry-run
 #                            prints label, where, guid and goes nowhere
+#   alfred                   the attention rows as Alfred Script Filter JSON
+#                            (title label, subtitle reason, wait, profile,
+#                            arg pid; one "Nobody is waiting" row when none)
 #   tabs                     iTerm2's sessions: window, tty, title
 #   focus <pid>              bring that session's iTerm2 tab forward (a buried
 #                            workgroup peer is swapped in, or its group shown)
@@ -602,6 +605,25 @@ EOF_ROW
   printf '%s: %s, waiting %s%s\n' "$label" "$reason" "$(dur_of "$waited")" "$note"
 }
 
+# Alfred Script Filter JSON, always exit 0 so Alfred shows a list, not an error.
+cmd_alfred() {
+  [ $# -eq 0 ] || usage
+  need_python
+  cmd_attention 2>/dev/null | while IFS=$TAB read -r pid profile label waited reason _; do
+    printf '%s\t%s\t%s\t%s\t%s\n' "$pid" "$label" "$reason" "$(dur_of "$waited")" "$profile"
+  done | python3 -I -c '
+import json, sys
+items = []
+for line in sys.stdin:
+    pid, label, reason, dur, profile = line.rstrip("\n").split("\t")
+    items.append({"uid": pid, "title": label, "arg": pid, "valid": True,
+                  "subtitle": f"{reason} \u00b7 waiting {dur} \u00b7 {profile}"})
+if not items:
+    items = [{"title": "Nobody is waiting", "valid": False}]
+print(json.dumps({"items": items}))
+'
+}
+
 # Single-quoted for a POSIX shell.
 sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
@@ -839,6 +861,7 @@ case $cmd in
   list)      cmd_list;;
   attention) cmd_attention "$@";;
   next)      cmd_next "$@";;
+  alfred)    cmd_alfred "$@";;
   tabs)      cmd_tabs;;
   focus)     cmd_focus "$@";;
   save)      cmd_save "$@";;

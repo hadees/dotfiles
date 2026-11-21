@@ -1050,3 +1050,52 @@ buried_peer() {
   [ "$status" -eq 0 ]
   [[ "$(cat "$IT2_LOG")" == "session focus GUID-PEER|:" ]]
 }
+
+@test "alfred: one Script Filter item per waiting session, longest first; none waiting is one invalid item" {
+  a=$(make_repo alpha); b=$(make_repo beta)
+  run sh "$CT" alfred
+  [ "$status" -eq 0 ]
+  [[ "$output" == '{"items": [{"title": "Nobody is waiting", "valid": false}]}' ]]
+  live_pid; pa=$LIVE; live_pid; pb=$LIVE
+  now=$(date +%s)
+  make_waiting "$HOME/.claude" "$pa" "$a" $(( (now - 30) * 1000 )) "permission prompt"
+  make_waiting "$HOME/.claude-personal" "$pb" "$b" $(( (now - 600) * 1000 )) "permission prompt"
+  printf '%s 1 ttys003\n%s 1 ttys004\n' "$pa" "$pb" > "$PS_TABLE"
+  run sh "$CT" alfred
+  [ "$status" -eq 0 ]
+  printf '%s' "$output" | python3 -I -c '
+import json, sys
+d = json.load(sys.stdin)["items"]
+assert [i["title"] for i in d] == ["beta", "alpha"], d
+assert [i["uid"] for i in d] == [i["arg"] for i in d] == [sys.argv[2], sys.argv[1]], d
+assert d[0]["subtitle"] == "permission prompt · waiting 10m · personal", d[0]
+assert d[1]["subtitle"].startswith("permission prompt · waiting ") and d[1]["subtitle"].endswith(" · default"), d[1]
+assert all(i["valid"] for i in d)
+' "$pa" "$pb"
+  run sh "$CT" alfred extra
+  [ "$status" -eq 2 ]
+}
+
+@test "the Alfred workflow calls ~/bin/claude-tab by absolute path, wires the filter to focus and an unassigned hotkey to next" {
+  run python3 -I - "$BATS_TEST_DIRNAME/../alfred/claude-tab/info.plist" <<'PY'
+import plistlib, sys
+p = plistlib.load(open(sys.argv[1], "rb"))
+assert p["bundleid"] == "local.claude-tab.alfred", p["bundleid"]
+o = {x["uid"]: x for x in p["objects"]}
+def kind(t): return [x for x in p["objects"] if x["type"] == t]
+sf, = kind("alfred.workflow.input.scriptfilter")
+hk, = kind("alfred.workflow.trigger.hotkey")
+note, = kind("alfred.workflow.output.notification")
+focus, nxt = sorted(kind("alfred.workflow.action.script"), key=lambda x: x["config"]["script"])
+assert sf["config"]["script"] == '"$HOME/bin/claude-tab" alfred\n'
+assert sf["config"]["keyword"] == "cn" and sf["config"]["alfredfiltersresults"] is True
+assert focus["config"]["script"] == '"$HOME/bin/claude-tab" focus "$1"\n'
+assert nxt["config"]["script"] == '"$HOME/bin/claude-tab" next\n'
+assert sf["config"]["scriptargtype"] == focus["config"]["scriptargtype"] == 1
+assert hk["config"]["hotkey"] == 0 and hk["config"]["hotmod"] == 0 and hk["config"]["hotstring"] == ""
+def to(a): return {c["destinationuid"] for c in p["connections"].get(a["uid"], [])}
+assert to(sf) == {focus["uid"]} and to(hk) == {nxt["uid"]} and to(nxt) == {note["uid"]}
+assert set(p["connections"]) <= set(o) and set(p["uidata"]) == set(o) and len(o) == 5
+PY
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+}
