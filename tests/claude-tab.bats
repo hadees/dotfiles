@@ -924,3 +924,129 @@ $b|start Beta --continue -- pick up" ]
   [ "$status" -eq 0 ]
   [ "$(col 7,8)" = "$(printf 'unknown\t-')" ]
 }
+
+# stub_it2 <exit status> : an `it2` that logs its arguments and the cookie it was given.
+stub_it2() {
+  export CLAUDE_TAB_IT2="$BATS_TEST_TMPDIR/it2" IT2_LOG="$BATS_TEST_TMPDIR/it2-log"
+  : > "$IT2_LOG"
+  printf '#!/bin/sh\nprintf "%%s|%%s:%%s\\n" "$*" "${ITERM2_COOKIE-}" "${ITERM2_KEY-}" >> "$IT2_LOG"\nexit %s\n' "$1" > "$CLAUDE_TAB_IT2"
+  chmod +x "$CLAUDE_TAB_IT2"
+}
+
+# stub_group_peer <leader dir> <member dir>... : a claude-peer that answers `claim`
+# with that leader and `peers` with those members.
+stub_group_peer() {
+  export CLAUDE_TAB_PEER="$BATS_TEST_TMPDIR/claude-peer"
+  {
+    printf '#!/bin/sh\ncase "$1" in\n'
+    printf '  claim) printf "pid\\t1\\nleader\\t%s\\n";;\n' "$1"
+    shift
+    printf '  peers) '
+    for m in "$@"; do printf 'printf "%%s\\t1\\tL\\tAlpha\\n" "%s"; ' "$m"; done
+    printf ';;\nesac\n'
+  } > "$CLAUDE_TAB_PEER"
+  chmod +x "$CLAUDE_TAB_PEER"
+}
+
+# buried_peer : a lead (tty ttys003) and its waiting peer (ttys004) in two repos;
+# sets LEAD, PEERDIR, PL, PB. Only the lead's tty is in iTerm2's listing.
+buried_peer() {
+  LEAD=$(make_repo lead); PEERDIR=$(make_repo peerdir)
+  live_pid; PL=$LIVE; live_pid; PB=$LIVE
+  make_session "$HOME/.claude" "$PL" "$LEAD" lead busy
+  make_waiting "$HOME/.claude" "$PB" "$PEERDIR" $(( ($(date +%s) - 90) * 1000 )) "permission prompt"
+  printf '%s 1 ttys003\n%s 1 ttys004\n' "$PL" "$PB" > "$PS_TABLE"
+  printf 'claude ITERM_SESSION_ID=w0t0p1:GUID-PEER\n' > "$PS_ENV_DIR/$PB"
+  export FAKE_TABS=$'42\t/dev/ttys003\tlead'
+}
+
+@test "next: a visible session is focused by its tab, never through it2" {
+  a=$(make_repo alpha); live_pid
+  make_waiting "$HOME/.claude" "$LIVE" "$a" $(( ($(date +%s) - 90) * 1000 )) "permission prompt"
+  printf '%s 1 ttys003\n' "$LIVE" > "$PS_TABLE"
+  export FAKE_TABS=$'42\t/dev/ttys003\talpha'
+  stub_it2 0
+  run sh "$CT" next
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ ^"alpha: permission prompt, waiting "[0-9]+[smhd]$ ]]
+  grep -q 'is "/dev/ttys003"' "$OSA_SCRIPT"
+  [ ! -s "$IT2_LOG" ]
+}
+
+@test "next --dry-run prints label, where and guid and focuses nothing" {
+  buried_peer; stub_it2 0
+  : > "$OSA_ALL"
+  run sh "$CT" next --dry-run
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'peerdir\tother\tGUID-PEER')" ]
+  ! grep -q 'select w' "$OSA_ALL"
+  [ ! -s "$IT2_LOG" ]
+}
+
+@test "next: a buried peer is swapped in when it2 takes it" {
+  buried_peer; stub_it2 0
+  : > "$OSA_ALL"
+  run sh "$CT" next
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ ^"peerdir: permission prompt, waiting "[0-9]+[smhd]$ ]]
+  [[ "$(cat "$IT2_LOG")" == "session focus GUID-PEER|:" ]]
+  ! grep -q 'select w' "$OSA_ALL"
+}
+
+@test "next: when it2 refuses, a visible member of the workgroup comes forward and is named" {
+  buried_peer; stub_it2 1; stub_group_peer "$LEAD" "$PEERDIR"
+  run sh "$CT" next
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ ^"peerdir: permission prompt, waiting "[0-9]+[smhd]" (its tab is in front; pick it in the peer bar)"$ ]]
+  [ "$(wc -l < "$IT2_LOG" | tr -d ' ')" -eq 1 ]
+  grep -q 'is "/dev/ttys003"' "$OSA_SCRIPT"
+}
+
+@test "next: without it2 the group route still works; with no visible member it is exit 1 and one line" {
+  buried_peer; stub_group_peer "$LEAD" "$PEERDIR"
+  run sh "$CT" next
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"(its tab is in front; pick it in the peer bar)" ]]
+  export FAKE_TABS=$'42\t/dev/ttys999\telsewhere'
+  stub_it2 1
+  run --separate-stderr sh "$CT" next
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [ "${#stderr_lines[@]}" -eq 1 ]
+  [[ "$stderr" == "claude-tab: pid $PB is on /dev/ttys004, a buried peer, and no tab of its workgroup is in front" ]]
+}
+
+@test "next: nobody waiting is exit 3 with one line; off macOS it is exit 2" {
+  a=$(make_repo alpha); live_pid
+  make_session "$HOME/.claude" "$LIVE" "$a" one idle
+  run --separate-stderr sh "$CT" next
+  [ "$status" -eq 3 ]
+  [ "$stderr" = "claude-tab: nobody is waiting" ]
+  FAKE_OS=Linux run sh "$CT" next
+  [ "$status" -eq 2 ]
+  run sh "$CT" next --bogus
+  [ "$status" -eq 2 ]
+}
+
+@test "it2 gets the API cookie only when it is newer than iTerm2's socket" {
+  buried_peer; stub_it2 0
+  mkdir -p "$HOME/.local/state/iterm2" "$HOME/Library/Application Support/iTerm2/private"
+  ck=$HOME/.local/state/iterm2/api-cookie sock="$HOME/Library/Application Support/iTerm2/private/socket"
+  printf 'COOKIE KEY\n' > "$ck"; : > "$sock"
+  touch -t 202001010000 "$sock"
+  run sh "$CT" next
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$IT2_LOG")" == "session focus GUID-PEER|COOKIE:KEY" ]]
+  : > "$IT2_LOG"
+  touch -t 202001010000 "$ck"; touch "$sock"
+  run sh "$CT" next
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$IT2_LOG")" == "session focus GUID-PEER|:" ]]
+}
+
+@test "focus works for a buried peer: it2 swaps it in" {
+  buried_peer; stub_it2 0
+  FAKE_FOCUS="" run sh "$CT" focus "$PB"
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$IT2_LOG")" == "session focus GUID-PEER|:" ]]
+}
