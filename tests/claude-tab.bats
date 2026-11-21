@@ -979,7 +979,7 @@ buried_peer() {
   run sh "$CT" next --dry-run
   [ "$status" -eq 0 ]
   [ "$output" = "$(printf 'peerdir\tother\tGUID-PEER')" ]
-  ! grep -q 'select w' "$OSA_ALL"
+  [ "$(grep -c 'select w' "$OSA_ALL")" -eq 0 ]
   [ ! -s "$IT2_LOG" ]
 }
 
@@ -990,7 +990,7 @@ buried_peer() {
   [ "$status" -eq 0 ]
   [[ "$output" =~ ^"peerdir: permission prompt, waiting "[0-9]+[smhd]$ ]]
   [[ "$(cat "$IT2_LOG")" == "session focus GUID-PEER|:" ]]
-  ! grep -q 'select w' "$OSA_ALL"
+  [ "$(grep -c 'select w' "$OSA_ALL")" -eq 0 ]
 }
 
 @test "next: when it2 refuses, a visible member of the workgroup comes forward and is named" {
