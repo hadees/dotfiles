@@ -228,6 +228,7 @@ cask 'steam'
 cask 'suspicious-package'
 cask 'sweet-home3d' # Interior design and floor plan application
 cask 'the-unarchiver'
+cask 'tigervnc' # TigerVNC viewer, a VNC client
 cask 'tinymediamanager'
 cask 'tower'
 cask 'transmission'
