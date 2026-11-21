@@ -39,11 +39,19 @@
 #   status [name]            supervisor + backend state, tailnet, hostname, expiry
 #   logs <name> [tail args]  the daemon's log
 #   system                   the app's / root daemon's tailnet (the "system" one)
-#   peer <name> <host>       exit 0 if <host> is a node of that tailnet
-#   route [--force] [--prefer <name>] <host>
+#   peer <name> <host>       exit 0 if <host> is a node of that tailnet, or an
+#                            IPv4 inside a subnet route one of its nodes
+#                            advertises; exit 3 for such an IPv4 while this
+#                            machine is on that known LAN
+#   route [--force] [--explain] [--prefer <name>] <host>
 #                            print the tailnet to proxy <host> through, nothing
 #                            when the system tailnet already reaches it (go
-#                            direct); exit 1 when it is a node nowhere
+#                            direct); exit 1 when it is a node nowhere; exit 3,
+#                            nothing printed, when <host> is on a known LAN this
+#                            machine is on (direct). --explain keeps the exit
+#                            status but prints, instead of the tailnet, one line
+#                            on the subnet route involved (nothing when none),
+#                            and does not count an unrecognised overlap
 #   nc <name> <host> <port>  TCP to <host>:<port> inside that tailnet on
 #                            stdin/stdout — the ssh ProxyCommand
 #   mount <name> [rclone flags]  mount a configured remote directory over its
@@ -54,6 +62,7 @@
 #                            mountpoint,rclone-args}
 #   umount <name>            unmount it (the rclone daemon exits with it)
 #   mounts                   configured mounts and whether each is mounted
+#   lan                      this network's default gateway and whether its MAC is a known LAN
 set -u
 
 TAILNET_STATE=${TAILNET_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/tailnet}
@@ -169,19 +178,200 @@ system_status_json() {
 # case-folded; DNSName carries a trailing dot) or a quoted tailnet IP. Never
 # a DNS lookup: `tailscale ip <host>` falls back to OS DNS for anything it
 # doesn't recognise, which is a network round-trip per candidate.
+#
+# An IPv4 also counts when it falls inside a subnet route a peer advertises
+# and this daemon accepted (`PrimaryRoutes`; the daemons run --accept-routes),
+# so a LAN behind a subnet router is reachable away from it. The most specific
+# route holding the address decides. Status:
+#   0  a node, or a routed address and no interface of this machine is in the
+#      route (away): this tailnet; direct when the app is on it
+#   1  not here        2  the daemon is unreachable
+#   3  an interface is in the route and a default gateway inside it has a MAC
+#      listed in tailnet-lan.<label>.gateway (a known LAN): direct, whichever
+#      tailnet the app is on
+#   4  an interface is in the route, no listed gateway (overlap): this tailnet's
+#      daemon proxy, even when the app is on it, because the kernel would send
+#      the address to whatever shares the prefix here
+# Wrong at a known LAN nobody listed is a hairpin through the router; wrong the
+# other way is a stranger's device, so the default is the tailnet.
+# ponytail: a Docker/VM bridge overlapping a route has no gateway to list, so
+# its addresses go through the tailnet (`command ssh` for direct); WSL2's NAT
+# mode hides the real LAN, so it reads as away; a route narrower than the LAN
+# that leaves the gateway outside it is never known.
+# TAILNET=<name> forces the daemon's proxy; `command ssh` goes direct.
 peer_in() { # name host
   json=$(daemon_status_json "$1") || return 2
   h=$(printf '%s' "$2" | tr 'A-Z' 'a-z')
   h=${h%.}
   case $h in
     *[!0-9.]*) ;;   # not an IPv4
-    *) printf '%s\n' "$json" | grep -q "\"$h\"" ; return $? ;;
+    *) printf '%s\n' "$json" | grep -q "\"$h\"" && return 0
+       subnet_class "$json" "$h"; return $? ;;
   esac
   case $h in
     *:*) printf '%s\n' "$json" | grep -qi "\"$h\"" ; return $? ;;  # IPv6
   esac
   hq=$(printf '%s' "$h" | sed 's/[.]/\\./g')
   printf '%s\n' "$json" | grep -q "^[[:space:]]*\"DNSName\": *\"$hq\\."
+}
+
+in_cidr() { # ipv4 a.b.c.d/n -> exit 0 if inside; a /0 never matches
+  awk -v ip="$1" -v c="$2" '
+    function n(a, p) { split(a, p, "."); return ((p[1] * 256 + p[2]) * 256 + p[3]) * 256 + p[4] }
+    BEGIN { split(c, q, "/"); b = q[2] + 0; if (b < 1 || b > 32) exit 1
+            m = 2 ^ (32 - b); exit !(int(n(ip) / m) == int(n(q[1]) / m)) }'
+}
+
+local_ipv4s() { # this machine's interface addresses
+  { ifconfig 2>/dev/null || ip -4 addr 2>/dev/null; } |
+    sed -n 's/^[[:space:]]*inet \([0-9.]*\).*/\1/p'
+}
+
+# --- which LAN is this? The default gateway's MAC, listed per known LAN in
+# machine-local git config (tailnet-lan.<label>.gateway, overlay-supplied). A
+# MAC is read for nothing (no permission, wired or wireless); the SSID is not.
+
+mac_norm() { # mac -> six lowercase two-digit octets joined by ':', or nothing
+  printf '%s\n' "$1" | awk '{
+    if (split(tolower($0), p, /[:-]/) != 6) exit
+    for (i = 1; i <= 6; i++) {
+      if (p[i] !~ /^[0-9a-f][0-9a-f]?$/) exit
+      o = o (i > 1 ? ":" : "") (length(p[i]) == 1 ? "0" : "") p[i]
+    }
+    print o }'
+}
+
+default_gateways() { # IPv4 gateways of the default routes, one per line
+  case $(os) in
+  Darwin) netstat -rn -f inet 2>/dev/null ;;
+  *)      ip -4 route show default 2>/dev/null ;;
+  esac | awk '$1 == "default" {
+    g = ($2 == "via") ? $3 : $2
+    if (g ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && !seen[g]++) print g }'
+}
+
+neighbour_mac() { # ipv4 -> its MAC (normalised), or nothing
+  nm_raw=
+  case $(os) in
+  Darwin) ;;
+  *) nm_raw=$(ip neigh show 2>/dev/null | awk -v ip="$1" '
+       $1 == ip { for (i = 2; i < NF; i++) if ($i == "lladdr") { print $(i + 1); exit } }') ;;
+  esac
+  # macOS, and Linux with only net-tools: `? (<ip>) at <mac> on en0 ...`
+  [ -n "$nm_raw" ] || nm_raw=$(arp -an 2>/dev/null | awk -v ip="($1)" '$2 == ip && $3 == "at" { print $4; exit }')
+  mac_norm "$nm_raw"
+}
+
+known_lans() { # one "<normalised mac> <label>" per configured gateway
+  command -v git >/dev/null 2>&1 || return 0
+  command git config --get-regexp '^tailnet-lan\..*\.gateway$' 2>/dev/null |
+    while read -r kl_key kl_val; do
+      kl_mac=$(mac_norm "$kl_val")
+      [ -n "$kl_mac" ] || continue
+      kl_label=${kl_key#tailnet-lan.}
+      printf '%s %s\n' "$kl_mac" "${kl_label%.gateway}"
+    done
+}
+
+# Prints the label and exits 0 when a default gateway inside <cidr> has a listed MAC.
+known_lan_in() { # cidr
+  kn_lans=$(known_lans)
+  [ -n "$kn_lans" ] || return 1
+  for kn_g in $(default_gateways); do
+    in_cidr "$kn_g" "$1" || continue
+    kn_m=$(neighbour_mac "$kn_g")
+    [ -n "$kn_m" ] || continue
+    kn_label=$(printf '%s\n' "$kn_lans" | awk -v m="$kn_m" '$1 == m { sub(/^[^ ]* /, ""); print; exit }')
+    [ -n "$kn_label" ] || continue
+    printf '%s\n' "$kn_label"
+    return 0
+  done
+  return 1
+}
+
+# One byte per route sent through a tailnet on a network that overlaps its
+# subnet route and is not a known LAN, and the latest one (UTC time, tailnet,
+# route, host; tab-separated), like the lsof guard's tally. Never an error.
+tally_unrecognised() { # tailnet cidr host
+  {
+    printf x >> "$TAILNET_STATE/lan-unrecognised.count" &&
+      printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" > "$TAILNET_STATE/lan-unrecognised.last"
+  } 2>/dev/null
+  return 0
+}
+
+cmd_lan() {
+  lan_gws=$(default_gateways)
+  lan_known=$(known_lans)
+  if [ -z "$lan_gws" ]; then
+    printf 'gateway: <none — no default route through an IPv4 gateway>\n'
+  fi
+  for lan_g in $lan_gws; do
+    lan_m=$(neighbour_mac "$lan_g")
+    if [ -z "$lan_m" ]; then
+      printf 'gateway: %s — no neighbour entry\n' "$lan_g"
+      continue
+    fi
+    lan_label=$(printf '%s\n' "$lan_known" | awk -v m="$lan_m" '$1 == m { sub(/^[^ ]* /, ""); print; exit }')
+    if [ -n "$lan_label" ]; then
+      printf 'gateway: %s at %s — known LAN %s\n' "$lan_g" "$lan_m" "$lan_label"
+    else
+      printf 'gateway: %s at %s — not a known LAN\n' "$lan_g" "$lan_m"
+      printf '  to mark this network as known, in a machine-local gitconfig (overlay): [tailnet-lan "<label>"] gateway = %s\n' "$lan_m"
+    fi
+  done
+  # The raw config, so a value known_lans skips is shown.
+  lan_cfg=$(command -v git >/dev/null 2>&1 && command git config --get-regexp '^tailnet-lan\..*\.gateway$' 2>/dev/null)
+  if [ -z "$lan_cfg" ]; then
+    printf 'known:   <none — tailnet-lan.<label>.gateway in a machine-local gitconfig (overlay; see docs/private-overlays.md)>\n'
+  else
+    printf '%s\n' "$lan_cfg" | while read -r lan_key lan_val; do
+      lan_label=${lan_key#tailnet-lan.}
+      lan_label=${lan_label%.gateway}
+      lan_mac=$(mac_norm "$lan_val")
+      if [ -n "$lan_mac" ]; then
+        printf 'known:   %s = %s\n' "$lan_label" "$lan_mac"
+      else
+        printf 'known:   %s = %s — INVALID (six hex octets expected)\n' "$lan_label" "$lan_val"
+      fi
+    done
+  fi
+  lan_n=0
+  [ -f "$TAILNET_STATE/lan-unrecognised.count" ] && lan_n=$(wc -c < "$TAILNET_STATE/lan-unrecognised.count" | tr -d ' ')
+  if [ "$lan_n" -gt 0 ] && [ -f "$TAILNET_STATE/lan-unrecognised.last" ]; then
+    IFS=$(printf '\t') read -r lan_t lan_tn lan_cidr lan_host < "$TAILNET_STATE/lan-unrecognised.last"
+    printf 'tally:   %s through a tailnet on an unrecognised overlapping network, last %s %s %s\n' "$lan_n" "$lan_t" "$lan_tn" "$lan_cidr"
+  else
+    printf 'tally:   %s\n' "$lan_n"
+  fi
+  return 0
+}
+
+subnet_routes() { # status-json -> the peers' IPv4 PrimaryRoutes, one per line (Self's never count)
+  printf '%s\n' "$1" | sed '1,/^[[:space:]]*"Peer":/d' |
+    sed -n '/"PrimaryRoutes": *\[/,/\]/s/^[[:space:]]*"\([0-9.]*\/[0-9]*\)".*/\1/p'
+}
+
+route_holding() { # status-json ipv4 -> the longest-prefix route holding it, exit 1 if none
+  subnet_routes "$1" | awk -v ip="$2" '
+    function n(a, p) { split(a, p, "."); return ((p[1] * 256 + p[2]) * 256 + p[3]) * 256 + p[4] }
+    { split($0, q, "/"); b = q[2] + 0; if (b < 1 || b > 32) next
+      m = 2 ^ (32 - b)
+      if (int(n(ip) / m) == int(n(q[1]) / m) && b > best) { best = b; r = $0 } }
+    END { if (r == "") exit 1; print r }'
+}
+
+# Sets sc_route (the route, empty when none) and sc_lan (the label, status 3 only).
+subnet_class() { # status-json ipv4 -> 1 no route, 0 away, 3 known LAN, 4 overlap
+  sc_route= sc_lan=
+  sc_route=$(route_holding "$1" "$2") || return 1
+  for sc_a in $(local_ipv4s); do
+    in_cidr "$sc_a" "$sc_route" || continue
+    sc_lan=$(known_lan_in "$sc_route") && return 3
+    sc_lan=
+    return 4
+  done
+  return 0
 }
 
 # --- supervisor -------------------------------------------------------------
@@ -460,10 +650,11 @@ cmd_system() {
 }
 
 cmd_route() {
-  force=0 prefer=
+  force=0 explain=0 prefer=
   while [ $# -gt 0 ]; do
     case $1 in
       --force) force=1;;
+      --explain) explain=1;;
       --prefer) shift; prefer=${1-};;
       --prefer=*) prefer=${1#--prefer=};;
       --) shift; break;;
@@ -474,10 +665,17 @@ cmd_route() {
   done
   [ $# -eq 1 ] || usage
   host=$1
-  hit=
+  hit= rt_proxy=0 rt_st=
   if [ "$force" = 1 ]; then
     [ -n "$prefer" ] || die "route --force needs --prefer <name>"
     hit=$prefer
+    # Forced on an overlapping network or a known LAN: the daemon's proxy, never the kernel route.
+    case $host in
+      ''|*[!0-9.]*) ;;
+      *) sc_route= sc_lan=
+         peer_in "$hit" "$host"; rt_st=$?
+         case $rt_st in 3|4) rt_proxy=1;; esac;;
+    esac
   else
     prefer_done=
     for n in $prefer $(names); do
@@ -486,18 +684,48 @@ cmd_route() {
         [ "$prefer_done" = 1 ] && continue
         prefer_done=1
       fi
-      if peer_in "$n" "$host"; then hit=$n; break; fi
+      sc_route= sc_lan=
+      peer_in "$n" "$host"
+      rt_st=$?
+      case $rt_st in
+        0|3|4) hit=$n; break;;   # 3: on a known LAN, later daemons are not asked
+      esac
     done
     [ -n "$hit" ] || return 1
+    [ "$rt_st" != 4 ] || rt_proxy=1
+  fi
+  if [ "$explain" = 1 ]; then
+    rt_why=
+    if [ "$force" = 1 ]; then
+      case $rt_st in
+        3|4) rt_why="$sc_route on $hit: forced through $hit although this network overlaps it";;
+      esac
+    else
+      case $rt_st in
+        0) [ -z "$sc_route" ] || rt_why="$sc_route on $hit: this machine is not on that subnet";;
+        3) rt_why="$sc_route on $hit: this machine is on it (known LAN $sc_lan)";;
+        4) rt_why="$sc_route on $hit: this network overlaps it and is not a known LAN, so $hit carries it (tailnet lan shows how to mark a known LAN)";;
+      esac
+    fi
+    [ -z "$rt_why" ] || printf '%s\n' "$rt_why"
+  elif [ "$force" != 1 ] && [ "$rt_st" = 4 ]; then
+    tally_unrecognised "$hit" "$sc_route" "$host"
+  fi
+  if [ "$force" != 1 ] && [ "$rt_st" = 3 ]; then
+    return 3
   fi
   # Direct when the system daemon is on the very same tailnet: kernel
-  # networking and the app's MagicDNS already reach the host.
-  dsuf=$(daemon_status_json "$hit" | json_first MagicDNSSuffix)
-  ssuf=$(system_status_json | json_first MagicDNSSuffix)
-  if [ -n "$dsuf" ] && [ "$dsuf" = "$ssuf" ]; then
-    return 0
+  # networking and the app's MagicDNS already reach the host. Not on an
+  # overlapping network: there the kernel's route may lead to another LAN.
+  if [ "$rt_proxy" != 1 ]; then
+    dsuf=$(daemon_status_json "$hit" | json_first MagicDNSSuffix)
+    ssuf=$(system_status_json | json_first MagicDNSSuffix)
+    if [ -n "$dsuf" ] && [ "$dsuf" = "$ssuf" ]; then
+      return 0
+    fi
   fi
-  printf '%s\n' "$hit"
+  [ "$explain" = 1 ] || printf '%s\n' "$hit"
+  return 0
 }
 
 cmd_nc() {
@@ -644,12 +872,13 @@ case $cmd in
   status)     cmd_status "$@";;
   logs)       need_installed "${1-}"; n=$1; shift; [ $# -gt 0 ] || set -- -n 50; tail "$@" "$(state_dir "$n")/tailscaled.log";;
   system)     cmd_system;;
-  peer)       need_installed "${1-}"; [ $# -eq 2 ] || usage; peer_in "$1" "$2";;
+  peer)       need_installed "${1-}"; [ $# -eq 2 ] || usage; peer_in "$1" "$2"; pr=$?; [ "$pr" -ne 4 ] || pr=0; exit "$pr";;
   route)      cmd_route "$@";;
   nc)         cmd_nc "$@";;
   mount)      cmd_mount "$@";;
   umount)     cmd_umount "$@";;
   mounts)     cmd_mounts;;
+  lan)        cmd_lan;;
   -h|--help|help) usage;;
   *)          die "unknown command '$cmd' (tailnet help)";;
 esac

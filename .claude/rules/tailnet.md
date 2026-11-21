@@ -38,15 +38,87 @@ daemon whose socket file is missing is skipped without a call (the CLI stalls
 is ssh's post-config HostName and stays unresolved, so MagicDNS resolves in
 that daemon), curl gets `--proxy socks5h://localhost:<port>`. A node of the
 app's own tailnet, or of no tailnet, runs untouched; so do hosts whose shape
-can't be a node (public FQDNs, non-CGNAT IPs, localhost — zero calls),
+can't be a node (public FQDNs, public IPs, localhost — zero calls), and
 anything with a ProxyJump/ProxyCommand already (config or `-J`/`-o`: a
 command-line `-o ProxyCommand` would silently override a configured
 ProxyJump), and curl with `-x`/`--noproxy`/proxy variables set. The
 destination comes from `ssh -G` (ssh's own parsing) — scp/sftp extract the
 `[user@]host:` operand first — and for curl the first URL / bare host
 argument, skipping the value of an option that takes one (a header or a form
-field can hold a URL). `TAILNET` forces its tailnet with the node check skipped (subnet
-routes the daemons can't vouch for); `tailnet-as <name> <cmd…>` does that and
+field can hold a URL). A private (RFC 1918) IPv4 is asked about too: `peer_in` counts it when it
+falls inside a subnet route a peer advertises (`PrimaryRoutes`, read from the
+peers only; the daemons run `--accept-routes`), so a LAN behind a subnet
+router is reachable away from it. The most specific route holding the address
+decides (longest prefix; an exit node's `/0` never does), and what happens
+next depends on whether this machine is *on* that route, meaning one of its
+own interface addresses (`ifconfig`, else `ip -4 addr`) is inside it. Per
+daemon, cwd's tailnet first:
+
+| Case | Test | Verdict |
+| --- | --- | --- |
+| away | no interface address is in the route | this tailnet; direct if the app is on it, else the daemon's proxy |
+| known LAN | an interface address is in the route, and a default gateway inside the route has a MAC listed in `tailnet-lan.<label>.gateway` | direct, whichever tailnet the app is on; later daemons are not asked; `tailnet route` exits 3 and prints nothing; `tailnet peer` exits 3 |
+| overlap, not known | an interface address is in the route, no listed gateway | this tailnet's daemon proxy, **even when the app is on this tailnet**; tallied; `tailnet peer` still exits 0 |
+
+The LAN's identity is its default gateway's MAC, read for nothing (`netstat
+-rn -f inet` and `arp -an` on macOS, `ip -4 route show default` and `ip neigh
+show` elsewhere; chosen by `os()`, not by fall-through) and compared after
+normalising (macOS prints octets without leading zeros). It is checked only
+when an interface address overlaps a route that holds the target, so a host
+away from the route costs nothing extra. The SSID is not usable (macOS
+redacts it without a signed app holding a Location Services grant, and
+Ethernet has none), and a DHCP domain is whatever the network's owner chose.
+The config holds only gateway MACs — `[tailnet-lan "<label>"] gateway = <mac>`,
+repeatable, machine-local and overlay-supplied (`docs/private-overlays.md`) —
+never an address range or a tailnet name: the prefix comes from what the
+daemons advertise at run time, so a second copy cannot drift. A MAC is a
+convenience, not a security boundary: anyone on a network can spoof the
+gateway's, and the worst case is that a stranger's network is treated as the
+known LAN and its addresses run direct. A value that is not six hex octets is skipped (`tailnet lan`
+shows it as INVALID).
+
+The default for an unlisted overlapping network is the tailnet because the
+two errors are not symmetric: wrong at a known LAN nobody listed yet is a
+hairpin through the subnet router (and needs `command ssh` when the router is
+down), wrong the other way is a stranger's device at that address answering
+`ssh`. A userspace daemon's proxy reaches the routed address whatever this
+machine's interfaces are, so it works there, and for the tailnet the app is
+on too (that daemon idles but is logged in). That is also why the
+same-tailnet shortcut (direct when the system daemon is on the very tailnet
+that vouches) is skipped on an overlap: macOS scopes the app's route to its
+own interface when a local route has the same prefix, so "direct" there
+means the local network. Linux does the opposite (a root tailscaled's table
+52 outranks the main table), which predates this and is not addressed. On a
+known LAN direct is the kernel's route and is right. Limits that remain: a
+Docker or VM bridge overlapping a route has no gateway to list, so its
+addresses go through the tailnet (`command ssh` for direct); WSL2's NAT mode
+hides the real LAN, so it reads as away; a route narrower than the LAN that
+leaves the gateway outside it is never known. Until a LAN's gateway is listed,
+and after its router is replaced (a new MAC), that LAN is reached through its
+subnet router.
+
+`tailnet lan` prints the default gateway, its MAC and whether it is a known
+LAN (with the line to add when it is not), the configured gateways, and a
+`tally:` line. `tailnet route --explain <host>` keeps `route`'s exit status
+and prints zero or one reason line, never the tailnet name, and tallies
+nothing; the line exists only when a subnet route was involved. Every
+unforced route that ends in the overlap case appends one byte to
+`lan-unrecognised.count` and replaces `lan-unrecognised.last` (UTC time,
+tailnet, route, host, tab-separated) in the state dir, like the lsof guard's
+tally; a failed write changes nothing. Neither is a tailnet directory, so
+`names` and `tailnet_active` do not see them. `tailnet-doctor` shows a `lan:`
+block (the output of `tailnet lan`) only when a `tailnet-lan.*` key exists or
+the tally is non-empty, and for a host a `subnet:` line under `route:` saying
+which route and which case; its verdicts are `via <name>`, `direct (on a
+known LAN)`, `direct (a subnet route of the tailnet the app is on)`. The curl
+wrapper skips the value of `--interface`, `--dns-interface`, `--dns-ipv4-addr`,
+`--dns-servers`, `--haproxy-clientip`, `--connect-to` and `--resolve`: since a
+private IPv4 is node-shaped, an address given to one would otherwise send the
+whole request through whichever tailnet routes it. `TAILNET=<name>` forces
+that tailnet with the node check skipped (subnet routes the daemons can't
+vouch for), and on an address inside a route this machine is on it forces the
+daemon's proxy, never the kernel route; `command ssh` is the direct override.
+`tailnet-as <name> <cmd…>` does that and
 exports `ALL_PROXY`/`HTTP(S)_PROXY`/`NO_PROXY` so any proxy-aware tool
 follows. `tailnet-doctor [host]` traces all of it. Without the script or an
 installed tailnet the wrappers are plain passthroughs. Order and failure

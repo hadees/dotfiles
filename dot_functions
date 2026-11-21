@@ -2237,7 +2237,7 @@ function wrangler-doctor() {
 # currently on also runs direct (kernel networking, the app's MagicDNS). Only
 # a hit on another tailnet is routed: ssh/scp/sftp get a ProxyCommand through
 # that daemon (`tailnet nc`), curl a `--proxy socks5h://` on its port. Hosts
-# whose shape cannot be a tailnet node (public FQDNs, non-CGNAT IPs,
+# whose shape cannot be a tailnet node (public FQDNs, public IPs,
 # localhost) cost nothing — that shape check is a pure string match and runs
 # before the state dir or a daemon is even looked at. And the wrappers fail
 # open: the whole routing decision runs in a subshell, so a helper that
@@ -2246,7 +2246,9 @@ function wrangler-doctor() {
 # TAILNET=<name> (an installed tailnet, or an account/alias mapped in
 # `tailnet.profile.*`) forces that tailnet for one command regardless of the
 # node check — the way to reach subnet-router destinations the daemons can't
-# vouch for — and `tailnet-as <name> <cmd…>` does that plus exports the proxy
+# vouch for; on a network that overlaps a subnet route it also forces the
+# daemon's proxy even when the app is on that tailnet (`command ssh` is the
+# direct override) — and `tailnet-as <name> <cmd…>` does that plus exports the proxy
 # environment (ALL_PROXY/HTTPS_PROXY/…) so any proxy-aware tool follows.
 # `tailnet-doctor [host]` traces every step without routing anything.
 #
@@ -2314,8 +2316,9 @@ function tailnet_active() {
 
 # Could $1 be a node of some tailnet? Only shapes that can are worth asking the
 # daemons about: a bare label (MagicDNS short name), *.ts.net, a CGNAT
-# 100.64/10 IPv4, or a fd7a:115c:a1e0::/48 IPv6. Everything else — a public
-# FQDN, localhost, another IP — runs direct without a single tailscale call.
+# 100.64/10 IPv4, a private (RFC 1918) IPv4 — a subnet router may advertise
+# its LAN — or a fd7a:115c:a1e0::/48 IPv6. Everything else — a public FQDN,
+# localhost, another IP — runs direct without a single tailscale call.
 function tailnet_hostish() {
 	emulate -L zsh;
 	local h=${(L)1};
@@ -2325,6 +2328,7 @@ function tailnet_hostish() {
 		(localhost) return 1;;
 		(*.ts.net) return 0;;
 		(100.<64-127>.<0-255>.<0-255>) return 0;;
+		(10.<0-255>.<0-255>.<0-255>|172.<16-31>.<0-255>.<0-255>|192.168.<0-255>.<0-255>) return 0;;
 		(fd7a:115c:a1e0:*) return 0;;
 		(*[.:]*) return 1;;
 		(*) return 0;;
@@ -2442,7 +2446,7 @@ function tailnet_curl_host() {
 	for a in "$@"; do
 		(( skip )) && { skip=0; continue; };
 		case $a in
-			(-H|--header|-d|--data|--data-raw|--data-binary|--data-urlencode|--json|-e|--referer|-A|--user-agent|-F|--form|--form-string|-u|--user|-o|--output|-w|--write-out|-b|--cookie|-X|--request) skip=1; continue;;
+			(-H|--header|-d|--data|--data-raw|--data-binary|--data-urlencode|--json|-e|--referer|-A|--user-agent|-F|--form|--form-string|-u|--user|-o|--output|-w|--write-out|-b|--cookie|-X|--request|--interface|--dns-interface|--dns-ipv4-addr|--dns-servers|--haproxy-clientip|--connect-to|--resolve) skip=1; continue;;
 			(-*) continue;;
 			(*://*)
 				host=${a#*://};
@@ -2603,8 +2607,8 @@ function tailnet-as() {
 # and asks the daemons for status; never routes anything.
 function tailnet-doctor() {
 	emulate -L zsh;
-	local root n origin slug acct repopin map prefer host verdict probe prc;
-	local -a pref;
+	local root n origin slug acct repopin map prefer host verdict probe prc why rrc;
+	local -a pref force;
 	print -r -- "wrapper: $(whence -w ssh) / $(whence -w curl)";
 	print -r -- "defined: $(defined_trace tailnet_exec tailnet_for_cmd tailnet_route tailnet_active tailnet_installed tailnet_state_root tailnet_hostish tailnet_for_cwd tailnet_ssh_host tailnet_scp_host tailnet_curl_host gh_account_for_cwd git_origin_slug bin_trace)";
 	# Self-test: run the wrappers' real decision path (tailnet_for_cmd, the
@@ -2665,6 +2669,12 @@ function tailnet-doctor() {
 			command tailnet mounts 2>/dev/null | sed 's/^/  /';
 		fi;
 	fi;
+	# LANs (tailnet lan): shown when a known LAN is configured or an
+	# unrecognised overlap has been tallied; the body comes from the script.
+	if (( $+commands[tailnet] )) && { command git config --get-regexp '^tailnet-lan\.' >/dev/null 2>&1 || [[ -s $root/lan-unrecognised.count ]]; }; then
+		print -r -- "lan:";
+		command tailnet lan 2>/dev/null | sed 's/^/  /';
+	fi;
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
 	print -r -- "origin:  ${origin:-<none — not a git repo or no origin>}";
@@ -2714,15 +2724,27 @@ function tailnet-doctor() {
 			# system tailnet"; exit 1 means a node of nothing.
 			[[ -n $prefer ]] && pref=(--prefer "$prefer");
 			n="$(tailnet_route "$host")";
+			# --explain: same status as plain route, plus one reason line when a
+			# subnet route was involved (none for a node, or a forced route off
+			# any LAN). Forced as tailnet_route forces it.
+			[[ -n $TAILNET && -n $prefer ]] && force=(--force);
+			why="$(command tailnet route --explain "${force[@]}" "${pref[@]}" -- "$host" 2>/dev/null)"; rrc=$?;
 			if [[ -n $n ]]; then
 				verdict="via $n (ProxyCommand=${commands[tailnet]} nc $n %h %p; curl --proxy $(command tailnet proxy-url "$n" 2>/dev/null))";
-			elif [[ -n $TAILNET ]] || command tailnet route "${pref[@]}" -- "$host" >/dev/null 2>&1; then
-				verdict="direct (a node of the tailnet the app is on)";
+			elif [[ $rrc -eq 3 ]]; then
+				verdict="direct (on a known LAN)";
+			elif [[ -n $TAILNET || $rrc -eq 0 ]]; then
+				if [[ -n $why ]]; then
+					verdict="direct (a subnet route of the tailnet the app is on)";
+				else
+					verdict="direct (a node of the tailnet the app is on)";
+				fi;
 			else
 				verdict="direct (a node of no installed tailnet)";
 			fi;
 		fi;
 		print -r -- "route:   $host -> $verdict";
+		if [[ -n $why ]]; then print -r -- "subnet:  $why"; fi;
 	fi;
 }
 
