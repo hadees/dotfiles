@@ -22,7 +22,7 @@ setup() {
   # The stub answers `auth cookie` as the real one does and records every
   # call. $IT2_GETS is how many `session get-status` calls succeed before it
   # starts failing; $IT2_FAIL_GET=<n> fails only the n-th `session get-status`;
-# $IT2_AUTH=fail makes `auth cookie` exit 1.
+  # $IT2_AUTH=fail makes `auth cookie` exit 1.
   IT2_LOG="$BATS_TEST_TMPDIR/it2.log"
   export IT2_LOG
   cat > "$HOME/.config/iterm2/it2" <<'EOF'

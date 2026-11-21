@@ -3367,7 +3367,8 @@ function iterm2-doctor() {
 	local ckfix='run iterm2-cookie' cksuf='' ckrec="$HOME/.local/state/iterm2/api-cookie.failed" cksock="$HOME/Library/Application Support/iTerm2/private/socket";
 	local -a ckrecs;
 	if iterm2_allows_all_apps; then
-		ckfix='the next attended claude launch mints one';
+		# `git config claude.iterm2-check false` turns the mint off (see claude()).
+		[[ "$(command git config --get claude.iterm2-check 2>/dev/null)" != false ]] && ckfix='the next attended claude launch mints one';
 		if [[ -e $ckrec && ( ! -e $cksock || $ckrec -nt $cksock ) ]]; then
 			ckrecs=("${(@f)$(<$ckrec)}");
 			ckrecs=(${ckrecs:#});

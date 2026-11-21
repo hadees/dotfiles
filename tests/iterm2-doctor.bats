@@ -331,6 +331,17 @@ STUBEOF
   [ "$(grep -c 'automatic mints failed' <<<"$output")" -eq 0 ]
 }
 
+@test "iterm2-doctor: with the allow-all file but claude.iterm2-check false the cookie line says run iterm2-cookie" {
+  make_app "$(doctor_stamp)"
+  sock="$HOME/Library/Application Support/iTerm2/private/socket"
+  mkdir -p "${sock%/*}"
+  : > "${sock%/*}/../disable-automation-auth"
+  git config --global claude.iterm2-check false
+  doctor
+  [[ "$output" == *$'cookie:  absent — run iterm2-cookie'* ]]
+  [ "$(grep -c 'mints one' <<<"$output")" -eq 0 ]
+}
+
 @test "iterm2-doctor: osascript line counts uncookied events and running cookie requests" {
   make_app "$(doctor_stamp)"
   # A real ps would count the osascripts this very bug leaves running.
