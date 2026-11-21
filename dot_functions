@@ -401,19 +401,30 @@ function claude() {
 	fi;
 	# Two things about iTerm2 worth a line: with no API cookie every hook
 	# event's `it2` starts an osascript (iTerm2 issue 13189), and an iTerm2
-	# that has moved off the release the iterm2 skill describes. Builtins and
-	# one file read until there is something to say, then one `git config`
-	# read for both; never blocks. `git config claude.iterm2-check false`
-	# silences them.
+	# that has moved off the release the iterm2 skill describes. A missing
+	# cookie is minted in the background when iTerm2 will not ask for one
+	# (`iterm2_cookie_auto`), and the line appears only when iTerm2 would have
+	# to ask or the last mint failed. Builtins and file reads until there is
+	# something to say, then one `git config` read for all of it; never
+	# blocks. `git config claude.iterm2-check false` silences the lines and
+	# the mint.
 	if [[ -n $attended ]]; then
 		local -a notes;
+		local state drift;
 		if [[ -n $ITERM_SESSION_ID && -e $HOME/.config/iterm2/it2 ]]; then
-			iterm2_cookie_state;
-			[[ $REPLY != fresh ]] && notes+=("no iTerm2 API cookie for this iTerm2 run ($REPLY), so every hook event starts osascript (iTerm2 issue 13189): run iterm2-cookie");
+			iterm2_cookie_state; state=$REPLY;
 		fi;
-		iterm2_skill_drift;
-		[[ -n $REPLY ]] && notes+=($REPLY);
-		if (( $#notes )) && [[ "$(command git config --get claude.iterm2-check 2>/dev/null)" != false ]]; then
+		iterm2_skill_drift; drift=$REPLY;
+		if [[ -n $drift || ( -n $state && $state != fresh ) ]] && [[ "$(command git config --get claude.iterm2-check 2>/dev/null)" != false ]]; then
+			if [[ -n $state && $state != fresh ]]; then
+				iterm2_cookie_auto;
+				if [[ $REPLY == manual ]]; then
+					notes+=("no iTerm2 API cookie for this iTerm2 run ($state), so every hook event starts osascript (iTerm2 issue 13189): run iterm2-cookie");
+				elif [[ $REPLY == failed:* ]]; then
+					notes+=("no iTerm2 API cookie for this iTerm2 run ($state) and minting one failed (${REPLY#failed: }), so every hook event starts osascript (iTerm2 issue 13189): run iterm2-cookie");
+				fi;
+			fi;
+			[[ -n $drift ]] && notes+=($drift);
 			for line in $notes; do print -ru2 -- "claude: $line"; done;
 		fi;
 	fi;
@@ -999,7 +1010,7 @@ function claude-as() {
 function claude-doctor() {
 	local origin acct map dir cred email slug pin;
 	print -r -- "wrapper: $(whence -w claude)";
-	print -r -- "defined: $(defined_trace claude_profile_dir claude_proxy_probe claude_proxy_decide claude_proxy_session claude_proxy_external claude_proxy_notice claude_sessions_here claude_memory_leaks tabstatus_wiring iterm2_cookie_state iterm2_skill_drift iterm2_app_path claude_peer_key hermes_profile claude_browser_alias claude_browser_can_open gh_account_for_cwd git_origin_slug bin_trace)";
+	print -r -- "defined: $(defined_trace claude_profile_dir claude_proxy_probe claude_proxy_decide claude_proxy_session claude_proxy_external claude_proxy_notice claude_sessions_here claude_memory_leaks tabstatus_wiring iterm2_cookie_state iterm2_cookie_auto iterm2_allows_all_apps iterm2_skill_drift iterm2_app_path claude_peer_key hermes_profile claude_browser_alias claude_browser_can_open gh_account_for_cwd git_origin_slug bin_trace)";
 	print -r -- "binary:  $(bin="$(whence -p claude)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH')";
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
@@ -3174,6 +3185,29 @@ function iterm2-cookie() {
 	[[ -e $dir/uncookied ]] && : >| "$dir/uncookied";
 	[[ -n $quiet ]] || print -r -- "iterm2-cookie: fresh until iTerm2 quits";
 	return 0;
+}
+
+# What `claude` does about a cookie that is not fresh, in $REPLY. The caller
+# guarantees $ITERM_SESSION_ID is set and ~/.config/iterm2/it2 exists.
+#   manual   iTerm2 would have to ask: nothing is started
+#   started  a quiet mint is running in the background, no failure on record
+#   failed: <why>  a quiet mint was started again; <why> is the last failure
+#            recorded for this iTerm2 run
+# Never waits for the mint, and keeps the terminal out of it: all three
+# redirections are what stop it writing into the session.
+function iterm2_cookie_auto() {
+	emulate -L zsh;
+	local f="$HOME/.local/state/iterm2/api-cookie.failed" s="$HOME/Library/Application Support/iTerm2/private/socket";
+	local -a lines;
+	iterm2_allows_all_apps || { REPLY=manual; return 0; };
+	if [[ -e $f && ( ! -e $s || $f -nt $s ) ]]; then
+		lines=(${(f)"$(<$f)"});
+		REPLY="failed: ${lines[-1]#* }";
+	else
+		REPLY=started;
+	fi;
+	# ponytail: no lock. Launches in the same second each mint; iTerm2 accepts every cookie in this mode and the last rename wins. Add a noclobber lock only if the extra osascripts ever show in iterm2-doctor.
+	( iterm2-cookie quiet </dev/null >/dev/null 2>&1 & );
 }
 
 # Where iTerm2 is installed, or nothing. $ITERM2_APP names a non-standard
