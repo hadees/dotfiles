@@ -98,13 +98,20 @@ absent: a visible member of the same workgroup, found through `claude-peer
 claim` and `peers --leader`, is brought forward and `next` adds ` (its tab is
 in front; pick it in the peer bar)`). `alfred` prints the `attention` rows as
 Script Filter JSON, and `alfred/claude-tab/info.plist` (keyword `cn`, a
-`focus` on the chosen row, a hotkey running `next`) is installed by hand with
-`worktabs alfred-install "$(chezmoi source-path)/alfred/claude-tab"`.
+`focus` on the chosen row, a hotkey running `next`) is installed by hand.
+`worktabs alfred-install` is for the `ws` workflow only (it always builds
+`Worktabs.alfredworkflow`), so zip `info.plist` to the archive root and open it:
 
-**Not yet proven.** Plan step 1's live probe was skipped, so U1 to U3 are
-unverified on the running app: whether `it2 session focus` swaps a buried peer
-in (source says it is refused, `iTermAPIHelper.m:3190-3195`), so the `swap`
-route and the `group` fallback after it have only run against stubs. The Alfred
+    cd "$(chezmoi source-path)/alfred/claude-tab" && zip -q -j -r "$TMPDIR/claude-tab.alfredworkflow" .
+    open "$TMPDIR/claude-tab.alfredworkflow"
+
+**Not yet proven.** The live probe on the running app was skipped, so three
+things are unverified. Whether Claude Code's own status reports put member rows
+under a tab's merged Session Status row (read from source and docs only).
+Whether the shim's paints and those reports can share a row, or the last
+writer wins. Whether `it2 session focus` swaps a buried peer in (source says it
+is refused, `iTermAPIHelper.m:3190-3195`), so the `swap` route and the `group`
+fallback after it have only run against stubs. The Alfred
 workflow has never been imported; its hotkey and notification objects are
 written from memory of Alfred 5's format and may need a field changed on first
 import. The hotkey ships **unassigned**, the operator picks the key in Alfred.
