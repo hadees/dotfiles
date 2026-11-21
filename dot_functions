@@ -401,19 +401,30 @@ function claude() {
 	fi;
 	# Two things about iTerm2 worth a line: with no API cookie every hook
 	# event's `it2` starts an osascript (iTerm2 issue 13189), and an iTerm2
-	# that has moved off the release the iterm2 skill describes. Builtins and
-	# one file read until there is something to say, then one `git config`
-	# read for both; never blocks. `git config claude.iterm2-check false`
-	# silences them.
+	# that has moved off the release the iterm2 skill describes. A missing
+	# cookie is minted in the background when iTerm2 will not ask for one
+	# (`iterm2_cookie_auto`), and the line appears only when iTerm2 would have
+	# to ask or the last mint failed. Builtins and file reads until there is
+	# something to say, then one `git config` read for all of it; never
+	# blocks. `git config claude.iterm2-check false` silences the lines and
+	# the mint.
 	if [[ -n $attended ]]; then
 		local -a notes;
+		local state drift;
 		if [[ -n $ITERM_SESSION_ID && -e $HOME/.config/iterm2/it2 ]]; then
-			iterm2_cookie_state;
-			[[ $REPLY != fresh ]] && notes+=("no iTerm2 API cookie for this iTerm2 run ($REPLY), so every hook event starts osascript (iTerm2 issue 13189): run iterm2-cookie");
+			iterm2_cookie_state; state=$REPLY;
 		fi;
-		iterm2_skill_drift;
-		[[ -n $REPLY ]] && notes+=($REPLY);
-		if (( $#notes )) && [[ "$(command git config --get claude.iterm2-check 2>/dev/null)" != false ]]; then
+		iterm2_skill_drift; drift=$REPLY;
+		if [[ -n $drift || ( -n $state && $state != fresh ) ]] && [[ "$(command git config --get claude.iterm2-check 2>/dev/null)" != false ]]; then
+			if [[ -n $state && $state != fresh ]]; then
+				iterm2_cookie_auto;
+				if [[ $REPLY == manual ]]; then
+					notes+=("no iTerm2 API cookie for this iTerm2 run ($state), so every hook event starts osascript (iTerm2 issue 13189): run iterm2-cookie");
+				elif [[ $REPLY == failed:* ]]; then
+					notes+=("no iTerm2 API cookie for this iTerm2 run ($state) and minting one failed (${REPLY#failed: }), so every hook event starts osascript (iTerm2 issue 13189): run iterm2-cookie");
+				fi;
+			fi;
+			[[ -n $drift ]] && notes+=($drift);
 			for line in $notes; do print -ru2 -- "claude: $line"; done;
 		fi;
 	fi;
@@ -999,7 +1010,7 @@ function claude-as() {
 function claude-doctor() {
 	local origin acct map dir cred email slug pin;
 	print -r -- "wrapper: $(whence -w claude)";
-	print -r -- "defined: $(defined_trace claude_profile_dir claude_proxy_probe claude_proxy_decide claude_proxy_session claude_proxy_external claude_proxy_notice claude_sessions_here claude_memory_leaks tabstatus_wiring iterm2_cookie_state iterm2_skill_drift iterm2_app_path claude_peer_key hermes_profile claude_browser_alias claude_browser_can_open gh_account_for_cwd git_origin_slug bin_trace)";
+	print -r -- "defined: $(defined_trace claude_profile_dir claude_proxy_probe claude_proxy_decide claude_proxy_session claude_proxy_external claude_proxy_notice claude_sessions_here claude_memory_leaks tabstatus_wiring iterm2_cookie_state iterm2_cookie_auto iterm2_allows_all_apps iterm2_skill_drift iterm2_app_path claude_peer_key hermes_profile claude_browser_alias claude_browser_can_open gh_account_for_cwd git_origin_slug bin_trace)";
 	print -r -- "binary:  $(bin="$(whence -p claude)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH')";
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
@@ -3083,27 +3094,44 @@ function iterm2_cookie_state() {
 	fi;
 }
 
+# Whether iTerm2 allows all apps to connect (Settings > General > Magic): it
+# then keeps a root-owned `disable-automation-auth` file, and a single-use
+# cookie request raises no announcement. Existence only; whether iTerm2 really
+# honours the file is decided by `iterm2-cookie` using the cookie twice.
+function iterm2_allows_all_apps() {
+	emulate -L zsh;
+	[[ -e "$HOME/Library/Application Support/iTerm2/disable-automation-auth" ]];
+}
+
 # Mint, check or forget the API cookie the hooks hand to `it2`. An `it2` with
 # no cookie falls back to AppleScript, which leaks one osascript per hook event
 # (iTerm2 issue 13189); with a cookie it speaks the websocket API directly.
-#   iterm2-cookie           ask iTerm2 for a reusable cookie, store it, prove it
+#   iterm2-cookie           mint a cookie, store it, prove it
+#   iterm2-cookie quiet     mint without ever raising an announcement, print
+#                           nothing: 0 minted, 1 tried and failed (the reason is
+#                           appended to api-cookie.failed), 3 not tried because
+#                           iTerm2 would have to ask
 #   iterm2-cookie status    the state, plus whether iTerm2 accepts it right now
-#   iterm2-cookie forget    delete the cookie and any rejected one
-# Run it once per iTerm2 launch, in an iTerm2 session, and answer Forever in
-# the announcement: the cookie lives in iTerm2's memory, so Forever means until
-# it quits. Minting uses the cookie twice before trusting it — a single-use
-# cookie ("Always Allow All Apps" hands one back) would pass once and then make
-# every later hook event fail with no rows at all. The file is a bearer
-# credential for iTerm2's API, so it is written 0600 in a 0700 directory and is
-# never exported from shell startup; only the hook line reads it.
+#   iterm2-cookie forget    delete the cookie, any rejected one and the failures
+# When iTerm2 allows all apps to connect, a single-use cookie request raises no
+# announcement and iTerm2 accepts any cookie for as long as it runs, so the verb
+# mints that way, and `claude` runs `quiet` itself. Without that setting the
+# only way is a reusable cookie: iTerm2 asks in this session's announcement bar;
+# choose Forever, which lasts until iTerm2 quits. Either way the cookie is used
+# twice before it is trusted, which is also what tells the two apart: a
+# single-use cookie passes once and then makes every later hook event fail with
+# no rows at all. The file is a bearer credential for iTerm2's API, so it is
+# written 0600 in a 0700 directory and is never exported from shell startup;
+# only the hook line reads it.
 function iterm2-cookie() {
 	emulate -L zsh;
-	local dir="$HOME/.local/state/iterm2" it2 out w a b i why;
-	local cookie=$dir/api-cookie sid=${ITERM_SESSION_ID#*:};
+	local dir="$HOME/.local/state/iterm2" it2 out w a b i why mode quiet;
+	local cookie=$dir/api-cookie sid=${ITERM_SESSION_ID#*:} failed=$dir/api-cookie.failed;
+	local -a modes flag;
 	it2="$HOME/.config/iterm2/it2";
 	[[ -x $it2 ]] || it2=${commands[it2]-};
 	case ${1-} in
-		forget) command rm -f "$cookie" "$cookie.rejected"; return 0;;
+		forget) command rm -f "$cookie" "$cookie.rejected" "$failed"; return 0;;
 		status)
 			iterm2_cookie_state;
 			if [[ $REPLY == fresh && -n $ITERM_SESSION_ID && -n $it2 ]]; then
@@ -3117,40 +3145,91 @@ function iterm2-cookie() {
 			fi;
 			print -r -- "$REPLY";
 			return 0;;
+		quiet) quiet=1; iterm2_allows_all_apps || return 3;;
 		'') ;;
-		*) print -ru2 -- "usage: iterm2-cookie [status|forget]"; return 2;;
+		*) print -ru2 -- "usage: iterm2-cookie [status|forget|quiet]"; return 2;;
 	esac;
-	[[ -n $ITERM_SESSION_ID ]] || { print -ru2 -- "iterm2-cookie: not inside an iTerm2 session (iTerm2 asks in the session that requests it)"; return 1; };
-	[[ -n $it2 ]] || { print -ru2 -- "iterm2-cookie: no it2 found (~/.config/iterm2/it2, or on PATH)"; return 1; };
-	print -r -- "iterm2-cookie: iTerm2 will ask in this session's announcement bar; choose Forever (it lasts until iTerm2 quits)";
-	for i in 1; do
-		out="$("$it2" auth cookie 2>/dev/null)" || { why="iTerm2 handed out no cookie (denied or dismissed, or iTerm2 is not running)"; break; };
-		for w in ${=out}; do
-			case $w in
-				ITERM2_COOKIE=*) a=${w#*=};;
-				ITERM2_KEY=*) b=${w#*=};;
-			esac;
-		done;
-		[[ -n $a && -n $b ]] || { why="it2 auth cookie printed no ITERM2_COOKIE and ITERM2_KEY"; break; };
-		( umask 077; command mkdir -p "$dir" && command chmod 700 "$dir" && print -r -- "$a $b" >"$cookie.$$" && command mv -f "$cookie.$$" "$cookie" ) || { why="could not write $cookie"; break; };
-		command rm -f "$cookie.rejected";
-		for i in 1 2; do
-			ITERM2_COOKIE=$a ITERM2_KEY=$b "$it2" session get-status --session "$sid" >/dev/null 2>&1 && continue;
-			if (( i == 1 )); then
-				why="iTerm2 would not accept the cookie it just issued (is iTerm2 running, and is this a live session?)";
-			else
-				why="the cookie worked once and then failed: it is single-use (choose Forever, not Always Allow All Apps)";
-			fi;
-			break 2;
-		done;
-	done;
+	if [[ -z $ITERM_SESSION_ID ]]; then
+		why="not inside an iTerm2 session (iTerm2 asks in the session that requests it)";
+	elif [[ -z $it2 ]]; then
+		why="no it2 found (~/.config/iterm2/it2, or on PATH)";
+	fi;
 	if [[ -n $why ]]; then
-		command rm -f "$cookie" "$cookie.$$";
-		print -ru2 -- "iterm2-cookie: $why";
+		if [[ -z $quiet ]]; then print -ru2 -- "iterm2-cookie: $why"; return 1; fi;
+	else
+		if [[ -n $quiet ]]; then modes=(single);
+		elif iterm2_allows_all_apps; then modes=(single reusable);
+		else modes=(reusable); fi;
+		for mode in $modes; do
+			why=; a=; b=; flag=();
+			if [[ $mode == single ]]; then
+				flag=(--single-use);
+				[[ -n $quiet ]] || print -r -- "iterm2-cookie: iTerm2 allows all apps to connect, so it issues the cookie without an announcement";
+			else
+				print -r -- "iterm2-cookie: iTerm2 will ask in this session's announcement bar; choose Forever (it lasts until iTerm2 quits)";
+			fi;
+			for i in 1; do
+				out="$("$it2" auth cookie $flag 2>/dev/null)" || { why="iTerm2 handed out no cookie (denied or dismissed, or iTerm2 is not running)"; break; };
+				for w in ${=out}; do
+					case $w in
+						ITERM2_COOKIE=*) a=${w#*=};;
+						ITERM2_KEY=*) b=${w#*=};;
+					esac;
+				done;
+				[[ -n $a && -n $b ]] || { why="it2 auth cookie printed no ITERM2_COOKIE and ITERM2_KEY"; break; };
+				( umask 077; command mkdir -p "$dir" && command chmod 700 "$dir" && print -r -- "$a $b" >"$cookie.$$" && command mv -f "$cookie.$$" "$cookie" ) 2>/dev/null || { why="could not write $cookie"; break; };
+				command rm -f "$cookie.rejected";
+				for i in 1 2; do
+					ITERM2_COOKIE=$a ITERM2_KEY=$b "$it2" session get-status --session "$sid" >/dev/null 2>&1 && continue;
+					if (( i == 1 )); then
+						why="iTerm2 would not accept the cookie it just issued (is iTerm2 running, and is this a live session?)";
+					elif [[ $mode == single ]]; then
+						why="the cookie worked once and then failed: iTerm2 does not honour its disable-automation-auth file (Settings > General > Magic > Allow all apps to connect)";
+					else
+						why="the cookie worked once and then failed: it is single-use (choose Forever, not Always Allow All Apps)";
+					fi;
+					break 2;
+				done;
+			done;
+			[[ -z $why ]] && break;
+			command rm -f "$cookie" "$cookie.$$";
+			[[ -n $quiet ]] || print -ru2 -- "iterm2-cookie: $why";
+		done;
+	fi;
+	if [[ -n $why ]]; then
+		# The record is per iTerm2 run: one older than the socket belongs to an earlier run.
+		[[ -z $quiet ]] || ( umask 077; zmodload zsh/datetime; command mkdir -p "$dir" && command chmod 700 "$dir";
+			[[ -e $failed && -e "$HOME/Library/Application Support/iTerm2/private/socket" && ! $failed -nt "$HOME/Library/Application Support/iTerm2/private/socket" ]] && : >| "$failed";
+			print -r -- "$EPOCHSECONDS $why" >>"$failed" ) 2>/dev/null;
 		return 1;
 	fi;
+	command rm -f "$failed";
 	[[ -e $dir/uncookied ]] && : >| "$dir/uncookied";
-	print -r -- "iterm2-cookie: fresh until iTerm2 quits";
+	[[ -n $quiet ]] || print -r -- "iterm2-cookie: fresh until iTerm2 quits";
+	return 0;
+}
+
+# What `claude` does about a cookie that is not fresh, in $REPLY. The caller
+# guarantees $ITERM_SESSION_ID is set and ~/.config/iterm2/it2 exists.
+#   manual   iTerm2 would have to ask: nothing is started
+#   started  a quiet mint is running in the background, no failure on record
+#   failed: <why>  a quiet mint was started again; <why> is the last failure
+#            recorded for this iTerm2 run
+# Never waits for the mint, and keeps the terminal out of it: all three
+# redirections are what stop it writing into the session.
+function iterm2_cookie_auto() {
+	emulate -L zsh;
+	local f="$HOME/.local/state/iterm2/api-cookie.failed" s="$HOME/Library/Application Support/iTerm2/private/socket";
+	local -a lines;
+	iterm2_allows_all_apps || { REPLY=manual; return 0; };
+	if [[ -e $f && ( ! -e $s || $f -nt $s ) ]]; then
+		lines=(${(f)"$(<$f)"});
+		REPLY="failed: ${lines[-1]#* }";
+	else
+		REPLY=started;
+	fi;
+	# ponytail: no lock. Launches in the same second each mint; iTerm2 accepts every cookie in this mode and the last rename wins. Add a noclobber lock only if the extra osascripts ever show in iterm2-doctor.
+	( iterm2-cookie quiet </dev/null >/dev/null 2>&1 & );
 }
 
 # Where iTerm2 is installed, or nothing. $ITERM2_APP names a non-standard
@@ -3247,7 +3326,7 @@ function iterm2-doctor() {
 	local stamp=3.7.7;
 	local app ver skill c d v cmp;
 	local -a chans vers plugs profiles autopy;
-	print -r -- "defined: $(defined_trace iterm2_app_path iterm2_bundle_version iterm2_pref iterm2_cookie_state tabstatus_wiring claude_profile_dirs)";
+	print -r -- "defined: $(defined_trace iterm2_app_path iterm2_bundle_version iterm2_pref iterm2_cookie_state iterm2_allows_all_apps tabstatus_wiring claude_profile_dirs)";
 	app="$(iterm2_app_path)";
 	if [[ -z $app ]]; then
 		print -r -- "app:     NOT INSTALLED — no iTerm.app in /Applications or ~/Applications$([[ $(uname) == Darwin ]] || print -r -- ' (macOS-only app)')";
@@ -3304,12 +3383,26 @@ function iterm2-doctor() {
 	print -r -- "cc-status: ~/.config/iterm2/cc-status${cct:+ -> $cct} ($ccstate); it2: $ccit2";
 	# The API cookie the hooks hand to it2 (static: whether iTerm2 accepts it
 	# is `iterm2-cookie status`) and how many hook events ran without one.
+	# With iTerm2's allow-all file the launch wrapper mints the cookie itself,
+	# so the fix named is its mint, plus how many mints failed in this iTerm2
+	# run (the record is older than the socket once iTerm2 restarted).
+	local ckfix='run iterm2-cookie' cksuf='' ckrec="$HOME/.local/state/iterm2/api-cookie.failed" cksock="$HOME/Library/Application Support/iTerm2/private/socket";
+	local -a ckrecs;
+	if iterm2_allows_all_apps; then
+		# `git config claude.iterm2-check false` turns the mint off (see claude()).
+		[[ "$(command git config --get claude.iterm2-check 2>/dev/null)" != false ]] && ckfix='the next attended claude launch mints one';
+		if [[ -e $ckrec && ( ! -e $cksock || $ckrec -nt $cksock ) ]]; then
+			ckrecs=("${(@f)$(<$ckrec)}");
+			ckrecs=(${ckrecs:#});
+			(( $#ckrecs )) && cksuf=" (${#ckrecs} automatic mints failed this run, last: ${${ckrecs[-1]}#* }; run iterm2-cookie)";
+		fi;
+	fi;
 	iterm2_cookie_state;
 	case $REPLY in
 		fresh) print -r -- "cookie:  fresh (newer than the API socket)";;
-		stale) print -r -- "cookie:  stale — iTerm2 restarted since it was issued; run iterm2-cookie";;
-		rejected) print -r -- "cookie:  rejected — iTerm2 refused it; run iterm2-cookie";;
-		*) print -r -- "cookie:  absent — run iterm2-cookie";;
+		stale) print -r -- "cookie:  stale — iTerm2 restarted since it was issued; $ckfix$cksuf";;
+		rejected) print -r -- "cookie:  rejected — iTerm2 refused it; $ckfix$cksuf";;
+		*) print -r -- "cookie:  absent — $ckfix$cksuf";;
 	esac;
 	local unc="$HOME/.local/state/iterm2/uncookied" uncn=0 uncb='never' uncp=0 uncs;
 	zmodload zsh/stat zsh/datetime 2>/dev/null;

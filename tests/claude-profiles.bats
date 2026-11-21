@@ -189,7 +189,7 @@ claude_in() {
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: claude: function"* ]]
-  [[ "$output" == *"defined: ok (19 helpers)"* ]]
+  [[ "$output" == *"defined: ok (21 helpers)"* ]]
   [[ "$output" == *"binary:  $BATS_TEST_TMPDIR/bin/claude"* ]]
   [[ "$output" == *"account: personal-account"* ]]
   [[ "$output" == *"launch:  $HOME/.claude-personal"* ]]
@@ -1199,43 +1199,126 @@ os.waitpid(pid, 0)
 }
 
 # The launch line about a missing API cookie needs an attended launch, an
-# iTerm2 session and an it2; the sandbox cookie from setup makes it fresh.
+# iTerm2 session and an it2; the sandbox cookie from setup makes it fresh. The
+# stub it2 logs every call; `auth cookie` fails while it2.deny exists.
 cookie_line_setup() {
   mkdir -p "$HOME/.config/iterm2"
-  printf '#!/bin/sh\n' > "$HOME/.config/iterm2/it2"
+  cat > "$HOME/.config/iterm2/it2" <<'EOF2'
+#!/bin/sh
+echo "$*" >> "$BATS_TEST_TMPDIR/it2.calls"
+if [ "$1 $2" = "auth cookie" ]; then
+  [ -e "$BATS_TEST_TMPDIR/it2.deny" ] && exit 1
+  echo "ITERM2_COOKIE=abc ITERM2_KEY=def"
+fi
+exit 0
+EOF2
   chmod +x "$HOME/.config/iterm2/it2"
   export ITERM_SESSION_ID=w0t0p0:FIXTURE
+  # A launch that lasts a moment, as a real one does: the pty hangs up the
+  # background mint with the shell when a stub claude returns at once.
+  printf '#!/bin/sh\necho "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR-UNSET}"\nsleep 1\n' \
+    > "$BATS_TEST_TMPDIR/bin/claude"
+  IT2_CALLS="$BATS_TEST_TMPDIR/it2.calls"
+  COOKIE="$HOME/.local/state/iterm2/api-cookie"
+  RECORD="$COOKIE.failed"
 }
 
-@test "claude: an attended launch with no API cookie says so once, with the state" {
+# iTerm2 allows all apps to connect: it keeps this file.
+cookie_allow_all() {
+  mkdir -p "$HOME/Library/Application Support/iTerm2"
+  : > "$HOME/Library/Application Support/iTerm2/disable-automation-auth"
+}
+
+# Poll (ten per second, five seconds) until the command succeeds.
+cookie_wait() {
+  local i
+  for i in $(seq 50); do "$@" && return 0; sleep 0.1; done
+  return 1
+}
+
+cookie_has_abc_def() { [ "$(cat "$COOKIE" 2>/dev/null)" = "abc def" ]; }
+cookie_records_are() { [ "$(cat "$RECORD" 2>/dev/null | grep -c '')" -eq "$1" ]; }
+cookie_record_gone() { [ ! -e "$RECORD" ]; }
+
+@test "claude: an attended launch with no API cookie and no allow-all file says so once, with the state" {
   cookie_line_setup
   repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
-  rm "$HOME/.local/state/iterm2/api-cookie"
+  rm "$COOKIE"
   PTY_DIR=$repo PTY_ANSWER=n pty_claude
   [[ "$output" == *"claude: no iTerm2 API cookie for this iTerm2 run (absent), so every hook event starts osascript (iTerm2 issue 13189): run iterm2-cookie"* ]]
   [[ "$output" == *"CLAUDE_CONFIG_DIR="* ]]
   [[ "$output" == *"rc=0"* ]]
   [ "$(printf '%s' "$output" | grep -c 'no iTerm2 API cookie')" -eq 1 ]
   # A set-aside cookie is named as rejected.
-  : > "$HOME/.local/state/iterm2/api-cookie.rejected"
+  : > "$COOKIE.rejected"
   PTY_DIR=$repo PTY_ANSWER=n pty_claude
   [[ "$output" == *"for this iTerm2 run (rejected)"* ]]
+  # Nothing was asked of iTerm2 and nothing recorded.
+  [ ! -e "$IT2_CALLS" ] || [ "$(grep -c 'auth cookie' "$IT2_CALLS")" -eq 0 ]
+  [ ! -e "$RECORD" ]
 }
 
-@test "claude: a fresh cookie, print mode, no it2, no iTerm2 session or the switch say nothing" {
+@test "claude: with the allow-all file, an attended launch mints the cookie in the background and says nothing" {
   cookie_line_setup
+  cookie_allow_all
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  rm "$COOKIE"
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" != *"no iTerm2 API cookie"* ]]
+  [[ "$output" == *"rc=0"* ]]
+  cookie_wait cookie_has_abc_def
+  [ "$(grep -c -- 'auth cookie --single-use' "$IT2_CALLS")" -eq 1 ]
+  # Fresh now: a second launch forks nothing.
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" != *"no iTerm2 API cookie"* ]]
+  [ "$(grep -c 'auth cookie' "$IT2_CALLS")" -eq 1 ]
+}
+
+@test "claude: with the allow-all file, a failed mint is silent once, then reported until it heals" {
+  cookie_line_setup
+  cookie_allow_all
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+  rm "$COOKIE"
+  : > "$BATS_TEST_TMPDIR/it2.deny"
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" != *"no iTerm2 API cookie"* ]]
+  cookie_wait cookie_records_are 1
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" == *"claude: no iTerm2 API cookie for this iTerm2 run (absent) and minting one failed (iTerm2 handed out no cookie"* ]]
+  [[ "$output" == *"so every hook event starts osascript (iTerm2 issue 13189): run iterm2-cookie"* ]]
+  [ "$(printf '%s' "$output" | grep -c 'no iTerm2 API cookie')" -eq 1 ]
+  cookie_wait cookie_records_are 2
+  rm "$BATS_TEST_TMPDIR/it2.deny"
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  cookie_wait cookie_has_abc_def
+  cookie_wait cookie_record_gone
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" != *"no iTerm2 API cookie"* ]]
+}
+
+@test "claude: a fresh cookie, print mode, no it2, no iTerm2 session or the switch say nothing and mint nothing" {
+  cookie_line_setup
+  cookie_allow_all
   repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
   PTY_DIR=$repo PTY_ANSWER=n pty_claude
   [[ "$output" != *"no iTerm2 API cookie"* ]]
-  rm "$HOME/.local/state/iterm2/api-cookie"
+  rm "$COOKIE"
   PTY_DIR=$repo PTY_ANSWER=n pty_claude -p hello
   [[ "$output" != *"no iTerm2 API cookie"* ]]
   (unset ITERM_SESSION_ID; PTY_DIR=$repo PTY_ANSWER=n pty_claude; [[ "$output" != *"no iTerm2 API cookie"* ]])
-  (rm "$HOME/.config/iterm2/it2"; PTY_DIR=$repo PTY_ANSWER=n pty_claude; [[ "$output" != *"no iTerm2 API cookie"* ]])
   git config --file "$GIT_CONFIG_GLOBAL" claude.iterm2-check false
   PTY_DIR=$repo PTY_ANSWER=n pty_claude
   [[ "$output" != *"no iTerm2 API cookie"* ]]
   [[ "$output" == *"rc=0"* ]]
+  git config --file "$GIT_CONFIG_GLOBAL" --unset claude.iterm2-check
+  rm "$HOME/.config/iterm2/it2"
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" != *"no iTerm2 API cookie"* ]]
+  # Give the mint a moment it would need, then check nothing happened.
+  sleep 1
+  [ ! -e "$IT2_CALLS" ] || [ "$(grep -c 'auth cookie' "$IT2_CALLS")" -eq 0 ]
+  [ ! -e "$COOKIE" ]
+  [ ! -e "$RECORD" ]
 }
 
 # The launch line about an iTerm2 that has moved past the skill's stamp needs

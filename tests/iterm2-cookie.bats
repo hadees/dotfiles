@@ -21,7 +21,8 @@ setup() {
 
   # The stub answers `auth cookie` as the real one does and records every
   # call. $IT2_GETS is how many `session get-status` calls succeed before it
-  # starts failing; $IT2_AUTH=fail makes `auth cookie` exit 1.
+  # starts failing; $IT2_FAIL_GET=<n> fails only the n-th `session get-status`;
+  # $IT2_AUTH=fail makes `auth cookie` exit 1.
   IT2_LOG="$BATS_TEST_TMPDIR/it2.log"
   export IT2_LOG
   cat > "$HOME/.config/iterm2/it2" <<'EOF'
@@ -36,6 +37,7 @@ case "$1 $2" in
     [ "${ITERM2_COOKIE-}" = abc ] || exit 1
     n=$(grep -c '^session get-status' "$IT2_LOG")
     [ "$n" -le "${IT2_GETS-99}" ] || exit 1
+    [ "$n" -ne "${IT2_FAIL_GET-0}" ] || exit 1
     ;;
 esac
 EOF
@@ -51,6 +53,12 @@ write_cookie() {
   mkdir -p "$STATE"
   echo "abc def" > "$COOKIE"
   touch -t "$1" "$COOKIE"
+}
+
+# iTerm2's "Allow all apps to connect" file.
+allow_all() {
+  mkdir -p "$HOME/Library/Application Support/iTerm2"
+  : > "$HOME/Library/Application Support/iTerm2/disable-automation-auth"
 }
 
 state() {
@@ -69,6 +77,9 @@ state() {
   [ "$(ls -A "$STATE")" = api-cookie ]
   # used twice, with the session id from the part after the colon
   [ "$(grep -c '^session get-status --session SESS cookie=abc' "$IT2_LOG")" -eq 2 ]
+  # without the setting it asks for a reusable cookie, never a single-use one
+  grep -q '^auth cookie cookie=unset' "$IT2_LOG"
+  [ "$(grep -c -- '--single-use' "$IT2_LOG")" -eq 0 ]
 }
 
 @test "mint: a denied request leaves no file and returns 1" {
@@ -197,4 +208,98 @@ state() {
   cookie nonsense
   [ "$status" -eq 2 ]
   [[ "$output" == *usage* ]]
+}
+
+@test "mint: with allow-all it asks for a single-use cookie, no announcement" {
+  export ITERM_SESSION_ID=w0t0p0:SESS
+  allow_all
+  cookie
+  [ "$status" -eq 0 ]
+  grep -q '^auth cookie --single-use' "$IT2_LOG"
+  [[ "$output" == *"without an announcement"* ]]
+  [[ "$output" == *"fresh until iTerm2 quits"* ]]
+  [[ "$output" != *Forever* ]]
+  [ "$(grep -c '^session get-status' "$IT2_LOG")" -eq 2 ]
+}
+
+@test "mint: allow-all that is not honoured falls back to the Forever request" {
+  export ITERM_SESSION_ID=w0t0p0:SESS IT2_FAIL_GET=2
+  allow_all
+  cookie
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"does not honour"*"Forever"*"fresh until"* ]]
+  grep -q '^auth cookie --single-use' "$IT2_LOG"
+  grep -q '^auth cookie cookie=unset' "$IT2_LOG"
+}
+
+@test "quiet: without allow-all it returns 3 and asks nothing" {
+  export ITERM_SESSION_ID=w0t0p0:SESS
+  cookie quiet
+  [ "$status" -eq 3 ]
+  [ -z "$output" ]
+  [ ! -e "$IT2_LOG" ]
+  [ ! -e "$STATE" ] || [ -z "$(ls -A "$STATE")" ]
+}
+
+@test "quiet: with allow-all it mints silently" {
+  export ITERM_SESSION_ID=w0t0p0:SESS
+  allow_all
+  cookie quiet
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$(cat "$COOKIE")" = "abc def" ]
+  [ "$(stat -c %a "$COOKIE" 2>/dev/null || stat -f %Lp "$COOKIE")" = 600 ]
+  [ ! -e "$COOKIE.failed" ]
+}
+
+@test "quiet: a cookie that fails the second use is recorded, once per run" {
+  export ITERM_SESSION_ID=w0t0p0:SESS IT2_GETS=1
+  allow_all
+  cookie quiet
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [ ! -e "$COOKIE" ]
+  [ "$(wc -l < "$COOKIE.failed")" -eq 1 ]
+  grep -Eq '^[0-9]+ the cookie worked once' "$COOKIE.failed"
+  [ "$(stat -c %a "$COOKIE.failed" 2>/dev/null || stat -f %Lp "$COOKIE.failed")" = 600 ]
+  [ "$(grep -c '^auth cookie cookie=' "$IT2_LOG")" -eq 0 ]
+  rm "$IT2_LOG"
+  cookie quiet
+  [ "$(wc -l < "$COOKIE.failed")" -eq 2 ]
+  # a record older than the socket belongs to an earlier run
+  touch -t 201901010000 "$COOKIE.failed"
+  rm "$IT2_LOG"
+  cookie quiet
+  [ "$(wc -l < "$COOKIE.failed")" -eq 1 ]
+}
+
+@test "quiet: an iTerm2 that hands out no cookie is recorded" {
+  export ITERM_SESSION_ID=w0t0p0:SESS IT2_AUTH=fail
+  allow_all
+  cookie quiet
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  grep -q 'handed out no cookie' "$COOKIE.failed"
+}
+
+@test "quiet: outside an iTerm2 session it records without calling it2" {
+  allow_all
+  cookie quiet
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [ ! -e "$IT2_LOG" ]
+  [ "$(wc -l < "$COOKIE.failed")" -eq 1 ]
+}
+
+@test "a successful quiet mint and forget both remove the failure record" {
+  export ITERM_SESSION_ID=w0t0p0:SESS
+  allow_all
+  mkdir -p "$STATE"
+  echo "1 earlier" > "$COOKIE.failed"
+  cookie quiet
+  [ "$status" -eq 0 ]
+  [ ! -e "$COOKIE.failed" ]
+  echo "1 earlier" > "$COOKIE.failed"
+  cookie forget
+  [ ! -e "$COOKIE.failed" ]
 }

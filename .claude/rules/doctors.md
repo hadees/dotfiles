@@ -48,13 +48,17 @@ mints the API cookie the hooks read, and `iterm2_cookie_state` names whether
 that cookie is fresh, stale, rejected or absent (see `cc-status-shim.md`).
 
 `iterm2-doctor` prints two lines after `cc-status:`. `cookie:` is the static
-state (`fresh`, `stale`, `rejected`, `absent`, each with the fix); whether
-iTerm2 accepts the cookie is `iterm2-cookie status`'s question. `osascript:`
-is the size of `~/.local/state/iterm2/uncookied` (hook events that ran without a
-cookie), that file's birth time, and the number of processes whose command
+state (`fresh`, `stale`, `rejected`, `absent`). Without iTerm2's
+`disable-automation-auth` file the fix is `run iterm2-cookie`; with it, the
+fix is `the next attended claude launch mints one`, and when `api-cookie.failed`
+has lines newer than the API socket the line ends ` (N automatic mints failed
+this run, last: <why>; run iterm2-cookie)`. It only reads files and starts
+nothing. Whether iTerm2 accepts the cookie is `iterm2-cookie status`'s
+question. `osascript:` is the size of `~/.local/state/iterm2/uncookied` (hook
+events that ran without a cookie), that file's birth time, and the number of processes whose command
 line contains `request cookie and key for app named`, from one `ps`; `0 … since
-never` when the file does not exist. `iterm2_cookie_state` is in its `defined:`
-list.
+never` when the file does not exist. `iterm2_cookie_state` and
+`iterm2_allows_all_apps` are in its `defined:` list.
 
 `iterm2-doctor` then prints `hooks:` and `shim:`. `hooks:` is one line per
 profile directory that has a `settings.json` (from `claude_profile_dirs`:
