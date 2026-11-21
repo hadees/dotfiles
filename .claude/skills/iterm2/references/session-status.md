@@ -188,6 +188,20 @@ Read from the v3.7.7 source:
 - The Session Status tool is per window, and *Merge workgroup statuses*
   collapses a workgroup to its visible peer (`ToolStatus.swift:58-60, 926-933,
   1043-1067`).
+- With merge off, rows sort (`ToolStatus.swift:38-52`): snoozed last, then
+  priority, then the row whose status changed longest ago first ("Let stale
+  ones rise to the top"), then session id. Priority is the index of the first
+  pattern that is a lowercased substring of the status text
+  (`StatusPrioritySettings.swift:160-171`); the default list is `wait, done,
+  error, work, idle` (`:29`), text matching none sorts after every pattern
+  (`:150`), no text sorts last. So the longest-waiting row is first, and a
+  `done` stays until the user has seen it (`iTermProgramStatus.swift:693-694`,
+  stated for OSC 7501 records). The comparator has no tab or workgroup field,
+  so nothing a hook writes can keep one tab's peers together.
+- The peer bar spins a segment only while its peer is `working`
+  (`iTermWorkgroupPeerPort.swift:194`), so waiting, idle and never-started look
+  alike. `it2 session list` does not list buried peers: it walks the split tree
+  and floating panes of each tab (`it2cli/Sources/it2core/Helpers.swift:35-42`).
 - Peers spawn eagerly at entry, not on first switch: `enter` loops
   `spawnPeer` for every peer child (`iTermWorkgroupInstance.swift:937-951`),
   and a regular peer's command starts at once, buried until activated.
