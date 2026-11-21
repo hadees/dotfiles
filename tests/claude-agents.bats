@@ -389,8 +389,21 @@ raw_body() {
   shared="$(shared_memory_all | tr '\n' ' ' | tr -s ' ')"
   for p in 'postbox: you are Lead of' 'Unless you are Lead' 'only when I ask' 'One at a time' \
     'gh pr update-branch' 'Never `--admin`' 'Never `stop --force`' 'Lead still asks before' \
-    'see or feel' 'reaches beyond this machine' 'cannot be undone' 'spends money'; do
+    'see or feel' 'reaches beyond this machine' 'cannot be undone' 'spends money' \
+    'One go covers what I named to its end' 'no second ask per step'; do
     grep -qF -- "$p" <<< "$shared" || { echo "shared memory: no '$p'"; false; }
   done
   grep -qF 'postbox: you are Lead of' "$BATS_TEST_DIRNAME/../bin/executable_postbox" || { echo "postbox no longer prints the Lead line"; false; }
+}
+
+@test "the shared memory says what the operator types is his word in that session" {
+  # A session once sent the operator to another tab four times to repeat a go,
+  # because a peer had said it took his go only there, and carried the peer's
+  # condition through its summaries as a rule of his.
+  local shared p
+  shared="$(shared_memory_all | tr '\n' ' ' | tr -s ' ')"
+  for p in 'What I type to you is my word' 'binds that session alone' \
+    'never my rule in a summary' 'Never send me to another tab'; do
+    grep -qF -- "$p" <<< "$shared" || { echo "shared memory: no '$p'"; false; }
+  done
 }

@@ -27,7 +27,8 @@
   leads (other people, account or org settings, publishing, a message sent as
   me); what cannot be undone by a revert, a re-run or a restart (force-push,
   deleting unmerged work or data, rewriting history); logins, secrets, and
-  what spends money. Unsure: ask.
+  what spends money. Unsure: ask. One go covers what I named to its end,
+  merge and deploy alike: no second ask per step.
 - Standing approvals (operator, 2026-11-16), so work keeps moving while I am
   away: a plan's open questions take the plan's recommended answer, noted
   where I can flip it; a test render or smoke call costing at most $0.25 each
