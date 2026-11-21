@@ -192,7 +192,6 @@ cask 'inkscape'
 cask 'istat-menus'
 cask 'iterm2' # Terminal emulator with tabs, splits, and an AppleScript/Python scripting API
 cask 'itermai' # Generative AI features for iTerm2
-cask 'jollysfastvnc' # VNC/ARD client with built-in SSH tunneling
 cask 'kaleidoscope'
 cask 'keyboardcleantool' # Blocks all keyboard/Touch Bar input while cleaning
 cask 'libreoffice'
