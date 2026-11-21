@@ -305,18 +305,62 @@ one through AppleScript, and those processes pile up. With a reusable cookie
 it talks to iTerm2's websocket API directly and spawns nothing. A cookie lives
 in iTerm2's memory, so one granted as **Forever** lasts until iTerm2 quits.
 
-`iterm2-cookie` (`dot_functions`, run by hand in an iTerm2 session, once per
-iTerm2 launch) asks for it, writes `<cookie> <key>` to
+`iterm2-cookie` (`dot_functions`) writes `<cookie> <key>` to
 `~/.local/state/iterm2/api-cookie` (0600, in a 0700 directory, through a
-temporary file and a rename) and uses it **twice** before keeping it: "Always
-Allow All Apps", and a request made with no session, hand back a single-use
-cookie, which passes once and then fails every later hook event. Any failure
-removes the file and says which step failed. `iterm2-cookie status` prints the
-state and, when it is `fresh` inside a session, makes one authenticated
-`it2 session get-status` and appends `accepted`, or `REFUSED` after setting
-the file aside as `api-cookie.rejected`; `iterm2-cookie forget` removes both.
-Minting also truncates `~/.local/state/iterm2/uncookied`, the count of hook
-events that ran without a cookie.
+temporary file and a rename) and uses it **twice** before keeping it: without the
+file a single-use cookie passes once and then fails every later hook event. Any
+failure removes the file and says which step failed. It has two modes, and
+`iterm2_allows_all_apps` (iTerm2's
+`~/Library/Application Support/iTerm2/disable-automation-auth` exists, which
+Settings > General > Magic > "Allow all apps to connect" creates after an
+administrator prompt) picks between them:
+
+- **With the file, nobody is asked.** The verb requests a single-use cookie
+  (`it2 auth cookie --single-use`), which iTerm2 issues with no announcement,
+  and `claude()` runs `iterm2-cookie quiet` itself in the background on an
+  attended launch whose cookie is not fresh (`claude-profiles.md`). `quiet`
+  never raises an announcement and prints nothing: status 0 minted, 1 tried and
+  failed, 3 not tried because there is no file. By hand the verb tries the
+  single-use mint first and falls back to the reusable one if iTerm2 does not
+  honour the file.
+- **Without the file, a person must click.** By hand, in an iTerm2 session, the
+  verb requests a reusable cookie and iTerm2 asks in the session's announcement
+  bar; choose **Forever**, which lasts until iTerm2 quits. The wrapper does
+  not mint here, it only says so.
+
+Why, from iTerm2's source at tag `v3.7.7` (the three server files are identical
+on its `master`): a reusable request always raises the announcement, whatever
+the file says (`sources/Applescript/iTermRequestCookieCommand.m`), while a
+single-use request returns a cookie at once. With the file valid (root-owned,
+contents the hex of its own path plus the magic string,
+`sources/API/iTermAPIHelper.m`) a connection need not be pre-authorised
+(`iTermAPIHelper.m`, `sources/API/iTermWebSocketConnection.m`), so iTerm2
+accepts any cookie, any number of times; `it2` only needs a cookie in its
+environment to stop asking. Without the file a used single-use cookie is
+refused with no UI (`it2` always sends `x-iterm2-disable-auth-ui`), which is
+why the use-it-twice proof tells the two modes apart. "Always Allow All Apps"
+hands back a single-use cookie that fails only when the administrator prompt
+behind it is declined; accepted, it creates the file and the cookie keeps
+working. Removing the file in Settings turns the stored cookie into a refused
+one: the shim sets it aside as `rejected` and the next launch reports `manual`.
+
+`iterm2-cookie status` prints the state and, when it is `fresh` inside a
+session, makes one authenticated `it2 session get-status` and appends
+`accepted`, or `REFUSED` after setting the file aside as `api-cookie.rejected`;
+`iterm2-cookie forget` removes both and the failure record. Minting also
+truncates `~/.local/state/iterm2/uncookied`, the count of hook events that ran
+without a cookie.
+
+**`api-cookie.failed`** (same directory, 0600) holds one line per failed
+`quiet` mint in this iTerm2 run, `<EPOCHSECONDS> <why>`; a record older than the
+socket belongs to an earlier run and the next failure truncates it. A mint that
+succeeds removes it. The next attended launch prints the last reason and tries
+again, so a transient failure heals and a persistent one keeps saying so;
+`iterm2-doctor` counts the lines.
+
+**There is no lock.** Launches in the same second each mint, iTerm2 accepts
+every cookie in this mode and the last rename wins; a lock left behind by a
+killed attempt would switch the mechanism off silently for the rest of the run.
 
 **The shim reads the file itself**, in the shell part before the payload, with
 builtins only (no fork), so a session still on an older hook line stops
@@ -336,7 +380,10 @@ recreates at each launch, or that socket is missing), `stale` (older, so iTerm2
 restarted), `rejected` (no cookie, a set-aside one) or `absent`. A stale cookie
 is ignored rather than used because a **wrong cookie is worse than none**: with
 `ITERM2_COOKIE` set `it2` never falls back to AppleScript, and iTerm2's refusal
-leaves no rows at all. So the cookie is never exported from shell startup or by
+leaves no rows at all. That is also why the state stays per iTerm2 run even
+though allow-all mode would accept a stale cookie: the `-nt socket` test is in
+the hook line, the shim and `pane-sight`, and it is the only correct rule when
+the file is absent or later removed. So the cookie is never exported from shell startup or by
 `claude()` into a long-lived process; the paths are fixed under `$HOME`
 (`XDG_STATE_HOME` is deliberately not consulted) so that the settings
 templates, the shim and the verb name the same file. The file is a bearer

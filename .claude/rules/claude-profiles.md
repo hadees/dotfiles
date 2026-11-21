@@ -147,17 +147,28 @@ on, and shared with it. postbox finds Lead by process, never by this name; a
 launch not made through the wrapper keeps Claude Code's own name, and a name
 set with `/rename` is replaced at the next wrapper launch of that session.
 
-**The wrapper says when hooks will spawn osascript.** On an attended launch
-with `$ITERM_SESSION_ID` set and `~/.config/iterm2/it2` present, a state other
-than `fresh` from `iterm2_cookie_state` prints one stderr line, `claude: no
-iTerm2 API cookie for this iTerm2 run (<state>), so every hook event starts
-osascript (iTerm2 issue 13189): run iterm2-cookie`. The checks before the line
-are builtins, so a launch with nothing to say forks nothing (the one
-`git config` read comes only after the state is not `fresh`); it never blocks.
-`git config claude.iterm2-check false` silences it (machine-local, like the
-other switches). `tests/claude-profiles.bats` gives its sandbox a fresh cookie
-in `setup`, so only the tests about this line ever meet it. The cookie is
-described in `cc-status-shim.md`.
+**The wrapper mints the iTerm2 API cookie when iTerm2 will not ask, and says
+so when it cannot.** On an attended launch with `$ITERM_SESSION_ID` set and
+`~/.config/iterm2/it2` present, a state other than `fresh` from
+`iterm2_cookie_state` calls `iterm2_cookie_auto`, which sets `REPLY`:
+`manual` (no `disable-automation-auth` file, so iTerm2 would have to ask:
+nothing is started), `started` (`( iterm2-cookie quiet </dev/null >/dev/null
+2>&1 & )` is running, no failure on record for this iTerm2 run) or `failed:
+<why>` (a mint was started again; `<why>` is the last line of
+`api-cookie.failed`). `started` prints nothing. `manual` prints one stderr
+line, `claude: no iTerm2 API cookie for this iTerm2 run (<state>), so every
+hook event starts osascript (iTerm2 issue 13189): run iterm2-cookie`, and
+`failed` prints `claude: no iTerm2 API cookie for this iTerm2 run (<state>) and
+minting one failed (<why>), so every hook event starts osascript (iTerm2 issue
+13189): run iterm2-cookie`. The mint is in the background with all three
+redirections so it never blocks and never writes into the session. The checks
+before it are builtins, so a launch with nothing to do forks nothing (the one
+`git config` read comes only after the state is not `fresh`, and a fresh
+cookie forks nothing). `git config claude.iterm2-check false` silences the
+lines and turns the mint off too (machine-local, like the other switches).
+`tests/claude-profiles.bats` gives its sandbox a fresh cookie in `setup`, so
+only the tests about this block ever meet it. The cookie, its two modes and the
+failure record are described in `cc-status-shim.md`.
 
 **The same block says when iTerm2 has moved past the skill.** On an attended
 launch `iterm2_skill_drift` compares the installed iTerm2's version (one read
