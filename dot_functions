@@ -3304,7 +3304,7 @@ function iterm2-doctor() {
 	local stamp=3.7.7;
 	local app ver skill c d v cmp;
 	local -a chans vers plugs profiles autopy;
-	print -r -- "defined: $(defined_trace iterm2_app_path iterm2_bundle_version iterm2_pref iterm2_cookie_state tabstatus_wiring claude_profile_dirs)";
+	print -r -- "defined: $(defined_trace iterm2_app_path iterm2_bundle_version iterm2_pref iterm2_cookie_state iterm2_allows_all_apps tabstatus_wiring claude_profile_dirs)";
 	app="$(iterm2_app_path)";
 	if [[ -z $app ]]; then
 		print -r -- "app:     NOT INSTALLED — no iTerm.app in /Applications or ~/Applications$([[ $(uname) == Darwin ]] || print -r -- ' (macOS-only app)')";
@@ -3361,12 +3361,25 @@ function iterm2-doctor() {
 	print -r -- "cc-status: ~/.config/iterm2/cc-status${cct:+ -> $cct} ($ccstate); it2: $ccit2";
 	# The API cookie the hooks hand to it2 (static: whether iTerm2 accepts it
 	# is `iterm2-cookie status`) and how many hook events ran without one.
+	# With iTerm2's allow-all file the launch wrapper mints the cookie itself,
+	# so the fix named is its mint, plus how many mints failed in this iTerm2
+	# run (the record is older than the socket once iTerm2 restarted).
+	local ckfix='run iterm2-cookie' cksuf='' ckrec="$HOME/.local/state/iterm2/api-cookie.failed" cksock="$HOME/Library/Application Support/iTerm2/private/socket";
+	local -a ckrecs;
+	if iterm2_allows_all_apps; then
+		ckfix='the next attended claude launch mints one';
+		if [[ -e $ckrec && ( ! -e $cksock || $ckrec -nt $cksock ) ]]; then
+			ckrecs=("${(@f)$(<$ckrec)}");
+			ckrecs=(${ckrecs:#});
+			(( $#ckrecs )) && cksuf=" (${#ckrecs} automatic mints failed this run, last: ${${ckrecs[-1]}#* }; run iterm2-cookie)";
+		fi;
+	fi;
 	iterm2_cookie_state;
 	case $REPLY in
 		fresh) print -r -- "cookie:  fresh (newer than the API socket)";;
-		stale) print -r -- "cookie:  stale — iTerm2 restarted since it was issued; run iterm2-cookie";;
-		rejected) print -r -- "cookie:  rejected — iTerm2 refused it; run iterm2-cookie";;
-		*) print -r -- "cookie:  absent — run iterm2-cookie";;
+		stale) print -r -- "cookie:  stale — iTerm2 restarted since it was issued; $ckfix$cksuf";;
+		rejected) print -r -- "cookie:  rejected — iTerm2 refused it; $ckfix$cksuf";;
+		*) print -r -- "cookie:  absent — $ckfix$cksuf";;
 	esac;
 	local unc="$HOME/.local/state/iterm2/uncookied" uncn=0 uncb='never' uncp=0 uncs;
 	zmodload zsh/stat zsh/datetime 2>/dev/null;

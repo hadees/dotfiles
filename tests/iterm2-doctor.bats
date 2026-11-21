@@ -93,7 +93,7 @@ doctor_stamp() {
   make_app "$(doctor_stamp)"
   doctor
   [ "$status" -eq 0 ]
-  [[ "$output" == *"defined: ok (6 helpers)"* ]]
+  [[ "$output" == *"defined: ok (7 helpers)"* ]]
   [[ "$output" == *"app:     $APP ($(doctor_stamp))"* ]]
   [[ "$output" == *"skill:   written against iTerm2 $(doctor_stamp) — matches"* ]]
   # House style: every label is padded so its value starts in column 10, the
@@ -294,6 +294,41 @@ STUBEOF
   touch -t 203001010000 "$state/api-cookie"
   doctor
   [[ "$output" == *"cookie:  fresh (newer than the API socket)"* ]]
+}
+
+@test "iterm2-doctor: with iTerm2's allow-all file the cookie lines name the launch mint and the failure count" {
+  make_app "$(doctor_stamp)"
+  state="$HOME/.local/state/iterm2"
+  sock="$HOME/Library/Application Support/iTerm2/private/socket"
+  mkdir -p "$state" "${sock%/*}"
+  : > "${sock%/*}/../disable-automation-auth"
+  doctor
+  [[ "$output" == *$'cookie:  absent — the next attended claude launch mints one'* ]]
+  [ "$(grep -c 'automatic mints failed' <<<"$output")" -eq 0 ]
+  : > "$state/api-cookie.rejected"
+  doctor
+  [[ "$output" == *$'cookie:  rejected — iTerm2 refused it; the next attended claude launch mints one'* ]]
+  : > "$state/api-cookie"
+  touch -t 202001010000 "$state/api-cookie"
+  : > "$sock"
+  doctor
+  [[ "$output" == *$'cookie:  stale — iTerm2 restarted since it was issued; the next attended claude launch mints one'* ]]
+  touch -t 203001010000 "$state/api-cookie"
+  doctor
+  [[ "$output" == *"cookie:  fresh (newer than the API socket)"* ]]
+  [ "$(grep -c 'automatic mints failed' <<<"$output")" -eq 0 ]
+  rm "$state/api-cookie"
+  printf '1 first reason\n2 the cookie worked once\n' > "$state/api-cookie.failed"
+  touch -t 203001010000 "$state/api-cookie.failed"
+  touch -t 202001010000 "$sock"
+  doctor
+  [[ "$output" == *"cookie:  rejected — iTerm2 refused it; the next attended claude launch mints one (2 automatic mints failed this run, last: the cookie worked once; run iterm2-cookie)"* ]]
+  # report-only: the doctor leaves the record and no cookie behind
+  [ -e "$state/api-cookie.failed" ]
+  [ ! -e "$state/api-cookie" ]
+  touch -t 201901010000 "$state/api-cookie.failed"
+  doctor
+  [ "$(grep -c 'automatic mints failed' <<<"$output")" -eq 0 ]
 }
 
 @test "iterm2-doctor: osascript line counts uncookied events and running cookie requests" {
