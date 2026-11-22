@@ -1,0 +1,325 @@
+#!/bin/sh
+# operator-asks — counts how often a session made the operator a step: a
+# question put to them, a line telling them to type or run something, a
+# permission prompt, a permission the classifier refused.
+#
+# `count` and `list` read one profile's transcripts and write nothing. The two
+# `hook` routes are the only writers: they append a row to a log in the state
+# directory, which holds no tool input, session id or path, because that
+# directory is readable by every profile (the same stance as shared-memory's
+# log). Every `hook` route prints nothing and exits 0, so a broken hook never
+# blocks a session or tells the model to retry.
+#
+# A profile's transcripts are read only when the running profile does not deny
+# them: `permissions.deny` of the running profile's settings.json is checked
+# against the transcript directory, and a denied one is refused unread.
+#
+# Usage:
+#   operator-asks count [--since DAYS] [--dir PROFILE_DIR]   metric<TAB>count
+#   operator-asks list  [--since DAYS] [--dir PROFILE_DIR]   time<TAB>session<TAB>kind<TAB>text
+#                                   prints transcript text: for the caller's terminal only
+#   operator-asks hook denied|prompt  PermissionDenied / PermissionRequest JSON on stdin
+#   operator-asks settings          the two hook entries each overlay pastes
+# env:
+#   CLAUDE_CONFIG_DIR   the running profile (else $HOME/.claude); the default PROFILE_DIR.
+#   XDG_STATE_HOME      where denials.tsv and prompts.tsv live.
+set -eu
+
+# The payload reaches python on fd 3 through an already-unlinked file, because
+# python's stdin carries its program.
+case "${1:-}" in
+hook)
+  case "${2:-}" in denied | prompt) ;; *) exit 0 ;; esac
+  payload=$(cat) || exit 0
+  command -v python3 >/dev/null 2>&1 || exit 0
+  tmp=$(mktemp "${TMPDIR:-/tmp}/operator-asks.XXXXXX") || exit 0
+  trap 'rm -f "$tmp"' EXIT
+  printf '%s' "$payload" >"$tmp" || exit 0
+  exec 3<"$tmp"
+  rm -f "$tmp"
+  ;;
+*)
+  command -v python3 >/dev/null 2>&1 || {
+    printf 'operator-asks: python3 not found\n' >&2
+    exit 1
+  }
+  ;;
+esac
+
+rc=0
+python3 -I - "$@" <<'PY' || rc=$?
+import fnmatch
+import glob
+import json
+import os
+import re
+import sys
+import time
+
+HOME = os.environ.get("HOME", "")
+DAY = 86400
+STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local", "state"), "operator-asks")
+DENIALS = os.path.join(STATE, "denials.tsv")
+PROMPTS = os.path.join(STATE, "prompts.tsv")
+SHARED = "/.claude-shared/"
+
+# Frozen, so weeks compare. The first is the subset counted as `elsewhere`.
+STEP_PATTERNS = [re.compile(p, re.I) for p in (
+    r"\b(type|paste|run|press|pick|answer|approve)\b[^.\n]{0,80}\b(in|at) (its|their|that|the|each)\b[^.\n]{0,40}\b(pane|tab|prompt)\b",
+    r"/(exit|clear|login)\b",
+    r"\b(only you can|needs you\b|still yours|yours to|is yours|for you to)",
+    r"^\s*(next: |\d+\. |[-*] )?[^.\n]{0,40}\b(type|run|paste)\b[^.\n]{0,8}[\x60\"]",
+)]
+
+
+def config_dir():
+    return (os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")).rstrip("/")
+
+
+def label(cfg):
+    return os.path.basename(cfg) or ".claude"
+
+
+def stamp(t=None):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+
+
+def denied(target):
+    # Fails closed on a rule it can read; a settings file it cannot read denies nothing.
+    try:
+        with open(os.path.join(config_dir(), "settings.json"), encoding="utf-8") as f:
+            rules = json.load(f)["permissions"]["deny"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    probes = {os.path.join(p, "projects", "x", "x.jsonl") for p in (target, os.path.realpath(target))}
+    for rule in rules if isinstance(rules, list) else ():
+        m = re.fullmatch(r"Read\((.*)\)", rule) if isinstance(rule, str) else None
+        if not m:
+            continue
+        pat = m.group(1)
+        if pat.startswith("//"):
+            pat = pat[1:]
+        elif pat.startswith("~/"):
+            pat = HOME + pat[1:]
+        else:
+            continue
+        glob_pat = pat.replace("**", "*")
+        for probe in probes:
+            if fnmatch.fnmatchcase(probe, glob_pat) or probe.startswith(pat.rstrip("/") + "/"):
+                return True
+    return False
+
+
+def parse_args(argv):
+    since, target, i = 7, config_dir(), 0
+    while i < len(argv):
+        if argv[i] == "--since" and i + 1 < len(argv) and argv[i + 1].isdigit():
+            since = int(argv[i + 1])
+        elif argv[i] == "--dir" and i + 1 < len(argv):
+            target = argv[i + 1].rstrip("/")
+        else:
+            return None
+        i += 2
+    return since, target
+
+
+def squeeze(line):
+    return " ".join(re.sub(r"\d+", "N", line).split())
+
+
+def scan(since, target):
+    # Yields (kind, session name, time, text) for every counted event of the
+    # main conversation (sidechain records are skipped).
+    cut_t = time.time() - since * DAY
+    cut = stamp(cut_t)
+    for path in sorted(glob.glob(os.path.join(target, "projects", "*", "*.jsonl"))):
+        try:
+            if os.path.getmtime(path) < cut_t:
+                continue
+            with open(path, encoding="utf-8", errors="replace") as f:
+                records = [r for r in (_load(line) for line in f) if r is not None]
+        except OSError:
+            continue
+        sid = os.path.basename(path)[:-6]
+        names = {}
+        start = ""
+        for r in records:
+            if r.get("type") in ("custom-title", "agent-name"):
+                names[r["type"]] = r.get("customTitle") or r.get("agentName") or ""
+            if not start and isinstance(r.get("timestamp"), str):
+                start = r["timestamp"]
+        name = names.get("custom-title") or names.get("agent-name") or sid[:8]
+        name = name.replace("\t", " ").replace("\n", " ")
+        if "-claude-worktrees-" in os.path.basename(os.path.dirname(path)) and start >= cut:
+            for r in records:
+                if r.get("type") == "permission-mode":
+                    yield "peer-mode:%s" % r.get("permissionMode"), name, start, ""
+                    break
+        seen = set()
+        for r in records:
+            ts = r.get("timestamp")
+            if r.get("isSidechain") or not isinstance(ts, str) or ts < cut:
+                continue
+            res = r.get("toolUseResult")
+            if r.get("type") == "user" and isinstance(res, dict) and isinstance(res.get("answers"), dict):
+                yield "questions", name, ts, ""
+                qs = res.get("questions")
+                if isinstance(qs, list) and qs and all(_first(q, res["answers"]) for q in qs):
+                    yield "first-option", name, ts, ""
+            msg = r.get("message")
+            if r.get("type") != "assistant" or not isinstance(msg, dict) or not isinstance(msg.get("content"), list):
+                continue
+            for c in msg["content"]:
+                if not isinstance(c, dict):
+                    continue
+                if c.get("type") == "tool_use" and c.get("name") == "Read":
+                    p = (c.get("input") or {}).get("file_path")
+                    if isinstance(p, str) and SHARED in p:
+                        rest = p.split(SHARED, 1)[1]
+                        if rest == "approvals-ledger.md" or (rest.startswith("topics/") and "/" not in rest[7:]):
+                            yield "read:" + rest.split("/")[-1], name, ts, ""
+                elif c.get("type") == "text" and isinstance(c.get("text"), str):
+                    for line in c["text"].split("\n"):
+                        hits = [bool(p.search(line)) for p in STEP_PATTERNS]
+                        key = (ts[:10], squeeze(line))
+                        if any(hits) and key not in seen:
+                            seen.add(key)
+                            text = " ".join(line.split())[:200]
+                            yield ("elsewhere" if hits[0] else "steps"), name, ts, text
+
+
+def _load(line):
+    try:
+        r = json.loads(line)
+    except ValueError:
+        return None
+    return r if isinstance(r, dict) else None
+
+
+def _first(q, answers):
+    try:
+        return answers.get(q["question"]) == q["options"][0]["label"]
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return False
+
+
+def cmd_count(argv):
+    args = parse_args(argv)
+    if args is None:
+        return usage()
+    since, target = args
+    if denied(target):
+        sys.stderr.write("operator-asks: %s is denied to this profile, not read\n" % target)
+        return 1
+    counts = {"questions": 0, "first-option": 0, "steps": 0, "elsewhere": 0, "prompts": 0}
+    for kind, _, _, _ in scan(since, target):
+        # `elsewhere` is the subset of `steps` that matches pattern 1.
+        for k in ("steps", "elsewhere") if kind == "elsewhere" else (kind,):
+            counts[k] = counts.get(k, 0) + 1
+    cut = stamp(time.time() - since * DAY)
+    for path, field, metric in ((DENIALS, 2, "denied:"), (PROMPTS, None, "prompts")):
+        for line in _lines(path):
+            f = line.split("\t")
+            if len(f) < 3 or f[0] < cut or f[1] != label(target):
+                continue
+            k = metric + f[field] if field else metric
+            counts[k] = counts.get(k, 0) + 1
+    for k in sorted(counts):
+        print("%s\t%d" % (k, counts[k]))
+    return 0
+
+
+def _lines(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read().split("\n")
+    except OSError:
+        return []
+
+
+def cmd_list(argv):
+    args = parse_args(argv)
+    if args is None:
+        return usage()
+    since, target = args
+    if denied(target):
+        sys.stderr.write("operator-asks: %s is denied to this profile, not read\n" % target)
+        return 1
+    rows = sorted((ts, name, kind, text) for kind, name, ts, text in scan(since, target) if text)
+    for row in rows:
+        print("\t".join(row))
+    return 0
+
+
+def write_row(path, *fields):
+    try:
+        os.makedirs(STATE, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("\t".join((stamp(), label(config_dir())) + fields) + "\n")
+    except OSError:
+        pass
+
+
+def hook(argv):
+    # Every route returns 0 and prints nothing.
+    try:
+        with os.fdopen(3, encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            return 0
+        tool = payload.get("tool_name")
+        tool = tool if isinstance(tool, str) and re.fullmatch(r"[A-Za-z0-9_:.*-]{1,80}", tool) else "-"
+        if argv[:1] == ["denied"]:
+            # Only the leading [Label], never the rest of the reason: it can quote the command.
+            m = re.match(r"\[([^\]\t\n]{1,60})\]", str(payload.get("reason") or ""))
+            write_row(DENIALS, "[%s]" % m.group(1) if m else "other", tool)
+        elif argv[:1] == ["prompt"]:
+            write_row(PROMPTS, tool)
+    except BaseException:
+        pass
+    return 0
+
+
+SETTINGS = """operator-asks does not edit settings.json — each profile's file is owned by
+its overlay. Add these to that file's "hooks" (merging with what is there):
+
+  "PermissionDenied": [
+    { "hooks": [{ "type": "command", "timeout": 5, "command": "[ -x ~/bin/operator-asks ] && exec ~/bin/operator-asks hook denied || true" }] }
+  ],
+  "PermissionRequest": [
+    { "hooks": [{ "type": "command", "timeout": 5, "command": "[ -x ~/bin/operator-asks ] && exec ~/bin/operator-asks hook prompt || true" }] }
+  ]
+
+Each entry appends one row (time, profile, reason or tool name) to a log in
+${XDG_STATE_HOME:-$HOME/.local/state}/operator-asks/, prints nothing, and
+fails open."""
+
+
+def cmd_settings(argv):
+    if argv:
+        return usage()
+    print(SETTINGS)
+    return 0
+
+
+def usage():
+    sys.stderr.write(
+        "usage: operator-asks count [--since DAYS] [--dir PROFILE_DIR]\n"
+        "       operator-asks list [--since DAYS] [--dir PROFILE_DIR]\n"
+        "       operator-asks hook denied|prompt\n"
+        "       operator-asks settings\n")
+    return 64
+
+
+def main():
+    cmds = {"count": cmd_count, "list": cmd_list, "hook": hook, "settings": cmd_settings}
+    argv = sys.argv[1:]
+    if not argv or argv[0] not in cmds:
+        return usage()
+    return cmds[argv[0]](argv[1:])
+
+
+sys.exit(main())
+PY
+[ "${1:-}" = hook ] && exit 0
+exit "$rc"
