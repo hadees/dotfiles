@@ -5,9 +5,11 @@
 #
 # `count` and `list` read one profile's transcripts and write nothing. The two
 # `hook` routes are the only writers: they append a row to a log in the state
-# directory, which holds no tool input, session id or path, because that
-# directory is readable by every profile (the same stance as shared-memory's
-# log). Every `hook` route prints nothing and exits 0, so a broken hook never
+# directory, which holds no tool input or path, only the opaque session id,
+# because that directory is readable by every profile (the same stance as
+# shared-memory's log). `count` tallies a log row only when its session id is
+# one of a project the scan allowed; a row with no session id is not counted
+# and only their number is reported, on stderr. Every `hook` route prints nothing and exits 0, so a broken hook never
 # blocks a session or tells the model to retry.
 #
 # A transcript is read only when the running profile does not deny it:
@@ -89,9 +91,12 @@ def stamp(t=None):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
 
 
-def allowed(*paths):
+def allowed(*paths, explain=False):
     # The one deny definition is denyguard's; only its exit 0 allows. A missing
     # denyguard, exit 1 (denied), exit 2 (cannot tell) or a hang all deny.
+    # `explain` passes on, for exit 2 only, the lines that name the rule it
+    # cannot evaluate (never a path); exit 1 says which path is denied, so
+    # it stays silent.
     dg = shutil.which("denyguard")
     if not dg:
         return False
@@ -100,7 +105,18 @@ def allowed(*paths):
                            stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return False
+    if explain and r.returncode == 2:
+        for line in r.stderr.decode("utf-8", "replace").split("\n"):
+            if re.fullmatch(r"denyguard: .{1,300} cannot be evaluated without a session cwd", line):
+                sys.stderr.write(line + "\n")
     return r.returncode == 0
+
+
+def tree_allowed(target):
+    if allowed(os.path.join(target, "projects"), explain=True):
+        return True
+    sys.stderr.write("operator-asks: %s is denied to this profile or could not be checked, not read\n" % target)
+    return False
 
 
 def first_cwd(path):
@@ -133,11 +149,11 @@ def squeeze(line):
     return " ".join(re.sub(r"\d+", "N", line).split())
 
 
-def scan(since, target, skipped):
+def scan(since, target, skipped, sids=None):
     # Yields (kind, session name, time, text) for every counted event of the
     # main conversation (sidechain records are skipped). A project the running
     # profile denies, or whose cwd it cannot place, is added to `skipped` and
-    # none of its records is read.
+    # none of its records is read; the session ids of the others go into `sids`.
     cut_t = time.time() - since * DAY
     cut = stamp(cut_t)
     projects = {}
@@ -152,6 +168,8 @@ def scan(since, target, skipped):
         if None in cwds or not allowed(proj, *cwds):
             skipped.add(proj)
             continue
+        if sids is not None:
+            sids.update(os.path.basename(p)[:-6] for p in paths)
         yield from _scan_files(paths, cut)
 
 
@@ -230,26 +248,34 @@ def cmd_count(argv):
     if args is None:
         return usage()
     since, target = args
-    if not allowed(os.path.join(target, "projects")):
-        sys.stderr.write("operator-asks: %s is denied to this profile or could not be checked, not read\n" % target)
+    if not tree_allowed(target):
         return 1
-    skipped = set()
+    skipped, sids = set(), set()
     counts = {"questions": 0, "first-option": 0, "steps": 0, "elsewhere": 0, "prompts": 0}
-    for kind, _, _, _ in scan(since, target, skipped):
+    for kind, _, _, _ in scan(since, target, skipped, sids):
         # `elsewhere` is the subset of `steps` that matches pattern 1.
         for k in ("steps", "elsewhere") if kind == "elsewhere" else (kind,):
             counts[k] = counts.get(k, 0) + 1
     cut = stamp(time.time() - since * DAY)
-    for path, field, metric in ((DENIALS, 2, "denied:"), (PROMPTS, None, "prompts")):
+    unplaced = 0
+    # The session id is the last field: after the tool name in both logs.
+    for path, field, sid_at, metric in ((DENIALS, 2, 4, "denied:"), (PROMPTS, None, 3, "prompts")):
         for line in _lines(path):
             f = line.split("\t")
             if len(f) < 3 or f[0] < cut or f[1] != label(target):
+                continue
+            if len(f) <= sid_at or f[sid_at] == "-":
+                unplaced += 1
+                continue
+            if f[sid_at] not in sids:
                 continue
             k = metric + f[field] if field else metric
             counts[k] = counts.get(k, 0) + 1
     for k in sorted(counts):
         print("%s\t%d" % (k, counts[k]))
     note_skipped(skipped)
+    if unplaced:
+        sys.stderr.write("operator-asks: %d hook log rows without a session id not counted\n" % unplaced)
     return 0
 
 
@@ -272,8 +298,7 @@ def cmd_list(argv):
     if args is None:
         return usage()
     since, target = args
-    if not allowed(os.path.join(target, "projects")):
-        sys.stderr.write("operator-asks: %s is denied to this profile or could not be checked, not read\n" % target)
+    if not tree_allowed(target):
         return 1
     skipped = set()
     rows = sorted((ts, name, kind, text) for kind, name, ts, text in scan(since, target, skipped) if text)
@@ -301,12 +326,14 @@ def hook(argv):
             return 0
         tool = payload.get("tool_name")
         tool = tool if isinstance(tool, str) and re.fullmatch(r"[A-Za-z0-9_:.*-]{1,80}", tool) else "-"
+        sid = payload.get("session_id")
+        sid = sid if isinstance(sid, str) and re.fullmatch(r"[A-Za-z0-9-]{1,64}", sid) else "-"
         if argv[:1] == ["denied"]:
             # Only the leading [Label], never the rest of the reason: it can quote the command.
             m = re.match(r"\[([^\]\t\n]{1,60})\]", str(payload.get("reason") or ""))
-            write_row(DENIALS, "[%s]" % m.group(1) if m else "other", tool)
+            write_row(DENIALS, "[%s]" % m.group(1) if m else "other", tool, sid)
         elif argv[:1] == ["prompt"]:
-            write_row(PROMPTS, tool)
+            write_row(PROMPTS, tool, sid)
     except BaseException:
         pass
     return 0
@@ -322,7 +349,7 @@ its overlay. Add these to that file's "hooks" (merging with what is there):
     { "hooks": [{ "type": "command", "timeout": 5, "command": "[ -x ~/bin/operator-asks ] && exec ~/bin/operator-asks hook prompt || true" }] }
   ]
 
-Each entry appends one row (time, profile, reason or tool name) to a log in
+Each entry appends one row (time, profile, reason or tool name, session id) to a log in
 ${XDG_STATE_HOME:-$HOME/.local/state}/operator-asks/, prints nothing, and
 fails open."""
 

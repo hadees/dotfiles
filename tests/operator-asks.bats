@@ -136,7 +136,7 @@ PY
 @test "count reads the profile named by --dir, and counts its own log label" {
   fixture "$HOME/.other"
   mkdir -p "$XDG_STATE_HOME/operator-asks"
-  printf '%s\t.other\t[Merge Without Review]\tBash\n%s\t.claude-test\t[Merge Without Review]\tBash\n' \
+  printf '%s\t.other\t[Merge Without Review]\tBash\taaaa\n%s\t.claude-test\t[Merge Without Review]\tBash\taaaa\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DENIALS"
   run "$OA" count --dir "$HOME/.other"
   [ "$status" -eq 0 ]
@@ -250,25 +250,25 @@ EOF
   done
 }
 
-@test "hook denied writes the reason label and tool name, never the command text" {
+@test "hook denied writes the reason label, tool name and session id, never the command text" {
   run "$OA" hook denied <<'EOF'
 {"reason":"[Merge Without Review] gh pr merge 12 --admin secret-token","tool_name":"Bash","tool_input":{"command":"gh pr merge 12 secret-token"},"session_id":"abc-123","cwd":"/x/y"}
 EOF
   [ "$status" -eq 0 ]
   [ -z "$output" ]
   [ "$(wc -l < "$DENIALS" | tr -d ' ')" -eq 1 ]
-  grep -q "$(printf '\t.claude-test\t\[Merge Without Review\]\tBash$')" "$DENIALS"
-  ! grep -q -e secret-token -e abc-123 -e merge "$DENIALS" || false
+  grep -q "$(printf '\t.claude-test\t\[Merge Without Review\]\tBash\tabc-123$')" "$DENIALS"
+  ! grep -q -e secret-token -e merge -e /x/y "$DENIALS" || false
 }
 
-@test "hook prompt writes the tool name and nothing else" {
+@test "hook prompt writes the tool name and session id and nothing else" {
   run "$OA" hook prompt <<'EOF'
 {"tool_name":"mcp__demo__thing","tool_input":{"command":"secret-token"},"session_id":"abc-123"}
 EOF
   [ "$status" -eq 0 ]
   [ -z "$output" ]
-  grep -q "$(printf '\t.claude-test\tmcp__demo__thing$')" "$PROMPTS"
-  ! grep -q -e secret-token -e abc-123 "$PROMPTS" || false
+  grep -q "$(printf '\t.claude-test\tmcp__demo__thing\tabc-123$')" "$PROMPTS"
+  ! grep -q secret-token "$PROMPTS" || false
 }
 
 @test "a hook payload that is not JSON writes nothing and exits 0" {
@@ -295,13 +295,73 @@ EOF
 
 @test "count counts the hook rows as denied and prompts" {
   fixture "$CLAUDE_CONFIG_DIR"
-  printf '{"reason":"[Merge Without Review]","tool_name":"Bash"}' | "$OA" hook denied
-  printf '{"tool_name":"Bash"}' | "$OA" hook prompt
-  printf '{"tool_name":"Edit"}' | "$OA" hook prompt
-  run "$OA" count
+  printf '{"reason":"[Merge Without Review]","tool_name":"Bash","session_id":"aaaa"}' | "$OA" hook denied
+  printf '{"tool_name":"Bash","session_id":"aaaa"}' | "$OA" hook prompt
+  printf '{"tool_name":"Edit","session_id":"bbbb"}' | "$OA" hook prompt
+  run --separate-stderr "$OA" count
   [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
   printf '%s\n' "$output" | grep -q "$(printf '^denied:\[Merge Without Review\]\t1$')"
   printf '%s\n' "$output" | grep -q "$(printf '^prompts\t2$')"
+}
+
+@test "count tallies a hook row only for a session of an allowed project, and reports rows with no session id" {
+  fixture "$CLAUDE_CONFIG_DIR"
+  extra_project "$CLAUDE_CONFIG_DIR" "$HOME/code/octo-secret/sub"
+  printf '{"permissions":{"deny":["Read(~/code/octo-secret/**)"]}}\n' > "$CLAUDE_CONFIG_DIR/settings.json"
+  # cccc is the denied project's session, dddd is in no project at all
+  for sid in aaaa cccc dddd; do
+    printf '{"reason":"[Merge Without Review]","tool_name":"Bash","session_id":"%s"}' "$sid" | "$OA" hook denied
+    printf '{"tool_name":"Bash","session_id":"%s"}' "$sid" | "$OA" hook prompt
+  done
+  # a payload with no session id, and rows written before the id was logged
+  printf '{"reason":"[Merge Without Review]","tool_name":"Bash"}' | "$OA" hook denied
+  printf '{"tool_name":"Bash"}' | "$OA" hook prompt
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf '%s\t.claude-test\t[Merge Without Review]\tBash\n' "$now" >> "$DENIALS"
+  printf '%s\t.claude-test\tBash\n' "$now" >> "$PROMPTS"
+  run --separate-stderr "$OA" count
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | grep -q "$(printf '^denied:\[Merge Without Review\]\t1$')"
+  printf '%s\n' "$output" | grep -q "$(printf '^prompts\t1$')"
+  [[ "$stderr" == *"operator-asks: 4 hook log rows without a session id not counted"* ]]
+  [[ "$stderr" == *"1 projects skipped (denied)"* ]]
+  # without the rule the denied project's session counts too
+  rm "$CLAUDE_CONFIG_DIR/settings.json"
+  run --separate-stderr "$OA" count
+  printf '%s\n' "$output" | grep -q "$(printf '^denied:\[Merge Without Review\]\t2$')"
+}
+
+@test "a rule denyguard cannot evaluate is named on the projects-tree check, then everything is refused" {
+  fixture "$CLAUDE_CONFIG_DIR"
+  printf '{"permissions":{"deny":["Read(./.env)"]}}\n' > "$CLAUDE_CONFIG_DIR/settings.json"
+  for cmd in count list; do
+    run --separate-stderr "$OA" "$cmd"
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"denyguard: Read(./.env) cannot be evaluated without a session cwd"* ]]
+    [[ "$stderr" == *"could not be checked, not read"* ]]
+  done
+}
+
+@test "an unevaluable rule on a per-project check prints no denyguard line, and a denied tree names nothing" {
+  fixture "$CLAUDE_CONFIG_DIR"
+  extra_project "$CLAUDE_CONFIG_DIR" "$HOME/stubbed"
+  mkdir "$BATS_TEST_TMPDIR/stub"
+  cat > "$BATS_TEST_TMPDIR/stub/denyguard" <<'EOF'
+#!/bin/sh
+for a; do case "$a" in */stubbed) echo "denyguard: Read(./.env) cannot be evaluated without a session cwd" >&2; exit 2 ;; esac; done
+exit 0
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/stub/denyguard"
+  PATH="$BATS_TEST_TMPDIR/stub:$PATH" run --separate-stderr "$OA" count
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "operator-asks: 1 projects skipped (denied)" ]
+  # a tree that is denied outright prints denyguard's path line nowhere
+  printf '{"permissions":{"deny":["Read(/%s/**)"]}}\n' "$CLAUDE_CONFIG_DIR" > "$CLAUDE_CONFIG_DIR/settings.json"
+  run --separate-stderr "$OA" count
+  [ "$status" -eq 1 ]
+  [ "$stderr" = "operator-asks: $CLAUDE_CONFIG_DIR is denied to this profile or could not be checked, not read" ]
 }
 
 @test "settings prints both hook entries and edits nothing" {
