@@ -23,6 +23,8 @@ in the conversation, read its file before the work it covers:
   before you start, stop or re-task a peer or log `done`; before Lead puts
   anything to me, or when I grant or revoke an approval (the row goes in
   `~/.claude-shared/approvals-ledger.md`).
+- `github-accounts.md`: your first `gh` command in a session, which the
+  shared-memory hook adds; read it first if the hook is not wired.
 - `commit-signing.md`: a commit or tag that fails, including `failed to fill
   whole buffer` or `failed to write commit object`.
 - `tailnet-routed-ssh.md`: an ssh, scp, sftp or curl that cannot connect.
@@ -37,8 +39,6 @@ in the conversation, read its file before the work it covers:
   Opus advice to the delegation rules.
 - `delegation-reference.md`: before changing a Claude Code setting, agent
   definition, model, effort or cache behaviour, or reading `/usage`.
-
-@topics/github-accounts.md
 
 @topics/worktrees.md
 

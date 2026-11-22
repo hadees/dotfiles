@@ -130,6 +130,10 @@ summarised away.
   `log claim|note|done` (`PEER_COMMAND`; `slots` and `log show` add nothing);
 - `session-mail` when the tool is `SendMessage` or starts `mcp__postbox__`, or
   the Bash command runs `am mail` (`MAIL_COMMAND`).
+- `github-accounts` when the Bash command starts with `gh ` or `command gh `
+  (`GH_COMMAND`), so a session's first `gh` command brings the wrapper rules;
+  `cd x && gh ...` and `sudo gh ...` do not match. It was imported until 2026-11-22,
+  when always-loaded memory had to fit its 16,200 ceiling.
 
 Those two read the command text only, never its output.
 
@@ -179,7 +183,7 @@ none may be added (the same stance as `memoryguard hook`, and the reverse of
 
 `hook tool` runs on every Bash call, so `sh` checks the payload against the
 `SIGNING` and `CONNECT` strings, the Claude in Chrome name, `claude-peer start`,
-`stop` and `log`, `am mail`, `SendMessage` and `mcp__postbox__` before starting
+`stop` and `log`, `am mail`, a command starting `gh `, `SendMessage` and `mcp__postbox__` before starting
 python. The strings in the `case` in the script and the constants in the
 python must be edited together.
 

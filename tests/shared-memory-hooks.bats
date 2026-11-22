@@ -45,13 +45,14 @@ Topics this file does not import:
 - `talking-to-sessions.md`: another session.
 - `claude-peers.md` and `lead.md`: a repo with peers.
 - `peer-seat.md`, `approvals.md`, `peer-lifetime.md` and `session-mail.md`: a role, a peer, mail.
+- `github-accounts.md`: a first gh command.
 - `commit-signing.md`: a commit that fails to sign.
 - `claude-in-chrome.md`: the browser.
 
 @topics/always-here.md
 EOF
   local t
-  for t in always-here talking-to-sessions claude-peers peer-seat lead approvals peer-lifetime session-mail commit-signing tailnet-routed-ssh claude-in-chrome; do
+  for t in always-here talking-to-sessions claude-peers peer-seat lead approvals peer-lifetime session-mail github-accounts commit-signing tailnet-routed-ssh claude-in-chrome; do
     printf '## Fixture %s\n\nBODY-%s\n' "$t" "$t" > "$SHARED_MEMORY_DIR/topics/$t.md"
   done
 
@@ -134,7 +135,7 @@ its overlay. Add these to that file's "hooks" (merging with what is there):
 
 SessionStart adds the messaging, Claude Peers, peer and Lead topics to a
 session they apply to; the two tool events add the commit-signing, tailnet,
-Claude in Chrome, peer lifetime and session mail topics once per session when
+Claude in Chrome, peer lifetime, session mail and GitHub accounts topics once per session when
 their trigger appears. Every entry fails open, and a topic the shared index
 still imports is never added.
 EOF
@@ -465,6 +466,29 @@ bash_payload() {
   [[ "$(context)" == *BODY-session-mail ]]
   run tool "$(bash_payload 'echo am mailbox' s4)"
   [ -z "$output" ]
+}
+
+@test "hook tool: a command starting gh or command gh adds github-accounts once per session, on both events" {
+  local n=0 c
+  for c in 'gh pr list' 'command gh api user' 'gh  auth status'; do
+    n=$((n + 1))
+    run tool "$(bash_payload "$c" "g$n")"
+    [ "$status" -eq 0 ]
+    [[ "$(context)" == *BODY-github-accounts ]] || { echo "no match: $c"; false; }
+  done
+  run tool "$(bash_payload 'gh pr view' g1)"
+  [ -z "$output" ]
+  run tool '{"hook_event_name":"PostToolUseFailure","session_id":"g9","tool_name":"Bash","tool_input":{"command":"gh pr merge 3"},"error":"Exit code 1\nboom"}'
+  [[ "$(context)" == *BODY-github-accounts ]]
+}
+
+@test "hook tool: gh mentioned but not run adds nothing" {
+  local c
+  for c in 'git ghost' 'echo gh pr list' 'ls ~/.config/gh/' 'cd x && gh pr list' 'ghx pr' 'sudo gh pr list'; do
+    run tool "$(bash_payload "$c" s1)"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ] || { echo "added for: $c"; false; }
+  done
 }
 
 @test "hook tool: one signing failure that is also an ssh failure adds both, signing first" {

@@ -55,7 +55,7 @@ hook)
   payload=$(cat) || exit 0
   # `hook tool` runs on every Bash call, so a payload that holds none of the
   # strings python could match (the SIGNING and CONNECT lists below, the
-  # Claude in Chrome name, and the peer and mail commands) never starts python.
+  # Claude in Chrome name, and the peer, mail and gh commands) never starts python.
   # Keep these in step with them.
   if [ "$2" = tool ]; then
     case "$payload" in
@@ -63,7 +63,7 @@ hook)
     *"Could not resolve host"* | *"Connection refused"* | *"Connection timed out"* | *"Operation timed out"* | *"No route to host"*) ;;
     *"Connection closed by"* | *"kex_exchange_identification"* | *"Failed to connect to"* | *"Couldn't connect to server"*) ;;
     *"Network is unreachable"* | *"SOCKS"* | *"claude-in-chrome"*) ;;
-    *"claude-peer start"* | *"claude-peer stop"* | *"claude-peer log"* | *"am mail"* | *SendMessage* | *mcp__postbox__*) ;;
+    *'"gh '* | *'"command gh '* | *"claude-peer start"* | *"claude-peer stop"* | *"claude-peer log"* | *"am mail"* | *SendMessage* | *mcp__postbox__*) ;;
     *) exit 0 ;;
     esac
   fi
@@ -107,6 +107,7 @@ TRIGGERS = {
     "lead": "start",
     "approvals": "start",
     "peer-lifetime": "tool",
+    "github-accounts": "tool",
     "session-mail": "tool",
     "commit-signing": "tool",
     "tailnet-routed-ssh": "tool",
@@ -135,6 +136,8 @@ POSTBOX_PREFIX = "mcp__postbox__"
 # above repeats their literal parts.
 PEER_COMMAND = re.compile(r"(^|[;&|(\x60]\s*|\$\(\s*|\s|/)claude-peer\s+(start|stop|log\s+(--as\s+\S+\s+)?(claim|note|done))(\s|$)")
 MAIL_COMMAND = re.compile(r"(^|[;&|(\x60]\s*|\$\(\s*|\s|/)am\s+mail(\s|$)")
+# A session's first `gh` command: the command starts with `gh ` or `command gh `.
+GH_COMMAND = re.compile(r"^(command\s+)?gh\s")
 
 HOME = os.environ.get("HOME", "")
 DIR = os.environ.get("SHARED_MEMORY_DIR") or os.path.join(HOME, ".claude-shared")
@@ -238,7 +241,7 @@ its overlay. Add these to that file's "hooks" (merging with what is there):
 
 SessionStart adds the messaging, Claude Peers, peer and Lead topics to a
 session they apply to; the two tool events add the commit-signing, tailnet,
-Claude in Chrome, peer lifetime and session mail topics once per session when
+Claude in Chrome, peer lifetime, session mail and GitHub accounts topics once per session when
 their trigger appears. Every entry fails open, and a topic the shared index
 still imports is never added."""
 
@@ -417,6 +420,8 @@ def tool_slugs(payload):
             slugs.append("peer-lifetime")
         if isinstance(cmd, str) and MAIL_COMMAND.search(cmd):
             slugs.append("session-mail")
+        if isinstance(cmd, str) and GH_COMMAND.match(cmd):
+            slugs.append("github-accounts")
     if isinstance(name, str) and (name == "SendMessage" or name.startswith(POSTBOX_PREFIX)):
         slugs.append("session-mail")
     skill = args.get("skill")

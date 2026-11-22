@@ -70,13 +70,14 @@ start_bundle() {
   local out slug payload
   export XDG_STATE_HOME="$BATS_TEST_TMPDIR/state" CLAUDE_CONFIG_DIR="$BATS_TEST_TMPDIR/profile"
   export SHARED_MEMORY_DIR="$(dirname "$SHARED_MEMORY")"
-  for slug in commit-signing tailnet-routed-ssh claude-in-chrome peer-lifetime session-mail; do
+  for slug in commit-signing tailnet-routed-ssh claude-in-chrome peer-lifetime session-mail github-accounts; do
     case "$slug" in
     commit-signing) payload='{"hook_event_name":"PostToolUseFailure","session_id":"s-'$slug'","tool_name":"Bash","tool_input":{"command":"git commit"},"error":"Exit code 128\nerror: 1Password: failed to fill whole buffer"}' ;;
     tailnet-routed-ssh) payload='{"hook_event_name":"PostToolUseFailure","session_id":"s-'$slug'","tool_name":"Bash","tool_input":{"command":"ssh h"},"error":"Exit code 255\nssh: Could not resolve hostname h"}' ;;
     claude-in-chrome) payload='{"hook_event_name":"PostToolUse","session_id":"s-'$slug'","tool_name":"mcp__claude-in-chrome__tabs_context_mcp","tool_input":{},"tool_response":"ok"}' ;;
     peer-lifetime) payload='{"hook_event_name":"PostToolUse","session_id":"s-'$slug'","tool_name":"Bash","tool_input":{"command":"claude-peer stop alpha"},"tool_response":"ok"}' ;;
     session-mail) payload='{"hook_event_name":"PostToolUse","session_id":"s-'$slug'","tool_name":"SendMessage","tool_input":{},"tool_response":"ok"}' ;;
+    github-accounts) payload='{"hook_event_name":"PostToolUse","session_id":"s-'$slug'","tool_name":"Bash","tool_input":{"command":"gh pr list"},"tool_response":"ok"}' ;;
     esac
     out="$(printf '%s' "$payload" | sh "$SM" hook tool)"
     [ -n "$out" ] || { echo "tool hook added nothing for $slug"; false; }
@@ -163,7 +164,9 @@ PY
   # Every rule that steers the main conversation stays in every session.
   for p in 'is the orchestrator and, for a dependent chain, the implementer' '**Five shared definitions**' \
     '**A big idea is chit-chat first' 'builds it:** read the plan here' '**Escalation is a rule, not a mood.**' \
-    '**Every seat reports the same way**' '**Do not change what is being researched.**'; do
+    '**Every seat reports the same way**' '**Do not change what is being researched.**' \
+    '**I am never a step.**' 'Never hand me steps to run or type' 'Ask for that go once' \
+    'no step asks again for what a row names'; do
     grep -qF -- "$p" <<< "$exp" || { echo "always loaded: no '$p'"; false; }
   done
   for p in '**Effort is fixed in the agent file' "**Each profile's \`settings.json\` is owned" '**The wrapper exports four defaults**' \
@@ -200,6 +203,11 @@ role_topic_checks() {
   role_topic_checks peer-lifetime tool '## How long a peer lives (start, stop, keep)' \
     '`Asked`' '`State`' '`Decided`' '`Learned`' '`Open`' '`Session`' 'is the whole guard' 'keeping <Label>' \
     '--continue --handoff' 'type no `/exit`' 'claude-peer context list'
+}
+
+@test "github-accounts is a tool topic, added on a session's first gh command, with the wrapper rules" {
+  role_topic_checks github-accounts tool '## GitHub accounts (gh CLI)' \
+    '**Run `gh` plain' 'never prefix it with `GH_TOKEN=`' 'gh-doctor'
 }
 
 @test "session-mail is a tool topic with the routes, names and threads" {
