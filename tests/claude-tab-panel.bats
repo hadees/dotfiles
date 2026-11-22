@@ -826,6 +826,8 @@ serve() {
     echo "serve: no 'panel on' after 10 s; server pid $SERVER alive: $(kill -0 "$SERVER" 2>&1 && echo yes)" >&3
     echo "serve: health: $(curl -s --noproxy '*' -m 3 -w ' http %{http_code}' "http://127.0.0.1:$PORT/health" 2>&1)" >&3
     sed 's/^/serve.out: /' "$BATS_TEST_TMPDIR/serve.out" >&3
+    ps -Ao pid,ppid,stat,etime,command | grep -E "claude-tab|python|sh " | grep -v grep | cut -c1-200 >&3
+    for c in $(pgrep -P "$SERVER") $SERVER; do sample "$c" 1 2>&1 | head -60 >&3; done
     return 1
   }
 }
