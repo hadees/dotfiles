@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Needs You</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    color-scheme: dark light;
+    --bg: #1a1a1a; --fg: #d3d0c8; --dim: #747369; --hover: #2a2a2a; --fade: #2d2d2d;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f2f0ec; --fg: #2d2d2d; --dim: #747369; --hover: #e6e3dc; --fade: #dcd9d2; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); }
+  body {
+    padding: 4px 6px 6px; font: 11px/1.55 ui-monospace, "SF Mono", Menlo, monospace;
+    font-variant-numeric: tabular-nums; -webkit-user-select: none; user-select: none;
+  }
+  [hidden] { display: none !important; }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+  #main.stale { opacity: .4; }
+  .head { color: var(--dim); font-size: 10px; margin: 6px 0 1px; }
+  .row {
+    position: relative; display: grid; grid-template-columns: 7px minmax(0, 1fr) auto 3ch;
+    column-gap: 6px; align-items: center; padding: 0 2px; cursor: pointer; border-radius: 2px;
+  }
+  .row:hover, .row:focus-visible { background: var(--hover); outline: 0; }
+  .row.seen { opacity: .55; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #888888; }
+  .name { font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .why { max-width: 11em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .age, .ok { grid-column: 4; grid-row: 1; text-align: right; color: var(--dim); }
+  .ok { opacity: 0; color: var(--fg); }
+  .row:hover .ok, .row:focus-within .ok { opacity: 1; }
+  .row:hover .age, .row:focus-within .age { opacity: 0; }
+  @media (prefers-reduced-motion: no-preference) {
+    .row.new { animation: arrive 600ms ease-out; }
+    @keyframes arrive { from { background: var(--fade); } to { background: transparent; } }
+  }
+  #empty { color: var(--dim); margin: 4px 0; }
+  #more { display: block; width: 100%; margin: 8px 0 2px; color: var(--dim); }
+  .ghead { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; column-gap: 6px; width: 100%; padding: 0 2px; }
+  .ghead:hover { background: var(--hover); }
+  .gname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .gneed { white-space: nowrap; }
+  .gdot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: .3em; }
+  .gcount { color: var(--dim); white-space: nowrap; }
+  .gbody { margin-left: 10px; }
+  #status { margin-top: 8px; color: var(--dim); font-size: 10px; min-height: 1.5em; }
+  #dead { color: var(--dim); margin: 4px 0; }
+</style>
+</head>
+<body>
+<div id="dead" hidden><div id="deadwhen"></div><div>claude-tab panel start</div></div>
+<div id="main">
+  <div id="list">
+    <div id="sec-blocked" hidden><div class="head">Blocked on you</div><div></div></div>
+    <div id="sec-move" hidden><div class="head">Your move</div><div></div></div>
+    <div id="sec-check" hidden><div class="head">Check</div><div></div></div>
+    <div id="empty" hidden>Nothing needs you</div>
+  </div>
+  <button id="more" type="button" hidden></button>
+  <div id="groups" hidden></div>
+</div>
+<div id="status"></div>
+<script>
+"use strict";
+/* Draws /snapshot.json: what needs the operator, then every session by group.
+   Text reaches the page only through textContent. */
+var COLOR = {
+  blocked: "#5f87ff", asked: "#ffd75f", failed: "#ff5f5f", quiet: "#af8700",
+  finished: "#00d75f", "finished-bg": "#00d75f"
+};
+var GREY = "#888888";
+/* the kinds of the list; the others view also shows working, idle and idle-bg in grey */
+var SECTION = {
+  blocked: "blocked", failed: "move", asked: "move", finished: "move", "finished-bg": "move",
+  quiet: "check", unknown: "check"
+};
+var POLL_MS = 2000, STALE_S = 6, DEAD_S = 30, OTHERS_REDRAW_MS = 30000, ERROR_MS = 10000;
+var STORE = "claude-tab-panel";
+
+function $(id) { return document.getElementById(id); }
+var memory = { others: false, groups: {} };
+try { memory = Object.assign(memory, JSON.parse(localStorage.getItem(STORE)) || {}); } catch (e) { /* no storage: all closed */ }
+function remember() { try { localStorage.setItem(STORE, JSON.stringify(memory)); } catch (e) { /* no storage */ } }
+
+var build = null, lastOk = null, loadedAt = Date.now() / 1000, snap = null, first = true;
+var healthy = true, errorText = "", errorUntil = 0, othersDrawn = 0;
+
+function el(tag, cls, text) {
+  var n = document.createElement(tag);
+  if (cls) { n.className = cls; }
+  if (text !== undefined) { n.textContent = text; }
+  return n;
+}
+function setText(n, t) { if (n.textContent !== t) { n.textContent = t; } }
+
+function age(since) {
+  var s = Math.max(0, Date.now() / 1000 - since);
+  if (s < 60) { return "now"; }
+  if (s < 3600) { return Math.floor(s / 60) + "m"; }
+  if (s < 86400) { return Math.floor(s / 3600) + "h"; }
+  return Math.floor(s / 86400) + "d";
+}
+
+/* Make box's children match items, in order, reusing nodes by pid and kind. */
+function sync(box, items, make, update) {
+  var have = {};
+  Array.prototype.forEach.call(box.children, function (c) { have[c.dataset.key] = c; });
+  items.forEach(function (it, i) {
+    var key = it.pid + "|" + it.kind, node = have[key];
+    if (node) { delete have[key]; } else {
+      node = make(it);
+      node.dataset.key = key;
+      if (!first) { node.classList.add("new"); }
+    }
+    update(node, it);
+    var at = box.children[i];
+    if (at !== node) { box.insertBefore(node, at || null); }
+  });
+  Object.keys(have).forEach(function (k) { box.removeChild(have[k]); });
+}
+
+function post(path, pid) {
+  return fetch(path, {
+    method: "POST", headers: { "X-Claude-Tab": "1", "Content-Type": "application/x-www-form-urlencoded" },
+    body: "pid=" + pid
+  });
+}
+function flash(t) { errorText = t; errorUntil = Date.now() + ERROR_MS; drawStatus(); }
+function go(pid) {
+  post("/go", pid).then(function (r) {
+    if (r.ok) { return; }
+    return r.json().then(function (j) { flash(j.error || "focus failed"); }, function () { flash("focus failed"); });
+  }).catch(function () { flash("no answer"); }).then(poll);
+}
+function seen(pid) { post("/seen", pid).catch(function () { /* the next poll shows the truth */ }).then(poll); }
+
+function makeRow() {
+  var row = el("div", "row"), ok = el("button", "ok", "✓");
+  row.tabIndex = 0;
+  row.setAttribute("role", "button");
+  ok.type = "button";
+  ok.title = "Mark seen";
+  row.append(el("span", "dot"), el("span", "name"), el("span", "why"), el("span", "age"), ok);
+  row.addEventListener("click", function (ev) {
+    if (ev.target === ok) { ev.stopPropagation(); seen(row.dataset.pid); } else { go(row.dataset.pid); }
+  });
+  row.addEventListener("keydown", function (ev) { if (ev.key === "Enter" && ev.target === row) { go(row.dataset.pid); } });
+  return row;
+}
+function updateRow(row, r) {
+  var c = COLOR[r.kind] || GREY, k = row.children;
+  row.dataset.pid = r.pid;
+  row.title = [r.profile, r.role, "pid " + r.pid, r.kind].join(" · ");
+  row.classList.toggle("seen", !!r.seen);
+  k[0].style.background = c;
+  setText(k[1], r.label);
+  setText(k[2], r.reason || r.kind);
+  k[2].style.color = c;
+  setText(k[3], age(r.since));
+}
+
+function drawNeeds(needs) {
+  var by = { blocked: [], move: [], check: [] };
+  needs.forEach(function (r) { by[SECTION[r.kind] || "check"].push(r); });
+  Object.keys(by).forEach(function (s) {
+    var sec = $("sec-" + s);
+    sec.hidden = by[s].length === 0;
+    sync(sec.lastChild, by[s], makeRow, updateRow);
+  });
+  $("empty").hidden = needs.length !== 0;
+}
+
+function makeGroup(g) {
+  var node = el("div", "group"), head = el("button", "ghead"), need = el("span", "gneed");
+  head.type = "button";
+  need.append(el("span", "gdot"), el("span"));
+  head.append(el("span", "gname"), need, el("span", "gcount"));
+  head.addEventListener("click", function () {
+    memory.groups[g.group] = !memory.groups[g.group];
+    remember();
+    if (snap) { drawOthers(snap.others, snap.needs); }
+  });
+  node.append(head, el("div", "gbody"));
+  return node;
+}
+function updateGroup(node, g) {
+  var open = !!memory.groups[g.group], head = node.firstChild, need = head.children[1], body = node.lastChild;
+  setText(head.children[0], (open ? "▾ " : "▸ ") + g.group + "  " + g.rows.length);
+  need.hidden = !(g.needs > 0);
+  setText(need.lastChild, String(g.needs));
+  var worst = g.rows.filter(function (r) { return COLOR[r.kind]; })[0];
+  need.firstChild.style.background = worst ? COLOR[worst.kind] : GREY;
+  setText(head.children[2], g.working + " working · " + g.idle + " idle");
+  body.hidden = !open;
+  if (open) { sync(body, g.rows, makeRow, updateRow); }
+}
+function drawOthers(others, needs) {
+  var total = 0, box = $("groups"), more = $("more"), have = {};
+  others.forEach(function (g) { total += g.rows.length; });
+  more.hidden = total === 0;
+  setText(more, (memory.others ? "▾ " : "▸ ") + Math.max(0, total - needs.length) + " others");
+  box.hidden = !memory.others;
+  if (!memory.others) { return; }
+  Array.prototype.forEach.call(box.children, function (c) { have[c.dataset.key] = c; });
+  others.forEach(function (g, i) {
+    var node = have[g.group];
+    if (node) { delete have[g.group]; } else { node = makeGroup(g); node.dataset.key = g.group; }
+    updateGroup(node, g);
+    if (box.children[i] !== node) { box.insertBefore(node, box.children[i] || null); }
+  });
+  Object.keys(have).forEach(function (k) { box.removeChild(have[k]); });
+}
+
+function drawStatus() {
+  var s = $("status"), now = Date.now(), t = lastOk === null ? null : now / 1000 - lastOk;
+  if (now < errorUntil) { setText(s, errorText); return; }
+  if (!snap) { setText(s, healthy ? "waiting for the first snapshot" : ""); return; }
+  if (t > STALE_S) { setText(s, "no data for " + Math.floor(t) + "s"); return; }
+  var h = snap.health, parts = [h.sessions + " sessions", h.profiles + " profiles"];
+  if (h.focus === "unknown") { parts.push("focus off"); }
+  if (h.unreadable > 0) { parts.push(h.unreadable + " unreadable"); }
+  setText(s, parts.join(" · "));
+}
+
+function drawStaleness() {
+  var at = lastOk === null ? loadedAt : lastOk, t = Date.now() / 1000 - at, dead = t > DEAD_S;
+  $("main").classList.toggle("stale", t > STALE_S);
+  $("main").hidden = dead;
+  $("dead").hidden = !dead;
+  if (dead) {
+    var d = new Date(at * 1000);
+    setText($("deadwhen"), "Not updating since " + ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2) + ".");
+  }
+}
+
+function draw() {
+  var now = Date.now();
+  drawNeeds(snap.needs);
+  if (memory.others || othersDrawn === 0 || now - othersDrawn >= OTHERS_REDRAW_MS) {
+    drawOthers(snap.others, snap.needs);
+    othersDrawn = now;
+  }
+  first = false;
+}
+
+function poll() {
+  var ctl = new AbortController(), timer = setTimeout(function () { ctl.abort(); }, POLL_MS + 1000);
+  return fetch("/snapshot.json", { signal: ctl.signal }).then(function (r) {
+    if (!r.ok) { throw new Error(String(r.status)); }
+    return r.json();
+  }).then(function (j) {
+    clearTimeout(timer);
+    if (build !== null && j.build !== build) { location.reload(); return; }
+    build = j.build;
+    snap = j;
+    lastOk = Date.now() / 1000;
+    healthy = true;
+    draw();
+  }).catch(function () {
+    clearTimeout(timer);
+    /* a server that answers /health with no snapshot yet is starting, not gone */
+    return fetch("/health").then(function (r) { healthy = r.ok; }, function () { healthy = false; });
+  }).then(function () { drawStaleness(); drawStatus(); });
+}
+
+$("more").addEventListener("click", function () {
+  memory.others = !memory.others;
+  remember();
+  if (snap) { drawOthers(snap.others, snap.needs); othersDrawn = Date.now(); }
+});
+
+poll();
+setInterval(poll, POLL_MS);
+</script>
+</body>
+</html>

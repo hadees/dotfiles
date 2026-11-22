@@ -77,6 +77,18 @@ teardown() {
   pf=$HOME/.local/state/claude-tab/panel.pid
   [ ! -f "$pf" ] || kill "$(cut -d' ' -f1 "$pf")" 2>/dev/null || true
   [ ! -f "$BATS_TEST_TMPDIR/sleepers" ] || xargs kill < "$BATS_TEST_TMPDIR/sleepers" 2>/dev/null || true
+  # A server whose start gave up before panel.pid was written is found by the
+  # port this test gave it; none may survive the test.
+  port=$(git config --file "$GIT_CONFIG_GLOBAL" claude-tab.panel-port 2>/dev/null) || port=
+  if [ -n "$port" ]; then
+    pkill -f -- "serve --port $port( |$)" 2>/dev/null || true
+    i=0
+    while pgrep -f -- "serve --port $port( |$)" >/dev/null && [ "$i" -lt 30 ]; do
+      i=$((i + 1))
+      sleep 0.1
+    done
+    ! pgrep -f -- "serve --port $port( |$)" >/dev/null
+  fi
 }
 
 # live_pid : sets LIVE to a pid that is alive until teardown.
@@ -965,4 +977,38 @@ STUB
   [[ "${lines[2]}" == "focus: "* ]]
   [ "${lines[3]}" = "needs: none" ]
   [[ "${lines[4]}" == "tally: "* ]]
+}
+
+# The page: panel.html is one self-contained file, checked as text.
+page() { printf '%s' "$BATS_TEST_DIRNAME/../dot_local/share/claude-tab/panel.html"; }
+
+@test "the page reaches nothing outside itself and writes text only through textContent" {
+  PAGE=$(page)
+  [ -f "$PAGE" ]
+  ! grep -Eq 'https?:|//' "$PAGE"
+  ! grep -Eq 'innerHTML|document\.write|eval' "$PAGE"
+  grep -q 'textContent' "$PAGE"
+  run "$REAL_PYTHON3" -I -c '
+import sys
+t = open(sys.argv[1], encoding="utf-8").read()
+sys.exit(1 if any(0xE000 <= ord(c) <= 0xF8FF for c in t) else 0)' "$PAGE"
+  [ "$status" -eq 0 ]
+}
+
+@test "the page names all four endpoints and every kind of the snapshot" {
+  PAGE=$(page)
+  for w in /snapshot.json /health /seen /go X-Claude-Tab \
+    blocked failed asked finished finished-bg quiet unknown working idle idle-bg; do
+    grep -Fq -- "$w" "$PAGE" || { echo "panel.html lacks $w"; return 1; }
+  done
+}
+
+@test "GET / serves the deployed page with the CSP" {
+  export CLAUDE_TAB_PANEL_HTML
+  CLAUDE_TAB_PANEL_HTML=$(page)
+  serve
+  run curl -si --noproxy '*' "http://127.0.0.1:$PORT/"
+  out=$(printf '%s' "$output" | tr 'A-Z' 'a-z')
+  [[ "$out" == *"content-security-policy: default-src 'none'"* ]]
+  [[ "$out" == *"<title>needs you</title>"* ]]
 }

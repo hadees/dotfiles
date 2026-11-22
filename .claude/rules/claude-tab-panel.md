@@ -1,6 +1,7 @@
 ---
 paths:
   - "**/bin/executable_claude-tab"
+  - "**/dot_local/share/claude-tab/**"
   - "**/tests/claude-tab-panel.bats"
 ---
 
@@ -176,6 +177,28 @@ and `tally:` lines, exit 3 and `server: not running` when nothing answers.
 The invariant anyone can check while a prompt is open: the pids of
 `claude-tab attention` rows waiting four seconds or more are exactly the
 `blocked` rows of `panel snapshot`.
+
+**The page** is `dot_local/share/claude-tab/panel.html`, one file with no
+external resource and no framework, deployed to
+`~/.local/share/claude-tab/panel.html` on macOS only (`.chezmoiignore`). It
+polls `/snapshot.json` every 2 seconds and draws the `needs` list in up to
+three sections (`Blocked on you`, `Your move`, `Check`) with a closed `<n>
+others` disclosure over the sessions by group; a click on a row posts `/go`, the
+`✓` posts `/seen`, a 409's `error` shows in the status line for ten seconds.
+Text reaches the page only through `textContent` (a label is a directory's
+name), and the test refuses `innerHTML`, `document.write`, `eval`, any
+`http:`, `https:` or `//` address and any private-use glyph. Rows are updated in
+place by pid and kind, so a poll neither resets a hover nor re-fades a row. It
+looks like the Toolbelt's neighbours: Base16 Eighties (`#1a1a1a`) in a
+monospace face by default, a light variant under `prefers-color-scheme: light`,
+and the kind colours of Session Status (`blocked` blue, `asked` yellow,
+`failed` red, `quiet` amber, `finished` green, everything else grey). The
+list greys after 6 seconds without an answer (`no data for <N>s`) and is
+replaced after 30 by `Not updating since <HH:MM>.` and the command that
+starts the server; a failed snapshot is followed by a `/health` probe so a
+server that is starting says so. A changed `build` reloads the page. Open
+groups and the `others` disclosure are kept in `localStorage`. The test names
+every kind of the snapshot, so a renamed kind fails there and not on the screen.
 
 **The tell.** A snapshot whose `health.sessions` is 0 while `claude-tab list`
 prints rows, or a row of kind `unknown`, means the registry's words moved.
