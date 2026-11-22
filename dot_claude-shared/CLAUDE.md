@@ -17,6 +17,12 @@ in the conversation, read its file before the work it covers:
 - `claude-peers.md` and `lead.md`: a `claude-peer` slot worktree
   (`$CLAUDE_PEER_WORKTREE` set), a repo where `claude-peer slots` lists
   anyone, or a `postbox:` line about Lead or Claude Peers.
+- `session-mail.md`: before you message another session or read mail from
+  one.
+- `peer-seat.md`, `peer-lifetime.md` and `approvals.md`: in a slot worktree;
+  before you start, stop or re-task a peer or log `done`; before Lead puts
+  anything to me, or when I grant or revoke an approval (the row goes in
+  `~/.claude-shared/approvals-ledger.md`).
 - `commit-signing.md`: a commit or tag that fails, including `failed to fill
   whole buffer` or `failed to write commit object`.
 - `tailnet-routed-ssh.md`: an ssh, scp, sftp or curl that cannot connect.

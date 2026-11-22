@@ -388,7 +388,7 @@ raw_body() {
   local shared p
   shared="$(shared_memory_all | tr '\n' ' ' | tr -s ' ')"
   for p in 'postbox: you are Lead of' 'Unless you are Lead' 'only when I ask' 'One at a time' \
-    'gh pr update-branch' 'Never `--admin`' 'Never `stop --force`' 'Lead still asks before' \
+    'gh pr update-branch' 'Never `--admin`' 'never `--force` unasked' 'Lead still asks before' \
     'see or feel' 'reaches beyond this machine' 'cannot be undone' 'spends money' \
     'One go covers what I named to its end' 'no second ask per step'; do
     grep -qF -- "$p" <<< "$shared" || { echo "shared memory: no '$p'"; false; }

@@ -28,14 +28,41 @@ LINES_MAX=200
   [[ "$output" != *$'\tno'* ]] || { echo "$output"; false; }
 }
 
-@test "the topics a start hook adds fit in one hook output" {
-  local out slug
+# The start hook picks topics by role, so each role is held to its own bound
+# and to the topics it must not carry: a peer has no Lead text, a plain session
+# neither.
+start_bundle() {
+  printf '{"session_id":"s1","source":"startup","session_title":"%s","cwd":"/x"}' "$1" | sh "$SM" hook start
+}
+
+@test "the topics a start hook adds, per role, fit their bound and hold only what the role needs" {
+  local out slug spec role bound have lack
   export XDG_STATE_HOME="$BATS_TEST_TMPDIR/state" CLAUDE_CONFIG_DIR="$BATS_TEST_TMPDIR/profile"
-  export SHARED_MEMORY_DIR="$(dirname "$SHARED_MEMORY")" SHARED_MEMORY_CLAUDE_PEER=/nonexistent
-  out="$(printf '%s' '{"session_id":"s1","source":"startup","session_title":"x-lead","cwd":"/x"}' | sh "$SM" hook start)"
-  [ "${#out}" -lt 9000 ] || { echo "start hook output is ${#out} characters"; false; }
-  for slug in talking-to-sessions claude-peers lead; do
-    grep -qxF "$(head -1 "$TOPICS/$slug.md")" <<< "$out" || { echo "start hook output lacks $slug"; false; }
+  export SHARED_MEMORY_DIR="$(dirname "$SHARED_MEMORY")"
+  printf '#!/bin/sh\n[ "$1" = slots ] && echo "alpha running"\nexit 0\n' > "$BATS_TEST_TMPDIR/claude-peer"
+  chmod +x "$BATS_TEST_TMPDIR/claude-peer"
+  mkdir -p "$BATS_TEST_TMPDIR/sock"
+  python3 -I -c 'import os, socket, sys; os.chdir(sys.argv[1]); socket.socket(socket.AF_UNIX).bind("inbox")' "$BATS_TEST_TMPDIR/sock"
+  unset CLAUDE_PEER_WORKTREE CLAUDE_CODE_MESSAGING_SOCKET
+  # role|bound|topics it holds|topics it must not hold
+  for spec in "lead|7600|talking-to-sessions claude-peers lead approvals|peer-seat" \
+    "peer|4000|talking-to-sessions claude-peers peer-seat|lead approvals" \
+    "peers|3300|talking-to-sessions claude-peers|lead approvals peer-seat" \
+    "inbox|2200|talking-to-sessions|claude-peers lead approvals peer-seat"; do
+    IFS='|' read -r role bound have lack <<< "$spec"
+    case "$role" in
+    lead) out="$(SHARED_MEMORY_CLAUDE_PEER="$BATS_TEST_TMPDIR/claude-peer" start_bundle x-lead)" ;;
+    peer) out="$(CLAUDE_PEER_WORKTREE=/x SHARED_MEMORY_CLAUDE_PEER="$BATS_TEST_TMPDIR/claude-peer" start_bundle x)" ;;
+    peers) out="$(SHARED_MEMORY_CLAUDE_PEER="$BATS_TEST_TMPDIR/claude-peer" start_bundle x)" ;;
+    inbox) out="$(CLAUDE_CODE_MESSAGING_SOCKET="$BATS_TEST_TMPDIR/sock/inbox" SHARED_MEMORY_CLAUDE_PEER=/nonexistent start_bundle x)" ;;
+    esac
+    [ "${#out}" -lt "$bound" ] || { echo "$role start bundle is ${#out} characters, bound $bound"; false; }
+    for slug in $have; do
+      grep -qxF "$(head -1 "$TOPICS/$slug.md")" <<< "$out" || { echo "$role start bundle lacks $slug"; false; }
+    done
+    for slug in $lack; do
+      ! grep -qxF "$(head -1 "$TOPICS/$slug.md")" <<< "$out" || { echo "$role start bundle holds $slug"; false; }
+    done
   done
 }
 
@@ -43,15 +70,17 @@ LINES_MAX=200
   local out slug payload
   export XDG_STATE_HOME="$BATS_TEST_TMPDIR/state" CLAUDE_CONFIG_DIR="$BATS_TEST_TMPDIR/profile"
   export SHARED_MEMORY_DIR="$(dirname "$SHARED_MEMORY")"
-  for slug in commit-signing tailnet-routed-ssh claude-in-chrome; do
+  for slug in commit-signing tailnet-routed-ssh claude-in-chrome peer-lifetime session-mail; do
     case "$slug" in
     commit-signing) payload='{"hook_event_name":"PostToolUseFailure","session_id":"s-'$slug'","tool_name":"Bash","tool_input":{"command":"git commit"},"error":"Exit code 128\nerror: 1Password: failed to fill whole buffer"}' ;;
     tailnet-routed-ssh) payload='{"hook_event_name":"PostToolUseFailure","session_id":"s-'$slug'","tool_name":"Bash","tool_input":{"command":"ssh h"},"error":"Exit code 255\nssh: Could not resolve hostname h"}' ;;
     claude-in-chrome) payload='{"hook_event_name":"PostToolUse","session_id":"s-'$slug'","tool_name":"mcp__claude-in-chrome__tabs_context_mcp","tool_input":{},"tool_response":"ok"}' ;;
+    peer-lifetime) payload='{"hook_event_name":"PostToolUse","session_id":"s-'$slug'","tool_name":"Bash","tool_input":{"command":"claude-peer stop alpha"},"tool_response":"ok"}' ;;
+    session-mail) payload='{"hook_event_name":"PostToolUse","session_id":"s-'$slug'","tool_name":"SendMessage","tool_input":{},"tool_response":"ok"}' ;;
     esac
     out="$(printf '%s' "$payload" | sh "$SM" hook tool)"
     [ -n "$out" ] || { echo "tool hook added nothing for $slug"; false; }
-    [ "${#out}" -lt 9000 ] || { echo "tool hook output for $slug is ${#out} characters"; false; }
+    [ "${#out}" -lt 4000 ] || { echo "tool hook output for $slug is ${#out} characters"; false; }
     grep -qF "$(head -1 "$TOPICS/$slug.md")" <<< "$out" || { echo "tool hook output lacks $slug"; false; }
   done
 }
@@ -142,4 +171,50 @@ PY
     grep -qF -- "$p" <<< "$flat" || { echo "delegation-reference: no '$p'"; false; }
     ! grep -qF -- "$p" <<< "$exp" || { echo "always loaded still holds '$p'"; false; }
   done
+}
+
+# A role topic is listed in the index once, never imported, loaded by the class
+# its role needs, opens with its heading and keeps the phrases a session acts on.
+# Args: slug, class, heading, then the phrases.
+role_topic_checks() {
+  local slug="$1" class="$2" heading="$3" flat p
+  shift 3
+  [ "$(grep -c -F "\`$slug.md\`" "$SHARED_MEMORY")" -eq 1 ] || { echo "$slug is not listed exactly once in the index"; false; }
+  ! grep -q "^@topics/$slug.md" "$SHARED_MEMORY" || { echo "$slug is imported"; false; }
+  [ "$(sh "$SM" topics "$(dirname "$SHARED_MEMORY")" | awk -v s="$slug" '$1==s {print $2}')" = "$class" ]
+  [ "$(head -1 "$TOPICS/$slug.md")" = "$heading" ]
+  flat="$(tr '\n' ' ' < "$TOPICS/$slug.md" | tr -s ' ')"
+  for p in "$@"; do
+    grep -qF -- "$p" <<< "$flat" || { echo "$slug: no '$p'"; false; }
+  done
+}
+
+@test "approvals is a start topic with the standing approvals and the ledger rules" {
+  role_topic_checks approvals start '## Approvals I have already given' \
+    'costing at most $0.25 each' 'opens the bump PR and merges it once green' 'Before I go to sleep' \
+    'Only the session I typed an approval to writes its row' 'acts on the row, not on the message' \
+    'One session asks' 'offer me a row'
+}
+
+@test "peer-lifetime is a tool topic with the report headings and the stop guard" {
+  role_topic_checks peer-lifetime tool '## How long a peer lives (start, stop, keep)' \
+    '`Asked`' '`State`' '`Decided`' '`Learned`' '`Open`' '`Session`' 'is the whole guard' 'keeping <Label>' \
+    '--continue --handoff' 'type no `/exit`' 'claude-peer context list'
+}
+
+@test "session-mail is a tool topic with the routes, names and threads" {
+  role_topic_checks session-mail tool '## Session mail: routes, names, threads' \
+    'look first with `ListAgents`' 'register_agent' 'pass the full recipient list'
+}
+
+@test "peer-seat is a start topic for a peer tab" {
+  role_topic_checks peer-seat start '## When you are a peer' 'keep Lead told' 'postbox lead'
+}
+
+@test "lead keeps its own rules: the approvals moved out and the harness bullet reads as signed" {
+  local flat
+  flat="$(tr '\n' ' ' < "$TOPICS/lead.md" | tr -s ' ')"
+  ! grep -qF 'costing at most $0.25' <<< "$flat" || { echo "lead.md still holds the standing approvals"; false; }
+  ! grep -qF 'never a peer I started at its pane' <<< "$flat" || { echo "lead.md still bars the pane-started peer"; false; }
+  grep -qF 'never `--force` unasked' <<< "$flat"
 }
