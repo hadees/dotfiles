@@ -1656,6 +1656,7 @@ args_sent() { printf '%s' "$output" | tr -d '\r' | sed -n 's/^.*args=/args=/p'; 
 panel_setup() {
   cookie_line_setup
   mkdir -p "$HOME/bin" "$HOME/.local/state/claude-tab"
+  export XDG_STATE_HOME="$HOME/.local/state"
   printf '#!/bin/sh\necho "$*" >> "%s/panel.calls"\n' "$BATS_TEST_TMPDIR" > "$HOME/bin/claude-tab"
   chmod +x "$HOME/bin/claude-tab"
   PANEL_CALLS="$BATS_TEST_TMPDIR/panel.calls"
