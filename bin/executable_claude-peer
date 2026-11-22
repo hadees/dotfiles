@@ -101,8 +101,14 @@
 #                            exit 3 already running or no slot free, 4 no pane
 #                            waiting, 1 not started in CLAUDE_PEER_START_WAIT s
 #   stop <slot> [--force]    TERM the claude of a running slot when its registry
-#                            record says idle -> slot<TAB>worktree<TAB>stopped;
-#                            exit 3 not running, 5 busy (or no record) w/o --force
+#                            record says idle (or shell, after its done) and
+#                            names that slot's session and process; also a
+#                            session whose worktree is gone, and a pane-started
+#                            one is held for a Claude caller until it has sat
+#                            idle claude-peer.pane-idle-minutes (default 60)
+#                            -> slot<TAB>worktree<TAB>stopped;
+#                            exit 3 not running, 5 refused (busy, no record, not
+#                            the session or process named; noted in the log)
 #   slots [<dir>]            slot<TAB>running|waiting<TAB>worktree<TAB>pid<TAB>
 #                            leader<TAB>session name per slot of the repository
 #   panes [<dir>]            slot<TAB>running|waiting<TAB>pid<TAB>leader<TAB>
@@ -587,10 +593,20 @@ dur_of() {
   elif [ "$1" -lt 86400 ]; then echo "$(( $1 / 3600 ))h"; else echo "$(( $1 / 86400 ))d"; fi
 }
 
-# What a hand-off adds to the peer's prompt, printed literally.
+# What a hand-off adds to the peer's prompt: literal, but for the report's
+# directory (this repository's session-name prefix, $rname) and the line that
+# says what each heading holds: a pointer to the shared topic when it is
+# deployed, the meanings themselves when it is not (an ephemeral box has no
+# ~/.claude-shared).
 handoff_note() {
+  if [ -f "$HOME/.claude-shared/topics/peer-lifetime.md" ]; then
+    what='~/.claude-shared/topics/peer-lifetime.md says what goes under each'
+  else
+    # shellcheck disable=SC2016
+    what='Asked: the task and who gave it; State: branch, last commit, pull request, anything uncommitted or unpushed; Decided: each decision and why; Learned: what was tried and failed, what surprised you; Open: what is unfinished, the next step, questions waiting; Session: $CLAUDE_CODE_SESSION_ID and the worktree'
+  fi
   # shellcheck disable=SC2016
-  printf '%s\n' 'Hand-off from Lead. When you finish, or cannot go on, write your report to a file under ${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<this repository'"'"'s directory name>/ and then run: claude-peer log done "<DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT>: <one line; the commit or pull request; the report'"'"'s path>". That line reaches Lead by itself. A report left only in this pane reaches nobody.'
+  printf 'Hand-off from Lead. This session is for this one task and is stopped once Lead has read your report. When you finish, or cannot go on, write the report to a file under ${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/%s/ with the headings Asked, State, Decided, Learned, Open and Session (%s), and then run: claude-peer log done "<DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT>: <one line; the commit or pull request; the report'"'"'s path>". That line reaches Lead by itself. A report left only in this pane reaches nobody.\n' "$rname" "$what"
 }
 
 # One line of at most 80 characters, tabs as spaces, for a claim and the pane's
@@ -606,6 +622,18 @@ default_model() {
     '') ;;
     -*|*[[:space:]]*) warn "claude-peer.model '$dm_v' is not a model name; ignored";;
     *) printf '%s\n' "$dm_v";;
+  esac
+}
+
+# git config claude-peer.permission-mode, read where the caller stands each time
+# a session starts: one of the modes `claude --help` lists for --permission-mode
+# except bypassPermissions, or nothing (unset, or anything else, said once).
+peer_mode() {
+  pm_v=$(git config --get claude-peer.permission-mode 2>/dev/null) || pm_v=
+  case $pm_v in
+    '') ;;
+    acceptEdits|auto|manual|dontAsk|plan) printf '%s\n' "$pm_v";;
+    *) warn "claude-peer.permission-mode '$pm_v' is not a permission mode; ignored";;
   esac
 }
 
@@ -654,6 +682,11 @@ $(handoff_note)"; fi
   # only a fresh start with no model of its own: a resumed session keeps its model
   # and cache, an agent definition carries its model
   [ "$pg_mode" != fresh ] || [ -n "$pg_cm" ] || [ -n "$pg_ca" ] || pg_cm=$(default_model)
+  # not when the definition's own arguments already carry one
+  pg_has= pg_pm=
+  for pg_a in "$@"; do [ "$pg_a" != --permission-mode ] || pg_has=1; done
+  [ -n "$pg_has" ] || pg_pm=$(peer_mode)
+  [ -z "$pg_pm" ] || set -- "$@" --permission-mode "$pg_pm"
   [ -z "$pg_ca" ] || set -- "$@" --agent "$pg_ca"
   [ -z "$pg_cm" ] || set -- "$@" --model "$pg_cm"
   [ -z "$pg_ce" ] || set -- "$@" --effort "$pg_ce"
@@ -1912,6 +1945,73 @@ descendants() {
           for (p in d) print p }'
 }
 
+# record path, key -> the first value of that key, a string or digits; empty when absent
+rec_get() {
+  grep -Eo "\"$2\"[[:space:]]*:[[:space:]]*(\"[^\"]*\"|[0-9]+)" "$1" 2>/dev/null |
+    sed -n '1s/^[^:]*:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p'
+}
+
+# root pid -> pid<TAB>registry record of the first descendant that has one; nothing when none
+session_record() {
+  for sr_p in $(descendants "$1"); do
+    for sr_d in $(profile_dirs); do
+      [ -f "$sr_d/sessions/$sr_p.json" ] || continue
+      printf '%s\t%s\n' "$sr_p" "$sr_d/sessions/$sr_p.json"
+      return 0
+    done
+  done
+  return 0
+}
+
+# pid, record -> 0 when the pid is alive and is the process the record names: its
+# procStart equals ps's start time (spaces squeezed), so a pid reused since the record
+# was written is refused. No procStart in the record, or none from ps: not checked.
+session_same() {
+  kill -0 "$1" 2>/dev/null || return 1
+  ss_rec=$(rec_get "$2" procStart | tr -s ' ' | sed 's/^ //; s/ $//')
+  [ -n "$ss_rec" ] || return 0
+  ss_now=$(TZ=UTC LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//')
+  [ -z "$ss_now" ] || [ "$ss_rec" = "$ss_now" ]
+}
+
+# label, epoch seconds -> 0 when that label logged done at or after that time
+done_since() {
+  ds_f=$(log_file) && [ -f "$ds_f" ] || return 1
+  ds_t=$(date -u -d "@$2" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$2" +%Y-%m-%dT%H:%M:%SZ) || return 1
+  awk -F'\t' -v w="$1" -v m="$ds_t" '$2 == w && $3 == "done" && $1 >= m { f = 1 } END { exit !f }' "$ds_f"
+}
+
+# slot -> P<TAB>claude pid<TAB>record of a live session pane with no claim left: its worktree
+# is gone, and the claim with it. The pane's .term file survives in the common dir; the pane
+# is in a session when its wait file is gone; the slot is the one whose name the record bears.
+# Nothing when there is none.
+orphan_of() {
+  oo_wd=$(wait_dir "$repo")
+  oo_live=$(cmd_peers "$repo" | cut -f2)
+  oo_tab=$(printf '\t')
+  for oo_t in "$oo_wd"/*.term; do
+    [ -f "$oo_t" ] || continue
+    oo_s=${oo_t##*/}; oo_s=${oo_s%.term}; oo_p=${oo_s##*.}
+    case $oo_p in ''|*[!0-9]*) continue;; esac
+    kill -0 "$oo_p" 2>/dev/null || continue
+    [ ! -e "$oo_wd/$oo_s" ] || continue
+    ! printf '%s\n' "$oo_live" | grep -qx "$oo_p" || continue
+    oo_sr=$(session_record "$oo_p")
+    [ -n "$oo_sr" ] || continue
+    [ "$(rec_get "${oo_sr#*"$oo_tab"}" name)" = "$(session_name "$1")" ] || continue
+    printf '%s\t%s\n' "$oo_p" "$oo_sr"
+    return 0
+  done
+  return 0
+}
+
+# reason [hint]: note the refusal in the log, say it, exit 5
+stop_refuse() {
+  log_add "$sp_who" note "stop refused: $(label_of "$sp_slot") $1" 2>/dev/null
+  warn "$sp_slot $1${2-}"
+  exit 5
+}
+
 # <slot> [--force]
 cmd_stop() {
   [ $# -ge 1 ] && [ $# -le 2 ] || usage
@@ -1919,37 +2019,91 @@ cmd_stop() {
   if [ $# -eq 2 ]; then [ "$2" = --force ] || usage; sp_force=1; fi
   slot_ok "$sp_slot" || die "'$sp_slot' is not a slot name (lowercase letters, digits, - and _)"
   repo=$(repo_root) || exit 1
+  rname=$(rname_of "$repo")
   sp_wt=$repo/.claude/worktrees/$sp_slot
-  if ! claim_live "$sp_wt"; then
-    printf '%s\t%s\tnot-running\n' "$sp_slot" "$sp_wt"
-    exit 3
+  sp_tab=$(printf '\t')
+  sp_orph=0 sp_cf= sp_claim= sp_ho= sp_by= sp_l9= # sp_orph: the worktree is gone, and the claim with it
+  if claim_live "$sp_wt"; then
+    sp_cf=$(claim_file "$sp_wt")
+    sp_claim=$(sed -n 1p "$sp_cf")
+    sp_ho=$(sed -n 8p "$sp_cf") # the claim goes with the session
+    sp_by=$(sed -n 4p "$sp_cf") sp_l9=$(sed -n 9p "$sp_cf")
+    sp_sr=$(session_record "$sp_claim")
+  else
+    sp_sr=$(orphan_of "$sp_slot")
+    if [ -z "$sp_sr" ]; then
+      printf '%s\t%s\tnot-running\n' "$sp_slot" "$sp_wt"
+      exit 3
+    fi
+    sp_orph=1
+    sp_sr=${sp_sr#*"$sp_tab"}
   fi
   sp_who=$(log_who) # before the kill: the claim that makes this Lead goes with it
-  sp_claim=$(sed -n 1p "$(claim_file "$sp_wt")")
-  sp_kids=$(descendants "$sp_claim")
-  sp_target= sp_status=
-  for sp_pid in $sp_kids; do
-    for sp_d in $(profile_dirs); do
-      [ -f "$sp_d/sessions/$sp_pid.json" ] || continue
-      sp_target=$sp_pid
-      sp_status=$(sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$sp_d/sessions/$sp_pid.json" | sed -n 1p)
-      break 2
-    done
-  done
-  if [ "$sp_force" = 0 ] && [ "$sp_status" != idle ]; then
-    warn "$sp_slot is ${sp_status:-unknown}; stop --force to stop it anyway"
-    exit 5
+  sp_hint="; stop --force to stop it anyway"
+  sp_target=${sp_sr%%"$sp_tab"*} sp_rec=${sp_sr#*"$sp_tab"} sp_status= sp_sid=- sp_start=
+  if [ -n "$sp_sr" ]; then
+    sp_status=$(rec_get "$sp_rec" status)
+    sp_name=$(rec_get "$sp_rec" name)
+    [ -z "$sp_name" ] || [ "$sp_name" = "$(session_name "$sp_slot")" ] || stop_refuse "is not the session its claim names"
+    sp_sid=$(rec_get "$sp_rec" sessionId)
+    case $sp_sid in ''|*[!A-Za-z0-9-]*) sp_sid=-;; esac
+    sp_start=; [ -z "$sp_cf" ] || sp_start=$(sed -n 7p "$sp_cf")
+    case $sp_start in ''|*[!0-9]*)
+      sp_start=$(rec_get "$sp_rec" startedAt)
+      case $sp_start in ''|*[!0-9]*) sp_start=;; *) sp_start=$((sp_start / 1000));; esac;;
+    esac
   fi
-  printf '%s\n' "$sp_who" >"$(stop_file "$sp_wt")" 2>/dev/null
-  if [ -n "$sp_target" ]; then kill -TERM "$sp_target" 2>/dev/null
-  else for sp_pid in $sp_kids; do kill -TERM "$sp_pid" 2>/dev/null; done; fi
+  sp_rep=none
+  if [ -n "$sp_start" ] && done_since "$(label_of "$sp_slot")" "$sp_start"; then sp_rep=logged; fi
+  if [ "$sp_force" = 0 ]; then
+    case $sp_status in
+      idle) ;;
+      shell) [ "$sp_rep" = logged ] || stop_refuse "has a background shell and no done since it started" "$sp_hint";;
+      *) stop_refuse "is ${sp_status:-unknown}" "$sp_hint";;
+    esac
+    # a Claude session leaves alone what its operator started at the pane until it has sat idle
+    case ${CLAUDE_PID-} in ''|*[!0-9]*) ;; *)
+      if [ "$sp_orph" = 1 ] || [ "$sp_by" = pane ] || [ "$sp_l9" = - ] || [ -z "$sp_l9" ]; then
+        sp_min=$(git config --get claude-peer.pane-idle-minutes 2>/dev/null)
+        case $sp_min in ''|*[!0-9]*) sp_min=60;; esac
+        if [ "$sp_min" -gt 0 ]; then
+          sp_upd=$(rec_get "$sp_rec" statusUpdatedAt)
+          [ -n "$sp_upd" ] || stop_refuse "was started at its pane and its record has no time" "$sp_hint"
+          sp_age=$(( ($(date +%s) - sp_upd / 1000) / 60 )); [ "$sp_age" -ge 0 ] || sp_age=0
+          [ "$sp_age" -ge "$sp_min" ] || stop_refuse "was started at its pane and was active ${sp_age}m ago" "$sp_hint"
+        fi
+      fi;;
+    esac
+  fi
+  if [ -z "$sp_sr" ]; then
+    case $(ps -o command= -p "$sp_claim" 2>/dev/null) in
+      *claude-peer*) ;;
+      *) stop_refuse "has a claim whose pid is not a claude-peer pane";;
+    esac
+  fi
+  [ "$sp_orph" = 1 ] || printf '%s\n' "$sp_who" >"$(stop_file "$sp_wt")" 2>/dev/null
+  if [ -n "$sp_sr" ]; then
+    # the check and the signal are one list: nothing between them may reopen the pid-reuse window
+    if session_same "$sp_target" "$sp_rec"; then kill -TERM "$sp_target" 2>/dev/null
+    else [ "$sp_orph" = 1 ] || rm -f "$(stop_file "$sp_wt")"; stop_refuse "is not the process its record names"; fi
+  else for sp_pid in $(descendants "$sp_claim"); do kill -TERM "$sp_pid" 2>/dev/null; done; fi
   sp_limit=$(( ${CLAUDE_PEER_STOP_WAIT:-15} * 5 )); sp_i=0
   while [ "$sp_i" -lt "$sp_limit" ]; do
-    claim_live "$sp_wt" || { log_add "$sp_who" stop "$(label_of "$sp_slot") by $sp_who" 2>/dev/null; printf '%s\t%s\tstopped\n' "$sp_slot" "$sp_wt"; exit 0; }
+    sp_gone=0
+    if [ "$sp_orph" = 1 ]; then session_same "$sp_target" "$sp_rec" || sp_gone=1
+    else claim_live "$sp_wt" || sp_gone=1; fi
+    if [ "$sp_gone" = 1 ]; then
+      log_add "$sp_who" stop "$(label_of "$sp_slot") by $sp_who" "$(printf '\tsession=%s\treport=%s' "$sp_sid" "$sp_rep")$([ "$sp_orph" = 0 ] || printf '\tworktree=gone')" 2>/dev/null
+      printf '%s\t%s\tstopped\n' "$sp_slot" "$sp_wt"
+      if [ "$sp_rep" = none ] && [ "$sp_ho" = handoff ]; then
+        warn "$sp_slot logged no done since it started, so its report is not in: claude-peer start $sp_slot --continue --handoff -- \"write the report you owe\""
+      fi
+      exit 0
+    fi
     sleep 0.2
     sp_i=$((sp_i + 1))
   done
-  rm -f "$(stop_file "$sp_wt")"
+  [ "$sp_orph" = 1 ] || rm -f "$(stop_file "$sp_wt")"
   warn "$sp_slot did not exit within ${CLAUDE_PEER_STOP_WAIT:-15}s"
   exit 1
 }

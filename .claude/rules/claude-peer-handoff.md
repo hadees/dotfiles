@@ -21,12 +21,42 @@ directory, a peer and a subagent are not, and `claude -n "$(claude-peer name
 lead)"` is the by-hand form. Lead's to stop or re-task is a slot whose
 `leader` in `slots` is its directory and whose claim says `by Lead`
 (`claude-peer claim <worktree>`); a `by pane` claim is the operator's own
-start. `stop` without `--force` refuses a busy session (exit 5), and that
-refusal is the guard, so Lead never forces. Re-tasking is a message to an
+start. `stop` is the guard (**Stop**, below), so Lead never forces unasked. Re-tasking is a message to an
 idle peer, or `stop` then `start --handoff`. The Hermes pane has no claim and
 no `start`, so Lead uses Hermes only by `hermes -z "<task>"` through the
 wrapper. Overlay peers and peers of another profile are not Lead's. The merge
 gate is in `merge-gate.md`.
+
+**Stop.** `stop <slot> [--force]` finds the claude under the claim's pid by its
+registry record, `sessions/<pid>.json` in `$CLAUDE_CONFIG_DIR`, Claude Code's own
+default `~/.claude` (what an unset one means) or a `claude.profile.*` directory
+(that layout is observed, not an interface), and sends it TERM. Without `--force`
+it accepts `idle`, and `shell` (at its prompt with a background task) once the
+label has logged `done` since the claim's start (line 7, else the record's
+`startedAt`); anything else, or no record, is refused with exit 5. With or
+without `--force` it refuses a record whose `name` is not `session_name` of the
+slot, and one whose `procStart` is not `ps -o lstart=` of the pid (spaces
+squeezed), checked in the one list that signals, so a pid reused since is never
+signalled; a record without `procStart` is not checked. `--force` with no record
+signals every process under the claim, but only when the claim's pid is a
+`claude-peer` process. Every refusal prints one line and first writes a `note`
+`stop refused: <Label> <reason>`; a stop's `stop` line ends
+`<TAB>session=<id or -><TAB>report=logged|none`, and a hand-off stopped with
+`report=none` prints one stderr line naming the `--continue --handoff` start that
+asks for the report. Readers take field 4 of a `stop` line as the label. The
+worktree and transcript are never touched.
+
+A slot with no live claim is still found when its worktree is gone (`orphan_of`):
+a pane whose `<slot>.<pid>.term` sidecar survives in the common dir, with no wait
+file of the same stem (so it is in a session) and no live claim, and a session
+under it whose record is named for the slot. It is stopped by the same rules, with
+no stop mark, and its line ends `<TAB>worktree=gone`. **The pane clock** holds a
+pane-started peer (claim line 4 `pane`, line 9 `-` or empty, or any orphan) from a
+caller that is a Claude session (numeric `CLAUDE_PID`), without `--force`: it is
+refused until the record's `statusUpdatedAt` (milliseconds) is
+`claude-peer.pane-idle-minutes` old (default 60, a non-number is 60, 0 turns the
+clock off), and a record with no such time is refused. A shell that is not a
+Claude session, and a hand-off claim, are never held.
 
 **Names.** `session_name` is the one place a session name is composed,
 `<repo>-<slot>`. `claude-peer name <slot|lead> [<dir>]` prints the name a role
@@ -45,9 +75,15 @@ with the flag; `pane_go` reads `PG_HANDOFF`, `PG_LEADPID`, `PG_LEADSID` and the
 claim gains lines 8-10, `handoff` or `-`, the pid or `-`, the session id or `-`
 (a start from the pane writes `-` three times). With `PG_HANDOFF` and a
 prompt, `pane_go` appends an empty line and `handoff_note`, a fixed paragraph
-telling the peer to write its report under
-`${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<repo>/` and end with `claude-peer log done
-"<STATUS>: …"`; a context's body gets it after substitution. A plain start
+(only the directory varies) saying the session is stopped once Lead has read the
+report and telling the peer to write it under
+`${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<rname>/` (`$rname`, the
+session-name prefix, not the slot) with the headings Asked, State, Decided, Learned,
+Open and Session (a pointer to `peer-lifetime.md` in the shared topics only when
+`~/.claude-shared/topics/peer-lifetime.md` exists, else a one-line meaning of each
+heading, so the note stands alone on an `ephemeral` box)
+and end with `claude-peer log done "<STATUS>: …"`; a context's body gets it after
+substitution. A plain start
 with a prompt or context from a Claude session warns on stderr `not a
 hand-off: nobody is told when <Label> finishes (--handoff)`; stdout and the
 exit status do not change. `claude-peer claim [<dir>]` prints the live claim
