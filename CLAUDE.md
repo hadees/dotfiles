@@ -263,7 +263,7 @@ rule first.
 | `lsof-guard` | the opt-in `~/bin/lsof` guard, `lsof.guard`, the refusal tally |
 | `worktabs` | the iTerm2 tab launcher, `workspace.*` config, the Alfred workflow |
 | `claude-peer` | Workgroup peers, named slot worktrees, claims, the Hermes peer, overlay peers |
-| `claude-peer-handoff` | Lead and its name, `start --handoff`, `log idle`, the stop mark |
+| `claude-peer-handoff` | Lead and its name, `start --handoff`, `log idle`, the stop mark, what `stop` accepts and refuses |
 | `claude-peer-restore` | the entry record, the restored-pane check |
 | `claude-peer-look` | the sleeper's motion: its timer, waking, and `look` with its trigger and lock |
 | `claude-peer-caduceus` | the Hermes pane's figure and glint, read from the installed Hermes |
