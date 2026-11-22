@@ -87,7 +87,7 @@ teardown() {
       i=$((i + 1))
       sleep 0.1
     done
-    ! pgrep -f -- "serve --port $port( |$)" >/dev/null
+    ! pgrep -f -- "serve --port $port( |$)" >/dev/null || { echo "a panel server on port $port outlived its test"; false; }
   fi
 }
 
@@ -1058,8 +1058,8 @@ page() { printf '%s' "$BATS_TEST_DIRNAME/../dot_local/share/claude-tab/panel.htm
 @test "the page reaches nothing outside itself and writes text only through textContent" {
   PAGE=$(page)
   [ -f "$PAGE" ]
-  ! grep -Eq 'https?:|//' "$PAGE"
-  ! grep -Eq 'innerHTML|document\.write|eval' "$PAGE"
+  ! grep -Eq 'https?:|//' "$PAGE" || { echo "the page loads or links something off-box"; false; }
+  ! grep -Eq 'innerHTML|document\.write|eval' "$PAGE" || { echo "the page writes HTML from data"; false; }
   grep -q 'textContent' "$PAGE"
   run "$REAL_PYTHON3" -I -c '
 import sys
