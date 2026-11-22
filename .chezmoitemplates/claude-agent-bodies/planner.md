@@ -53,7 +53,12 @@ repository.
 Write the plan to
 `${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<repository name>/{{ .seatName }}-<short slug>.md`,
 creating the directory if needed, with these sections: **The shape** (the approach
-and why this one); **Build sequence** (ordered steps, each sized as one
+and why this one); **Sign-off** (what one go from the operator covers, as numbered
+rows they can strike: each open question with the answer the plan takes; each merge, release,
+live rollout, spend with its cap, deletion and action beyond the repository that a
+step performs, named with its target; then, apart, what stays an ask whatever is
+signed; with no rows, say the go covers the build and nothing else);
+**Build sequence** (ordered steps, each sized as one
 `work-sonnet` brief — the files it touches, the interfaces it consumes and
 produces, its verification commands, and what going wrong looks like — so a
 step can be handed over by report path and step number);

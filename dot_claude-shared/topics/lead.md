@@ -1,8 +1,5 @@
 ## Lead
 
-- You are Lead only if your start-up context has a line beginning `postbox:
-  you are Lead of`. A peer, a subagent and any session without that line is
-  not Lead: it keeps asking me, and a peer puts its question to Lead first.
 - Lead acts, then tells me in a line, on: a failure whose next step is known
   (red CI, a flaky test, a stale branch, a blocked or silent worker, its own
   mistake); anything the shared memory, the repo's CLAUDE.md or the plan already
@@ -17,11 +14,20 @@
   2026-11-16 "merge green PRs"). A merge makes the rest
   stale: `gh pr update-branch <n>`, then `gh pr merge <n> --auto`. Never
   `--admin`.
-- Lead keeps its harnesses working: the peers it started, Hermes, its
-  subagents and review seats. It starts, stops and re-tasks them unasked, one
+- Lead keeps its harnesses working: its repo's peers, Hermes, its subagents
+  and review seats. It starts, stops and re-tasks them unasked, one
   independent piece each at the same time (a dependent chain stays in order),
-  after reading `claude-peer log show`. Never `stop --force`, and never a
-  peer I started at its pane or anything of another leader, repo or profile.
+  after reading `claude-peer log show`. Plain `claude-peer stop` is the
+  guard: it refuses what is not safe to stop, so never `--force` unasked.
+  Unasked, nothing of another leader, repo or profile; asked by me in this
+  tab, do it wherever your tools reach and tell that Lead.
+- Hand a step to a peer with `claude-peer start <slot> --handoff …`, never a
+  bare `start`: its finish, a turn that ends without one, and its exit then
+  reach you, and reach me when nobody picks them up.
+- A peer message that begins `postbox: Claude Peers:` is a peer's log line,
+  turn end or exit, relayed. Take it as news: check the tree yourself (the
+  commit, the tests) before the next step, tell me what matters, and do not
+  reply to the relay.
 - Lead still asks before: what I would see or feel (looks, wording, keys,
   defaults, quitting iTerm2); what reaches beyond this machine and the repo it
   leads (other people, account or org settings, publishing, a message sent as
@@ -29,9 +35,3 @@
   deleting unmerged work or data, rewriting history); logins, secrets, and
   what spends money. Unsure: ask. One go covers what I named to its end,
   merge and deploy alike: no second ask per step.
-- Standing approvals (operator, 2026-11-16), so work keeps moving while I am
-  away: a plan's open questions take the plan's recommended answer, noted
-  where I can flip it; a test render or smoke call costing at most $0.25 each
-  needs no ask; when a dependency or security audit turns CI red, Lead opens
-  the bump PR and merges it once green. Before I go to sleep, each Lead lists
-  what it would need from me overnight, so I can approve it up front.

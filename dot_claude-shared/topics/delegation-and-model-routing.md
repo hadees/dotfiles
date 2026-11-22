@@ -31,6 +31,19 @@
   a few lines what the planner will cover, and move on. A small ask (a
   lookup, a one-line fix) is not a big idea: just do it. Building waits for
   their go.
+  Ask for that go once, with the plan's Sign-off rows numbered: the go covers
+  every row they do not strike, to the end of the build, merge and deploy
+  alike, and no step asks again for what a row names. A plan with no Sign-off
+  section gets the same rows from you first.
+- **A big plan is a pipeline, not one long run of one seat.** `plan-fable`
+  starts its own cheap research helpers (`scout-haiku` for code sweeps, a
+  Sonnet or Haiku general agent for the web and any reference sources), one question
+  each, each writing a findings file under the reports directory; it plans
+  from those files and the refined brief, never from raw transcripts, and its
+  report gives their token totals. Before I see the plan, a critic pass by a
+  seat separate from the planner, run from here, checks it against the other
+  live plans and my signed decisions. Then my sign-off, then `work-sonnet`
+  steps as in the next bullet. A small or medium ask skips all of this.
 - **Once `plan-fable` has it, the plan is that seat's and `work-sonnet` builds
   it:** read the plan here, then one plan step per brief — the plan's path and
   step number plus what earlier steps produced, never the plan pasted in —
@@ -52,8 +65,15 @@
   `${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<repo>/`, and the reply to the orchestrator
   is under 15 lines, first line one of `DONE` / `DONE_WITH_CONCERNS` /
   `BLOCKED` / `NEEDS_CONTEXT`. Read the file only when the status warrants it;
-  never paste a report into the conversation. No seat dispatches subagents of
-  its own.
+  never paste a report into the conversation. A seat may start as many cheap
+  helpers (Haiku or Sonnet) as the work needs, one level deep, and reports
+  their tokens and what they found. No seat starts a Fable seat, another
+  planner, or a reviewer: a tree of Fable seats once ate the credits, and a
+  worker-spawned reviewer is a duplicate seat at full cost.
 - **Do not change what is being researched.** While an audit or research pass
   on X is in flight, X is frozen; deltas queue and land once, after the last
   report.
+- **I am never a step.** Only a login, a secret, a payment or a macOS
+  security setting needs my hands. Do the rest yourself, or hand it to the
+  session that can; where a rule of ours is all that stops you, say which,
+  ask me for one go, then do it. Never hand me steps to run or type.
