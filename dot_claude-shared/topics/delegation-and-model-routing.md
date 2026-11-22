@@ -37,7 +37,7 @@
   section gets the same rows from you first.
 - **A big plan is a pipeline, not one long run of one seat.** `plan-fable`
   starts its own cheap research helpers (`scout-haiku` for code sweeps, a
-  Sonnet or Haiku general agent for the web and the library), one question
+  Sonnet or Haiku general agent for the web and any reference sources), one question
   each, each writing a findings file under the reports directory; it plans
   from those files and the refined brief, never from raw transcripts, and its
   report gives their token totals. Before I see the plan, a critic pass by a
