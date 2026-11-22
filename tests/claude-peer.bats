@@ -1080,6 +1080,125 @@ stop_record() {
   [ ! -s "$BATS_TEST_TMPDIR/err" ]
 }
 
+# A session whose worktree is gone: a fixture pane (pid $op) with a child (pid $oc) holding
+# a registry record named for slot gamma, and the pane's .term file in the wait directory.
+orphan_fixture() {
+  cfg=$BATS_TEST_TMPDIR/cfg; mkdir -p "$cfg/sessions"; export CLAUDE_CONFIG_DIR=$cfg
+  owd=$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)/claude-peer.wait
+  mkdir -p "$owd"
+  sh -c 'sleep 30 & echo $! >"$1"; wait' sh "$BATS_TEST_TMPDIR/ocpid" 3>&- 2>/dev/null &
+  op=$!
+  PANES="$PANES $op"
+  until_ok '[ -s "$BATS_TEST_TMPDIR/ocpid" ]'
+  oc=$(cat "$BATS_TEST_TMPDIR/ocpid")
+  PANES="$PANES $oc"
+  printf -- '-\n-\n' >"$owd/gamma.$op.term"
+}
+# status, then more JSON members (each led by a comma)
+orphan_record() {
+  printf '{"pid":%s,"sessionId":"aaaa-bbbb","name":"proj-gamma","status":"%s"%s}\n' "$oc" "$1" "${2-}" >"$cfg/sessions/$oc.json"
+}
+# <minutes>: the JSON member for a status that last changed that long ago
+idle_for() { printf ',"statusUpdatedAt":%s' $(( ($(date +%s) - $1 * 60) * 1000 )); }
+# rewrite line 4 of alpha's claim, who started it
+claim_by() {
+  cl=$(claim_of "$REPO/.claude/worktrees/alpha")
+  awk -v v="$1" 'NR == 4 { $0 = v } 1' "$cl" >"$cl.new" && mv "$cl.new" "$cl"
+}
+
+@test "stop: a session whose worktree is gone is found by its pane and stopped; the line says so" {
+  orphan_fixture
+  orphan_record idle
+  run sh "$BIN" stop gamma
+  [ "$status" -eq 0 ]
+  [ "$output" = "gamma"$'\t'"$REPO/.claude/worktrees/gamma"$'\t'"stopped" ]
+  no kill -0 "$oc" 2>/dev/null
+  [ "$(grep '	stop	' "$REPO/$LOG" | cut -f2-7)" = "proj"$'\t'"stop"$'\t'"Gamma by proj"$'\t'"session=aaaa-bbbb"$'\t'"report=none"$'\t'"worktree=gone" ]
+}
+
+@test "stop: an orphan that is busy is refused and kept; --force stops it" {
+  orphan_fixture
+  orphan_record busy
+  run sh "$BIN" stop gamma
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"gamma is busy; stop --force"* ]]
+  grep -q '	note	stop refused: Gamma is busy$' "$REPO/$LOG"
+  kill -0 "$oc"
+  run sh "$BIN" stop gamma --force
+  [ "$status" -eq 0 ]
+  no kill -0 "$oc" 2>/dev/null
+}
+
+@test "stop: a pane that is waiting is no orphan, nor is one whose record names another slot" {
+  orphan_fixture
+  orphan_record idle
+  printf '%s\n' "$REPO" >"$owd/gamma.$op"
+  run sh "$BIN" stop gamma
+  [ "$status" -eq 3 ]
+  [[ "$output" == *$'\t'"not-running" ]]
+  kill -0 "$oc"
+  rm "$owd/gamma.$op"
+  run sh "$BIN" stop zeta
+  [ "$status" -eq 3 ]
+  kill -0 "$oc"
+}
+
+@test "stop: a Claude caller is held off a pane-started peer until it has sat idle pane-idle-minutes" {
+  stop_fixture
+  claim_by pane
+  stop_record idle "$(idle_for 59)"
+  CLAUDE_PID=1234 run sh "$BIN" stop alpha
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"alpha was started at its pane and was active 59m ago; stop --force"* ]]
+  grep -q '	note	stop refused: Alpha was started at its pane and was active 59m ago$' "$REPO/$LOG"
+  kill -0 "$sp"
+  stop_record idle
+  CLAUDE_PID=1234 run sh "$BIN" stop alpha
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"alpha was started at its pane and its record has no time"* ]]
+  stop_record idle "$(idle_for 61)"
+  CLAUDE_PID=1234 run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  no kill -0 "$sp" 2>/dev/null
+}
+
+@test "stop: the operator's own shell is never held, and neither is pane-idle-minutes 0" {
+  stop_fixture
+  claim_by pane
+  stop_record idle "$(idle_for 59)"
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  : >"$BATS_TEST_TMPDIR/shpid"
+  sh "$BIN" start alpha >/dev/null
+  until_ok '[ -s "$BATS_TEST_TMPDIR/shpid" ]'
+  sp=$(cat "$BATS_TEST_TMPDIR/shpid")
+  claim_by pane
+  stop_record idle "$(idle_for 1)"
+  git config claude-peer.pane-idle-minutes 0
+  CLAUDE_PID=1234 run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  no kill -0 "$sp" 2>/dev/null
+}
+
+@test "stop: a hand-off peer is never held by the pane clock; an orphan is" {
+  STOP_HANDOFF=1 stop_fixture
+  stop_record idle "$(idle_for 1)"
+  CLAUDE_PID=1234 run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  no kill -0 "$sp" 2>/dev/null
+  orphan_fixture
+  orphan_record idle "$(idle_for 59)"
+  CLAUDE_PID=1234 run sh "$BIN" stop gamma
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"gamma was started at its pane and was active 59m ago"* ]]
+  kill -0 "$oc"
+  git config claude-peer.pane-idle-minutes 30
+  CLAUDE_PID=1234 run sh "$BIN" stop gamma
+  [ "$status" -eq 0 ]
+  no kill -0 "$oc" 2>/dev/null
+}
+
 @test "claude-peer.start = auto: the pane starts a session after the settle delay, then waits" {
   git config claude-peer.start auto
   mkfifo "$BATS_TEST_TMPDIR/tty-alpha"

@@ -46,6 +46,18 @@ signals every process under the claim, but only when the claim's pid is a
 asks for the report. Readers take field 4 of a `stop` line as the label. The
 worktree and transcript are never touched.
 
+A slot with no live claim is still found when its worktree is gone (`orphan_of`):
+a pane whose `<slot>.<pid>.term` sidecar survives in the common dir, with no wait
+file of the same stem (so it is in a session) and no live claim, and a session
+under it whose record is named for the slot. It is stopped by the same rules, with
+no stop mark, and its line ends `<TAB>worktree=gone`. **The pane clock** holds a
+pane-started peer (claim line 4 `pane`, line 9 `-` or empty, or any orphan) from a
+caller that is a Claude session (numeric `CLAUDE_PID`), without `--force`: it is
+refused until the record's `statusUpdatedAt` (milliseconds) is
+`claude-peer.pane-idle-minutes` old (default 60, a non-number is 60, 0 turns the
+clock off), and a record with no such time is refused. A shell that is not a
+Claude session, and a hand-off claim, are never held.
+
 **Names.** `session_name` is the one place a session name is composed,
 `<repo>-<slot>`. `claude-peer name <slot|lead> [<dir>]` prints the name a role
 gets there: a slot's, or Lead's, `<repo>-lead` in the main checkout and
