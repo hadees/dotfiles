@@ -220,15 +220,12 @@ The prompt is one argument, last, never re-parsed by a shell; `-` reads it from
 stdin, and one that begins with `-` is a usage error. With several leaders'
 panes waiting only those of `--leader` (default the caller's directory) are
 candidates; the pane whose own slot is the one asked for wins, else the first
-by label. `stop <slot> [--force]` sends TERM to the claude under the claim's pid
-whose `sessions/<pid>.json` record, in `$CLAUDE_CONFIG_DIR`, Claude Code's own default `~/.claude` (what an unset one means) or a
-`claude.profile.*` directory, says `idle` (that layout is observed, not an
-interface); a busy or unknown session is refused unless `--force`, which stops
-every process under the claim. The worktree and transcript are never touched.
+by label. `stop <slot> [--force]` is described in `claude-peer-handoff.md`; the
+worktree and transcript are never touched.
 `slots [<dir>]` prints `slot<TAB>running|waiting<TAB>worktree<TAB>pid<TAB>
 leader<TAB>session name` for the repository. Exit codes: 0 done; 1 failed; 2
 usage; 3 already in the requested state (running, not running, no slot free);
-4 nothing to act on (no pane waiting); 5 refused because busy.
+4 nothing to act on (no pane waiting); 5 refused by `stop`.
 
 **Lead**, the one session that may start, stop and re-task its peers unasked, is in `claude-peer-handoff.md`.
 

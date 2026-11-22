@@ -975,6 +975,111 @@ pane_ended() { until_ok "! kill -0 '$1' 2>/dev/null"; }
   no kill -0 "$sp" 2>/dev/null
 }
 
+# A live fixture session in slot alpha (the fake shell, a child of the claim's pid), its registry
+# directory in $cfg and its pid in $sp; STOP_HANDOFF=1 starts it as a hand-off.
+stop_fixture() {
+  cfg=$BATS_TEST_TMPDIR/cfg; mkdir -p "$cfg/sessions"; export CLAUDE_CONFIG_DIR=$cfg
+  FAKE_SHELL_SLEEP=30 FAKE_SHELL_PID="$BATS_TEST_TMPDIR/shpid" pane alpha
+  if [ -n "${STOP_HANDOFF-}" ]; then CLAUDE_PID=4242 sh "$BIN" start alpha --handoff the task >/dev/null
+  else sh "$BIN" start alpha >/dev/null; fi
+  until_ok '[ -s "$BATS_TEST_TMPDIR/shpid" ]'
+  sp=$(cat "$BATS_TEST_TMPDIR/shpid")
+}
+# status, then more JSON members (each led by a comma)
+stop_record() {
+  printf '{"pid":%s,"sessionId":"aaaa-bbbb","name":"proj-alpha","status":"%s"%s}\n' "$sp" "$1" "${2-}" >"$cfg/sessions/$sp.json"
+}
+
+@test "stop: a shell session is stopped only after a done since it started; every refusal is a note" {
+  stop_fixture
+  stop_record shell
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"alpha has a background shell and no done since it started; stop --force"* ]]
+  kill -0 "$sp"
+  [ "$(grep -c '	note	stop refused: Alpha has a background shell and no done since it started$' "$REPO/$LOG")" -eq 1 ]
+  printf '2000-01-01T00:00:00Z\tAlpha\tdone\tbefore it started\n' >>"$REPO/$LOG"
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 5 ]
+  kill -0 "$sp"
+  stop_record busy
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 5 ]
+  grep -q '	note	stop refused: Alpha is busy$' "$REPO/$LOG"
+  stop_record shell
+  sh "$BIN" log --as Alpha done "DONE: report" >/dev/null
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  [[ "$output" == *$'\t'"stopped" ]]
+  no kill -0 "$sp" 2>/dev/null
+}
+
+@test "stop: a record named for another session is refused, --force or not, and nothing is signalled" {
+  stop_fixture
+  printf '{"pid":%s,"name":"other-alpha","status":"idle"}\n' "$sp" >"$cfg/sessions/$sp.json"
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"alpha is not the session its claim names"* ]]
+  run sh "$BIN" stop alpha --force
+  [ "$status" -eq 5 ]
+  kill -0 "$sp"
+  [ "$(grep -c '	note	stop refused: Alpha is not the session its claim names$' "$REPO/$LOG")" -eq 2 ]
+  [ ! -e "$(stopmark)" ]
+}
+
+@test "stop: the process must be the one the record names (procStart), and a different one is left alive" {
+  stop_fixture
+  stop_record idle ',"procStart":"Mon Jan 1 00:00:00 2001"'
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"alpha is not the process its record names"* ]]
+  kill -0 "$sp"
+  grep -q '	note	stop refused: Alpha is not the process its record names$' "$REPO/$LOG"
+  [ ! -e "$(stopmark)" ]
+  # as Claude Code writes it: single spaces, where ps pads a one-digit day
+  ps_start=$(TZ=UTC LC_ALL=C ps -o lstart= -p "$sp" | tr -s ' ' | sed 's/^ //; s/ $//')
+  stop_record idle ",\"procStart\":\"$ps_start\""
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  no kill -0 "$sp" 2>/dev/null
+}
+
+@test "stop: the line carries the session id and whether a done was logged; log show is unchanged" {
+  stop_fixture
+  stop_record idle
+  sh "$BIN" log --as Alpha done "DONE: report" >/dev/null
+  before=$(sh "$BIN" log show)
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  [ "$(grep '	stop	' "$REPO/$LOG" | cut -f2-6)" = "Lead"$'\t'"stop"$'\t'"Alpha by Lead"$'\t'"session=aaaa-bbbb"$'\t'"report=logged" ]
+  [ "$(sh "$BIN" log show)" = "$before" ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  : >"$BATS_TEST_TMPDIR/shpid"
+  sh "$BIN" start alpha >/dev/null
+  until_ok '[ -s "$BATS_TEST_TMPDIR/shpid" ]'
+  sp=$(cat "$BATS_TEST_TMPDIR/shpid")
+  printf '{"pid":%s,"sessionId":"a b","status":"idle"}\n' "$sp" >"$cfg/sessions/$sp.json"
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  [ "$(grep '	stop	' "$REPO/$LOG" | tail -1 | cut -f5,6)" = "session=-"$'\t'"report=none" ]
+}
+
+@test "stop: a hand-off stopped with no done since it started says so on stderr; a plain start does not" {
+  STOP_HANDOFF=1 stop_fixture
+  stop_record idle
+  sh "$BIN" stop alpha >"$BATS_TEST_TMPDIR/out" 2>"$BATS_TEST_TMPDIR/err"
+  grep -qF 'claude-peer: alpha logged no done since it started, so its report is not in: claude-peer start alpha --continue --handoff -- "write the report you owe"' "$BATS_TEST_TMPDIR/err"
+  [ "$(wc -l <"$BATS_TEST_TMPDIR/err" | tr -d ' ')" -eq 1 ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  : >"$BATS_TEST_TMPDIR/shpid"
+  sh "$BIN" start alpha >/dev/null
+  until_ok '[ -s "$BATS_TEST_TMPDIR/shpid" ]'
+  sp=$(cat "$BATS_TEST_TMPDIR/shpid")
+  stop_record idle
+  sh "$BIN" stop alpha >"$BATS_TEST_TMPDIR/out" 2>"$BATS_TEST_TMPDIR/err"
+  [ ! -s "$BATS_TEST_TMPDIR/err" ]
+}
+
 @test "claude-peer.start = auto: the pane starts a session after the settle delay, then waits" {
   git config claude-peer.start auto
   mkfifo "$BATS_TEST_TMPDIR/tty-alpha"

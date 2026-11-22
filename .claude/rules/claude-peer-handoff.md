@@ -21,12 +21,30 @@ directory, a peer and a subagent are not, and `claude -n "$(claude-peer name
 lead)"` is the by-hand form. Lead's to stop or re-task is a slot whose
 `leader` in `slots` is its directory and whose claim says `by Lead`
 (`claude-peer claim <worktree>`); a `by pane` claim is the operator's own
-start. `stop` without `--force` refuses a busy session (exit 5), and that
-refusal is the guard, so Lead never forces. Re-tasking is a message to an
+start. `stop` is the guard (**Stop**, below), so Lead never forces unasked. Re-tasking is a message to an
 idle peer, or `stop` then `start --handoff`. The Hermes pane has no claim and
 no `start`, so Lead uses Hermes only by `hermes -z "<task>"` through the
 wrapper. Overlay peers and peers of another profile are not Lead's. The merge
 gate is in `merge-gate.md`.
+
+**Stop.** `stop <slot> [--force]` finds the claude under the claim's pid by its
+registry record, `sessions/<pid>.json` in `$CLAUDE_CONFIG_DIR`, Claude Code's own
+default `~/.claude` (what an unset one means) or a `claude.profile.*` directory
+(that layout is observed, not an interface), and sends it TERM. Without `--force`
+it accepts `idle`, and `shell` (at its prompt with a background task) once the
+label has logged `done` since the claim's start (line 7, else the record's
+`startedAt`); anything else, or no record, is refused with exit 5. With or
+without `--force` it refuses a record whose `name` is not `session_name` of the
+slot, and one whose `procStart` is not `ps -o lstart=` of the pid (spaces
+squeezed), checked in the one list that signals, so a pid reused since is never
+signalled; a record without `procStart` is not checked. `--force` with no record
+signals every process under the claim, but only when the claim's pid is a
+`claude-peer` process. Every refusal prints one line and first writes a `note`
+`stop refused: <Label> <reason>`; a stop's `stop` line ends
+`<TAB>session=<id or -><TAB>report=logged|none`, and a hand-off stopped with
+`report=none` prints one stderr line naming the `--continue --handoff` start that
+asks for the report. Readers take field 4 of a `stop` line as the label. The
+worktree and transcript are never touched.
 
 **Names.** `session_name` is the one place a session name is composed,
 `<repo>-<slot>`. `claude-peer name <slot|lead> [<dir>]` prints the name a role
