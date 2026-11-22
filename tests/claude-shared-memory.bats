@@ -31,7 +31,7 @@ LINES_MAX=200
 @test "the topics a start hook adds fit in one hook output" {
   local out slug
   export XDG_STATE_HOME="$BATS_TEST_TMPDIR/state" CLAUDE_CONFIG_DIR="$BATS_TEST_TMPDIR/profile"
-  export SHARED_MEMORY_DIR="$(dirname "$SHARED_MEMORY")" SHARED_MEMORY_CLAUDE_PEER=/nonexistent CLAUDE_PEER_WORKTREE=/x
+  export SHARED_MEMORY_DIR="$(dirname "$SHARED_MEMORY")" SHARED_MEMORY_CLAUDE_PEER=/nonexistent
   out="$(printf '%s' '{"session_id":"s1","source":"startup","session_title":"x-lead","cwd":"/x"}' | sh "$SM" hook start)"
   [ "${#out}" -lt 9000 ] || { echo "start hook output is ${#out} characters"; false; }
   for slug in talking-to-sessions claude-peers lead; do

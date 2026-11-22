@@ -44,13 +44,14 @@ Topics this file does not import:
 
 - `talking-to-sessions.md`: another session.
 - `claude-peers.md` and `lead.md`: a repo with peers.
+- `peer-seat.md`, `approvals.md`, `peer-lifetime.md` and `session-mail.md`: a role, a peer, mail.
 - `commit-signing.md`: a commit that fails to sign.
 - `claude-in-chrome.md`: the browser.
 
 @topics/always-here.md
 EOF
   local t
-  for t in always-here talking-to-sessions claude-peers lead commit-signing tailnet-routed-ssh claude-in-chrome; do
+  for t in always-here talking-to-sessions claude-peers peer-seat lead approvals peer-lifetime session-mail commit-signing tailnet-routed-ssh claude-in-chrome; do
     printf '## Fixture %s\n\nBODY-%s\n' "$t" "$t" > "$SHARED_MEMORY_DIR/topics/$t.md"
   done
 
@@ -123,18 +124,19 @@ its overlay. Add these to that file's "hooks" (merging with what is there):
     { "hooks": [{ "type": "command", "timeout": 10, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook start || true" }] }
   ],
   "PostToolUse": [
-    { "matcher": "Bash|Skill|mcp__claude-in-chrome__.*",
+    { "matcher": "Bash|Skill|SendMessage|mcp__claude-in-chrome__.*|mcp__postbox__.*",
       "hooks": [{ "type": "command", "timeout": 5, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook tool || true" }] }
   ],
   "PostToolUseFailure": [
-    { "matcher": "Bash|Skill|mcp__claude-in-chrome__.*",
+    { "matcher": "Bash|Skill|SendMessage|mcp__claude-in-chrome__.*|mcp__postbox__.*",
       "hooks": [{ "type": "command", "timeout": 5, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook tool || true" }] }
   ]
 
-SessionStart adds the messaging, Claude Peers and Lead topics to a session
-they apply to; the two tool events add the commit-signing, tailnet and
-Claude in Chrome topics once per session when their trigger appears. Every
-entry fails open, and a topic the shared index still imports is never added.
+SessionStart adds the messaging, Claude Peers, peer and Lead topics to a
+session they apply to; the two tool events add the commit-signing, tailnet,
+Claude in Chrome, peer lifetime and session mail topics once per session when
+their trigger appears. Every entry fails open, and a topic the shared index
+still imports is never added.
 EOF
 )"
   [ "$output" = "$expected" ]
@@ -152,27 +154,33 @@ EOF
   ! grep -nE 'exit 2|sys\.exit\(2\)|return 2' "$SM" || { echo "an exit 2 is in the script"; false; }
 }
 
-@test "hook start: a peer tab gets the messaging, peers and Lead topics" {
+@test "hook start: a peer tab gets the messaging, peers and peer-seat topics, and neither lead nor approvals" {
   CLAUDE_PEER_WORKTREE="$HOME/work" run start
   [ "$status" -eq 0 ]
   [[ "$output" == "shared-memory: these shared-memory topics apply to this session (a Claude Peers tab), so they are added here:"$'\n\n## Fixture talking-to-sessions'* ]]
-  [[ "$output" == *BODY-talking-to-sessions*BODY-claude-peers*BODY-lead ]]
+  [[ "$output" == *BODY-talking-to-sessions*BODY-claude-peers*BODY-peer-seat ]]
+  [[ "$output" != *BODY-lead* ]]
+  [[ "$output" != *BODY-approvals* ]]
 }
 
-@test "hook start: a -lead session title selects the same three" {
+@test "hook start: a -lead session title outside a peer tab selects messaging, peers, lead and approvals" {
   run start '{"session_id":"s1","session_title":"proj-lead"}'
   [ "$status" -eq 0 ]
   [[ "${lines[0]}" == *"(the Lead session)"* ]]
-  [[ "$output" == *BODY-talking-to-sessions*BODY-claude-peers*BODY-lead ]]
+  [[ "$output" == *BODY-talking-to-sessions*BODY-claude-peers*BODY-lead*BODY-approvals ]]
+  [[ "$output" != *BODY-peer-seat* ]]
   run start '{"session_id":"s1","session_title":"proj-leader"}'
   [ -z "$output" ]
 }
 
-@test "hook start: claude-peer slots listing a slot selects the same three, an empty listing none" {
+@test "hook start: claude-peer slots listing a slot selects messaging and peers only, an empty listing none" {
   STUB_SLOTS=$'a\trunning' run start
   [ "$status" -eq 0 ]
   [[ "${lines[0]}" == *"(a repo with Claude Peers)"* ]]
-  [[ "$output" == *BODY-talking-to-sessions*BODY-claude-peers*BODY-lead ]]
+  [[ "$output" == *BODY-talking-to-sessions*BODY-claude-peers ]]
+  [[ "$output" != *BODY-peer-seat* ]]
+  [[ "$output" != *BODY-lead* ]]
+  [[ "$output" != *BODY-approvals* ]]
   run start
   [ "$status" -eq 0 ]
   [ -z "$output" ]
@@ -215,13 +223,13 @@ EOF
 }
 
 @test "hook start: a topic the index imports is never printed, and is logged imported" {
-  printf '@topics/lead.md\n@topics/talking-to-sessions.md\n' >> "$SHARED_MEMORY_DIR/CLAUDE.md"
+  printf '@topics/peer-seat.md\n@topics/talking-to-sessions.md\n' >> "$SHARED_MEMORY_DIR/CLAUDE.md"
   CLAUDE_PEER_WORKTREE="$HOME/work" run start
   [ "$status" -eq 0 ]
   [[ "$output" == *BODY-claude-peers ]]
-  [[ "$output" != *BODY-lead* ]]
+  [[ "$output" != *BODY-peer-seat* ]]
   [[ "$output" != *BODY-talking* ]]
-  [ "$(cut -f3,4,5 "$LOG" | sort)" = "$(printf 'start\tclaude-peers\tinjected\nstart\tlead\timported\nstart\ttalking-to-sessions\timported')" ]
+  [ "$(cut -f3,4,5 "$LOG" | sort)" = "$(printf 'start\tclaude-peers\tinjected\nstart\tpeer-seat\timported\nstart\ttalking-to-sessions\timported')" ]
   # nothing left to add: no output at all
   printf '@topics/claude-peers.md\n' >> "$SHARED_MEMORY_DIR/CLAUDE.md"
   CLAUDE_PEER_WORKTREE="$HOME/work" run start
@@ -229,7 +237,7 @@ EOF
 }
 
 @test "hook start: a topic file that is missing is skipped" {
-  rm "$SHARED_MEMORY_DIR/topics/lead.md"
+  rm "$SHARED_MEMORY_DIR/topics/peer-seat.md"
   CLAUDE_PEER_WORKTREE="$HOME/work" run start
   [ "$status" -eq 0 ]
   [[ "$output" == *BODY-claude-peers ]]
@@ -242,7 +250,7 @@ EOF
   [ "${#output}" -lt 9000 ]
   [[ "${lines[0]}" == "shared-memory: these shared-memory topics apply to this session (a Claude Peers tab), so they are added here:" ]]
   [ "${lines[1]}" = "read ~/.claude-shared/topics/talking-to-sessions.md now: it applies to this session and is too long to add here." ]
-  [ "${lines[3]}" = "read ~/.claude-shared/topics/lead.md now: it applies to this session and is too long to add here." ]
+  [ "${lines[3]}" = "read ~/.claude-shared/topics/peer-seat.md now: it applies to this session and is too long to add here." ]
   [ "${#lines[@]}" -eq 4 ]
   [ "$(cut -f5 "$LOG" | sort -u)" = oversize ]
 }
@@ -334,14 +342,14 @@ EOF
   [[ "$(cut -f2,3 "$LOG" | sort -u)" == $'.claude-test\tstart' ]]
   run sh "$SM" log
   [ "$status" -eq 0 ]
-  [ "$output" = "$(printf 'injected\tclaude-peers\t2\ninjected\tlead\t2\ninjected\ttalking-to-sessions\t2')" ]
+  [ "$output" = "$(printf 'injected\tclaude-peers\t2\ninjected\tpeer-seat\t2\ninjected\ttalking-to-sessions\t2')" ]
   printf '2000-01-01T00:00:00Z\t.claude-test\tstart\tlead\terror\n' >> "$LOG"
   run sh "$SM" log
   [[ "$output" == *$'error\tlead\t1'* ]]
   run sh "$SM" log --since 7
   [ "$status" -eq 0 ]
   [[ "$output" != *error* ]]
-  [[ "$output" == *$'injected\tlead\t2'* ]]
+  [[ "$output" == *$'injected\tpeer-seat\t2'* ]]
 }
 
 @test "log: nothing when there is no log" {
@@ -415,6 +423,47 @@ EOF
   run tool '{"hook_event_name":"PostToolUse","session_id":"s4","tool_name":"Skill","tool_input":{"skill":"claude-in-chrome-notes"},"tool_response":"ok"}'
   [ -z "$output" ]
   run tool '{"hook_event_name":"PostToolUse","session_id":"s4","tool_name":"mcp__other__x","tool_input":{"note":"claude-in-chrome"},"tool_response":"ok"}'
+  [ -z "$output" ]
+}
+
+# A Bash PostToolUse payload for the command $1, session $2.
+bash_payload() {
+  printf '{"hook_event_name":"PostToolUse","session_id":"%s","tool_name":"Bash","tool_input":{"command":%s},"tool_response":{"stdout":"","stderr":""}}' \
+    "$2" "$(printf '%s' "$1" | python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))')"
+}
+
+@test "hook tool: claude-peer start, stop and log claim, note or done add peer-lifetime, on both events" {
+  run tool '{"hook_event_name":"PostToolUseFailure","session_id":"s1","tool_name":"Bash","tool_input":{"command":"claude-peer stop alpha"},"error":"Exit code 5\nclaude-peer: alpha is busy"}'
+  [ "$status" -eq 0 ]
+  [[ "$(context)" == *BODY-peer-lifetime ]]
+  local n=0 c
+  for c in 'claude-peer start beta --handoff -- go' 'cd x && ~/bin/claude-peer log done "DONE: x"' 'claude-peer log --as beta note "keeping Beta"' 'claude-peer log claim a b' 'x=$(claude-peer stop gamma)'; do
+    n=$((n + 1))
+    run tool "$(bash_payload "$c" "p$n")"
+    [[ "$(context)" == *BODY-peer-lifetime ]] || { echo "no match: $c"; false; }
+  done
+}
+
+@test "hook tool: claude-peer slots, log show and a grep for its stop add nothing" {
+  local c
+  for c in 'claude-peer slots' 'claude-peer log show' 'grep -n "claude-peer stop" f' 'echo claude-peer-stop'; do
+    run tool "$(bash_payload "$c" s1)"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ] || { echo "added for: $c"; false; }
+  done
+}
+
+@test "hook tool: SendMessage, a postbox tool and am mail each add session-mail, once per session" {
+  run tool '{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"SendMessage","tool_input":{"to":"x"},"tool_response":"ok"}'
+  [ "$status" -eq 0 ]
+  [[ "$(context)" == *BODY-session-mail ]]
+  run tool '{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"mcp__postbox__fetch_inbox","tool_input":{},"tool_response":"ok"}'
+  [ -z "$output" ]
+  run tool '{"hook_event_name":"PostToolUse","session_id":"s2","tool_name":"mcp__postbox__fetch_inbox","tool_input":{},"tool_response":"ok"}'
+  [[ "$(context)" == *BODY-session-mail ]]
+  run tool "$(bash_payload 'am mail send x' s3)"
+  [[ "$(context)" == *BODY-session-mail ]]
+  run tool "$(bash_payload 'echo am mailbox' s4)"
   [ -z "$output" ]
 }
 

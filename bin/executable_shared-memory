@@ -54,14 +54,16 @@ hook)
   case "${2:-}" in start | tool) ;; *) exit 0 ;; esac
   payload=$(cat) || exit 0
   # `hook tool` runs on every Bash call, so a payload that holds none of the
-  # strings python could match (the SIGNING and CONNECT lists below, and the
-  # Claude in Chrome name) never starts python. Keep these in step with them.
+  # strings python could match (the SIGNING and CONNECT lists below, the
+  # Claude in Chrome name, and the peer and mail commands) never starts python.
+  # Keep these in step with them.
   if [ "$2" = tool ]; then
     case "$payload" in
     *"failed to fill whole buffer"* | *"failed to write commit object"* | *"op-ssh-sign"* | *"No SSH private key found"*) ;;
     *"Could not resolve host"* | *"Connection refused"* | *"Connection timed out"* | *"Operation timed out"* | *"No route to host"*) ;;
     *"Connection closed by"* | *"kex_exchange_identification"* | *"Failed to connect to"* | *"Couldn't connect to server"*) ;;
     *"Network is unreachable"* | *"SOCKS"* | *"claude-in-chrome"*) ;;
+    *"claude-peer start"* | *"claude-peer stop"* | *"claude-peer log"* | *"am mail"* | *SendMessage* | *mcp__postbox__*) ;;
     *) exit 0 ;;
     esac
   fi
@@ -101,7 +103,11 @@ from contextlib import contextmanager
 TRIGGERS = {
     "talking-to-sessions": "start",
     "claude-peers": "start",
+    "peer-seat": "start",
     "lead": "start",
+    "approvals": "start",
+    "peer-lifetime": "tool",
+    "session-mail": "tool",
     "commit-signing": "tool",
     "tailnet-routed-ssh": "tool",
     "claude-in-chrome": "tool",
@@ -111,7 +117,7 @@ TRIGGERS = {
 INJECT_MAX = 9000
 PEER_TIMEOUT = 3
 TOLD_MAX_DAYS = 14
-START_ORDER = ("talking-to-sessions", "claude-peers", "lead")
+START_ORDER = ("talking-to-sessions", "claude-peers", "peer-seat", "lead", "approvals")
 # What a failed commit signature and a failed connection print. "Could not
 # resolve host" also covers "... hostname". The sh prefilter above repeats them.
 SIGNING = ("failed to fill whole buffer", "failed to write commit object", "No SSH private key found")
@@ -124,6 +130,11 @@ CONNECT = ("Could not resolve hostname", "Could not resolve host", "Connection r
            "Failed to connect to", "Couldn't connect to server", "Network is unreachable", "SOCKS")
 NET_COMMAND = re.compile(r"(^|[;&|(\x60]\s*|\$\(\s*|\s)(ssh|scp|sftp|curl)(\s|$)")
 CHROME_PREFIX = "mcp__claude-in-chrome__"
+POSTBOX_PREFIX = "mcp__postbox__"
+# What starts, stops or logs a peer's work, and what sends mail. The sh prefilter
+# above repeats their literal parts.
+PEER_COMMAND = re.compile(r"(^|[;&|(\x60]\s*|\$\(\s*|\s|/)claude-peer\s+(start|stop|log\s+(--as\s+\S+\s+)?(claim|note|done))(\s|$)")
+MAIL_COMMAND = re.compile(r"(^|[;&|(\x60]\s*|\$\(\s*|\s|/)am\s+mail(\s|$)")
 
 HOME = os.environ.get("HOME", "")
 DIR = os.environ.get("SHARED_MEMORY_DIR") or os.path.join(HOME, ".claude-shared")
@@ -217,18 +228,19 @@ its overlay. Add these to that file's "hooks" (merging with what is there):
     { "hooks": [{ "type": "command", "timeout": 10, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook start || true" }] }
   ],
   "PostToolUse": [
-    { "matcher": "Bash|Skill|mcp__claude-in-chrome__.*",
+    { "matcher": "Bash|Skill|SendMessage|mcp__claude-in-chrome__.*|mcp__postbox__.*",
       "hooks": [{ "type": "command", "timeout": 5, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook tool || true" }] }
   ],
   "PostToolUseFailure": [
-    { "matcher": "Bash|Skill|mcp__claude-in-chrome__.*",
+    { "matcher": "Bash|Skill|SendMessage|mcp__claude-in-chrome__.*|mcp__postbox__.*",
       "hooks": [{ "type": "command", "timeout": 5, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook tool || true" }] }
   ]
 
-SessionStart adds the messaging, Claude Peers and Lead topics to a session
-they apply to; the two tool events add the commit-signing, tailnet and
-Claude in Chrome topics once per session when their trigger appears. Every
-entry fails open, and a topic the shared index still imports is never added."""
+SessionStart adds the messaging, Claude Peers, peer and Lead topics to a
+session they apply to; the two tool events add the commit-signing, tailnet,
+Claude in Chrome, peer lifetime and session mail topics once per session when
+their trigger appears. Every entry fails open, and a topic the shared index
+still imports is never added."""
 
 
 def cmd_settings(argv):
@@ -345,8 +357,13 @@ def hook_start():
     }
     flags = list(why.values())
     wanted = set()
+    peer, lead = flags[0], flags[1]
     if any(flags[:3]):
-        wanted |= {"claude-peers", "lead"}
+        wanted.add("claude-peers")
+    if peer:
+        wanted.add("peer-seat")
+    elif lead:
+        wanted |= {"lead", "approvals"}
     if any(flags):
         wanted.add("talking-to-sessions")
     index = read_text(os.path.join(DIR, "CLAUDE.md"))
@@ -396,6 +413,12 @@ def tool_slugs(payload):
             slugs.append("commit-signing")
         if isinstance(cmd, str) and NET_COMMAND.search(cmd) and any(s in text for s in CONNECT):
             slugs.append("tailnet-routed-ssh")
+        if isinstance(cmd, str) and PEER_COMMAND.search(cmd):
+            slugs.append("peer-lifetime")
+        if isinstance(cmd, str) and MAIL_COMMAND.search(cmd):
+            slugs.append("session-mail")
+    if isinstance(name, str) and (name == "SendMessage" or name.startswith(POSTBOX_PREFIX)):
+        slugs.append("session-mail")
     skill = args.get("skill")
     if (isinstance(name, str) and name.startswith(CHROME_PREFIX)) or (
             name == "Skill" and isinstance(skill, str) and (skill == "claude-in-chrome" or skill.endswith(":claude-in-chrome"))):

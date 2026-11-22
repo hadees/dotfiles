@@ -101,11 +101,20 @@ conditions, each checked without a model:
   `settings.json` contains `postbox hook start`;
 - a native inbox: `CLAUDE_CODE_MESSAGING_SOCKET` names a socket.
 
-The peer topics (`claude-peers`, `lead`) are added when any of the first three
-holds. The messaging topic (`talking-to-sessions`) is added when any of the
-five does. The output opens with a `shared-memory:` line naming the true
-conditions, then the topic texts. On `clear` and `compact` the session's told
-file is deleted, because the tool topics were summarised away.
+The topics are chosen by role:
+
+| Topic | Added when |
+| --- | --- |
+| `talking-to-sessions` | any of the five conditions |
+| `claude-peers` | any of the first three |
+| `peer-seat` | a Claude Peers tab |
+| `lead`, `approvals` | the Lead session and not a Claude Peers tab |
+
+A slug whose file does not exist is skipped, so a role's topic costs nothing
+until its file lands. The output opens with a `shared-memory:` line naming the
+true conditions, then the topic texts in `START_ORDER`. On `clear` and
+`compact` the session's told file is deleted, because the tool topics were
+summarised away.
 
 `shared-memory hook tool`, on PostToolUse and PostToolUseFailure, adds:
 
@@ -116,7 +125,13 @@ file is deleted, because the tool topics were summarised away.
   a curl that returns a 404 adds nothing;
 - `claude-in-chrome` on the first call of a `mcp__claude-in-chrome__*` tool,
   or of the `Skill` tool with `claude-in-chrome` (possibly
-  plugin-prefixed) as the skill.
+  plugin-prefixed) as the skill;
+- `peer-lifetime` when the Bash command runs `claude-peer start`, `stop`, or
+  `log claim|note|done` (`PEER_COMMAND`; `slots` and `log show` add nothing);
+- `session-mail` when the tool is `SendMessage` or starts `mcp__postbox__`, or
+  the Bash command runs `am mail` (`MAIL_COMMAND`).
+
+Those two read the command text only, never its output.
 
 The result is one `additionalContext` JSON object. The payload carries the
 topic text and nothing else: no `decision`, no `permissionDecision`.
@@ -163,15 +178,18 @@ none may be added (the same stance as `memoryguard hook`, and the reverse of
   only costs the repo-with-peers condition.
 
 `hook tool` runs on every Bash call, so `sh` checks the payload against the
-`SIGNING` and `CONNECT` strings and the Claude in Chrome name before starting
+`SIGNING` and `CONNECT` strings, the Claude in Chrome name, `claude-peer start`,
+`stop` and `log`, `am mail`, `SendMessage` and `mcp__postbox__` before starting
 python. The strings in the `case` in the script and the constants in the
 python must be edited together.
 
 ## Wiring is each overlay's
 
 `shared-memory settings` prints the SessionStart entry and the PostToolUse and
-PostToolUseFailure entries (matcher `Bash|Skill|mcp__claude-in-chrome__.*`).
-It never edits a file; `docs/private-overlays.md` says where each overlay
+PostToolUseFailure entries (matcher
+`Bash|Skill|SendMessage|mcp__claude-in-chrome__.*|mcp__postbox__.*`). A profile
+whose settings still carry the old matcher gets `session-mail` only from
+`am mail` and from the index line. It never edits a file; `docs/private-overlays.md` says where each overlay
 pastes it. `claude-doctor`'s `topics:` line reports `hook: wired|partly
 wired|not wired` (the settings text contains `shared-memory hook start`,
 `shared-memory hook tool`, or both), whether `~/bin/shared-memory` is present,
