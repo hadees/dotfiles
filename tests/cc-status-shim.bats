@@ -1451,3 +1451,95 @@ stale_fixture() {
     [ -e "$d/$f" ]
   done
 }
+
+# Claude Code 2.1.325 keys a task by id, type and status, not task_id and task_type: the same
+# verdicts must come out of that shape. The tests above keep the older one.
+IDLE_ARGV='set-status|--session|ABC-123|--status|idle|--detail|idle · 1 quiet background task, quiet 120 min: tail -F build.log|--dot-color|#af8700|--text-color|#888888|--background-tasks|0'
+
+@test "task shape: a quiet shell keyed by id paints idle, stores 0, and feeds an empty array" {
+  age_file a 7200
+  run_shim <<< "$(payload Stop '[{"id":"a","type":"shell","status":"running","description":"tail -F build.log"}]')"
+  [ "$status" -eq 0 ]
+  [ "$(fed_tasks)" = "[]" ]
+  [ "$(it2_argv)" = "$IDLE_ARGV" ]
+}
+
+@test "task shape: after, all quiet keyed by id paints idle in amber, count 0" {
+  age_file a 7200
+  run_after <<< "$(after_stop Stop '[{"id":"a","type":"shell","status":"running","description":"tail -F build.log"}]')"
+  [ "$(it2_argv)" = "$IDLE_ARGV" ]
+}
+
+@test "task shape: after, one active and one quiet keyed by id corrects only the count" {
+  age_file a 7200
+  age_file b 30
+  run_after <<< "$(after_stop Stop '[{"id":"a","type":"shell","status":"running","description":"old"},{"id":"b","type":"subagent","status":"running","description":"busy"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--detail|1 background task running|--background-tasks|1" ]
+  [ "$(status_flags)" -eq 0 ]
+}
+
+@test "task shape: legacy feeds an active task keyed by id with its own status kept" {
+  age_file b 30
+  run_shim <<< "$(payload Stop '[{"id":"b","type":"subagent","status":"pending","description":"busy"}]')"
+  [ "$(fed_tasks)" = '[{"description": "busy", "id": "b", "status": "pending", "type": "subagent"}]' ]
+}
+
+@test "task shape: an agent's symlinked output keyed by id: fresh active, old quiet, dangling quiet" {
+  : > "$BATS_TEST_TMPDIR/agent.jsonl"
+  ln -s "$BATS_TEST_TMPDIR/agent.jsonl" "$SESS/tasks/ag.output"
+  run_shim <<< "$(payload Stop '[{"id":"ag","type":"subagent","status":"running"}]')"
+  [ "$(fed_tasks | grep -c '"ag"')" -eq 1 ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+
+  python3 -c 'import os,sys,time; t=time.time()-7200; os.utime(sys.argv[1],(t,t))' "$BATS_TEST_TMPDIR/agent.jsonl"
+  run_shim <<< "$(payload Stop '[{"id":"ag","type":"subagent","status":"running"}]')"
+  [ "$(fed_tasks)" = "[]" ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
+
+  rm "$BATS_TEST_TMPDIR/agent.jsonl" "$BATS_TEST_TMPDIR/calls"
+  run_shim <<< "$(payload Stop '[{"id":"ag","type":"subagent","status":"running"}]')"
+  [ "$(fed_tasks)" = "[]" ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
+}
+
+@test "task shape: after, a SubagentStop listing only the stopped agent by id sends exactly the zero count" {
+  run_after <<< "$(sub_stop '[{"id":"ag1","type":"subagent","status":"running"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--background-tasks|0" ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/calls")" -eq 1 ]
+}
+
+@test "task shape: after, a Stop over a running seat keyed by id repaints the seat colours" {
+  mkdir -p "$(dirname "$SEATS_FILE")"
+  printf 'ag1\tplan-fable\n' > "$SEATS_FILE"
+  age_file ag1 30
+  run_after <<< "$(after_stop Stop '[{"id":"ag1","type":"subagent","status":"running"}]')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--detail|plan-fable running · 1 background task running|--dot-color|#d787ff|--text-color|#d787ff|--background-tasks|1" ]
+  [ "$(status_flags)" -eq 0 ]
+}
+
+@test "task shape: after, a closing question beside one quiet task keyed by id paints yellow" {
+  age_file a 7200
+  run_after <<< "$(after_stop Stop '[{"id":"a","type":"shell","status":"running","description":"srv"}]' '"last_assistant_message":"Which branch?"')"
+  [ "$(it2_argv)" = "set-status|--session|ABC-123|--status|waiting|--detail|Which branch?|--dot-color|#ffd75f|--text-color|#ffd75f|--background-tasks|0" ]
+}
+
+@test "task shape: a finished task still listed is ignored, and a Stop holding only that is a plain Stop" {
+  age_file a 30
+  run_after <<< "$(after_stop Stop '[{"id":"a","type":"shell","status":"Completed","description":"srv"}]')"
+  rename_only
+  rm "$BATS_TEST_TMPDIR/calls"
+  run_shim <<< "$(payload Stop '[{"id":"a","type":"shell","status":"killed"}]')"
+  [ "$status" -eq 0 ]
+  [ ! -e "$BATS_TEST_TMPDIR/calls" ]
+  age_file b 30
+  run sh "$SHIM" explain after <<< "$(after_stop Stop '[{"id":"a","type":"shell","status":"failed"},{"id":"b","type":"shell","status":"running"}]')"
+  [[ $output == *"task b shell active"* && $output != *"task a"* ]]
+}
+
+@test "task shape: explain prints id and type, and an item with both keys uses task_id" {
+  age_file a 7200
+  run sh "$SHIM" explain after <<< "$(after_stop Stop '[{"id":"a","type":"shell","status":"running"}]')"
+  [[ $output == *"task a shell quiet"* && $output == *"action=rewrite+idle"* ]]
+  run sh "$SHIM" explain after <<< "$(after_stop Stop '[{"task_id":"a","id":"zz","task_type":"local_bash","type":"shell"}]')"
+  [[ $output == *"task a local_bash quiet"* ]]
+}

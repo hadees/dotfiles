@@ -27,7 +27,7 @@ The shim, deployed as `~/.local/libexec/cc-status-shim/cc-status`
 (`dot_local/libexec/cc-status-shim/`), takes cc-status's place in each
 profile's hook command. On Stop, StopFailure and SubagentStop it tells
 **quiet** tasks from **active** ones by the task's output file,
-`tasks/<task_id>.output` beside the payload's `scratchpad_dir` (a symlink
+`tasks/<id>.output` beside the payload's `scratchpad_dir` (a symlink
 to the transcript for an agent): written within `tabstatus.quiet-minutes`
 (git config, default 15 — above the ten-minute foreground ceiling) is
 active, older is quiet, and no file to judge by counts as active, because
@@ -45,9 +45,16 @@ the lie. `it2 set-status` keeps every field it is not given — a reset
 sending only the status word leaves the old dot colour — so every paint
 sends the full field set, and `tabstatus idle|working|waiting` sends
 cc-status's colour pair (plus a zero count for idle) unless given a colour,
-which makes it the manual reset for a stuck row. The shim also adds the
-`id` and `status` keys cc-status reads and 2.1.289 no longer sends, and
-drops the stopping agent from its own SubagentStop.
+which makes it the manual reset for a stuck row. Claude Code 2.1.325 keys
+each task by `id`, `type` and `status` (2.1.289 sent `task_id` and
+`task_type`); the shim reads both, `task_id` first, so a task is never
+anonymous (an anonymous task is `unknown`, counts as active, and keeps a quiet
+row working forever). A task whose `status` is finished (`completed`,
+`failed`, `cancelled`, `canceled`, `killed`, `stopped`, `done`) is dropped
+before anything is counted, as iTerm2's handler drops it, so the two counts
+agree. In legacy mode each item fed to cc-status also gets the `id` and
+`status` keys it reads (`status` kept when the item has one, else `running`);
+the shim drops the stopping agent from its own SubagentStop.
 
 A subagent **seat** gets its own dot and text colour while it runs
 (`plan-fable #d787ff`, `unstick-fable #ff5faf`, `review-fable #af87ff`,
@@ -274,11 +281,12 @@ types that keep no output file (`monitor`, `in_process_teammate`,
 `local_workflow`, `remote_agent` are unverified; a missing file reads as
 active), nor a dead process behind a recently written file. The upstream
 reports — the moved command keeping its stdin pipe, the hooks reference's
-stale `background_tasks[].status`, cc-status reading `id`/`status` where
-2.1.289 sends `task_id` — are drafts, not yet filed. `cc-status explain`
-(payload on stdin) prints each task's verdict, the seat and the action,
-calling nothing; `unknown` means the output file is not where it looks,
-`passthrough` that the gate missed the payload. The facts the shim rests on
+stale `background_tasks[].status` — are drafts, not yet filed. `cc-status
+explain` (payload on stdin) prints each task's verdict, the seat and the
+action, calling nothing; `unknown` means the output file is not where it
+looks, `passthrough` that the gate missed the payload. A row reading `task
+None None unknown` for a task that does have an output file means the task
+keys moved again (the shim reads `task_id` and `id`). The facts the shim rests on
 are `utilstr`/`binstr` lines in the skill's `manifest.txt`, so `verify.sh`
 says when a point release moves them. `claude-doctor`'s `tabstatus:` line
 counts the eleven events in a profile's `settings.json` that run the shim
