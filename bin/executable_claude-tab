@@ -928,7 +928,7 @@ panel_py() {
   # PANEL_EXEC=exec makes the server the very process that was started (its pid
   # is the one panel.pid holds, and survives replacing itself).
   ${PANEL_EXEC:+exec} python3 -I - "$@" <<'PANEL_PY'
-import copy, json, os, re, signal, subprocess, sys, threading, time, urllib.request
+import copy, json, os, re, signal, socketserver, subprocess, sys, threading, time, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 V = 1
@@ -1435,6 +1435,15 @@ def http_get(port, path):
         return None
 
 
+class LoopbackServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # http.server's own bind asks for the host's name (socket.getfqdn, a reverse
+        # lookup of 127.0.0.1) that nothing here uses, and on a macOS CI runner
+        # that lookup waited on mDNS for longer than the server could be waited for.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = "127.0.0.1", self.server_address[1]
+
+
 def serve(o):
     port, script = o["port"], o["script"]
     tick_s = float(os.environ.get("CLAUDE_TAB_PANEL_TICK") or 2)
@@ -1533,7 +1542,7 @@ def serve(o):
             self.reply(409, json.dumps({"ok": False, "error": err[-1] if err else "focus failed"}))
 
     try:
-        httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        httpd = LoopbackServer(("127.0.0.1", port), Handler)
     except OSError as err:
         sys.stderr.write("claude-tab: panel: port %d: %s\n" % (port, err.strerror or err))
         sys.exit(1)
