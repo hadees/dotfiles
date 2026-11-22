@@ -196,6 +196,8 @@ decide again. The order, the lines and the helpers are in `docs/claude-proxy.md`
 `tests/claude-profiles.bats` runs bare, like a stranger's clone, with one test
 that plants a healthy stub proxy; `tests/claude-proxy.bats` meets the lines.
 
+**The same block keeps the Needs You panel up.** When `claude-tab panel install` has left its marker (`panel.installed` in `claude-tab`'s state directory) and the launch is attended in an iTerm2 session, `claude()` starts `claude-tab panel ensure` in the background with all three streams off the terminal; with no marker it pays one file test and nothing else (`claude-tab-panel.md`).
+
 **Each profile must be logged in once** with `claude auth login`; credentials
 live in the macOS Keychain and cannot be copied between profiles — verified,
 copying `.claude.json` does not carry a session.

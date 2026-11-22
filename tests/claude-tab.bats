@@ -34,6 +34,12 @@ setup() {
   printf '#!/bin/sh\nexec "%s" "$@"\n' "$REAL_PYTHON3" > "$BIN/python3"
   export FAKE_OS=Darwin
   export FAKE_PROCS="iTerm2"
+  # The opener of the reveal URL: logs its argument, never touches the real iTerm2.
+  # FAKE_FRONT is the file the stub osascript prints for the front-tty read.
+  export CLAUDE_TAB_OPEN="$BATS_TEST_TMPDIR/open" OPEN_LOG="$BATS_TEST_TMPDIR/open-log" FAKE_FRONT="$BATS_TEST_TMPDIR/front"
+  : > "$OPEN_LOG"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> "$OPEN_LOG"\nexit "${FAKE_OPEN_EXIT:-0}"\n' > "$CLAUDE_TAB_OPEN"
+  chmod +x "$CLAUDE_TAB_OPEN"
   export PS_TABLE="$BATS_TEST_TMPDIR/ps-table"
   : > "$PS_TABLE"
   cat > "$BIN/uname" <<'STUB'
@@ -90,6 +96,7 @@ if [ -n "${FAKE_OSA_FAIL:-}" ]; then
   exit 1
 fi
 if grep -q '^-- restore:' "$OSA_SCRIPT"; then printf '%s\n' "${FAKE_RESTORE_TABS:-}"
+elif grep -q 'if not frontmost' "$OSA_SCRIPT"; then cat "$FAKE_FRONT" 2>/dev/null
 elif grep -q 'return out' "$OSA_SCRIPT"; then printf '%s\n' "${FAKE_TABS:-}"
 elif grep -q 'write text' "$OSA_SCRIPT"; then printf '%s\n' "${FAKE_WRITE-ok}"
 elif grep -q 'select w' "$OSA_SCRIPT"; then printf '%s\n' "${FAKE_FOCUS-ok}"
@@ -1049,6 +1056,50 @@ buried_peer() {
   FAKE_FOCUS="" run sh "$CT" focus "$PB"
   [ "$status" -eq 0 ]
   [[ "$(cat "$IT2_LOG")" == "session focus GUID-PEER|:" ]]
+}
+
+@test "focus: a buried peer takes the reveal URL when it brings that tty to the front, and it2 never runs" {
+  buried_peer; stub_it2 0
+  printf '/dev/ttys004\n' > "$FAKE_FRONT"
+  FAKE_FOCUS="" run sh "$CT" focus "$PB"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$OPEN_LOG")" = "iterm2:reveal?sessionid=x:GUID-PEER" ]
+  [ ! -s "$IT2_LOG" ]
+}
+
+@test "focus: a reveal the front tty does not confirm falls to swap, then group" {
+  buried_peer; stub_it2 0
+  printf '/dev/ttys999\n' > "$FAKE_FRONT"
+  FAKE_FOCUS="" run sh "$CT" focus "$PB"
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$OPEN_LOG" | tr -d ' ')" -eq 1 ]
+  [[ "$(cat "$IT2_LOG")" == "session focus GUID-PEER|:" ]]
+  stub_it2 1; stub_group_peer "$LEAD" "$PEERDIR"
+  run sh "$CT" next
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"(its tab is in front; pick it in the peer bar)" ]]
+  [ "$(grep -c . "$OPEN_LOG")" -eq 2 ]
+}
+
+@test "focus: an opener that fails falls through, and a visible session takes its tab without it" {
+  buried_peer; stub_it2 0
+  printf '/dev/ttys004\n' > "$FAKE_FRONT"
+  FAKE_FOCUS="" FAKE_OPEN_EXIT=1 run sh "$CT" focus "$PB"
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$IT2_LOG")" == "session focus GUID-PEER|:" ]]
+  : > "$OPEN_LOG"
+  run sh "$CT" focus "$PL"
+  [ "$status" -eq 0 ]
+  grep -q 'is "/dev/ttys003"' "$OSA_SCRIPT"
+  [ ! -s "$OPEN_LOG" ]
+}
+
+@test "focus: a session with no guid skips the reveal URL" {
+  buried_peer; stub_it2 0
+  printf 'claude\n' > "$PS_ENV_DIR/$PB"
+  printf '/dev/ttys004\n' > "$FAKE_FRONT"
+  FAKE_FOCUS="" run sh "$CT" focus "$PB"
+  [ ! -s "$OPEN_LOG" ]
 }
 
 @test "alfred: one Script Filter item per waiting session, longest first; none waiting is one invalid item" {

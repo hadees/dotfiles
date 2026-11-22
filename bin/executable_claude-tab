@@ -51,6 +51,27 @@
 #                            peers (claude-peer start --continue, retried up to
 #                            --peer-wait seconds, default 60, while their pane
 #                            is not waiting yet)
+#   panel tick [--state <file>] [--now <epoch>] [--focus <tty>|-|?]
+#                            one pass of the needs-you list: reads the registry
+#                            of every profile, updates the state file, prints
+#                            the snapshot as one line of JSON (--focus: the tty
+#                            in front, - for none, ? for unknown)
+#   panel serve [--port <n>] the needs-you list's server, in the foreground: a
+#                            tick every 2 s, the snapshot, the page and the
+#                            click on 127.0.0.1 only (macOS; port: git config
+#                            claude-tab.panel-port, else 47600)
+#   panel start|stop         serve detached (log and pid in the state
+#                            directory), or end that one (exit 3 when none runs)
+#   panel snapshot           the running server's snapshot (exit 3 when none)
+#   panel status             server, data, focus, needs and tally lines, and
+#                            whether the Toolbelt tool is installed
+#   panel register [--quiet] put the page in iTerm2's Toolbelt as a tool (needs
+#                            a fresh API cookie and iTerm2's Python runtime;
+#                            again with the same arguments reloads open copies)
+#   panel install|uninstall  start, register and leave the marker `claude`
+#                            looks for (install), or stop and remove it
+#   panel ensure             silent, for `claude`: start and register when the
+#                            marker is there and nothing answers
 set -u
 
 TAB=$(printf '\t')
@@ -322,6 +343,21 @@ return ""
 APPLESCRIPT
 }
 
+# Read-only: the tty of the session in front in the front window of iTerm2, "-"
+# when iTerm2 is not frontmost or has none. The panel's server asks this about
+# every two seconds while a row is unseen, and addresses iTerm2 alone.
+front_tty_script() {
+  cat <<'APPLESCRIPT'
+tell application "iTerm2"
+  if not frontmost then return "-"
+  try
+    return tty of current session of current window
+  end try
+end tell
+return "-"
+APPLESCRIPT
+}
+
 # Read-only, for restore: window id, tab ordinal (own counter — `index of t`
 # fails inside `repeat with`), sessions in the tab, tty, and 1 when the window
 # is the current one.
@@ -420,17 +456,27 @@ run_script() { # applescript on stdin
   return 1
 }
 
+# Export a fresh iTerm2 API cookie for what runs next; 1 when there is none. A
+# cookie older than iTerm2's socket is stale and is never exported (a wrong
+# cookie is worse than none); one already in the environment is left as it is.
+# Call it in a subshell: the exports would stay in the caller's environment.
+api_cookie_env() {
+  [ -z "${ITERM2_COOKIE-}" ] || return 0
+  ac_f=$HOME/.local/state/iterm2/api-cookie
+  { [ -r "$ac_f" ] && [ "$ac_f" -nt "$HOME/Library/Application Support/iTerm2/private/socket" ]; } || return 1
+  read -r ac_c ac_k < "$ac_f"
+  [ -n "${ac_k-}" ] || return 1
+  ITERM2_COOKIE=$ac_c ITERM2_KEY=$ac_k
+  export ITERM2_COOKIE ITERM2_KEY
+}
+
 # `it2 session focus <guid>`, five seconds at most (no `timeout` on macOS; python3
 # is needed anyway). A fresh API cookie is exported, a stale or absent one is not
 # (a wrong cookie is worse than none): the shim's clause, cc-status-shim.md.
 it2_focus() {
   [ -x "$IT2" ] || return 1
   (
-    ck=$HOME/.local/state/iterm2/api-cookie
-    if [ -z "${ITERM2_COOKIE-}" ] && [ -r "$ck" ] && [ "$ck" -nt "$HOME/Library/Application Support/iTerm2/private/socket" ]; then
-      read -r c k < "$ck"
-      [ -z "${k-}" ] || { ITERM2_COOKIE=$c ITERM2_KEY=$k; export ITERM2_COOKIE ITERM2_KEY; }
-    fi
+    api_cookie_env || :
     exec python3 -I -c 'import subprocess, sys
 try:
     sys.exit(subprocess.run([sys.argv[1], "session", "focus", sys.argv[2]], stdin=subprocess.DEVNULL,
@@ -460,8 +506,25 @@ group_tty() {
   done
 }
 
+# Hand iTerm2 its own reveal URL for session <guid> (it searches tabs, buried
+# sessions and peer ports), then read the front tty up to five times, 0.2 s
+# apart. Returns 0 only when the front tty is <tty>: the opener answers 0
+# whatever iTerm2 did, so the front tty is the only proof. Read-only osascript,
+# one try each, so a failing read costs a second, not the retries of run_script.
+reveal_session() { # guid tty
+  rs_tty=$2 rs_i=0
+  "${CLAUDE_TAB_OPEN:-/usr/bin/open}" "iterm2:reveal?sessionid=x:$1" >/dev/null 2>&1 || return 1
+  while [ "$rs_i" -lt 5 ]; do
+    [ "$(front_tty_script | osascript - 2>/dev/null)" != "$rs_tty" ] || return 0
+    rs_i=$((rs_i + 1))
+    [ "$rs_i" -ge 5 ] || sleep 0.2
+  done
+  return 1
+}
+
 # Bring session <pid> forward; FOCUS_ROUTE says how: tab (its own tab is in
-# front), swap (buried, `it2 session focus` took it), group (buried, a visible
+# front), reveal (iTerm2's reveal URL put its pane in front, a buried peer
+# included), swap (buried, `it2 session focus` took it), group (buried, a visible
 # member of its workgroup came forward instead). Returns 1 with one line when
 # none applies. <where> is list's: "other" is a buried one, so its tab is not tried.
 focus_session() { # pid tty where guid cwd
@@ -473,6 +536,7 @@ focus_session() { # pid tty where guid cwd
     fs_out=$(focus_script "$fs_tty" | run_script) || { warn "$OSA_HINT"; return 1; }
     [ "$fs_out" != ok ] || { FOCUS_ROUTE=tab; return 0; }
   fi
+  if [ -n "$fs_guid" ] && [ "$fs_guid" != - ] && reveal_session "$fs_guid" "$fs_tty"; then FOCUS_ROUTE=reveal; return 0; fi
   if [ "$fs_guid" != - ] && it2_focus "$fs_guid"; then FOCUS_ROUTE=swap; return 0; fi
   fs_gtty=$(group_tty "$fs_cwd")
   if [ -n "$fs_gtty" ]; then
@@ -852,6 +916,974 @@ EOF_PLAN
   fi
 }
 
+# --- the needs-you list ------------------------------------------------------
+
+# One pass of the list: the registry of every profile in, a state file and one
+# line of JSON out (the snapshot). Every rule of the list lives in this program;
+# .claude/rules/claude-tab-panel.md says what they are. A fourth registry reader,
+# for the reason of the other three, and it keeps the same filter: only
+# `<digits>.json`, a positive int pid that answers kill 0 (PermissionError is
+# alive). The mode word is the first argument.
+panel_py() {
+  # PANEL_EXEC=exec makes the server the very process that was started (its pid
+  # is the one panel.pid holds, and survives replacing itself).
+  ${PANEL_EXEC:+exec} python3 -I - "$@" <<'PANEL_PY'
+import copy, json, os, re, signal, socketserver, subprocess, sys, threading, time, urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+V = 1
+APPEAR = {"blocked": 4, "asked": 4, "failed": 4, "quiet": 0, "unknown": 60}
+RANK = {"blocked": 0, "failed": 1, "asked": 1, "finished": 2, "finished-bg": 2,
+        "quiet": 3, "unknown": 3}
+STICKY = ("blocked", "asked", "failed")
+CALM = ("finished", "finished-bg", "quiet", "unknown")
+TALLY = ("ticks", "transitions", "entered", "left", "hidden_prompts",
+         "seen_focus", "seen_click", "focus_reads", "focus_failures")
+IDLE_KIND = {"busy": "working", "idle": "idle", "shell": "idle-bg"}
+
+
+def die(msg):
+    sys.stderr.write("claude-tab: panel: %s\n" % msg)
+    sys.exit(2)
+
+
+def num(v):
+    return type(v) in (int, float)
+
+
+def posint(v, default):
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return default
+    return n if n > 0 else default
+
+
+def parse(argv):
+    o = {"state": None, "now": None, "focus": "?", "profiles": [], "quiet": 900,
+         "finished": 60, "life": {}, "build": "-", "tabname": "", "port": 0, "script": "",
+         "self": "", "focus-script": ""}
+    i = 0
+    while i < len(argv):
+        k = argv[i]
+        if k not in ("--state", "--now", "--focus", "--profile", "--quiet",
+                     "--finished", "--life", "--build", "--tabname", "--port", "--script",
+                     "--self", "--focus-script") or i + 1 >= len(argv):
+            die("bad argument '%s'" % k)
+        v = argv[i + 1]
+        i += 2
+        if k == "--profile":
+            d, _, label = v.rpartition("=")
+            o["profiles"].append((d, label))
+        elif k == "--life":
+            p, _, t = v.partition("=")
+            try:
+                o["life"][int(p)] = float(t)
+            except ValueError:
+                die("bad --life '%s'" % v)
+        elif k == "--now":
+            try:
+                o["now"] = float(v)
+            except ValueError:
+                die("bad --now '%s'" % v)
+        elif k in ("--quiet", "--finished"):
+            o[k[2:]] = posint(v, o[k[2:]])
+        elif k == "--port":
+            o["port"] = posint(v, 0)
+        else:
+            o[k[2:]] = v
+    return o
+
+
+def state_base():
+    return os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+
+
+def read_registry(profiles):
+    recs, unreadable, nprof, headless = [], 0, 0, 0
+    for d, label in profiles:
+        sd = os.path.join(d, "sessions")
+        try:
+            names = sorted(os.listdir(sd))
+        except OSError:
+            continue
+        nprof += 1
+        for n in names:
+            if not re.fullmatch(r"\d+\.json", n):
+                continue
+            try:
+                with open(os.path.join(sd, n)) as fh:
+                    r = json.load(fh)
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError):
+                unreadable += 1
+                continue
+            if type(r) is not dict:
+                unreadable += 1
+                continue
+            pid = r.get("pid")
+            if type(pid) is not int or pid <= 0:
+                continue
+            try:
+                os.kill(pid, 0)
+            except PermissionError:
+                pass  # alive, just not ours
+            except OSError:
+                continue
+            if "kind" in r and r["kind"] != "interactive":
+                headless += 1
+                continue
+            recs.append({"dir": d, "profile": label, "pid": pid, "r": r})
+    return recs, unreadable, nprof, headless
+
+
+def load_state(path):
+    try:
+        with open(path) as fh:
+            st = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if type(st) is not dict or st.get("v") != 1 or not num(st.get("saved_at")):
+        return None
+    if type(st.get("sessions")) is not dict or type(st.get("tally")) is not dict:
+        return None
+    return st
+
+
+def sane(e):
+    return (type(e) is dict and type(e.get("status")) is str and num(e.get("since"))
+            and (e.get("kind") is None or type(e["kind"]) is str)
+            and (e.get("cond_since") is None or num(e["cond_since"]))
+            and (e.get("seen_at") is None or num(e["seen_at"]))
+            and (e.get("entered_at") is None or num(e["entered_at"]))
+            and type(e.get("hits")) is int and type(e.get("listed")) is bool)
+
+
+def read_tty(pid):
+    try:
+        out = subprocess.run(["ps", "-o", "tty=", "-p", str(pid)], capture_output=True,
+                             text=True, timeout=3).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return None if out in ("", "?", "??") else "/dev/" + out
+
+
+def run(argv):
+    """Stdout of a command, or None when it failed, timed out or is missing."""
+    try:
+        r = subprocess.run(argv, capture_output=True, encoding="utf-8", errors="replace", timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+_git, _who, _life = {}, {}, {}
+
+
+def git_dirs(cwd):
+    """(git common dir, git dir) of cwd, absolute; (None, None) outside a work tree. Kept for the process."""
+    if cwd not in _git:
+        out = run(["git", "-C", cwd, "rev-parse", "--path-format=absolute",
+                   "--git-common-dir", "--absolute-git-dir"])
+        lines = out.splitlines() if out else []
+        _git[cwd] = (lines[0], lines[1]) if len(lines) == 2 else (None, None)
+    return _git[cwd]
+
+
+def who(cwd, now, tabname):
+    """label, role, group and handoff of the session in cwd; kept for 60 s, roles move with claims."""
+    base = (os.path.basename(cwd.rstrip("/")) if type(cwd) is str else "") or "-"
+    w = {"label": base, "role": "plain", "group": base, "handoff": False}
+    if type(cwd) is not str or not cwd.startswith("/"):
+        return w
+    hit = _who.get(cwd)
+    if hit is not None and now - hit[0] < 60:
+        return hit[1]
+    if tabname and os.access(tabname, os.X_OK):
+        out = (run([tabname, "--role", cwd]) or "").rstrip("\n")
+        role, tab, label = out.partition("\t")
+        if not tab:
+            role, label = "plain", out
+        if label:
+            w["label"], w["role"] = label, role if role in ("lead", "peer") else "plain"
+    common, gitdir = git_dirs(cwd)
+    if common:
+        w["group"] = os.path.basename(os.path.dirname(common)) or base
+    if w["role"] == "peer" and gitdir:
+        # a wrong False adds a row, a wrong True hides one: any doubt is False
+        try:
+            with open(os.path.join(gitdir, "claude-peer.claim")) as fh:
+                lines = fh.read().split("\n")
+            w["handoff"] = len(lines) > 7 and lines[7] == "handoff"
+            # tabname.peer-format is the operator's to set and may leave the slot out
+            # ({repo}); the slot is what tells peers of one group apart, so it is always there
+            if len(lines) > 2 and lines[2] and lines[2] not in w["label"]:
+                w["label"] += " \u00b7 " + lines[2]
+        except (OSError, ValueError):
+            pass
+    _who[cwd] = (now, w)
+    return w
+
+
+def guid_of(pid):
+    """The iTerm2 session guid from the process's start-up environment, else None."""
+    out = run(["ps", "eww", "-o", "command=", "-p", str(pid)])
+    m = re.search(r"(?:^|\s)ITERM_SESSION_ID=[^:\s]*:(\S+)", out or "")
+    return m.group(1) if m else None
+
+
+def transcript_dir(profile_dir, sid, now):
+    """The projects/ directory holding the session's transcript, else None. Kept per session."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", sid) or sid == "-":
+        return None
+    key = (profile_dir, sid)
+    hit = _life.get(key)
+    if hit is None or (hit[0] is None and now - hit[1] >= 60):
+        found = None
+        root = os.path.join(profile_dir, "projects")
+        try:
+            names = sorted(os.listdir(root))
+        except OSError:
+            names = []
+        # one listing a minute per silent session that has none; found, the path is kept
+        for n in names:
+            d = os.path.join(root, n)
+            if os.path.exists(os.path.join(d, sid + ".jsonl")) or os.path.isdir(os.path.join(d, sid, "subagents")):
+                found = d
+                break
+        hit = _life[key] = (found, now)
+    return hit[0]
+
+
+def life_of(profile_dir, sid, now):
+    """Newest mtime of the session's transcript or its subagents' files, else None (names and mtimes only)."""
+    found = transcript_dir(profile_dir, sid, now)
+    if found is None:
+        return None
+    paths = [os.path.join(found, sid + ".jsonl")]
+    sub = os.path.join(found, sid, "subagents")
+    try:
+        paths += [os.path.join(sub, n) for n in os.listdir(sub)]
+    except OSError:
+        pass
+    times = []
+    for p in paths:
+        try:
+            times.append(os.stat(p).st_mtime)
+        except OSError:
+            pass
+    return max(times) if times else None
+
+
+_driver = {}
+TAIL = 4 << 20
+
+
+def peer_driven(profile_dir, sid, now):
+    """True when the user entry that began the session's last turn came from another session
+    (origin.kind "peer": a cross-session message, a mail wake, a roll-call), else False.
+    Reads the transcript's tail and keeps only that one word; a session with no transcript,
+    no such entry or a read that failed is False, because a wrong True hides a turn.
+    ponytail: the last such entry decides, so mail landing mid-turn hides an operator-started
+    turn; upgrade is to walk back to the entry after the last assistant stop."""
+    found = transcript_dir(profile_dir, sid, now)
+    if found is None:
+        return False
+    path = os.path.join(found, sid + ".jsonl")
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    stamp = (st.st_mtime_ns, st.st_size)
+    hit = _driver.get(path)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    kind = None
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, st.st_size - TAIL))
+            lines = fh.read().split(b"\n")
+    except OSError:
+        return False
+    for raw in reversed(lines[1:] if st.st_size > TAIL else lines):
+        if b'"user"' not in raw:
+            continue
+        try:
+            d = json.loads(raw)
+        except ValueError:
+            continue
+        m = d.get("message") if type(d) is dict else None
+        ct = m.get("content") if type(m) is dict else None
+        if (type(d) is not dict or d.get("type") != "user" or d.get("isSidechain")
+                or (type(ct) is list and any(type(x) is dict and x.get("type") == "tool_result" for x in ct))):
+            continue
+        o = d.get("origin")
+        kind = o.get("kind") if type(o) is dict else d.get("turnOrigin")
+        if kind is not None:
+            break
+    _driver[path] = (stamp, kind == "peer")
+    return kind == "peer"
+
+
+def turn_record(sid, since, now):
+    """The turn record of a session when it is valid, else None."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", sid):
+        return None
+    try:
+        with open(os.path.join(state_base(), "tabstatus", sid + ".turn")) as fh:
+            t = json.loads(fh.readline())
+    except (OSError, ValueError):
+        return None
+    if type(t) is not dict or type(t.get("at")) is not int or t.get("end") not in ("question", "error", "plain"):
+        return None
+    return t if since - 15 <= t["at"] <= now + 5 else None
+
+
+def condition(status, since, now, wait_for, turn, life, quiet, handoff):
+    """(kind, cond_since, reason) of a session, first match wins; kind None is no condition."""
+    if status == "waiting":
+        return "blocked", since, wait_for or "waiting"
+    if status in ("idle", "shell"):
+        if handoff:  # its turn ends are Lead's, or the turn was started by another session, not the operator
+            return None, None, None
+        if turn and turn["end"] == "error":
+            return "failed", since, "failed"
+        if turn and turn["end"] == "question":
+            return "asked", since, "asked"
+        if status == "idle":
+            return "finished", since, "finished"
+        return "finished-bg", since, "finished, background task"
+    if status == "busy":
+        if life is not None and now - max(since, life) >= quiet:
+            return "quiet", max(since, life) + quiet, "quiet"
+        return None, None, None
+    return "unknown", since, "unknown: %s" % status
+
+
+def end_instance(e, tally):
+    """An instance ended: a row leaving, or a prompt that was never shown."""
+    if e["kind"] is None:
+        return
+    if e["listed"]:
+        tally["left"] += 1
+    elif e["kind"] == "blocked" and e["entered_at"] is None:
+        tally["hidden_prompts"] += 1
+
+
+def mark_seen(state, pid, now):
+    """A click on the row of pid: its current instance counts as seen."""
+    for key, e in state["sessions"].items():
+        if key.rsplit("|", 2)[1] == str(pid) and e["kind"] is not None and e["seen_at"] is None:
+            e["seen_at"] = now
+            state["tally"]["seen_click"] += 1
+
+
+def tick(prev, o, now):
+    recs, unreadable, nprof, headless = read_registry(o["profiles"])
+    fresh = prev is None or now - prev["saved_at"] > 86400
+    old_sessions = {} if prev is None else prev["sessions"]
+    tally = dict((k, 0) for k in TALLY)
+    if prev is not None:
+        for k in TALLY:
+            if type(prev["tally"].get(k)) is int:
+                tally[k] = prev["tally"][k]
+    tally["ticks"] += 1
+    focus = o["focus"]
+    sessions, rows = {}, []
+    turn_records = life_unknown = peer_turns = 0
+    for rec in recs:
+        r, pid = rec["r"], rec["pid"]
+        sid = r.get("sessionId")
+        sid = sid if type(sid) is str and sid else "-"
+        key = "%s|%d|%s" % (rec["dir"], pid, sid)
+        old = old_sessions.get(key)
+        if old is not None and not sane(old):
+            old = None
+        st = r.get("status")
+        status = st if type(st) is str else ("" if st is None else str(st))
+        sa = r.get("statusUpdatedAt")
+        if num(sa) and sa > 0:
+            since = sa / 1000.0
+        elif old is not None and old["status"] == status:
+            since = old["since"]
+        else:
+            since = now
+        if old is not None and old["status"] != status:
+            tally["transitions"] += 1
+        turn = None
+        if status in ("idle", "shell"):
+            turn = turn_record(sid, since, now)
+            if turn:
+                turn_records += 1
+        cwd = r.get("cwd")
+        w = who(cwd, now, o["tabname"])
+        by_peer = status in ("idle", "shell") and not w["handoff"] and peer_driven(rec["dir"], sid, now)
+        peer_turns += by_peer
+        life = None
+        if status == "busy" and now - since >= o["quiet"]:
+            life = o["life"].get(pid)
+            if life is None:
+                life = life_of(rec["dir"], sid, now)
+            if life is None:
+                life_unknown += 1
+        wf = r.get("waitingFor")
+        kind, cond_since, reason = condition(status, since, now, wf if type(wf) is str and wf else None,
+                                             turn, life, o["quiet"], w["handoff"] or by_peer)
+        if old is not None and old["kind"] == kind and old["cond_since"] == cond_since:
+            e = dict(old)
+        else:
+            if old is not None:
+                end_instance(old, tally)
+            e = {"kind": kind, "cond_since": cond_since, "seen_at": None, "hits": 0,
+                 "listed": False, "entered_at": None}
+            # starting calm: what finished before the list had a memory is not news
+            if kind in CALM and (fresh or (old is None and cond_since <= prev["saved_at"])):
+                e["seen_at"] = now
+        e["status"], e["since"] = status, since
+        e["tty"] = old["tty"] if old is not None and "tty" in old else read_tty(pid)
+        e["guid"] = old["guid"] if old is not None and "guid" in old else guid_of(pid)
+        # capped at 2: a session left in front must not make the state change every tick
+        e["hits"] = min(e["hits"] + 1, 2) if focus[:1] == "/" and e["tty"] == focus else 0
+        if kind is not None and e["seen_at"] is None and e["hits"] >= 2:
+            e["seen_at"] = now
+            tally["seen_focus"] += 1
+        eligible = False
+        if kind is not None:
+            appear = {"finished": o["finished"], "finished-bg": o["quiet"]}.get(kind, APPEAR.get(kind))
+            eligible = (now - cond_since >= appear and e["hits"] == 0
+                        and (kind in STICKY or e["seen_at"] is None))
+        if eligible and not e["listed"]:
+            e["listed"], e["entered_at"] = True, now
+            tally["entered"] += 1
+        elif not eligible and e["listed"]:
+            e["listed"] = False
+            tally["left"] += 1
+        sessions[key] = e
+        rk = kind if e["listed"] or kind not in (None, "finished", "finished-bg") else IDLE_KIND.get(status, kind)
+        rows.append((e, {"pid": pid, "profile": rec["profile"], "label": w["label"],
+                         "group": w["group"], "role": w["role"], "kind": rk,
+                         "reason": reason or status, "since": int(since),
+                         "seen": e["seen_at"] is not None, "tty": e["tty"], "guid": e["guid"]}))
+    for key, old in old_sessions.items():
+        if key not in sessions and sane(old):
+            end_instance(old, tally)
+    needs, groups = [], {}
+    for e, row in rows:
+        if e["listed"]:
+            needs.append((RANK[e["kind"]], e["entered_at"], row["pid"], dict(row, since=int(e["cond_since"]))))
+        g = groups.setdefault(row["group"], {"group": row["group"], "needs": 0, "working": 0,
+                                             "idle": 0, "rows": []})
+        g["rows"].append(row)
+        g["needs" if e["listed"] else "working" if e["status"] == "busy" else "idle"] += 1
+    needs.sort(key=lambda t: t[:3])
+    for g in groups.values():
+        g["rows"].sort(key=lambda x: (x["label"], x["pid"]))
+    snap = {"v": 1, "generated_at": float(now), "build": o["build"],
+            "health": {"profiles": nprof, "sessions": len(recs), "headless": headless,
+                       "unreadable": unreadable,
+                       "focus": "ok" if focus[:1] == "/" else ("none" if focus == "-" else "unknown"),
+                       "turn_records": turn_records, "life_unknown": life_unknown,
+                       "peer_turns": peer_turns,
+                       "want_focus": any(e["kind"] is not None and e["seen_at"] is None for e, _ in rows)},
+            "needs": [t[3] for t in needs], "others": [groups[k] for k in sorted(groups)],
+            "tally": tally}
+    return {"v": 1, "saved_at": now, "sessions": sessions, "tally": tally}, snap
+
+
+def save_state(path, state, prev, now):
+    """Write when something changed, or the file is a minute old."""
+    def core(st):
+        return (st["sessions"], dict((k, v) for k, v in st["tally"].items() if k != "ticks"))
+    if prev is not None and now - prev["saved_at"] < 60 and core(prev) == core(state):
+        return False
+    try:
+        os.makedirs(os.path.dirname(path) or ".", mode=0o700, exist_ok=True)
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump(state, fh, sort_keys=True)
+        os.replace(tmp, path)
+    except OSError as err:
+        sys.stderr.write("claude-tab: cannot write %s: %s\n" % (path, err))
+    return True
+
+
+
+def iterm_running():
+    out = run(["ps", "-Ao", "ucomm="])
+    return any(l.rstrip() == "iTerm2" for l in (out or "").splitlines())
+
+
+def front_tty(script):
+    """The tty of the iTerm2 session in front, "-" when none is, None when it could not be asked."""
+    try:
+        r = subprocess.run(["osascript", "-"], input=script, capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = r.stdout.strip()
+    return out if r.returncode == 0 and (out == "-" or out.startswith("/")) else None
+
+
+def http_get(port, path):
+    """Body of a GET on the local server, or None (no proxy: this is loopback)."""
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(
+                "http://127.0.0.1:%d%s" % (port, path), timeout=3) as r:
+            return r.read().decode("utf-8")
+    except (OSError, ValueError):
+        return None
+
+
+class LoopbackServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # http.server's own bind asks for the host's name (socket.getfqdn, a reverse
+        # lookup of 127.0.0.1) that nothing here uses, and on a macOS CI runner
+        # that lookup waited on mDNS for longer than the server could be waited for.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = "127.0.0.1", self.server_address[1]
+
+
+def serve(o):
+    port, script = o["port"], o["script"]
+    tick_s = float(os.environ.get("CLAUDE_TAB_PANEL_TICK") or 2)
+    html = os.environ.get("CLAUDE_TAB_PANEL_HTML") or os.path.join(
+        os.path.expanduser("~"), ".local", "share", "claude-tab", "panel.html")
+    path = os.path.join(state_base(), "claude-tab", "panel-state.json")
+    hosts = ("127.0.0.1:%d" % port, "localhost:%d" % port)
+
+    def mtime():
+        try:
+            return str(os.stat(script).st_mtime_ns)
+        except OSError:
+            return "-"
+    build = mtime()
+    o["build"] = build
+    lock = threading.Lock()
+    box = {"state": load_state(path), "snap": None, "pids": set()}
+    box["written"] = copy.deepcopy(box["state"])
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def reply(self, code, body, ctype="application/json", extra=()):
+            data = body if isinstance(body, bytes) else body.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            for k, v in extra:
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(data)
+
+        def other(self):
+            self.reply(404, '{"error": "not found"}')
+
+        do_HEAD = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = other
+
+        def do_GET(self):
+            if self.headers.get("Host") not in hosts:
+                return self.reply(403, '{"error": "bad host"}')
+            p = self.path.split("?", 1)[0]
+            if p == "/snapshot.json":
+                snap = box["snap"]
+                if snap is None:
+                    return self.reply(503, '{"error": "no snapshot yet"}')
+                return self.reply(200, json.dumps(snap, sort_keys=True))
+            if p == "/health":
+                return self.reply(200, json.dumps({"ok": True, "pid": os.getpid(), "build": build}))
+            if p == "/":
+                try:
+                    with open(html, "rb") as fh:
+                        page = fh.read()
+                except OSError:
+                    return self.reply(500, "claude-tab: panel page missing: %s\n" % html, "text/plain; charset=utf-8")
+                return self.reply(200, page, "text/html; charset=utf-8", [(
+                    "Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; "
+                    "style-src 'unsafe-inline'; connect-src 'self'")])
+            self.other()
+
+        def do_POST(self):
+            if self.headers.get("Host") not in hosts:
+                return self.reply(403, '{"error": "bad host"}')
+            p = self.path.split("?", 1)[0]
+            if p not in ("/seen", "/go"):
+                return self.other()
+            if self.headers.get("X-Claude-Tab") != "1":
+                return self.reply(403, '{"error": "missing header"}')
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = -1
+            body = self.rfile.read(n).decode("ascii", "replace") if 0 <= n <= 64 else ""
+            m = re.fullmatch(r"pid=(\d{1,10})", body)
+            if not m:
+                return self.reply(400, '{"error": "want pid=<digits>"}')
+            pid = int(m.group(1))
+            with lock:
+                if pid not in box["pids"]:
+                    return self.reply(404, '{"error": "no such session"}')
+                if box["state"] is not None:
+                    mark_seen(box["state"], pid, time.time())
+            if p == "/seen":
+                return self.reply(200, '{"ok": true}')
+            cmd = [o["self"], "focus", str(pid)] if o["self"] else ["/bin/sh", script, "focus", str(pid)]
+            try:
+                r = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=10)
+                err = [l for l in r.stderr.splitlines() if l.strip()]
+                rc = r.returncode
+            except (OSError, subprocess.SubprocessError) as e:
+                rc, err = 1, [str(e)]
+            if rc == 0:
+                return self.reply(200, '{"ok": true}')
+            self.reply(409, json.dumps({"ok": False, "error": err[-1] if err else "focus failed"}))
+
+    try:
+        httpd = LoopbackServer(("127.0.0.1", port), Handler)
+    except OSError as err:
+        sys.stderr.write("claude-tab: panel: port %d: %s\n" % (port, err.strerror or err))
+        sys.exit(1)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    gone_limit, gone, listening = 15 * tick_s, None, False  # 30 s at the default tick
+
+    while True:
+        now = time.time()
+        up = iterm_running()
+        if mtime() != build:
+            with lock:
+                if box["state"] is not None:
+                    save_state(path, box["state"], None, now)
+            httpd.server_close()
+            os.execv("/bin/sh", ["/bin/sh", script, "panel", "serve", "--port", str(port)])
+        if up:
+            gone = None
+        else:
+            gone = now if gone is None else gone
+            if now - gone >= gone_limit:
+                with lock:
+                    if box["state"] is not None:
+                        save_state(path, box["state"], None, now)
+                sys.exit(0)
+        try:
+            focus = "?"
+            snap = box["snap"]
+            if up and snap and snap["health"]["want_focus"] and box["state"] is not None:
+                f = front_tty(o["focus-script"])
+                with lock:
+                    tl = box["state"]["tally"]
+                    tl["focus_reads"] = tl.get("focus_reads", 0) + 1
+                    if f is None:
+                        tl["focus_failures"] = tl.get("focus_failures", 0) + 1
+                focus = f or "?"
+            with lock:
+                state, snap = tick(box["state"], dict(o, focus=focus), now)
+                if save_state(path, state, box["written"], now):
+                    box["written"] = copy.deepcopy(state)
+                box["state"], box["snap"] = state, snap
+                box["pids"] = set(r["pid"] for g in snap["others"] for r in g["rows"])
+        except Exception as err:  # one bad tick is logged; generated_at then stops moving
+            sys.stderr.write("claude-tab: panel tick failed: %r\n" % (err,))
+        if not listening and box["snap"] is not None:
+            listening = True
+            sys.stdout.write("claude-tab: panel on http://127.0.0.1:%d/\n" % port)
+            sys.stdout.flush()
+        time.sleep(tick_s)
+
+
+def status(o):
+    port = o["port"]
+    h, s = http_get(port, "/health"), http_get(port, "/snapshot.json")
+    if h is None:
+        print("server: not running")
+        sys.exit(3)
+    print("server: pid %d, port %d" % (json.loads(h)["pid"], port))
+    if s is None:
+        print("data: no snapshot yet")
+        return
+    s = json.loads(s)
+    hl, t = s["health"], s["tally"]
+    kinds = {}
+    for r in s["needs"]:
+        kinds[r["kind"]] = kinds.get(r["kind"], 0) + 1
+    print("data: %ds old, %d sessions, %d profiles, %d unreadable" % (
+        max(0, int(time.time() - s["generated_at"])), hl["sessions"], hl["profiles"], hl["unreadable"]))
+    print("focus: %s, %d reads, %d failures" % (hl["focus"], t["focus_reads"], t["focus_failures"]))
+    print("needs: " + (", ".join("%s %d" % kv for kv in sorted(kinds.items())) or "none"))
+    print("tally: %d entered, %d left, %d hidden prompts, %d seen by focus, %d seen by click, %d transitions" % (
+        t["entered"], t["left"], t["hidden_prompts"], t["seen_focus"], t["seen_click"], t["transitions"]))
+
+
+def detach(log, argv):
+    """Run argv in a session of its own, so it outlives iTerm2 and the shell that asked."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.makedirs(os.path.dirname(log), mode=0o700, exist_ok=True)
+    pid = os.fork()
+    if pid:
+        os.waitpid(pid, 0)
+        return
+    try:
+        os.setsid()
+        if os.fork():
+            os._exit(0)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        os.chdir("/")
+        null = os.open(os.devnull, os.O_RDONLY)
+        out = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        os.dup2(null, 0)
+        os.dup2(out, 1)
+        os.dup2(out, 2)
+        os.closerange(3, 256)
+        os.execv(argv[0], argv)
+    finally:
+        os._exit(127)
+
+
+def main(argv):
+    mode = argv[0] if argv else ""
+    if mode == "detach" and len(argv) >= 3:
+        return detach(argv[1], argv[2:])
+    if mode == "fetch" and len(argv) == 3 and argv[1].isdigit():
+        body = http_get(int(argv[1]), argv[2])
+        if body is None:
+            sys.exit(3)
+        return sys.stdout.write(body if body.endswith("\n") else body + "\n")
+    if mode not in ("tick", "serve", "status"):
+        die("unknown mode")
+    o = parse(argv[1:])
+    if mode == "serve":
+        return serve(o)
+    if mode == "status":
+        return status(o)
+    now = o["now"] if o["now"] is not None else time.time()
+    path = o["state"] or os.path.join(state_base(), "claude-tab", "panel-state.json")
+    prev = load_state(path)
+    state, snap = tick(prev, o, now)
+    save_state(path, state, prev, now)
+    sys.stdout.write(json.dumps(snap, sort_keys=True) + "\n")
+
+
+main(sys.argv[1:])
+PANEL_PY
+}
+
+# panel_run <mode> [args]: panel_py with the arguments every mode shares: the
+# profiles, the two thresholds and tabname.
+panel_run() {
+  mode=$1
+  shift
+  need_python
+  q=$(git config --get tabstatus.quiet-minutes 2>/dev/null) || q=''
+  case $q in ''|*[!0-9]*|0*) q=15;; esac
+  f=$(git config --get claude-tab.finished-seconds 2>/dev/null) || f=''
+  case $f in ''|*[!0-9]*|0*) f=60;; esac
+  set -- --quiet "$((q * 60))" --finished "$f" --tabname "$TABNAME" "$@"
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    set -- --profile "$d=$(profile_label "$d")" "$@"
+  done <<EOF_PROFILES
+$(profile_dirs)
+EOF_PROFILES
+  panel_py "$mode" "$@"
+}
+
+cmd_panel_tick() { panel_run tick "$@"; }
+
+# The server's port: git config claude-tab.panel-port, else 47600.
+panel_port() {
+  pp=$(git config --get claude-tab.panel-port 2>/dev/null) || pp=''
+  case $pp in ''|*[!0-9]*|0*) pp=47600;; esac
+  [ "$pp" -le 65535 ] || pp=47600
+  printf '%s\n' "$pp"
+}
+
+panel_dir() { printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/claude-tab"; }
+
+# This script's own absolute path, for the server to follow and to run `focus`.
+self_path() {
+  case $0 in
+    /*) printf '%s\n' "$0";;
+    *) printf '%s/%s\n' "$PWD" "$0";;
+  esac
+}
+
+cmd_panel_serve() {
+  need_macos "panel serve"
+  need_python
+  port=''
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --port) [ $# -ge 2 ] || usage; port=$2; shift 2;;
+      *) usage;;
+    esac
+  done
+  case $port in
+    '') port=$(panel_port);;
+    *[!0-9]*|0*) usage;;
+  esac
+  [ "$port" -le 65535 ] || usage
+  PANEL_EXEC=exec
+  panel_run serve --port "$port" --script "$(self_path)" --self "${CLAUDE_TAB_SELF-}" \
+    --focus-script "$(front_tty_script)"
+}
+
+cmd_panel_start() {
+  need_macos "panel start"
+  need_python
+  port=$(panel_port)
+  panel_py fetch "$port" /health >/dev/null 2>&1 && return 0
+  dir=$(panel_dir)
+  mkdir -p "$dir" && chmod 700 "$dir"
+  log=$dir/panel.log
+  if [ -f "$log" ] && [ "$(wc -c < "$log")" -gt 262144 ]; then mv -f "$log" "$log.prev"; fi
+  panel_py detach "$log" /bin/sh "$(self_path)" panel serve --port "$port"
+  i=0
+  while [ "$i" -lt 25 ]; do
+    if h=$(panel_py fetch "$port" /health 2>/dev/null); then
+      printf '%s %s\n' "$(printf '%s\n' "$h" | sed -n 's/.*"pid": \([0-9]*\).*/\1/p')" "$port" > "$dir/panel.pid"
+      printf 'claude-tab: panel started on http://127.0.0.1:%s/\n' "$port"
+      return 0
+    fi
+    sleep 0.2
+    i=$((i + 1))
+  done
+  die "panel did not answer on port $port within five seconds: $(tail -n 1 "$log" 2>/dev/null)"
+}
+
+cmd_panel_stop() {
+  f=$(panel_dir)/panel.pid
+  pid=''
+  [ -r "$f" ] && read -r pid _ < "$f"
+  case $pid in ''|*[!0-9]*) rm -f "$f"; exit 3;; esac
+  case $(ps -o command= -p "$pid" 2>/dev/null) in
+    *serve*claude-tab*) kill -TERM "$pid" 2>/dev/null || { rm -f "$f"; exit 3; };;
+    *) rm -f "$f"; exit 3;;
+  esac
+  rm -f "$f"
+  printf 'claude-tab: panel stopped\n'
+}
+
+cmd_panel_snapshot() {
+  need_python
+  panel_py fetch "$(panel_port)" /snapshot.json
+}
+
+cmd_panel_status() {
+  need_python
+  panel_py status --port "$(panel_port)"
+  ps_rc=$?
+  if [ -e "$(panel_dir)/panel.installed" ]; then echo "tool: installed"; else echo "tool: not installed"; fi
+  return "$ps_rc"
+}
+
+# The Python runtime that carries the iterm2 library (pane-sight's rule, with
+# its own variable first): the last executable of iTerm2's two runtime places.
+panel_python() {
+  pp=${CLAUDE_TAB_PANEL_PYTHON:-}
+  if [ -z "$pp" ]; then
+    for f in "$HOME/Library/Application Support/iTerm2"/iterm2env/versions/*/bin/python3 \
+             "$HOME/Library/Application Support/iTerm2"/uv/venvs/*/bin/python3; do
+      [ -x "$f" ] && pp=$f
+    done
+  fi
+  [ -n "$pp" ] && [ -x "$pp" ] && printf '%s\n' "$pp"
+}
+
+# The one registration: argv[1] the tool's name, argv[2] its identifier, argv[3]
+# its URL, ten seconds at most. Registering the same three again reloads every
+# open copy of the tool.
+PANEL_REGISTER_PY='import signal, sys
+import iterm2
+from iterm2 import tool
+
+signal.signal(signal.SIGALRM, signal.SIG_DFL)  # an inherited SIG_IGN would disarm the limit
+signal.alarm(10)
+
+async def main(connection):
+    await tool.async_register_web_view_tool(connection, sys.argv[1], sys.argv[2], True, sys.argv[3])
+
+iterm2.run_until_complete(main)'
+
+# Needs a fresh API cookie and never starts the library without one: it would
+# ask iTerm2 through AppleScript, which only an iTerm2 shell may do quietly.
+# Nothing here needs a terminal or a Claude session, so a login shell's `claude`
+# wrapper, launchd or an AutoLaunch script can all run it.
+cmd_panel_register() {
+  rg_quiet=''
+  case ${1-} in --quiet) rg_quiet=1; shift;; esac
+  [ $# -eq 0 ] || usage
+  need_macos "panel register"
+  rg_py=$(panel_python) || die "no iTerm2 Python runtime (Scripts > Manage > Install Python Runtime); the panel is not registered"
+  rg_name=$(git config --get claude-tab.panel-name 2>/dev/null) || rg_name=''
+  [ -n "$rg_name" ] || rg_name='Needs You'
+  rg_out=$(
+    api_cookie_env || exit 7
+    exec "$rg_py" -I -c "$PANEL_REGISTER_PY" "$rg_name" local.claude-tab.panel "http://127.0.0.1:$(panel_port)/" </dev/null 2>&1
+  ) || {
+    [ "$?" -ne 7 ] || die "no fresh iTerm2 API cookie (run iterm2-cookie); the panel is not registered"
+    die "could not register the panel: $(printf '%s\n' "$rg_out" | tail -n 1)"
+  }
+  [ -n "$rg_quiet" ] || printf 'claude-tab: Toolbelt tool "%s" registered (View > Toolbelt)\n' "$rg_name"
+}
+
+cmd_panel_install() {
+  cmd_panel_start
+  cmd_panel_register --quiet
+  mkdir -p "$(panel_dir)" && chmod 700 "$(panel_dir)"
+  panel_port > "$(panel_dir)/panel.installed"
+  printf 'claude-tab: the panel is the Toolbelt tool "%s", at http://127.0.0.1:%s/\n' \
+    "$(git config --get claude-tab.panel-name 2>/dev/null || echo 'Needs You')" "$(panel_port)"
+  printf 'claude-tab: it shows once the Toolbelt is (View > Toolbelt > Show Toolbelt); attended claude launches keep it up\n'
+}
+
+cmd_panel_uninstall() {
+  ( cmd_panel_stop ) || :
+  rm -f "$(panel_dir)/panel.installed"
+  printf 'claude-tab: untick the tool in View > Toolbelt (iTerm2 has no call that removes a registration)\n'
+}
+
+# Silent, for the `claude` wrapper: nothing without the marker, nothing while the
+# server answers, else start it and register (a view that loaded while nothing
+# listened stays blank until it is reloaded). A fresh launch after an iTerm2
+# restart may find its cookie still being minted, so the cookie is waited for
+# (this runs detached). Failures are one line each in panel.log.
+cmd_panel_ensure() {
+  en_dir=$(panel_dir)
+  [ -e "$en_dir/panel.installed" ] || return 0
+  [ "$(os)" = Darwin ] || return 0
+  panel_py fetch "$(panel_port)" /health >/dev/null 2>&1 && return 0
+  mkdir -p "$en_dir" && chmod 700 "$en_dir"
+  ( cmd_panel_start ) >/dev/null 2>>"$en_dir/panel.log" || return 0
+  en_i=0
+  while [ "$en_i" -lt 20 ] && ! ( api_cookie_env ); do
+    sleep "${CLAUDE_TAB_PANEL_COOKIE_WAIT:-0.5}"
+    en_i=$((en_i + 1))
+  done
+  ( cmd_panel_register --quiet ) >/dev/null 2>>"$en_dir/panel.log" || :
+}
+
+cmd_panel() {
+  [ $# -ge 1 ] || usage
+  verb=$1
+  shift
+  case $verb in
+    tick)     cmd_panel_tick "$@";;
+    serve)    cmd_panel_serve "$@";;
+    start)    cmd_panel_start;;
+    stop)     cmd_panel_stop;;
+    snapshot) cmd_panel_snapshot;;
+    status)   cmd_panel_status;;
+    register)  cmd_panel_register "$@";;
+    install)   cmd_panel_install;;
+    uninstall) cmd_panel_uninstall;;
+    ensure)    cmd_panel_ensure;;
+    *)        usage;;
+  esac
+}
+
 # --- dispatch ----------------------------------------------------------------
 
 [ $# -ge 1 ] || usage
@@ -866,6 +1898,7 @@ case $cmd in
   focus)     cmd_focus "$@";;
   save)      cmd_save "$@";;
   restore)   cmd_restore "$@";;
+  panel)     cmd_panel "$@";;
   -h|--help|help) usage;;
   *)         die "unknown command '$cmd' (claude-tab help)";;
 esac

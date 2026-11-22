@@ -272,7 +272,12 @@ binstr workingSessionCount
 binstr waitingSessionCount
 binstr ToolStatus.HelpMarkdown
 binstr Claude Code Integration Setup
+# The reveal URL claude-tab focus opens (references/session-status.md, Workgroups).
+binstr revealSessionID:
+binstr revealWithURL:
 binstr com.googlecode.iterm2.iTermCompanion
 # The per-session render pane-sight pictures a pane with (references/python-api.md).
 binstr apiServerScreenshot:handler:
 binstr screenshotPNGData
+# The Toolbelt tool the Needs You panel registers (references/workflow.md, Toolbelt).
+binstr NoSyncDynamicTools

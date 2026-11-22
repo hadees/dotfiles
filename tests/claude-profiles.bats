@@ -1649,3 +1649,35 @@ args_sent() { printf '%s' "$output" | tr -d '\r' | sed -n 's/^.*args=/args=/p'; 
   PTY_DIR=$repo PTY_ANSWER=n pty_claude
   [ "$(args_sent)" = "args=" ]
 }
+
+# The Needs You panel: an attended launch in an iTerm2 session starts
+# `claude-tab panel ensure` when `panel install` left its marker, and never
+# otherwise. The stub claude-tab logs its arguments.
+panel_setup() {
+  cookie_line_setup
+  mkdir -p "$HOME/bin" "$HOME/.local/state/claude-tab"
+  export XDG_STATE_HOME="$HOME/.local/state"
+  printf '#!/bin/sh\necho "$*" >> "%s/panel.calls"\n' "$BATS_TEST_TMPDIR" > "$HOME/bin/claude-tab"
+  chmod +x "$HOME/bin/claude-tab"
+  PANEL_CALLS="$BATS_TEST_TMPDIR/panel.calls"
+  repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
+}
+panel_called() { [ "$(cat "$PANEL_CALLS" 2>/dev/null)" = "panel ensure" ]; }
+
+@test "claude: an attended launch with the panel marker runs panel ensure" {
+  panel_setup
+  echo 47600 > "$HOME/.local/state/claude-tab/panel.installed"
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  [[ "$output" == *"rc=0"* ]]
+  cookie_wait panel_called
+}
+
+@test "claude: no marker, no iTerm2 session, or print mode runs no panel ensure" {
+  panel_setup
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude
+  echo 47600 > "$HOME/.local/state/claude-tab/panel.installed"
+  (unset ITERM_SESSION_ID; PTY_DIR=$repo PTY_ANSWER=n pty_claude)
+  PTY_DIR=$repo PTY_ANSWER=n pty_claude -p hi
+  sleep 1
+  [ ! -e "$PANEL_CALLS" ]
+}
