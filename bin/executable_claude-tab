@@ -56,6 +56,14 @@
 #                            of every profile, updates the state file, prints
 #                            the snapshot as one line of JSON (--focus: the tty
 #                            in front, - for none, ? for unknown)
+#   panel serve [--port <n>] the needs-you list's server, in the foreground: a
+#                            tick every 2 s, the snapshot, the page and the
+#                            click on 127.0.0.1 only (macOS; port: git config
+#                            claude-tab.panel-port, else 47600)
+#   panel start|stop         serve detached (log and pid in the state
+#                            directory), or end that one (exit 3 when none runs)
+#   panel snapshot           the running server's snapshot (exit 3 when none)
+#   panel status             server, data, focus, needs and tally lines
 set -u
 
 TAB=$(printf '\t')
@@ -324,6 +332,21 @@ tell application "iTerm2"
   end repeat
 end tell
 return ""
+APPLESCRIPT
+}
+
+# Read-only: the tty of the session in front in the front window of iTerm2, "-"
+# when iTerm2 is not frontmost or has none. The panel's server asks this about
+# every two seconds while a row is unseen, and addresses iTerm2 alone.
+front_tty_script() {
+  cat <<'APPLESCRIPT'
+tell application "iTerm2"
+  if not frontmost then return "-"
+  try
+    return tty of current session of current window
+  end try
+end tell
+return "-"
 APPLESCRIPT
 }
 
@@ -866,8 +889,11 @@ EOF_PLAN
 # `<digits>.json`, a positive int pid that answers kill 0 (PermissionError is
 # alive). The mode word is the first argument.
 panel_py() {
-  python3 -I - "$@" <<'PANEL_PY'
-import json, os, re, subprocess, sys, time
+  # PANEL_EXEC=exec makes the server the very process that was started (its pid
+  # is the one panel.pid holds, and survives replacing itself).
+  ${PANEL_EXEC:+exec} python3 -I - "$@" <<'PANEL_PY'
+import copy, json, os, re, signal, subprocess, sys, threading, time, urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 V = 1
 APPEAR = {"blocked": 4, "asked": 4, "failed": 4, "quiet": 0, "unknown": 60}
@@ -881,7 +907,7 @@ IDLE_KIND = {"busy": "working", "idle": "idle", "shell": "idle-bg"}
 
 
 def die(msg):
-    sys.stderr.write("claude-tab: panel tick: %s\n" % msg)
+    sys.stderr.write("claude-tab: panel: %s\n" % msg)
     sys.exit(2)
 
 
@@ -899,12 +925,14 @@ def posint(v, default):
 
 def parse(argv):
     o = {"state": None, "now": None, "focus": "?", "profiles": [], "quiet": 900,
-         "finished": 60, "life": {}, "build": "-", "tabname": ""}
+         "finished": 60, "life": {}, "build": "-", "tabname": "", "port": 0, "script": "",
+         "self": "", "focus-script": ""}
     i = 0
     while i < len(argv):
         k = argv[i]
         if k not in ("--state", "--now", "--focus", "--profile", "--quiet",
-                     "--finished", "--life", "--build", "--tabname") or i + 1 >= len(argv):
+                     "--finished", "--life", "--build", "--tabname", "--port", "--script",
+                     "--self", "--focus-script") or i + 1 >= len(argv):
             die("bad argument '%s'" % k)
         v = argv[i + 1]
         i += 2
@@ -924,6 +952,8 @@ def parse(argv):
                 die("bad --now '%s'" % v)
         elif k in ("--quiet", "--finished"):
             o[k[2:]] = posint(v, o[k[2:]])
+        elif k == "--port":
+            o["port"] = posint(v, 0)
         else:
             o[k[2:]] = v
     return o
@@ -1267,7 +1297,7 @@ def save_state(path, state, prev, now):
     def core(st):
         return (st["sessions"], dict((k, v) for k, v in st["tally"].items() if k != "ticks"))
     if prev is not None and now - prev["saved_at"] < 60 and core(prev) == core(state):
-        return
+        return False
     try:
         os.makedirs(os.path.dirname(path) or ".", mode=0o700, exist_ok=True)
         tmp = "%s.%d.tmp" % (path, os.getpid())
@@ -1277,12 +1307,249 @@ def save_state(path, state, prev, now):
         os.replace(tmp, path)
     except OSError as err:
         sys.stderr.write("claude-tab: cannot write %s: %s\n" % (path, err))
+    return True
+
+
+
+def iterm_running():
+    out = run(["ps", "-Ao", "ucomm="])
+    return any(l.rstrip() == "iTerm2" for l in (out or "").splitlines())
+
+
+def front_tty(script):
+    """The tty of the iTerm2 session in front, "-" when none is, None when it could not be asked."""
+    try:
+        r = subprocess.run(["osascript", "-"], input=script, capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = r.stdout.strip()
+    return out if r.returncode == 0 and (out == "-" or out.startswith("/")) else None
+
+
+def http_get(port, path):
+    """Body of a GET on the local server, or None (no proxy: this is loopback)."""
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(
+                "http://127.0.0.1:%d%s" % (port, path), timeout=3) as r:
+            return r.read().decode("utf-8")
+    except (OSError, ValueError):
+        return None
+
+
+def serve(o):
+    port, script = o["port"], o["script"]
+    tick_s = float(os.environ.get("CLAUDE_TAB_PANEL_TICK") or 2)
+    html = os.environ.get("CLAUDE_TAB_PANEL_HTML") or os.path.join(
+        os.path.expanduser("~"), ".local", "share", "claude-tab", "panel.html")
+    path = os.path.join(state_base(), "claude-tab", "panel-state.json")
+    hosts = ("127.0.0.1:%d" % port, "localhost:%d" % port)
+
+    def mtime():
+        try:
+            return str(os.stat(script).st_mtime_ns)
+        except OSError:
+            return "-"
+    build = mtime()
+    o["build"] = build
+    lock = threading.Lock()
+    box = {"state": load_state(path), "snap": None, "pids": set()}
+    box["written"] = copy.deepcopy(box["state"])
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def reply(self, code, body, ctype="application/json", extra=()):
+            data = body if isinstance(body, bytes) else body.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            for k, v in extra:
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(data)
+
+        def other(self):
+            self.reply(404, '{"error": "not found"}')
+
+        do_HEAD = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = other
+
+        def do_GET(self):
+            if self.headers.get("Host") not in hosts:
+                return self.reply(403, '{"error": "bad host"}')
+            p = self.path.split("?", 1)[0]
+            if p == "/snapshot.json":
+                snap = box["snap"]
+                if snap is None:
+                    return self.reply(503, '{"error": "no snapshot yet"}')
+                return self.reply(200, json.dumps(snap, sort_keys=True))
+            if p == "/health":
+                return self.reply(200, json.dumps({"ok": True, "pid": os.getpid(), "build": build}))
+            if p == "/":
+                try:
+                    with open(html, "rb") as fh:
+                        page = fh.read()
+                except OSError:
+                    return self.reply(500, "claude-tab: panel page missing: %s\n" % html, "text/plain; charset=utf-8")
+                return self.reply(200, page, "text/html; charset=utf-8", [(
+                    "Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; "
+                    "style-src 'unsafe-inline'; connect-src 'self'")])
+            self.other()
+
+        def do_POST(self):
+            if self.headers.get("Host") not in hosts:
+                return self.reply(403, '{"error": "bad host"}')
+            p = self.path.split("?", 1)[0]
+            if p not in ("/seen", "/go"):
+                return self.other()
+            if self.headers.get("X-Claude-Tab") != "1":
+                return self.reply(403, '{"error": "missing header"}')
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = -1
+            body = self.rfile.read(n).decode("ascii", "replace") if 0 <= n <= 64 else ""
+            m = re.fullmatch(r"pid=(\d{1,10})", body)
+            if not m:
+                return self.reply(400, '{"error": "want pid=<digits>"}')
+            pid = int(m.group(1))
+            with lock:
+                if pid not in box["pids"]:
+                    return self.reply(404, '{"error": "no such session"}')
+                if box["state"] is not None:
+                    mark_seen(box["state"], pid, time.time())
+            if p == "/seen":
+                return self.reply(200, '{"ok": true}')
+            cmd = [o["self"], "focus", str(pid)] if o["self"] else ["/bin/sh", script, "focus", str(pid)]
+            try:
+                r = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=10)
+                err = [l for l in r.stderr.splitlines() if l.strip()]
+                rc = r.returncode
+            except (OSError, subprocess.SubprocessError) as e:
+                rc, err = 1, [str(e)]
+            if rc == 0:
+                return self.reply(200, '{"ok": true}')
+            self.reply(409, json.dumps({"ok": False, "error": err[-1] if err else "focus failed"}))
+
+    try:
+        httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    except OSError as err:
+        sys.stderr.write("claude-tab: panel: port %d: %s\n" % (port, err.strerror or err))
+        sys.exit(1)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    gone_limit, gone, listening = 15 * tick_s, None, False  # 30 s at the default tick
+
+    while True:
+        now = time.time()
+        up = iterm_running()
+        if mtime() != build:
+            with lock:
+                if box["state"] is not None:
+                    save_state(path, box["state"], None, now)
+            httpd.server_close()
+            os.execv("/bin/sh", ["/bin/sh", script, "panel", "serve", "--port", str(port)])
+        if up:
+            gone = None
+        else:
+            gone = now if gone is None else gone
+            if now - gone >= gone_limit:
+                with lock:
+                    if box["state"] is not None:
+                        save_state(path, box["state"], None, now)
+                sys.exit(0)
+        try:
+            focus = "?"
+            snap = box["snap"]
+            if up and snap and snap["health"]["want_focus"] and box["state"] is not None:
+                f = front_tty(o["focus-script"])
+                with lock:
+                    tl = box["state"]["tally"]
+                    tl["focus_reads"] = tl.get("focus_reads", 0) + 1
+                    if f is None:
+                        tl["focus_failures"] = tl.get("focus_failures", 0) + 1
+                focus = f or "?"
+            with lock:
+                state, snap = tick(box["state"], dict(o, focus=focus), now)
+                if save_state(path, state, box["written"], now):
+                    box["written"] = copy.deepcopy(state)
+                box["state"], box["snap"] = state, snap
+                box["pids"] = set(r["pid"] for g in snap["others"] for r in g["rows"])
+        except Exception as err:  # one bad tick is logged; generated_at then stops moving
+            sys.stderr.write("claude-tab: panel tick failed: %r\n" % (err,))
+        if not listening and box["snap"] is not None:
+            listening = True
+            sys.stdout.write("claude-tab: panel on http://127.0.0.1:%d/\n" % port)
+            sys.stdout.flush()
+        time.sleep(tick_s)
+
+
+def status(o):
+    port = o["port"]
+    h, s = http_get(port, "/health"), http_get(port, "/snapshot.json")
+    if h is None:
+        print("server: not running")
+        sys.exit(3)
+    print("server: pid %d, port %d" % (json.loads(h)["pid"], port))
+    if s is None:
+        print("data: no snapshot yet")
+        return
+    s = json.loads(s)
+    hl, t = s["health"], s["tally"]
+    kinds = {}
+    for r in s["needs"]:
+        kinds[r["kind"]] = kinds.get(r["kind"], 0) + 1
+    print("data: %ds old, %d sessions, %d profiles, %d unreadable" % (
+        max(0, int(time.time() - s["generated_at"])), hl["sessions"], hl["profiles"], hl["unreadable"]))
+    print("focus: %s, %d reads, %d failures" % (hl["focus"], t["focus_reads"], t["focus_failures"]))
+    print("needs: " + (", ".join("%s %d" % kv for kv in sorted(kinds.items())) or "none"))
+    print("tally: %d entered, %d left, %d hidden prompts, %d seen by focus, %d seen by click, %d transitions" % (
+        t["entered"], t["left"], t["hidden_prompts"], t["seen_focus"], t["seen_click"], t["transitions"]))
+
+
+def detach(log, argv):
+    """Run argv in a session of its own, so it outlives iTerm2 and the shell that asked."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.makedirs(os.path.dirname(log), mode=0o700, exist_ok=True)
+    pid = os.fork()
+    if pid:
+        os.waitpid(pid, 0)
+        return
+    try:
+        os.setsid()
+        if os.fork():
+            os._exit(0)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        os.chdir("/")
+        null = os.open(os.devnull, os.O_RDONLY)
+        out = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        os.dup2(null, 0)
+        os.dup2(out, 1)
+        os.dup2(out, 2)
+        os.closerange(3, 256)
+        os.execv(argv[0], argv)
+    finally:
+        os._exit(127)
 
 
 def main(argv):
-    if not argv or argv[0] != "tick":
+    mode = argv[0] if argv else ""
+    if mode == "detach" and len(argv) >= 3:
+        return detach(argv[1], argv[2:])
+    if mode == "fetch" and len(argv) == 3 and argv[1].isdigit():
+        body = http_get(int(argv[1]), argv[2])
+        if body is None:
+            sys.exit(3)
+        return sys.stdout.write(body if body.endswith("\n") else body + "\n")
+    if mode not in ("tick", "serve", "status"):
         die("unknown mode")
     o = parse(argv[1:])
+    if mode == "serve":
+        return serve(o)
+    if mode == "status":
+        return status(o)
     now = o["now"] if o["now"] is not None else time.time()
     path = o["state"] or os.path.join(state_base(), "claude-tab", "panel-state.json")
     prev = load_state(path)
@@ -1295,7 +1562,11 @@ main(sys.argv[1:])
 PANEL_PY
 }
 
-cmd_panel_tick() {
+# panel_run <mode> [args]: panel_py with the arguments every mode shares: the
+# profiles, the two thresholds and tabname.
+panel_run() {
+  mode=$1
+  shift
   need_python
   q=$(git config --get tabstatus.quiet-minutes 2>/dev/null) || q=''
   case $q in ''|*[!0-9]*|0*) q=15;; esac
@@ -1308,7 +1579,93 @@ cmd_panel_tick() {
   done <<EOF_PROFILES
 $(profile_dirs)
 EOF_PROFILES
-  panel_py tick "$@"
+  panel_py "$mode" "$@"
+}
+
+cmd_panel_tick() { panel_run tick "$@"; }
+
+# The server's port: git config claude-tab.panel-port, else 47600.
+panel_port() {
+  pp=$(git config --get claude-tab.panel-port 2>/dev/null) || pp=''
+  case $pp in ''|*[!0-9]*|0*) pp=47600;; esac
+  [ "$pp" -le 65535 ] || pp=47600
+  printf '%s\n' "$pp"
+}
+
+panel_dir() { printf '%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}/claude-tab"; }
+
+# This script's own absolute path, for the server to follow and to run `focus`.
+self_path() {
+  case $0 in
+    /*) printf '%s\n' "$0";;
+    *) printf '%s/%s\n' "$PWD" "$0";;
+  esac
+}
+
+cmd_panel_serve() {
+  need_macos "panel serve"
+  need_python
+  port=''
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --port) [ $# -ge 2 ] || usage; port=$2; shift 2;;
+      *) usage;;
+    esac
+  done
+  case $port in
+    '') port=$(panel_port);;
+    *[!0-9]*|0*) usage;;
+  esac
+  [ "$port" -le 65535 ] || usage
+  PANEL_EXEC=exec
+  panel_run serve --port "$port" --script "$(self_path)" --self "${CLAUDE_TAB_SELF-}" \
+    --focus-script "$(front_tty_script)"
+}
+
+cmd_panel_start() {
+  need_macos "panel start"
+  need_python
+  port=$(panel_port)
+  panel_py fetch "$port" /health >/dev/null 2>&1 && return 0
+  dir=$(panel_dir)
+  mkdir -p "$dir" && chmod 700 "$dir"
+  log=$dir/panel.log
+  if [ -f "$log" ] && [ "$(wc -c < "$log")" -gt 262144 ]; then mv -f "$log" "$log.prev"; fi
+  panel_py detach "$log" /bin/sh "$(self_path)" panel serve --port "$port"
+  i=0
+  while [ "$i" -lt 25 ]; do
+    if h=$(panel_py fetch "$port" /health 2>/dev/null); then
+      printf '%s %s\n' "$(printf '%s\n' "$h" | sed -n 's/.*"pid": \([0-9]*\).*/\1/p')" "$port" > "$dir/panel.pid"
+      printf 'claude-tab: panel started on http://127.0.0.1:%s/\n' "$port"
+      return 0
+    fi
+    sleep 0.2
+    i=$((i + 1))
+  done
+  die "panel did not answer on port $port within five seconds: $(tail -n 1 "$log" 2>/dev/null)"
+}
+
+cmd_panel_stop() {
+  f=$(panel_dir)/panel.pid
+  pid=''
+  [ -r "$f" ] && read -r pid _ < "$f"
+  case $pid in ''|*[!0-9]*) rm -f "$f"; exit 3;; esac
+  case $(ps -o command= -p "$pid" 2>/dev/null) in
+    *serve*claude-tab*) kill -TERM "$pid" 2>/dev/null || { rm -f "$f"; exit 3; };;
+    *) rm -f "$f"; exit 3;;
+  esac
+  rm -f "$f"
+  printf 'claude-tab: panel stopped\n'
+}
+
+cmd_panel_snapshot() {
+  need_python
+  panel_py fetch "$(panel_port)" /snapshot.json
+}
+
+cmd_panel_status() {
+  need_python
+  panel_py status --port "$(panel_port)"
 }
 
 cmd_panel() {
@@ -1316,8 +1673,13 @@ cmd_panel() {
   verb=$1
   shift
   case $verb in
-    tick) cmd_panel_tick "$@";;
-    *)    usage;;
+    tick)     cmd_panel_tick "$@";;
+    serve)    cmd_panel_serve "$@";;
+    start)    cmd_panel_start;;
+    stop)     cmd_panel_stop;;
+    snapshot) cmd_panel_snapshot;;
+    status)   cmd_panel_status;;
+    *)        usage;;
   esac
 }
 

@@ -117,7 +117,68 @@ transcript to judge by, is never called quiet. The claim and transcript layouts
 are observed, not interfaces: if either moves, hand-off peers list their turn
 ends or `quiet` never fires (`health.life_unknown` counts the latter).
 
+**The process, `claude-tab panel serve [--port <n>]`** (macOS; foreground). The
+tick above, as a function in a loop: one pass every `CLAUDE_TAB_PANEL_TICK`
+seconds (default 2, a test handle), the last snapshot kept in memory, the state
+file written when something changed or a minute passed (against what was last
+written, not the previous tick). The port is `--port`, else `git config
+claude-tab.panel-port`, else 47600, bound to `127.0.0.1` only; a port in use is
+one line and exit 1. It prints `claude-tab: panel on http://127.0.0.1:<port>/`
+once the first tick is done. The profile directories are read once at start,
+so a profile created later is seen after the next restart. One tick that
+raises is one line on stderr and the loop goes on; `generated_at` then stops
+moving, which is what the page's stale banner reads.
+
+**Endpoints.** `GET /snapshot.json` (503 before the first tick), `GET /health`
+(`{ok, pid, build}`), `GET /` (the file `$CLAUDE_TAB_PANEL_HTML`, else
+`~/.local/share/claude-tab/panel.html`, read on each request, with a CSP that
+allows only inline script and style and fetches to itself; a missing file is
+500 naming the path), `POST /seen` and `POST /go` with the body `pid=<digits>`.
+Everything else is 404 and nothing is read from a path in the request. Every
+request whose `Host` is not `127.0.0.1:<port>` or `localhost:<port>` is 403
+(DNS rebinding: a page on another name resolving to loopback still sends its
+own `Host`). A POST needs the header `X-Claude-Tab: 1`, which a cross-site
+form cannot send and a cross-origin `fetch` may not add without a preflight
+the server never answers; and a pid that is in the current snapshot, else 404.
+Both POSTs call `mark_seen`; `/go` then runs `focus <pid>` through
+`$CLAUDE_TAB_SELF` (a test handle; else this script under `/bin/sh`) with ten
+seconds, and answers 200 `{"ok": true}` or 409 with the last line of its
+stderr.
+
+**The focus read.** On a tick whose previous snapshot had `want_focus` and
+only while iTerm2 is in `ps`, one `osascript -` of `front_tty_script`: iTerm2
+alone, three seconds at most, printing the tty of the current session of the
+current window, `-` when iTerm2 is not frontmost. A failure, a timeout or an
+answer that is neither is `?` and `tally.focus_failures`; every read is
+`tally.focus_reads`. With nothing unseen no read runs, so a calm list asks
+iTerm2 nothing. The tell: `focus unknown` with failures climbing in `status`
+means macOS is asking for a grant, and rows then clear by click and by
+typing only.
+
+**It follows its own code and ends with iTerm2.** When the script's mtime
+differs from the one read at start it saves its state and `exec`s `/bin/sh
+<script> panel serve --port <port>`; `build` is that mtime, so the page can
+reload itself. The server is the process that was started (`panel_py` execs
+python), so the pid in `panel.pid` survives the replacement. After iTerm2 has
+been absent from `ps` for 15 ticks (30 s at the default) it exits 0.
+
+**`start`, `stop`, `snapshot`, `status`.** `start` does nothing when `/health`
+already answers on the port; else it runs `serve` detached (a double fork and a
+session of its own, HUP ignored, ported from `iterm2-prefs`), appends its output
+to `<state dir>/panel.log` (rotated to `.prev` past 262144 bytes), waits up to
+five seconds for `/health`, writes `<pid> <port>` to `panel.pid` from the answer
+and prints `claude-tab: panel started on http://127.0.0.1:<port>/`. `stop`
+sends TERM to the pid of `panel.pid` when `ps` shows `serve` and `claude-tab`
+in its command, removes the file, exit 3 when nothing runs. `snapshot` prints
+the running server's `/snapshot.json` (python `urllib` without proxies, exit 3
+when nothing answers). `status` prints `server:`, `data:`, `focus:`, `needs:`
+and `tally:` lines, exit 3 and `server: not running` when nothing answers.
+The invariant anyone can check while a prompt is open: the pids of
+`claude-tab attention` rows waiting four seconds or more are exactly the
+`blocked` rows of `panel snapshot`.
+
 **The tell.** A snapshot whose `health.sessions` is 0 while `claude-tab list`
 prints rows, or a row of kind `unknown`, means the registry's words moved.
 Tests: `tests/claude-tab-panel.bats` (fixture registries, `--now`, `--focus`,
-state under `BATS_TEST_TMPDIR`).
+state under `BATS_TEST_TMPDIR`; the server tests start it on a free port with a stub
+`osascript`, `ps` and `uname`).

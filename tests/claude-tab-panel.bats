@@ -37,6 +37,11 @@ setup() {
   cat > "$BIN/ps" <<'STUB'
 #!/bin/sh
 case "$*" in
+  *-Ao*) cat "$PROCS_FILE" 2>/dev/null; exit 0;;
+  *eww*) ;;
+  *"-o command="*) exec /bin/ps "$@";;
+esac
+case "$*" in
   *eww*)
     while [ $# -gt 0 ]; do case $1 in -p) pid=$2; shift 2;; *) shift;; esac; done
     cat "$PS_TABLE.env.$pid" 2>/dev/null
@@ -48,11 +53,29 @@ case "$*" in
 esac
 exit 0
 STUB
+  # uname answers Darwin, and ps lists the processes in PROCS_FILE, so the serve
+  # verbs run as on a Mac with iTerm2 up; emptying the file is iTerm2 quitting.
+  export PROCS_FILE="$BATS_TEST_TMPDIR/procs"
+  echo iTerm2 > "$PROCS_FILE"
+  printf '#!/bin/sh\necho Darwin\n' > "$BIN/uname"
+  # osascript: logs each call, answers the file `front` ("-" without one), or
+  # fails when FAKE_OSA_FAIL is set.
+  export OSA_LOG="$BATS_TEST_TMPDIR/osa-log"
+  : > "$OSA_LOG"
+  cat > "$BIN/osascript" <<'STUB'
+#!/bin/sh
+echo call >> "$OSA_LOG"
+cat > /dev/null
+[ -z "${FAKE_OSA_FAIL:-}" ] || exit 1
+cat "$BATS_TEST_TMPDIR/front" 2>/dev/null || echo -
+STUB
   chmod +x "$BIN"/*
   export PATH="$BIN:$PATH"
 }
 
 teardown() {
+  pf=$HOME/.local/state/claude-tab/panel.pid
+  [ ! -f "$pf" ] || kill "$(cut -d' ' -f1 "$pf")" 2>/dev/null || true
   [ ! -f "$BATS_TEST_TMPDIR/sleepers" ] || xargs kill < "$BATS_TEST_TMPDIR/sleepers" 2>/dev/null || true
 }
 
@@ -682,4 +705,264 @@ life() {
   tick 5000
   [ -z "$(kinds)" ]
   [ "$(val 'd["health"]["life_unknown"]')" = 1 ]
+}
+
+# --- panel serve ------------------------------------------------------------
+
+now_s() { date +%s; }
+
+# wait_for <command...>: polls for up to ten seconds.
+wait_for() {
+  i=0
+  while ! "$@" >/dev/null 2>&1; do
+    i=$((i + 1))
+    [ "$i" -lt 100 ] || return 1
+    sleep 0.1
+  done
+}
+
+free_port() {
+  python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'
+}
+
+# serve [script]: starts the server in the background on a free port (PORT) and
+# waits for its /health; the script defaults to the real one. A finished turn
+# counts after one second here so a test need not wait a minute.
+serve() {
+  mkdir -p "$HOME/.claude/sessions"
+  PORT=$(free_port)
+  git config --file "$GIT_CONFIG_GLOBAL" claude-tab.panel-port "$PORT"
+  git config --file "$GIT_CONFIG_GLOBAL" claude-tab.finished-seconds 1
+  export CLAUDE_TAB_PANEL_TICK=0.1
+  sh "${1:-$CT}" panel serve --port "$PORT" > "$BATS_TEST_TMPDIR/serve.out" 2>&1 3>&- &
+  SERVER=$!
+  echo "$SERVER" >> "$BATS_TEST_TMPDIR/sleepers"
+  wait_for grep -q "panel on" "$BATS_TEST_TMPDIR/serve.out"
+}
+
+# snap : the running server's snapshot, as $output (val reads it).
+snap() { run curl -s --noproxy '*' "http://127.0.0.1:$PORT/snapshot.json"; }
+
+# post <path> <body> [curl args...]: prints the status code, the body is in $BODY.
+post() {
+  p=$1 b=$2
+  shift 2
+  curl -s --noproxy '*' -o "$BATS_TEST_TMPDIR/body" -w '%{http_code}' -X POST -d "$b" "$@" "http://127.0.0.1:$PORT$p"
+}
+
+# needs_has <python condition over the snapshot d>
+needs_has() { snap; [ "$(val "$1")" = True ]; }
+
+# a_finished : a fresh idle session whose turn ended just now; sets LIVE.
+a_finished() {
+  live_pid
+  rec "$LIVE" idle $(($(now_s) + 1))
+}
+
+@test "serve answers health and the snapshot with the fields of the tick, on 127.0.0.1 only" {
+  serve
+  [ "$(curl -s --noproxy '*' "http://127.0.0.1:$PORT/health" | python3 -I -c 'import json,sys; d=json.load(sys.stdin); print(d["ok"], d["pid"] == int(sys.argv[1]))' "$SERVER")" = "True True" ]
+  grep -q "claude-tab: panel on http://127.0.0.1:$PORT/" "$BATS_TEST_TMPDIR/serve.out"
+  snap
+  [ "$(val 'sorted(d)')" = "['build', 'generated_at', 'health', 'needs', 'others', 'tally', 'v']" ]
+  [ "$(val 'd["build"] != "-"')" = True ]
+  # not on any other address of this machine
+  ip=$(python3 -I -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("192.0.2.1", 9)); print(s.getsockname()[0])' 2>/dev/null) || ip=''
+  case $ip in ''|127.*) skip "no non-loopback address here";; esac
+  run curl -s --noproxy '*' --max-time 3 "http://$ip:$PORT/health"
+  [ -z "$output" ]
+}
+
+@test "a port in use is one line and exit 1" {
+  serve
+  run sh "$CT" panel serve --port "$PORT"
+  [ "$status" -eq 1 ]
+  [ "${#lines[@]}" -eq 1 ]
+}
+
+@test "a wrong Host is 403, and a path with .. is 404" {
+  serve
+  [ "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' -H "Host: example.test:$PORT" "http://127.0.0.1:$PORT/health")" = 403 ]
+  [ "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' -H "Host: localhost:$PORT" "http://127.0.0.1:$PORT/health")" = 200 ]
+  [ "$(curl -s --noproxy '*' --path-as-is -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/../etc/passwd")" = 404 ]
+  [ "$(curl -s --noproxy '*' --path-as-is -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/snapshot.json/..")" = 404 ]
+  [ "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/nope")" = 404 ]
+}
+
+@test "every response carries no-store and nosniff, and the page carries its CSP" {
+  printf '<p>x</p>' > "$BATS_TEST_TMPDIR/page.html"
+  export CLAUDE_TAB_PANEL_HTML="$BATS_TEST_TMPDIR/page.html"
+  serve
+  run curl -si --noproxy '*' "http://127.0.0.1:$PORT/"
+  out=$(printf '%s' "$output" | tr 'A-Z' 'a-z')
+  [[ "$out" == *"200 ok"* ]]
+  [[ "$out" == *"cache-control: no-store"* ]]
+  [[ "$out" == *"x-content-type-options: nosniff"* ]]
+  [[ "$out" == *"content-security-policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'"* ]]
+  [[ "$out" == *"<p>x</p>"* ]]
+  run curl -si --noproxy '*' "http://127.0.0.1:$PORT/health"
+  out=$(printf '%s' "$output" | tr 'A-Z' 'a-z')
+  [[ "$out" == *"cache-control: no-store"* ]]
+}
+
+@test "a missing page is 500 and names its path" {
+  export CLAUDE_TAB_PANEL_HTML="$BATS_TEST_TMPDIR/none.html"
+  serve
+  [ "$(curl -s --noproxy '*' -o "$BATS_TEST_TMPDIR/body" -w '%{http_code}' "http://127.0.0.1:$PORT/")" = 500 ]
+  grep -q "$BATS_TEST_TMPDIR/none.html" "$BATS_TEST_TMPDIR/body"
+}
+
+@test "a POST without the header is 403, a pid not in the snapshot is 404" {
+  serve
+  a_finished
+  wait_for needs_has "any(r['pid'] == $LIVE for g in d['others'] for r in g['rows'])"
+  [ "$(post /seen "pid=$LIVE")" = 403 ]
+  [ "$(post /go "pid=$LIVE")" = 403 ]
+  [ "$(post /seen "pid=999999" -H 'X-Claude-Tab: 1')" = 404 ]
+  [ "$(post /seen "pid=abc" -H 'X-Claude-Tab: 1')" = 400 ]
+  [ "$(post /seen "pid=$LIVE" -H 'X-Claude-Tab: 1')" = 200 ]
+}
+
+@test "/seen removes a listed finished row at the next tick and counts one click" {
+  serve
+  a_finished
+  wait_for needs_has "[r['kind'] for r in d['needs']] == ['finished']"
+  [ "$(post /seen "pid=$LIVE" -H 'X-Claude-Tab: 1')" = 200 ]
+  wait_for needs_has "d['needs'] == []"
+  [ "$(val 'd["tally"]["seen_click"]')" = 1 ]
+}
+
+@test "/seen on a blocked row leaves it listed and marks it seen" {
+  serve
+  live_pid
+  rec "$LIVE" waiting $(($(now_s) - 100)) "permission prompt"
+  wait_for needs_has "[r['kind'] for r in d['needs']] == ['blocked']"
+  [ "$(post /seen "pid=$LIVE" -H 'X-Claude-Tab: 1')" = 200 ]
+  wait_for needs_has "d['needs'][0]['seen']"
+  [ "$(val 'd["tally"]["seen_click"]')" = 1 ]
+}
+
+# self_stub : CLAUDE_TAB_SELF logs its arguments, and fails when the file self-fail exists.
+self_stub() {
+  cat > "$BATS_TEST_TMPDIR/self" <<'STUB'
+#!/bin/sh
+echo "$*" >> "$BATS_TEST_TMPDIR/self-log"
+if [ -e "$BATS_TEST_TMPDIR/self-fail" ]; then echo "first line" >&2; echo "refused: no tab" >&2; exit 1; fi
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/self"
+  export CLAUDE_TAB_SELF="$BATS_TEST_TMPDIR/self"
+}
+
+@test "/go runs focus with that pid and marks it seen" {
+  self_stub
+  serve
+  a_finished
+  wait_for needs_has "[r['kind'] for r in d['needs']] == ['finished']"
+  [ "$(post /go "pid=$LIVE" -H 'X-Claude-Tab: 1')" = 200 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/body")" = '{"ok": true}' ]
+  [ "$(cat "$BATS_TEST_TMPDIR/self-log")" = "focus $LIVE" ]
+  wait_for needs_has "d['needs'] == []"
+  [ "$(val 'd["tally"]["seen_click"]')" = 1 ]
+}
+
+@test "/go is 409 with the last line of stderr when focus fails" {
+  self_stub
+  : > "$BATS_TEST_TMPDIR/self-fail"
+  serve
+  a_finished
+  wait_for needs_has "[r['kind'] for r in d['needs']] == ['finished']"
+  [ "$(post /go "pid=$LIVE" -H 'X-Claude-Tab: 1')" = 409 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/body")" = '{"ok": false, "error": "refused: no tab"}' ]
+}
+
+@test "no osascript call while nothing is unseen, calls once a fresh idle record is" {
+  serve
+  sleep 1
+  [ ! -s "$OSA_LOG" ]
+  a_finished
+  wait_for test -s "$OSA_LOG"
+  wait_for needs_has "d['tally']['focus_reads'] >= 1"
+  [ "$(val 'd["health"]["focus"]')" = none ]
+}
+
+@test "a read of the front tty that fails is focus unknown and counted" {
+  export FAKE_OSA_FAIL=1
+  serve
+  a_finished
+  wait_for needs_has "d['tally']['focus_failures'] >= 1"
+  [ "$(val 'd["health"]["focus"]')" = unknown ]
+}
+
+@test "the session in front is not listed, and counts as seen once focus has stayed" {
+  serve
+  live_pid
+  printf '%s 1 ttys009\n' "$LIVE" >> "$PS_TABLE"
+  rec "$LIVE" idle $(($(now_s) + 1))
+  echo /dev/ttys009 > "$BATS_TEST_TMPDIR/front"
+  wait_for needs_has "d['tally']['seen_focus'] == 1"
+  [ "$(val 'd["needs"]')" = "[]" ]
+}
+
+@test "touching the script changes build, and the server answers again under its pid" {
+  mkdir -p "$BATS_TEST_TMPDIR/copy"
+  cp "$CT" "$BATS_TEST_TMPDIR/copy/claude-tab"
+  serve "$BATS_TEST_TMPDIR/copy/claude-tab"
+  before=$(curl -s --noproxy '*' "http://127.0.0.1:$PORT/health")
+  sleep 1
+  touch "$BATS_TEST_TMPDIR/copy/claude-tab"
+  changed() { c=$(curl -s --noproxy "*" "http://127.0.0.1:$PORT/health"); [ -n "$c" ] && [ "$c" != "$before" ]; }
+  wait_for changed
+  after=$(curl -s --noproxy '*' "http://127.0.0.1:$PORT/health")
+  [ "$(printf '%s' "$before" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["pid"])')" = \
+    "$(printf '%s' "$after" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["pid"])')" ]
+}
+
+@test "the server exits once iTerm2 has been gone for the (scaled) 30 seconds" {
+  serve
+  : > "$PROCS_FILE"
+  gone() { ! kill -0 "$SERVER" 2>/dev/null; }
+  wait_for gone
+}
+
+@test "start twice starts one process, stop ends it, a second stop is exit 3" {
+  port=$(free_port)
+  git config --file "$GIT_CONFIG_GLOBAL" claude-tab.panel-port "$port"
+  export CLAUDE_TAB_PANEL_TICK=0.1
+  run sh "$CT" panel start
+  [ "$status" -eq 0 ]
+  [ "$output" = "claude-tab: panel started on http://127.0.0.1:$port/" ]
+  pid=$(cut -d' ' -f1 "$HOME/.local/state/claude-tab/panel.pid")
+  run sh "$CT" panel start
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$(cut -d' ' -f1 "$HOME/.local/state/claude-tab/panel.pid")" = "$pid" ]
+  [ "$(curl -s --noproxy '*' "http://127.0.0.1:$port/health" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["pid"])')" = "$pid" ]
+  run sh "$CT" panel stop
+  [ "$status" -eq 0 ]
+  gone() { ! kill -0 "$pid" 2>/dev/null; }
+  wait_for gone
+  run sh "$CT" panel stop
+  [ "$status" -eq 3 ]
+}
+
+@test "snapshot and status read the running server, and exit 3 with none" {
+  git config --file "$GIT_CONFIG_GLOBAL" claude-tab.panel-port "$(free_port)"
+  run sh "$CT" panel status
+  [ "$status" -eq 3 ]
+  [ "$output" = "server: not running" ]
+  run sh "$CT" panel snapshot
+  [ "$status" -eq 3 ]
+  serve
+  wait_for needs_has "d['tally']['ticks'] >= 1"
+  run sh "$CT" panel snapshot
+  [ "$status" -eq 0 ]
+  [ "$(val 'd["v"]')" = 1 ]
+  run sh "$CT" panel status
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 5 ]
+  [ "${lines[0]}" = "server: pid $SERVER, port $PORT" ]
+  [[ "${lines[1]}" == "data: "* ]]
+  [[ "${lines[2]}" == "focus: "* ]]
+  [ "${lines[3]}" = "needs: none" ]
+  [[ "${lines[4]}" == "tally: "* ]]
 }
