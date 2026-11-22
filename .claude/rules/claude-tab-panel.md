@@ -93,7 +93,8 @@ unlisted row's kind is `working`, `idle`, `idle-bg` or its condition kind. A
 row is `pid, profile, label, group, role, kind, reason, since, seen, tty`;
 `label`, `group`, `role` and `guid` say who the session is (below). `health` is `profiles`, `sessions`,
 `headless`, `unreadable` (`<digits>.json` files that did not parse),
-`focus` (`ok`, `none`, `unknown`), `turn_records`, `life_unknown` and
+`focus` (`ok`, `none`, `unknown`), `turn_records`, `life_unknown`, `peer_turns`
+(idle sessions hidden because another session started their last turn, below) and
 `want_focus` (any instance not yet seen).
 
 **Who each session is**, `who(cwd)`, all inside `panel_py`. `label` and `role`
@@ -104,7 +105,10 @@ base name of the directory holding `git rev-parse --path-format=absolute
 --git-common-dir`, so a repository's linked worktrees share one group, else the
 base name of the directory. `handoff` is true only for a `peer` whose own git
 directory's `claude-peer.claim` has `handoff` as its line 8; any failure is
-false, because a wrong false adds a row and a wrong true hides one. The answer
+false, because a wrong false adds a row and a wrong true hides one. A peer's
+`label` always carries its slot (line 3 of the same claim): `tabname.peer-format`
+is the operator's to set and `{repo}` alone makes every peer of a repository read
+like the repository, so a label that lacks the slot gets ` · <slot>` added. The answer
 is kept per directory for 60 seconds (roles move with claims, and `tabname` per
 session per tick would be a process tree each), the two `rev-parse` answers for
 the life of the process. `guid` is the `ITERM_SESSION_ID` of the process's
@@ -117,6 +121,24 @@ once and kept; a session with none is retried once a minute and, with no
 transcript to judge by, is never called quiet. The claim and transcript layouts
 are observed, not interfaces: if either moves, hand-off peers list their turn
 ends or `quiet` never fires (`health.life_unknown` counts the latter).
+
+**A turn another session started is not the operator's move.** An idle or shell
+session whose last turn began with a message from another session (a cross-session
+message, a mail wake, a roll-call) is not listed as `finished`, `asked`,
+`failed` or `finished-bg`, the same as a hand-off peer's; it counts in
+`health.peer_turns`. A dialog on it (`blocked`) and `quiet` still list. The signal
+is the transcript's own: the last `type: user` entry that is not a tool result and
+not a sidechain's and that carries `origin.kind` (else `turnOrigin`), read from
+the last 4 MiB of `<sessionId>.jsonl` and kept per file stamp, so an idle session
+costs one `stat` a tick. `origin.kind` of `peer` is the cross-session case (every
+`SendMessage` and the postbox courier's wake arrive as one; observed on
+1,800 entries of one profile); `human` is the operator typing; `task-notification`
+(a background task finishing) and anything unknown stay listed, because a wrong
+hide costs a missed turn. Only the one word is kept, never a line. The ceiling: the
+last such entry decides, so mail landing in the middle of a turn the operator
+started hides it; no transcript, no such entry or a read that fails lists. The
+layout is observed, not an interface: if `origin` moves, `peer_turns` stays 0
+while mail-driven turns show up in `Your move` again.
 
 **The process, `claude-tab panel serve [--port <n>]`** (macOS; foreground). The
 tick above, as a function in a loop: one pass every `CLAUDE_TAB_PANEL_TICK`
@@ -173,10 +195,48 @@ sends TERM to the pid of `panel.pid` when `ps` shows `serve` and `claude-tab`
 in its command, removes the file, exit 3 when nothing runs. `snapshot` prints
 the running server's `/snapshot.json` (python `urllib` without proxies, exit 3
 when nothing answers). `status` prints `server:`, `data:`, `focus:`, `needs:`
-and `tally:` lines, exit 3 and `server: not running` when nothing answers.
+and `tally:` lines, then `tool:` (`installed` with the marker, else `not installed`); exit 3
+and `server: not running` when nothing answers.
 The invariant anyone can check while a prompt is open: the pids of
 `claude-tab attention` rows waiting four seconds or more are exactly the
 `blocked` rows of `panel snapshot`.
+
+**The Toolbelt tool, and keeping the process up.** `register [--quiet]` runs
+the one registration through iTerm2's Python runtime (the last executable of
+`iterm2env/versions/*/bin/python3` and `uv/venvs/*/bin/python3` under its
+Application Support directory, `CLAUDE_TAB_PANEL_PYTHON` first; none is one
+line naming Scripts > Manage > Install Python Runtime, exit 1):
+`tool.async_register_web_view_tool(connection, <name>, "local.claude-tab.panel",
+True, "http://127.0.0.1:<port>/")` under a ten-second alarm. The name is `git
+config claude-tab.panel-name`, else `Needs You`; a name equal to a built-in
+tool's is refused by iTerm2 and shows as the interpreter's last line. It needs a
+fresh API cookie as `api_cookie_env` judges it (the same clause `it2_focus` uses:
+one in the environment, else the cookie file newer than iTerm2's socket) and
+never starts the library without one, because the library would then ask iTerm2
+through AppleScript and a stale cookie leaves no tool and no message. It needs no
+terminal and no Claude session: the interpreter runs with stdin from
+`/dev/null`, so the `claude` wrapper, launchd or an AutoLaunch script all work,
+and a Claude session's own Bash is the one place the permission classifier has
+refused it. Registering again with the same arguments reloads every open copy.
+iTerm2 keeps the tool (`NoSyncDynamicTools`, registered again at every launch),
+so a registration is needed once, and again only when the view loaded while
+nothing listened.
+
+`install` is `start`, `register --quiet`, then the marker `panel.installed` in
+the state directory (one line, the port) and two lines saying where the tool is
+and that the Toolbelt must be showing; a failure before the marker leaves none.
+`uninstall` is `stop` and removing the marker (iTerm2 has no call that removes a
+registration, so the tool is unticked by hand). `ensure` is silent: nothing
+without the marker, nothing while `/health` answers, else `start`, wait up to ten
+seconds for a fresh cookie (an iTerm2 restart has the wrapper minting one at the
+same moment; `CLAUDE_TAB_PANEL_COOKIE_WAIT` is the test handle for the step),
+then `register --quiet`; each failure is one line in `panel.log`. `claude()`
+(`.functions`) starts it on an attended launch in an iTerm2 session
+(`ITERM_SESSION_ID`) when the marker exists and `~/bin/claude-tab` is
+executable, with all three streams off the terminal as the cookie mint; a machine
+that never installed the panel pays one file test. **The first install is one
+line the operator types in an iTerm2 shell: `claude-tab panel install`**; after
+that every attended `claude` launch keeps it up.
 
 **The page** is `dot_local/share/claude-tab/panel.html`, one file with no
 external resource and no framework, deployed to

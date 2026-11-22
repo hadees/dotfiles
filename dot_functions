@@ -428,6 +428,13 @@ function claude() {
 			for line in $notes; do print -ru2 -- "claude: $line"; done;
 		fi;
 	fi;
+	# Keep the Needs You panel up (claude-tab-panel.md): `panel ensure` is
+	# started only where `claude-tab panel install` left its marker, in an
+	# iTerm2 session, with all three streams off the terminal as the mint
+	# above. One file test is all a machine that never installed it pays.
+	if [[ -n $attended && -n $ITERM_SESSION_ID && -e ${XDG_STATE_HOME:-$HOME/.local/state}/claude-tab/panel.installed && -x $HOME/bin/claude-tab ]]; then
+		( "$HOME/bin/claude-tab" panel ensure </dev/null >/dev/null 2>&1 & );
+	fi;
 	# Choose the iTerm2 Workgroup this tab enters, now that the launch is going
 	# ahead (an `n` above returned already) and only for the launches that were
 	# asked: a variable-changed trigger per workgroup enters it. The nonce

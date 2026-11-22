@@ -531,7 +531,7 @@ state_val() { python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); pr
   tick 5000 /dev/ttys001 --build abc
   [ "${#lines[@]}" -eq 1 ]
   [ "$(val 'sorted(d)')" = "['build', 'generated_at', 'health', 'needs', 'others', 'tally', 'v']" ]
-  [ "$(val 'sorted(d["health"])')" = "['focus', 'headless', 'life_unknown', 'profiles', 'sessions', 'turn_records', 'unreadable', 'want_focus']" ]
+  [ "$(val 'sorted(d["health"])')" = "['focus', 'headless', 'life_unknown', 'peer_turns', 'profiles', 'sessions', 'turn_records', 'unreadable', 'want_focus']" ]
   [ "$(val 'sorted(d["tally"])')" = "['entered', 'focus_failures', 'focus_reads', 'hidden_prompts', 'left', 'seen_click', 'seen_focus', 'ticks', 'transitions']" ]
   [ "$(val 'sorted(d["needs"][0])')" = "['group', 'guid', 'kind', 'label', 'pid', 'profile', 'reason', 'role', 'seen', 'since', 'tty']" ]
   [ "$(val 'sorted(d["others"][0])')" = "['group', 'idle', 'needs', 'rows', 'working']" ]
@@ -685,6 +685,78 @@ peer_fixture() {
   [ "$(val '[r["guid"] for r in d["needs"] if r["pid"] == '"$a"'][0]')" = G-1234 ]
   [ "$(val '[r["guid"] for r in d["needs"] if r["pid"] == '"$b"'][0]')" = None ]
   [ "$(state_val 'sorted(e["guid"] or "-" for e in d["sessions"].values())')" = "['-', 'G-1234']" ]
+}
+
+# transcript <pid> <origin kind or ->: append to the session's transcript a user entry of that
+# origin kind (- for none), then an assistant entry and a tool_result entry, as a turn leaves them.
+transcript() {
+  f="$HOME/.claude/projects/-work-proj/s$1.jsonl"
+  mkdir -p "$(dirname "$f")"
+  if [ "$2" = - ]; then o=''; else o=",\"origin\":{\"kind\":\"$2\"}"; fi
+  {
+    printf '{"type":"user","isSidechain":false,"message":{"role":"user","content":"x"}%s}\n' "$o"
+    printf '{"type":"assistant","isSidechain":false,"message":{"role":"assistant","content":"y"}}\n'
+    printf '{"type":"user","isSidechain":false,"message":{"role":"user","content":[{"type":"tool_result","content":"z"}]}}\n'
+  } >> "$f"
+}
+
+@test "a turn another session started is not listed, a turn the operator started is" {
+  live_pid; a=$LIVE; live_pid; b=$LIVE; live_pid; c=$LIVE
+  seed
+  for p in $a $b $c; do rec "$p" idle 1000; done
+  transcript "$a" peer
+  transcript "$b" human
+  tick 5000
+  [ "$(val 'd["health"]["peer_turns"]')" = 1 ]
+  [ "$(val 'sorted(r["pid"] for r in d["needs"] if r["kind"] == "finished") == sorted(['"$b, $c"'])')" = True ]
+  [ "$(val '[r["kind"] for g in d["others"] for r in g["rows"] if r["pid"] == '"$a"'][0]')" = idle ]
+}
+
+@test "the operator typing after a message from another session makes the turn theirs" {
+  live_pid
+  seed
+  rec "$LIVE" idle 1000
+  transcript "$LIVE" peer
+  tick 5000
+  [ -z "$(kinds)" ]
+  transcript "$LIVE" human
+  tick 5001
+  [ "$(kinds)" = finished ]
+  [ "$(val 'd["health"]["peer_turns"]')" = 0 ]
+}
+
+@test "a dialog on a session another session drove is still listed" {
+  live_pid
+  seed
+  rec "$LIVE" waiting 5000 "permission prompt"
+  transcript "$LIVE" peer
+  tick 5010
+  [ "$(kinds)" = blocked ]
+}
+
+@test "a transcript with no origin entry, or none at all, lists" {
+  live_pid; a=$LIVE; live_pid; b=$LIVE
+  seed
+  rec "$a" idle 1000
+  rec "$b" idle 1000
+  transcript "$a" -
+  tick 5000
+  [ "$(val 'sorted(r["pid"] for r in d["needs"]) == sorted(['"$a, $b"'])')" = True ]
+  [ "$(val 'd["health"]["peer_turns"]')" = 0 ]
+}
+
+@test "a peer's row carries its slot even when tabname.peer-format leaves it out" {
+  peer_fixture -
+  git config --file "$GIT_CONFIG_GLOBAL" tabname.peer-format '{repo}'
+  live_pid
+  seed
+  rec "$LIVE" idle 1000 "" interactive "$HOME/.claude" "$WT"
+  tick 5000
+  [ "$(val 'd["needs"][0]["label"]')" = "proj · Alpha" ]
+  [ "$(val 'd["others"][0]["rows"][0]["label"]')" = "proj · Alpha" ]
+  git config --file "$GIT_CONFIG_GLOBAL" tabname.peer-format '{peer}'
+  tick 5061
+  [ "$(val 'd["needs"][0]["label"]')" = Alpha ]
 }
 
 # life <pid> <seconds> [file under the project directory]: that transcript file, its mtime set to <seconds>.
@@ -961,7 +1033,7 @@ STUB
   git config --file "$GIT_CONFIG_GLOBAL" claude-tab.panel-port "$(free_port)"
   run sh "$CT" panel status
   [ "$status" -eq 3 ]
-  [ "$output" = "server: not running" ]
+  [ "$output" = "server: not running${NL}tool: not installed" ]
   run sh "$CT" panel snapshot
   [ "$status" -eq 3 ]
   serve
@@ -971,12 +1043,13 @@ STUB
   [ "$(val 'd["v"]')" = 1 ]
   run sh "$CT" panel status
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 5 ]
+  [ "${#lines[@]}" -eq 6 ]
   [ "${lines[0]}" = "server: pid $SERVER, port $PORT" ]
   [[ "${lines[1]}" == "data: "* ]]
   [[ "${lines[2]}" == "focus: "* ]]
   [ "${lines[3]}" = "needs: none" ]
   [[ "${lines[4]}" == "tally: "* ]]
+  [ "${lines[5]}" = "tool: not installed" ]
 }
 
 # The page: panel.html is one self-contained file, checked as text.
@@ -1011,4 +1084,148 @@ sys.exit(1 if any(0xE000 <= ord(c) <= 0xF8FF for c in t) else 0)' "$PAGE"
   out=$(printf '%s' "$output" | tr 'A-Z' 'a-z')
   [[ "$out" == *"content-security-policy: default-src 'none'"* ]]
   [[ "$out" == *"<title>needs you</title>"* ]]
+}
+
+# The Toolbelt tool. A stub interpreter on CLAUDE_TAB_PANEL_PYTHON logs the three
+# arguments after -I -c <program>, the cookie it was handed and how much stdin it
+# saw; cookie fresh|stale lays the API cookie file newer or older than iTerm2's socket.
+NL='
+'
+reg_stub() {
+  export CLAUDE_TAB_PANEL_PYTHON="$BATS_TEST_TMPDIR/regpy"
+  REG_LOG="$BATS_TEST_TMPDIR/reg.log"
+  cat > "$CLAUDE_TAB_PANEL_PYTHON" <<STUB
+#!/bin/sh
+shift 3
+echo "\$* cookie=\${ITERM2_COOKIE-none} stdin=\$(cat | wc -c | tr -d ' ')" >> "$REG_LOG"
+[ ! -e "$BATS_TEST_TMPDIR/reg.fail" ] || { echo "boom"; exit 1; }
+STUB
+  chmod +x "$CLAUDE_TAB_PANEL_PYTHON"
+}
+
+cookie() {
+  sock="$HOME/Library/Application Support/iTerm2/private/socket"
+  ck="$HOME/.local/state/iterm2/api-cookie"
+  mkdir -p "$(dirname "$sock")" "$(dirname "$ck")"
+  : > "$sock"
+  echo "abc def" > "$ck"
+  python3 -I -c 'import os,sys; os.utime(sys.argv[1], (1000,) * 2); os.utime(sys.argv[2], ((2000 if sys.argv[3] == "fresh" else 500),) * 2)' "$sock" "$ck" "$1"
+}
+
+lines_of() { wc -l < "$1" | tr -d ' '; }
+
+@test "register hands the interpreter the name, identifier and URL with the port, and the cookie" {
+  reg_stub
+  cookie fresh
+  git config --file "$GIT_CONFIG_GLOBAL" claude-tab.panel-port 51234
+  run sh "$CT" panel register
+  [ "$status" -eq 0 ]
+  [ "$output" = 'claude-tab: Toolbelt tool "Needs You" registered (View > Toolbelt)' ]
+  [ "$(cat "$REG_LOG")" = "Needs You local.claude-tab.panel http://127.0.0.1:51234/ cookie=abc stdin=0" ]
+  git config --file "$GIT_CONFIG_GLOBAL" claude-tab.panel-name Panel
+  run sh "$CT" panel register --quiet
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$(tail -n 1 "$REG_LOG")" = "Panel local.claude-tab.panel http://127.0.0.1:51234/ cookie=abc stdin=0" ]
+}
+
+@test "register without a fresh cookie, or a runtime, exits 1 and never runs the library" {
+  reg_stub
+  run sh "$CT" panel register
+  [ "$status" -eq 1 ]
+  [ "$output" = "claude-tab: no fresh iTerm2 API cookie (run iterm2-cookie); the panel is not registered" ]
+  cookie stale
+  run sh "$CT" panel register
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no fresh iTerm2 API cookie"* ]]
+  [ ! -e "$REG_LOG" ]
+  unset CLAUDE_TAB_PANEL_PYTHON
+  cookie fresh
+  run sh "$CT" panel register
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Install Python Runtime"* ]]
+}
+
+@test "register says why the interpreter failed" {
+  reg_stub
+  cookie fresh
+  : > "$BATS_TEST_TMPDIR/reg.fail"
+  run sh "$CT" panel register
+  [ "$status" -eq 1 ]
+  [ "$output" = "claude-tab: could not register the panel: boom" ]
+}
+
+@test "install starts, registers and leaves the marker, uninstall stops and takes it away" {
+  reg_stub
+  cookie fresh
+  port=$(free_port)
+  git config --file "$GIT_CONFIG_GLOBAL" claude-tab.panel-port "$port"
+  export CLAUDE_TAB_PANEL_TICK=0.1
+  run sh "$CT" panel install
+  [ "$status" -eq 0 ]
+  [ "$(cat "$HOME/.local/state/claude-tab/panel.installed")" = "$port" ]
+  [ "$(lines_of "$REG_LOG")" = 1 ]
+  [[ "$output" == *'the Toolbelt tool "Needs You", at http://127.0.0.1:'"$port"'/'* ]]
+  [[ "$output" == *"View > Toolbelt > Show Toolbelt"* ]]
+  tool_line() { sh "$CT" panel status | grep -q '^tool: installed'; }
+  wait_for tool_line
+  run sh "$CT" panel uninstall
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"untick the tool in View > Toolbelt"* ]]
+  [ ! -e "$HOME/.local/state/claude-tab/panel.installed" ]
+  run sh "$CT" panel stop
+  [ "$status" -eq 3 ]
+}
+
+@test "install without a cookie leaves no marker" {
+  reg_stub
+  port=$(free_port)
+  git config --file "$GIT_CONFIG_GLOBAL" claude-tab.panel-port "$port"
+  export CLAUDE_TAB_PANEL_TICK=0.1
+  run sh "$CT" panel install
+  [ "$status" -eq 1 ]
+  [ ! -e "$HOME/.local/state/claude-tab/panel.installed" ]
+}
+
+@test "ensure does nothing without the marker" {
+  reg_stub
+  cookie fresh
+  git config --file "$GIT_CONFIG_GLOBAL" claude-tab.panel-port "$(free_port)"
+  run sh "$CT" panel ensure
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ ! -e "$HOME/.local/state/claude-tab/panel.pid" ]
+  [ ! -e "$REG_LOG" ]
+}
+
+@test "ensure with the marker and no server starts one and registers once, with a server it does neither" {
+  reg_stub
+  cookie fresh
+  port=$(free_port)
+  git config --file "$GIT_CONFIG_GLOBAL" claude-tab.panel-port "$port"
+  export CLAUDE_TAB_PANEL_TICK=0.1
+  mkdir -p "$HOME/.local/state/claude-tab"
+  echo "$port" > "$HOME/.local/state/claude-tab/panel.installed"
+  run sh "$CT" panel ensure
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ -f "$HOME/.local/state/claude-tab/panel.pid" ]
+  [ "$(lines_of "$REG_LOG")" = 1 ]
+  run sh "$CT" panel ensure
+  [ "$status" -eq 0 ]
+  [ "$(lines_of "$REG_LOG")" = 1 ]
+}
+
+@test "ensure that cannot register waits for the cookie, then leaves one line in the log" {
+  reg_stub
+  port=$(free_port)
+  git config --file "$GIT_CONFIG_GLOBAL" claude-tab.panel-port "$port"
+  export CLAUDE_TAB_PANEL_TICK=0.1 CLAUDE_TAB_PANEL_COOKIE_WAIT=0.01
+  mkdir -p "$HOME/.local/state/claude-tab"
+  echo "$port" > "$HOME/.local/state/claude-tab/panel.installed"
+  run sh "$CT" panel ensure
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ ! -e "$REG_LOG" ]
+  grep -Fq "claude-tab: no fresh iTerm2 API cookie" "$HOME/.local/state/claude-tab/panel.log"
 }

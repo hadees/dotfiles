@@ -63,7 +63,15 @@
 #   panel start|stop         serve detached (log and pid in the state
 #                            directory), or end that one (exit 3 when none runs)
 #   panel snapshot           the running server's snapshot (exit 3 when none)
-#   panel status             server, data, focus, needs and tally lines
+#   panel status             server, data, focus, needs and tally lines, and
+#                            whether the Toolbelt tool is installed
+#   panel register [--quiet] put the page in iTerm2's Toolbelt as a tool (needs
+#                            a fresh API cookie and iTerm2's Python runtime;
+#                            again with the same arguments reloads open copies)
+#   panel install|uninstall  start, register and leave the marker `claude`
+#                            looks for (install), or stop and remove it
+#   panel ensure             silent, for `claude`: start and register when the
+#                            marker is there and nothing answers
 set -u
 
 TAB=$(printf '\t')
@@ -448,17 +456,27 @@ run_script() { # applescript on stdin
   return 1
 }
 
+# Export a fresh iTerm2 API cookie for what runs next; 1 when there is none. A
+# cookie older than iTerm2's socket is stale and is never exported (a wrong
+# cookie is worse than none); one already in the environment is left as it is.
+# Call it in a subshell: the exports would stay in the caller's environment.
+api_cookie_env() {
+  [ -z "${ITERM2_COOKIE-}" ] || return 0
+  ac_f=$HOME/.local/state/iterm2/api-cookie
+  { [ -r "$ac_f" ] && [ "$ac_f" -nt "$HOME/Library/Application Support/iTerm2/private/socket" ]; } || return 1
+  read -r ac_c ac_k < "$ac_f"
+  [ -n "${ac_k-}" ] || return 1
+  ITERM2_COOKIE=$ac_c ITERM2_KEY=$ac_k
+  export ITERM2_COOKIE ITERM2_KEY
+}
+
 # `it2 session focus <guid>`, five seconds at most (no `timeout` on macOS; python3
 # is needed anyway). A fresh API cookie is exported, a stale or absent one is not
 # (a wrong cookie is worse than none): the shim's clause, cc-status-shim.md.
 it2_focus() {
   [ -x "$IT2" ] || return 1
   (
-    ck=$HOME/.local/state/iterm2/api-cookie
-    if [ -z "${ITERM2_COOKIE-}" ] && [ -r "$ck" ] && [ "$ck" -nt "$HOME/Library/Application Support/iTerm2/private/socket" ]; then
-      read -r c k < "$ck"
-      [ -z "${k-}" ] || { ITERM2_COOKIE=$c ITERM2_KEY=$k; export ITERM2_COOKIE ITERM2_KEY; }
-    fi
+    api_cookie_env || :
     exec python3 -I -c 'import subprocess, sys
 try:
     sys.exit(subprocess.run([sys.argv[1], "session", "focus", sys.argv[2]], stdin=subprocess.DEVNULL,
@@ -1098,6 +1116,10 @@ def who(cwd, now, tabname):
             with open(os.path.join(gitdir, "claude-peer.claim")) as fh:
                 lines = fh.read().split("\n")
             w["handoff"] = len(lines) > 7 and lines[7] == "handoff"
+            # tabname.peer-format is the operator's to set and may leave the slot out
+            # ({repo}); the slot is what tells peers of one group apart, so it is always there
+            if len(lines) > 2 and lines[2] and lines[2] not in w["label"]:
+                w["label"] += " \u00b7 " + lines[2]
         except (OSError, ValueError):
             pass
     _who[cwd] = (now, w)
@@ -1111,8 +1133,8 @@ def guid_of(pid):
     return m.group(1) if m else None
 
 
-def life_of(profile_dir, sid, now):
-    """Newest mtime of the session's transcript or its subagents' files, else None (names and mtimes only)."""
+def transcript_dir(profile_dir, sid, now):
+    """The projects/ directory holding the session's transcript, else None. Kept per session."""
     if not re.fullmatch(r"[A-Za-z0-9_-]+", sid) or sid == "-":
         return None
     key = (profile_dir, sid)
@@ -1131,10 +1153,16 @@ def life_of(profile_dir, sid, now):
                 found = d
                 break
         hit = _life[key] = (found, now)
-    if hit[0] is None:
+    return hit[0]
+
+
+def life_of(profile_dir, sid, now):
+    """Newest mtime of the session's transcript or its subagents' files, else None (names and mtimes only)."""
+    found = transcript_dir(profile_dir, sid, now)
+    if found is None:
         return None
-    paths = [os.path.join(hit[0], sid + ".jsonl")]
-    sub = os.path.join(hit[0], sid, "subagents")
+    paths = [os.path.join(found, sid + ".jsonl")]
+    sub = os.path.join(found, sid, "subagents")
     try:
         paths += [os.path.join(sub, n) for n in os.listdir(sub)]
     except OSError:
@@ -1146,6 +1174,56 @@ def life_of(profile_dir, sid, now):
         except OSError:
             pass
     return max(times) if times else None
+
+
+_driver = {}
+TAIL = 4 << 20
+
+
+def peer_driven(profile_dir, sid, now):
+    """True when the user entry that began the session's last turn came from another session
+    (origin.kind "peer": a cross-session message, a mail wake, a roll-call), else False.
+    Reads the transcript's tail and keeps only that one word; a session with no transcript,
+    no such entry or a read that failed is False, because a wrong True hides a turn.
+    ponytail: the last such entry decides, so mail landing mid-turn hides an operator-started
+    turn; upgrade is to walk back to the entry after the last assistant stop."""
+    found = transcript_dir(profile_dir, sid, now)
+    if found is None:
+        return False
+    path = os.path.join(found, sid + ".jsonl")
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    stamp = (st.st_mtime_ns, st.st_size)
+    hit = _driver.get(path)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    kind = None
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, st.st_size - TAIL))
+            lines = fh.read().split(b"\n")
+    except OSError:
+        return False
+    for raw in reversed(lines[1:] if st.st_size > TAIL else lines):
+        if b'"user"' not in raw:
+            continue
+        try:
+            d = json.loads(raw)
+        except ValueError:
+            continue
+        m = d.get("message") if type(d) is dict else None
+        ct = m.get("content") if type(m) is dict else None
+        if (type(d) is not dict or d.get("type") != "user" or d.get("isSidechain")
+                or (type(ct) is list and any(type(x) is dict and x.get("type") == "tool_result" for x in ct))):
+            continue
+        o = d.get("origin")
+        kind = o.get("kind") if type(o) is dict else d.get("turnOrigin")
+        if kind is not None:
+            break
+    _driver[path] = (stamp, kind == "peer")
+    return kind == "peer"
 
 
 def turn_record(sid, since, now):
@@ -1167,7 +1245,7 @@ def condition(status, since, now, wait_for, turn, life, quiet, handoff):
     if status == "waiting":
         return "blocked", since, wait_for or "waiting"
     if status in ("idle", "shell"):
-        if handoff:  # its turn ends are Lead's, not the operator's
+        if handoff:  # its turn ends are Lead's, or the turn was started by another session, not the operator
             return None, None, None
         if turn and turn["end"] == "error":
             return "failed", since, "failed"
@@ -1213,7 +1291,7 @@ def tick(prev, o, now):
     tally["ticks"] += 1
     focus = o["focus"]
     sessions, rows = {}, []
-    turn_records = life_unknown = 0
+    turn_records = life_unknown = peer_turns = 0
     for rec in recs:
         r, pid = rec["r"], rec["pid"]
         sid = r.get("sessionId")
@@ -1240,6 +1318,8 @@ def tick(prev, o, now):
                 turn_records += 1
         cwd = r.get("cwd")
         w = who(cwd, now, o["tabname"])
+        by_peer = status in ("idle", "shell") and not w["handoff"] and peer_driven(rec["dir"], sid, now)
+        peer_turns += by_peer
         life = None
         if status == "busy" and now - since >= o["quiet"]:
             life = o["life"].get(pid)
@@ -1249,7 +1329,7 @@ def tick(prev, o, now):
                 life_unknown += 1
         wf = r.get("waitingFor")
         kind, cond_since, reason = condition(status, since, now, wf if type(wf) is str and wf else None,
-                                             turn, life, o["quiet"], w["handoff"])
+                                             turn, life, o["quiet"], w["handoff"] or by_peer)
         if old is not None and old["kind"] == kind and old["cond_since"] == cond_since:
             e = dict(old)
         else:
@@ -1304,6 +1384,7 @@ def tick(prev, o, now):
                        "unreadable": unreadable,
                        "focus": "ok" if focus[:1] == "/" else ("none" if focus == "-" else "unknown"),
                        "turn_records": turn_records, "life_unknown": life_unknown,
+                       "peer_turns": peer_turns,
                        "want_focus": any(e["kind"] is not None and e["seen_at"] is None for e, _ in rows)},
             "needs": [t[3] for t in needs], "others": [groups[k] for k in sorted(groups)],
             "tally": tally}
@@ -1684,6 +1765,95 @@ cmd_panel_snapshot() {
 cmd_panel_status() {
   need_python
   panel_py status --port "$(panel_port)"
+  ps_rc=$?
+  if [ -e "$(panel_dir)/panel.installed" ]; then echo "tool: installed"; else echo "tool: not installed"; fi
+  return "$ps_rc"
+}
+
+# The Python runtime that carries the iterm2 library (pane-sight's rule, with
+# its own variable first): the last executable of iTerm2's two runtime places.
+panel_python() {
+  pp=${CLAUDE_TAB_PANEL_PYTHON:-}
+  if [ -z "$pp" ]; then
+    for f in "$HOME/Library/Application Support/iTerm2"/iterm2env/versions/*/bin/python3 \
+             "$HOME/Library/Application Support/iTerm2"/uv/venvs/*/bin/python3; do
+      [ -x "$f" ] && pp=$f
+    done
+  fi
+  [ -n "$pp" ] && [ -x "$pp" ] && printf '%s\n' "$pp"
+}
+
+# The one registration: argv[1] the tool's name, argv[2] its identifier, argv[3]
+# its URL, ten seconds at most. Registering the same three again reloads every
+# open copy of the tool.
+PANEL_REGISTER_PY='import signal, sys
+import iterm2
+from iterm2 import tool
+
+signal.signal(signal.SIGALRM, signal.SIG_DFL)  # an inherited SIG_IGN would disarm the limit
+signal.alarm(10)
+
+async def main(connection):
+    await tool.async_register_web_view_tool(connection, sys.argv[1], sys.argv[2], True, sys.argv[3])
+
+iterm2.run_until_complete(main)'
+
+# Needs a fresh API cookie and never starts the library without one: it would
+# ask iTerm2 through AppleScript, which only an iTerm2 shell may do quietly.
+# Nothing here needs a terminal or a Claude session, so a login shell's `claude`
+# wrapper, launchd or an AutoLaunch script can all run it.
+cmd_panel_register() {
+  rg_quiet=''
+  case ${1-} in --quiet) rg_quiet=1; shift;; esac
+  [ $# -eq 0 ] || usage
+  need_macos "panel register"
+  rg_py=$(panel_python) || die "no iTerm2 Python runtime (Scripts > Manage > Install Python Runtime); the panel is not registered"
+  rg_name=$(git config --get claude-tab.panel-name 2>/dev/null) || rg_name=''
+  [ -n "$rg_name" ] || rg_name='Needs You'
+  rg_out=$(
+    api_cookie_env || exit 7
+    exec "$rg_py" -I -c "$PANEL_REGISTER_PY" "$rg_name" local.claude-tab.panel "http://127.0.0.1:$(panel_port)/" </dev/null 2>&1
+  ) || {
+    [ "$?" -ne 7 ] || die "no fresh iTerm2 API cookie (run iterm2-cookie); the panel is not registered"
+    die "could not register the panel: $(printf '%s\n' "$rg_out" | tail -n 1)"
+  }
+  [ -n "$rg_quiet" ] || printf 'claude-tab: Toolbelt tool "%s" registered (View > Toolbelt)\n' "$rg_name"
+}
+
+cmd_panel_install() {
+  cmd_panel_start
+  cmd_panel_register --quiet
+  mkdir -p "$(panel_dir)" && chmod 700 "$(panel_dir)"
+  panel_port > "$(panel_dir)/panel.installed"
+  printf 'claude-tab: the panel is the Toolbelt tool "%s", at http://127.0.0.1:%s/\n' \
+    "$(git config --get claude-tab.panel-name 2>/dev/null || echo 'Needs You')" "$(panel_port)"
+  printf 'claude-tab: it shows once the Toolbelt is (View > Toolbelt > Show Toolbelt); attended claude launches keep it up\n'
+}
+
+cmd_panel_uninstall() {
+  ( cmd_panel_stop ) || :
+  rm -f "$(panel_dir)/panel.installed"
+  printf 'claude-tab: untick the tool in View > Toolbelt (iTerm2 has no call that removes a registration)\n'
+}
+
+# Silent, for the `claude` wrapper: nothing without the marker, nothing while the
+# server answers, else start it and register (a view that loaded while nothing
+# listened stays blank until it is reloaded). A fresh launch after an iTerm2
+# restart may find its cookie still being minted, so the cookie is waited for
+# (this runs detached). Failures are one line each in panel.log.
+cmd_panel_ensure() {
+  en_dir=$(panel_dir)
+  [ -e "$en_dir/panel.installed" ] || return 0
+  [ "$(os)" = Darwin ] || return 0
+  panel_py fetch "$(panel_port)" /health >/dev/null 2>&1 && return 0
+  mkdir -p "$en_dir" && chmod 700 "$en_dir"
+  ( cmd_panel_start ) >/dev/null 2>>"$en_dir/panel.log" || return 0
+  en_i=0
+  while [ "$en_i" -lt 20 ] && ! ( api_cookie_env ); do
+    sleep "${CLAUDE_TAB_PANEL_COOKIE_WAIT:-0.5}"
+    en_i=$((en_i + 1))
+  done
+  ( cmd_panel_register --quiet ) >/dev/null 2>>"$en_dir/panel.log" || :
 }
 
 cmd_panel() {
@@ -1697,6 +1867,10 @@ cmd_panel() {
     stop)     cmd_panel_stop;;
     snapshot) cmd_panel_snapshot;;
     status)   cmd_panel_status;;
+    register)  cmd_panel_register "$@";;
+    install)   cmd_panel_install;;
+    uninstall) cmd_panel_uninstall;;
+    ensure)    cmd_panel_ensure;;
     *)        usage;;
   esac
 }
