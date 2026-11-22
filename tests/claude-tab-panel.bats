@@ -670,9 +670,10 @@ peer_fixture() {
   tick 5000
   [ "$(kinds)" = finished ]
   claim "$WT" "$REPO" Alpha handoff
-  chmod 000 "$cf"
+  # unreadable by any user, root included (chmod 000 is no barrier to the CI containers' root)
+  rm "$cf"
+  mkdir "$cf"
   tick 5001
-  chmod 600 "$cf"
   [ "$(kinds)" = finished ]
 }
 
@@ -821,7 +822,12 @@ serve() {
   sh "${1:-$CT}" panel serve --port "$PORT" > "$BATS_TEST_TMPDIR/serve.out" 2>&1 3>&- &
   SERVER=$!
   echo "$SERVER" >> "$BATS_TEST_TMPDIR/sleepers"
-  wait_for grep -q "panel on" "$BATS_TEST_TMPDIR/serve.out"
+  wait_for grep -q "panel on" "$BATS_TEST_TMPDIR/serve.out" || {
+    echo "serve: no 'panel on' after 10 s; server pid $SERVER alive: $(kill -0 "$SERVER" 2>&1 && echo yes)" >&3
+    echo "serve: health: $(curl -s --noproxy '*' -m 3 -w ' http %{http_code}' "http://127.0.0.1:$PORT/health" 2>&1)" >&3
+    sed 's/^/serve.out: /' "$BATS_TEST_TMPDIR/serve.out" >&3
+    return 1
+  }
 }
 
 # snap : the running server's snapshot, as $output (val reads it).
