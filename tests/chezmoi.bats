@@ -232,6 +232,8 @@ teardown() {
   [ -f "$TMPHOME/.claude/CLAUDE.local.md" ]
   # The seven shipped peer contexts
   [ "$(ls "$TMPHOME"/.config/claude-peer/contexts/*.ctx | wc -l)" -eq 7 ]
+  # ...and the approvals ledger, header only
+  [ -f "$TMPHOME/.claude-shared/approvals-ledger.md" ]
 }
 
 @test "wsl class renders shell config cleanly" {
@@ -254,4 +256,12 @@ teardown() {
   echo "my custom notes" > "$TMPHOME/.claude/CLAUDE.local.md"
   chez init --source "$PWD" --promptString machineClass=linux --apply --exclude scripts
   grep -q "my custom notes" "$TMPHOME/.claude/CLAUDE.local.md"
+}
+
+@test "the approvals ledger is never overwritten on re-apply" {
+  cd "$BATS_TEST_DIRNAME/.."
+  mkdir -p "$TMPHOME/.claude-shared"
+  echo "| S1 | kept |" > "$TMPHOME/.claude-shared/approvals-ledger.md"
+  chez init --source "$PWD" --promptString machineClass=linux --apply --exclude scripts
+  grep -qF "| S1 | kept |" "$TMPHOME/.claude-shared/approvals-ledger.md"
 }

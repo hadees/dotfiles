@@ -258,7 +258,7 @@ rule first.
 | `browser-routing` | `open-as`, `chrome-pairing`, the iTerm2 browser tab, Finicky |
 | `denyguard` | the Bash deny hook, what it cannot see, why it fails closed |
 | `memoryguard` | the memory-write hook, the placement decision and its seat, stopgaps, the audit |
-| `shared-memory` | which shared-memory topics load always, by hook, or on demand; the hooks and their wiring |
+| `shared-memory` | which shared-memory topics load always, by hook, or on demand; the hooks and their wiring; the approvals topic and its ledger |
 | `loginguard` | the org pin per profile, the prompt hook, the removal after a wrong login, why it fails closed |
 | `lsof-guard` | the opt-in `~/bin/lsof` guard, `lsof.guard`, the refusal tally |
 | `operator-asks` | the count of how often a session made the operator a step, its two hooks, the per-project denyguard check |

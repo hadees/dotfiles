@@ -197,6 +197,21 @@ how many topics load on demand (split into start, tool and pointer), and how
 many injections the log counts, with how many were already told and how many
 errored. A missing or failing script prints `?`, not a healthy zero.
 
+## The approvals topic and its ledger
+
+`approvals` is a start topic for the Lead session. The ledger it points at,
+`~/.claude-shared/approvals-ledger.md` (source
+`dot_claude-shared/create_approvals-ledger.md`), is machine-local: chezmoi
+creates it once, header only, and never overwrites it, and it ships with no row
+because a row in the source would be an approval nobody gave. It sits beside the
+index and outside `topics/`, so `shared-memory topics`, memoryguard's section
+map and the size tests do not read it. It is not imported: an import would
+load every row into every session and subagent. Rows are written only by the
+session the operator typed to, the case Claude Code's "Instruction Poisoning"
+rule exempts. A row steers a session and cannot clear a permission-classifier
+block; the lever for that is an `autoMode.allow` entry in that profile's
+overlay.
+
 ## The log
 
 `${XDG_STATE_HOME:-$HOME/.local/state}/shared-memory/injections.tsv`, append

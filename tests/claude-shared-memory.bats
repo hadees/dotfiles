@@ -218,3 +218,16 @@ role_topic_checks() {
   ! grep -qF 'never a peer I started at its pane' <<< "$flat" || { echo "lead.md still bars the pane-started peer"; false; }
   grep -qF 'never `--force` unasked' <<< "$flat"
 }
+
+# The ledger holds the operator's approvals as machine-local rows. It ships as
+# a header only: a row in the source would be an approval nobody gave.
+@test "the approvals ledger ships as a header-only create_ file beside the index, outside topics" {
+  local src="$BATS_TEST_DIRNAME/../dot_claude-shared"
+  [ -f "$src/create_approvals-ledger.md" ]
+  [ ! -e "$src/approvals-ledger.md" ] || { echo "a plain-named twin would be overwritten on every apply"; false; }
+  [ ! -e "$TOPICS/approvals-ledger.md" ] || { echo "the ledger under topics/ is read as a topic"; false; }
+  grep -qxF '| id | given | for | covers | limit | until | words |' "$src/create_approvals-ledger.md"
+  ! grep -qE '^\| *S[0-9]' "$src/create_approvals-ledger.md" || { echo "a row ships in the source"; false; }
+  ! grep -qE '^## ' "$src/create_approvals-ledger.md" || { echo "a heading would be read as a section"; false; }
+  ! grep -qE '^@' "$src/create_approvals-ledger.md" || { echo "an @ line would import"; false; }
+}
