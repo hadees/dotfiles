@@ -52,14 +52,15 @@ seen in that status. An **instance** is one `(kind, cond_since)` of one
 session, and a change of either is a new instance: seen, hits, listed and
 entered reset. A `busy` session with no sign of life is never called quiet (not
 knowing is not stuck) and is counted in `health.life_unknown`; the sign of life
-is looked up only once `since` is `--quiet` old, and the tick takes it
-from `--life` and nowhere else yet. The **turn record**
+is looked up only once `since` is `--quiet` old (`--life <pid>=<epoch>`, a
+test handle, overrides the lookup). The **turn record**
 (`<state home>/tabstatus/<sessionId>.turn`, one line of JSON with `at`, `end`
 of `question`, `error` or `plain`, `active`, `quiet`) is read only for a
 session id of `[A-Za-z0-9_-]+` and only while idle or shell; it is valid when
 `since - 15 <= at <= now + 5`, else there is none and the session reads as
 finished. Nothing writes it yet. A turn end of a hand-off peer is Lead's, not
-the operator's; the tick does not know peers yet and lists every one.
+the operator's and is not listed (see "Who each session is"); a dialog on it
+still is, because only the operator can answer one.
 
 **Seen.** `--focus <tty>` gives the session on that tty one more look
 (`hits`, capped at 2) and every other session none; `-` and `?` give none to
@@ -89,11 +90,32 @@ pid, and a row does not move while it lives. `others` holds every interactive
 session once, grouped, each group with `needs`, `working` and `idle` counts; an
 unlisted row's kind is `working`, `idle`, `idle-bg` or its condition kind. A
 row is `pid, profile, label, group, role, kind, reason, since, seen, tty`;
-`label` and `group` are the base name of the session's directory and `role` is
-`plain` until the sessions are told apart. `health` is `profiles`, `sessions`,
+`label`, `group`, `role` and `guid` say who the session is (below). `health` is `profiles`, `sessions`,
 `headless`, `unreadable` (`<digits>.json` files that did not parse),
 `focus` (`ok`, `none`, `unknown`), `turn_records`, `life_unknown` and
 `want_focus` (any instance not yet seen).
+
+**Who each session is**, `who(cwd)`, all inside `panel_py`. `label` and `role`
+are what `tabname --role <cwd>` prints (`<role><TAB><label>`; the script is
+passed as `--tabname`, the shell's `$TABNAME`); no tabname, a failure or an empty
+answer is the base name of the directory and `plain`, silently. `group` is the
+base name of the directory holding `git rev-parse --path-format=absolute
+--git-common-dir`, so a repository's linked worktrees share one group, else the
+base name of the directory. `handoff` is true only for a `peer` whose own git
+directory's `claude-peer.claim` has `handoff` as its line 8; any failure is
+false, because a wrong false adds a row and a wrong true hides one. The answer
+is kept per directory for 60 seconds (roles move with claims, and `tabname` per
+session per tick would be a process tree each), the two `rev-parse` answers for
+the life of the process. `guid` is the `ITERM_SESSION_ID` of the process's
+start-up environment as `guid_of` reads it (`ps eww`), read once per session and
+kept in the state; `null` without one. A busy session's sign of life is the newest
+mtime among its transcript (`<profile dir>/projects/*/<sessionId>.jsonl`) and the
+files directly under `<sessionId>/subagents/` beside it; only names and mtimes
+are read, never a line. The project directory is found by listing `projects/`
+once and kept; a session with none is retried once a minute and, with no
+transcript to judge by, is never called quiet. The claim and transcript layouts
+are observed, not interfaces: if either moves, hand-off peers list their turn
+ends or `quiet` never fires (`health.life_unknown` counts the latter).
 
 **The tell.** A snapshot whose `health.sessions` is 0 while `claude-tab list`
 prints rows, or a row of kind `unknown`, means the registry's words moved.

@@ -30,12 +30,17 @@ setup() {
   mkdir -p "$BIN"
   printf '#!/bin/sh\nexec "%s" "$@"\n' "$REAL_PYTHON3" > "$BIN/python3"
   # ps: `-o tty= -p <pid>` answers the tty column of the PS_TABLE file ("pid ppid
-  # tty" per line); anything else answers nothing.
+  # tty" per line); `eww -p <pid>` answers the file $PS_TABLE.env.<pid> (a start-up
+  # environment), if there is one; anything else answers nothing.
   export PS_TABLE="$BATS_TEST_TMPDIR/ps-table"
   : > "$PS_TABLE"
   cat > "$BIN/ps" <<'STUB'
 #!/bin/sh
 case "$*" in
+  *eww*)
+    while [ $# -gt 0 ]; do case $1 in -p) pid=$2; shift 2;; *) shift;; esac; done
+    cat "$PS_TABLE.env.$pid" 2>/dev/null
+    exit 0;;
   *"-o tty="*)
     while [ $# -gt 0 ]; do case $1 in -p) pid=$2; shift 2;; *) shift;; esac; done
     awk -v p="$pid" '$1 == p { print $3 }' "$PS_TABLE"
@@ -58,13 +63,13 @@ live_pid() {
   printf '%s\n' "$LIVE" >> "$BATS_TEST_TMPDIR/sleepers"
 }
 
-# rec <pid> <status> <since seconds or ""> [waitingFor] [kind] [profile dir]: a
+# rec <pid> <status> <since seconds or ""> [waitingFor] [kind] [profile dir] [cwd]: a
 # registry record; the session id is s<pid>, an empty since leaves the field out.
 rec() {
   d=${6:-$HOME/.claude}
   mkdir -p "$d/sessions"
-  printf '{"pid":%s,"sessionId":"s%s","cwd":"/work/proj","kind":"%s","status":"%s"%s%s}\n' \
-    "$1" "$1" "${5:-interactive}" "$2" "${3:+,\"statusUpdatedAt\":$(($3 * 1000))}" \
+  printf '{"pid":%s,"sessionId":"s%s","cwd":"%s","kind":"%s","status":"%s"%s%s}\n' \
+    "$1" "$1" "${7:-/work/proj}" "${5:-interactive}" "$2" "${3:+,\"statusUpdatedAt\":$(($3 * 1000))}" \
     "${4:+,\"waitingFor\":\"$4\"}" > "$d/sessions/$1.json"
 }
 
@@ -493,7 +498,7 @@ state_val() { python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); pr
   [ "$(val 'sorted(d)')" = "['build', 'generated_at', 'health', 'needs', 'others', 'tally', 'v']" ]
   [ "$(val 'sorted(d["health"])')" = "['focus', 'headless', 'life_unknown', 'profiles', 'sessions', 'turn_records', 'unreadable', 'want_focus']" ]
   [ "$(val 'sorted(d["tally"])')" = "['entered', 'focus_failures', 'focus_reads', 'hidden_prompts', 'left', 'seen_click', 'seen_focus', 'ticks', 'transitions']" ]
-  [ "$(val 'sorted(d["needs"][0])')" = "['group', 'kind', 'label', 'pid', 'profile', 'reason', 'role', 'seen', 'since', 'tty']" ]
+  [ "$(val 'sorted(d["needs"][0])')" = "['group', 'guid', 'kind', 'label', 'pid', 'profile', 'reason', 'role', 'seen', 'since', 'tty']" ]
   [ "$(val 'sorted(d["others"][0])')" = "['group', 'idle', 'needs', 'rows', 'working']" ]
   [ "$(val 'd["build"]')" = abc ]
   [ "$(val 'd["health"]["focus"]')" = ok ]
@@ -540,4 +545,141 @@ state_val() { python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); pr
   [ "$status" -eq 0 ]
   [[ "$stderr" == *"cannot write"* ]]
   [ "$(printf '%s' "$output" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["v"])')" = 1 ]
+}
+
+# --- who each session is --------------------------------------------------------
+
+# make_repo <dir>: a repository with one commit. use_tabname links the real tabname.
+make_repo() {
+  git -c init.defaultBranch=trunk init -q "$1"
+  git -C "$1" -c user.name=octo -c user.email=octo@example.com commit -q --allow-empty -m one
+}
+use_tabname() { ln -s "$BATS_TEST_DIRNAME/../bin/executable_tabname" "$HOME/bin/tabname"; }
+
+# claim <worktree> <leader> <label> <line 8>: a live claim (held by this test) in the worktree's git directory.
+claim() {
+  printf '%s\n%s\n%s\n-\n-\n-\n-\n%s\n-\n-\n' "$$" "$2" "$3" "$4" \
+    > "$(git -C "$1" rev-parse --absolute-git-dir)/claude-peer.claim"
+}
+
+# peer_fixture <line 8>: REPO with a linked worktree WT that holds a live claim ending in it.
+peer_fixture() {
+  REPO="$BATS_TEST_TMPDIR/proj"
+  WT="$REPO/.claude/worktrees/alpha"
+  make_repo "$REPO"
+  git -C "$REPO" worktree add -q --detach "$WT"
+  use_tabname
+  claim "$WT" "$REPO" Alpha "$1"
+}
+
+@test "a linked worktree groups with its main checkout and carries tabname's label" {
+  live_pid; a=$LIVE; live_pid; b=$LIVE
+  REPO="$BATS_TEST_TMPDIR/proj"
+  make_repo "$REPO"
+  git -C "$REPO" worktree add -q --detach "$REPO/.claude/worktrees/alpha"
+  use_tabname
+  rec "$a" waiting 100 "" interactive "$HOME/.claude" "$REPO"
+  rec "$b" waiting 100 "" interactive "$HOME/.claude" "$REPO/.claude/worktrees/alpha"
+  tick 5000
+  [ "$(val 'len(d["others"])')" = 1 ]
+  [ "$(val 'd["others"][0]["group"]')" = proj ]
+  [ "$(val '" ".join(sorted(r["label"] for r in d["needs"]))')" = "proj proj@alpha" ]
+  [ "$(val 'd["needs"][0]["role"]')" = plain ]
+}
+
+@test "without tabname the label is the directory's name and nothing fails" {
+  live_pid
+  REPO="$BATS_TEST_TMPDIR/proj"
+  make_repo "$REPO"
+  git -C "$REPO" worktree add -q --detach "$REPO/.claude/worktrees/alpha"
+  rec "$LIVE" waiting 100 "" interactive "$HOME/.claude" "$REPO/.claude/worktrees/alpha"
+  run --separate-stderr sh "$CT" panel tick --state "$STATE" --now 5000
+  [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
+  [ "$(val 'd["needs"][0]["label"]')" = alpha ]
+  [ "$(val 'd["needs"][0]["group"]')" = proj ]
+}
+
+@test "a hand-off peer is not listed when idle for an hour, and is listed when blocked" {
+  peer_fixture handoff
+  live_pid
+  seed
+  rec "$LIVE" idle 1000 "" interactive "$HOME/.claude" "$WT"
+  tick 5000
+  [ -z "$(kinds)" ]
+  [ "$(val 'd["others"][0]["rows"][0]["role"]')" = peer ]
+  [ "$(val 'd["others"][0]["rows"][0]["kind"]')" = idle ]
+  rec "$LIVE" waiting 5000 "permission prompt" interactive "$HOME/.claude" "$WT"
+  tick 5010
+  [ "$(kinds)" = blocked ]
+  [ "$(val 'd["needs"][0]["label"]')" = "proj · Alpha" ]
+}
+
+@test "a peer whose claim line 8 is - is listed finished" {
+  peer_fixture -
+  live_pid
+  seed
+  rec "$LIVE" idle 1000 "" interactive "$HOME/.claude" "$WT"
+  tick 5000
+  [ "$(kinds)" = finished ]
+  [ "$(val 'd["needs"][0]["role"]')" = peer ]
+}
+
+@test "a claim that is short or cannot be read lists" {
+  peer_fixture handoff
+  live_pid
+  seed
+  rec "$LIVE" idle 1000 "" interactive "$HOME/.claude" "$WT"
+  cf="$(git -C "$WT" rev-parse --absolute-git-dir)/claude-peer.claim"
+  printf '%s\n%s\n%s\n' "$$" "$REPO" Alpha > "$cf"
+  tick 5000
+  [ "$(kinds)" = finished ]
+  claim "$WT" "$REPO" Alpha handoff
+  chmod 000 "$cf"
+  tick 5001
+  chmod 600 "$cf"
+  [ "$(kinds)" = finished ]
+}
+
+@test "the guid comes from the start-up environment and is null without one" {
+  live_pid; a=$LIVE; live_pid; b=$LIVE
+  rec "$a" waiting 100
+  rec "$b" waiting 100
+  printf 'claude --x HOME=/h ITERM_SESSION_ID=w0t1p2:G-1234 TERM=x\n' > "$PS_TABLE.env.$a"
+  tick 5000
+  [ "$(val '[r["guid"] for r in d["needs"] if r["pid"] == '"$a"'][0]')" = G-1234 ]
+  [ "$(val '[r["guid"] for r in d["needs"] if r["pid"] == '"$b"'][0]')" = None ]
+  [ "$(state_val 'sorted(e["guid"] or "-" for e in d["sessions"].values())')" = "['-', 'G-1234']" ]
+}
+
+# life <pid> <seconds> [file under the project directory]: that transcript file, its mtime set to <seconds>.
+life() {
+  prof="$HOME/.claude"
+  f="$prof/projects/-work-proj/${3:-s$1.jsonl}"
+  mkdir -p "$(dirname "$f")"
+  : > "$f"
+  python3 -I -c 'import os,sys; os.utime(sys.argv[1], (int(sys.argv[2]),) * 2)' "$f" "$2"
+}
+
+@test "a busy session with a transcript 901 s old is quiet, and a fresh subagent file keeps it working" {
+  live_pid; a=$LIVE; live_pid; b=$LIVE
+  seed
+  rec "$a" busy 100
+  rec "$b" busy 100
+  life "$a" 1000
+  life "$b" 1000
+  life "$b" 1891 "s$b/subagents/agent-x.jsonl"
+  tick 1901
+  [ "$(kinds)" = quiet ]
+  [ "$(val 'd["needs"][0]["pid"]')" = "$a" ]
+  [ "$(val 'd["health"]["life_unknown"]')" = 0 ]
+}
+
+@test "a busy session with no transcript is never quiet and is counted" {
+  live_pid
+  seed
+  rec "$LIVE" busy 100
+  tick 5000
+  [ -z "$(kinds)" ]
+  [ "$(val 'd["health"]["life_unknown"]')" = 1 ]
 }
