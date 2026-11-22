@@ -1080,7 +1080,12 @@ stop_record() {
 @test "stop: the line carries the session id and whether a done was logged; log show is unchanged" {
   stop_fixture
   stop_record idle
-  sh "$BIN" log --as Alpha done "DONE: report" >/dev/null
+  # The log and the claim count whole seconds, and the restart below starts a session in the
+  # same second as this one: a done stamped now would sit inside the second session's first
+  # second. So the claim starts 10 s ago and the done is logged 5 s ago.
+  cf=$(claim_of "$REPO/.claude/worktrees/alpha"); now=$(date +%s)
+  sed "7s/.*/$((now - 10))/" "$cf" >"$cf.new" && mv "$cf.new" "$cf"
+  printf '%s\tAlpha\tdone\tDONE: report\n' "$(date -u -d "@$((now - 5))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$((now - 5))" +%Y-%m-%dT%H:%M:%SZ)" >>"$REPO/$LOG"
   before=$(sh "$BIN" log show)
   run sh "$BIN" stop alpha
   [ "$status" -eq 0 ]
