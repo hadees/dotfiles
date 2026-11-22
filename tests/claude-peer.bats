@@ -802,6 +802,39 @@ modelfix() {
   no grep -q -- "--model" "$FAKE_SHELL_LOG"
 }
 
+@test "claude-peer.permission-mode: a fresh and a continued start get --permission-mode, an unset key none" {
+  git -C "$REPO" config claude-peer.permission-mode auto
+  FAKE_SHELL_SLEEP=2 pane alpha
+  run sh "$BIN" start alpha fix the thing
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha --permission-mode auto fix the thing\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  run sh "$BIN" start alpha --continue go on
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha --continue --permission-mode auto go on\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  git -C "$REPO" config --unset claude-peer.permission-mode
+  run sh "$BIN" start alpha plain
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha plain\$" "$FAKE_SHELL_LOG"'
+  [ "$(grep -c -- "--permission-mode" "$FAKE_SHELL_LOG")" -eq 2 ]
+}
+
+@test "claude-peer.permission-mode: bypassPermissions and a value with a space are ignored with one stderr line" {
+  git -C "$REPO" config claude-peer.permission-mode bypassPermissions
+  FAKE_SHELL_SLEEP=2 pane alpha
+  run sh "$BIN" start alpha fix the thing
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha fix the thing\$" "$FAKE_SHELL_LOG"'
+  [ "$(grep -c "claude-peer: claude-peer.permission-mode 'bypassPermissions' is not a permission mode; ignored" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 1 ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  git -C "$REPO" config claude-peer.permission-mode 'two words'
+  run sh "$BIN" start alpha again
+  until_ok 'grep -q "claude-peer proj-alpha again\$" "$FAKE_SHELL_LOG"'
+  grep -q "claude-peer.permission-mode 'two words' is not a permission mode; ignored" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  no grep -q -- "--permission-mode" "$FAKE_SHELL_LOG"
+}
+
 @test "start: no waiting pane is 4, a running slot is 3, a prompt that begins with - is 2" {
   run sh "$BIN" start alpha
   [ "$status" -eq 4 ]
@@ -973,6 +1006,235 @@ pane_ended() { until_ok "! kill -0 '$1' 2>/dev/null"; }
   [ "$status" -eq 0 ]
   [[ "$output" == *$'\t'"stopped" ]]
   no kill -0 "$sp" 2>/dev/null
+}
+
+# A live fixture session in slot alpha (the fake shell, a child of the claim's pid), its registry
+# directory in $cfg and its pid in $sp; STOP_HANDOFF=1 starts it as a hand-off.
+stop_fixture() {
+  cfg=$BATS_TEST_TMPDIR/cfg; mkdir -p "$cfg/sessions"; export CLAUDE_CONFIG_DIR=$cfg
+  FAKE_SHELL_SLEEP=30 FAKE_SHELL_PID="$BATS_TEST_TMPDIR/shpid" pane alpha
+  if [ -n "${STOP_HANDOFF-}" ]; then CLAUDE_PID=4242 sh "$BIN" start alpha --handoff the task >/dev/null
+  else sh "$BIN" start alpha >/dev/null; fi
+  until_ok '[ -s "$BATS_TEST_TMPDIR/shpid" ]'
+  sp=$(cat "$BATS_TEST_TMPDIR/shpid")
+}
+# status, then more JSON members (each led by a comma)
+stop_record() {
+  printf '{"pid":%s,"sessionId":"aaaa-bbbb","name":"proj-alpha","status":"%s"%s}\n' "$sp" "$1" "${2-}" >"$cfg/sessions/$sp.json"
+}
+
+@test "stop: a shell session is stopped only after a done since it started; every refusal is a note" {
+  stop_fixture
+  stop_record shell
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"alpha has a background shell and no done since it started; stop --force"* ]]
+  kill -0 "$sp"
+  [ "$(grep -c '	note	stop refused: Alpha has a background shell and no done since it started$' "$REPO/$LOG")" -eq 1 ]
+  printf '2000-01-01T00:00:00Z\tAlpha\tdone\tbefore it started\n' >>"$REPO/$LOG"
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 5 ]
+  kill -0 "$sp"
+  stop_record busy
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 5 ]
+  grep -q '	note	stop refused: Alpha is busy$' "$REPO/$LOG"
+  stop_record shell
+  sh "$BIN" log --as Alpha done "DONE: report" >/dev/null
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  [[ "$output" == *$'\t'"stopped" ]]
+  no kill -0 "$sp" 2>/dev/null
+}
+
+@test "stop: a record named for another session is refused, --force or not, and nothing is signalled" {
+  stop_fixture
+  printf '{"pid":%s,"name":"other-alpha","status":"idle"}\n' "$sp" >"$cfg/sessions/$sp.json"
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"alpha is not the session its claim names"* ]]
+  run sh "$BIN" stop alpha --force
+  [ "$status" -eq 5 ]
+  kill -0 "$sp"
+  [ "$(grep -c '	note	stop refused: Alpha is not the session its claim names$' "$REPO/$LOG")" -eq 2 ]
+  [ ! -e "$(stopmark)" ]
+}
+
+@test "stop: the process must be the one the record names (procStart), and a different one is left alive" {
+  stop_fixture
+  stop_record idle ',"procStart":"Mon Jan 1 00:00:00 2001"'
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"alpha is not the process its record names"* ]]
+  kill -0 "$sp"
+  grep -q '	note	stop refused: Alpha is not the process its record names$' "$REPO/$LOG"
+  [ ! -e "$(stopmark)" ]
+  # as Claude Code writes it: single spaces, where ps pads a one-digit day
+  ps_start=$(TZ=UTC LC_ALL=C ps -o lstart= -p "$sp" | tr -s ' ' | sed 's/^ //; s/ $//')
+  stop_record idle ",\"procStart\":\"$ps_start\""
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  no kill -0 "$sp" 2>/dev/null
+}
+
+@test "stop: the line carries the session id and whether a done was logged; log show is unchanged" {
+  stop_fixture
+  stop_record idle
+  # The log and the claim count whole seconds, and the restart below starts a session in the
+  # same second as this one: a done stamped now would sit inside the second session's first
+  # second. So the claim starts 10 s ago and the done is logged 5 s ago.
+  cf=$(claim_of "$REPO/.claude/worktrees/alpha"); now=$(date +%s)
+  sed "7s/.*/$((now - 10))/" "$cf" >"$cf.new" && mv "$cf.new" "$cf"
+  printf '%s\tAlpha\tdone\tDONE: report\n' "$(date -u -d "@$((now - 5))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$((now - 5))" +%Y-%m-%dT%H:%M:%SZ)" >>"$REPO/$LOG"
+  before=$(sh "$BIN" log show)
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  [ "$(grep '	stop	' "$REPO/$LOG" | cut -f2-6)" = "Lead"$'\t'"stop"$'\t'"Alpha by Lead"$'\t'"session=aaaa-bbbb"$'\t'"report=logged" ]
+  [ "$(sh "$BIN" log show)" = "$before" ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  : >"$BATS_TEST_TMPDIR/shpid"
+  sh "$BIN" start alpha >/dev/null
+  until_ok '[ -s "$BATS_TEST_TMPDIR/shpid" ]'
+  sp=$(cat "$BATS_TEST_TMPDIR/shpid")
+  printf '{"pid":%s,"sessionId":"a b","status":"idle"}\n' "$sp" >"$cfg/sessions/$sp.json"
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  [ "$(grep '	stop	' "$REPO/$LOG" | tail -1 | cut -f5,6)" = "session=-"$'\t'"report=none" ]
+}
+
+@test "stop: a hand-off stopped with no done since it started says so on stderr; a plain start does not" {
+  STOP_HANDOFF=1 stop_fixture
+  stop_record idle
+  sh "$BIN" stop alpha >"$BATS_TEST_TMPDIR/out" 2>"$BATS_TEST_TMPDIR/err"
+  grep -qF 'claude-peer: alpha logged no done since it started, so its report is not in: claude-peer start alpha --continue --handoff -- "write the report you owe"' "$BATS_TEST_TMPDIR/err"
+  [ "$(wc -l <"$BATS_TEST_TMPDIR/err" | tr -d ' ')" -eq 1 ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  : >"$BATS_TEST_TMPDIR/shpid"
+  sh "$BIN" start alpha >/dev/null
+  until_ok '[ -s "$BATS_TEST_TMPDIR/shpid" ]'
+  sp=$(cat "$BATS_TEST_TMPDIR/shpid")
+  stop_record idle
+  sh "$BIN" stop alpha >"$BATS_TEST_TMPDIR/out" 2>"$BATS_TEST_TMPDIR/err"
+  [ ! -s "$BATS_TEST_TMPDIR/err" ]
+}
+
+# A session whose worktree is gone: a fixture pane (pid $op) with a child (pid $oc) holding
+# a registry record named for slot gamma, and the pane's .term file in the wait directory.
+orphan_fixture() {
+  cfg=$BATS_TEST_TMPDIR/cfg; mkdir -p "$cfg/sessions"; export CLAUDE_CONFIG_DIR=$cfg
+  owd=$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)/claude-peer.wait
+  mkdir -p "$owd"
+  sh -c 'sleep 30 & echo $! >"$1"; wait' sh "$BATS_TEST_TMPDIR/ocpid" 3>&- 2>/dev/null &
+  op=$!
+  PANES="$PANES $op"
+  until_ok '[ -s "$BATS_TEST_TMPDIR/ocpid" ]'
+  oc=$(cat "$BATS_TEST_TMPDIR/ocpid")
+  PANES="$PANES $oc"
+  printf -- '-\n-\n' >"$owd/gamma.$op.term"
+}
+# status, then more JSON members (each led by a comma)
+orphan_record() {
+  printf '{"pid":%s,"sessionId":"aaaa-bbbb","name":"proj-gamma","status":"%s"%s}\n' "$oc" "$1" "${2-}" >"$cfg/sessions/$oc.json"
+}
+# <minutes>: the JSON member for a status that last changed that long ago
+idle_for() { printf ',"statusUpdatedAt":%s' $(( ($(date +%s) - $1 * 60) * 1000 )); }
+# rewrite line 4 of alpha's claim, who started it
+claim_by() {
+  cl=$(claim_of "$REPO/.claude/worktrees/alpha")
+  awk -v v="$1" 'NR == 4 { $0 = v } 1' "$cl" >"$cl.new" && mv "$cl.new" "$cl"
+}
+
+@test "stop: a session whose worktree is gone is found by its pane and stopped; the line says so" {
+  orphan_fixture
+  orphan_record idle
+  run sh "$BIN" stop gamma
+  [ "$status" -eq 0 ]
+  [ "$output" = "gamma"$'\t'"$REPO/.claude/worktrees/gamma"$'\t'"stopped" ]
+  no kill -0 "$oc" 2>/dev/null
+  [ "$(grep '	stop	' "$REPO/$LOG" | cut -f2-7)" = "proj"$'\t'"stop"$'\t'"Gamma by proj"$'\t'"session=aaaa-bbbb"$'\t'"report=none"$'\t'"worktree=gone" ]
+}
+
+@test "stop: an orphan that is busy is refused and kept; --force stops it" {
+  orphan_fixture
+  orphan_record busy
+  run sh "$BIN" stop gamma
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"gamma is busy; stop --force"* ]]
+  grep -q '	note	stop refused: Gamma is busy$' "$REPO/$LOG"
+  kill -0 "$oc"
+  run sh "$BIN" stop gamma --force
+  [ "$status" -eq 0 ]
+  no kill -0 "$oc" 2>/dev/null
+}
+
+@test "stop: a pane that is waiting is no orphan, nor is one whose record names another slot" {
+  orphan_fixture
+  orphan_record idle
+  printf '%s\n' "$REPO" >"$owd/gamma.$op"
+  run sh "$BIN" stop gamma
+  [ "$status" -eq 3 ]
+  [[ "$output" == *$'\t'"not-running" ]]
+  kill -0 "$oc"
+  rm "$owd/gamma.$op"
+  run sh "$BIN" stop zeta
+  [ "$status" -eq 3 ]
+  kill -0 "$oc"
+}
+
+@test "stop: a Claude caller is held off a pane-started peer until it has sat idle pane-idle-minutes" {
+  stop_fixture
+  claim_by pane
+  stop_record idle "$(idle_for 59)"
+  CLAUDE_PID=1234 run sh "$BIN" stop alpha
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"alpha was started at its pane and was active 59m ago; stop --force"* ]]
+  grep -q '	note	stop refused: Alpha was started at its pane and was active 59m ago$' "$REPO/$LOG"
+  kill -0 "$sp"
+  stop_record idle
+  CLAUDE_PID=1234 run sh "$BIN" stop alpha
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"alpha was started at its pane and its record has no time"* ]]
+  stop_record idle "$(idle_for 61)"
+  CLAUDE_PID=1234 run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  no kill -0 "$sp" 2>/dev/null
+}
+
+@test "stop: the operator's own shell is never held, and neither is pane-idle-minutes 0" {
+  stop_fixture
+  claim_by pane
+  stop_record idle "$(idle_for 59)"
+  run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  : >"$BATS_TEST_TMPDIR/shpid"
+  sh "$BIN" start alpha >/dev/null
+  until_ok '[ -s "$BATS_TEST_TMPDIR/shpid" ]'
+  sp=$(cat "$BATS_TEST_TMPDIR/shpid")
+  claim_by pane
+  stop_record idle "$(idle_for 1)"
+  git config claude-peer.pane-idle-minutes 0
+  CLAUDE_PID=1234 run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  no kill -0 "$sp" 2>/dev/null
+}
+
+@test "stop: a hand-off peer is never held by the pane clock; an orphan is" {
+  STOP_HANDOFF=1 stop_fixture
+  stop_record idle "$(idle_for 1)"
+  CLAUDE_PID=1234 run sh "$BIN" stop alpha
+  [ "$status" -eq 0 ]
+  no kill -0 "$sp" 2>/dev/null
+  orphan_fixture
+  orphan_record idle "$(idle_for 59)"
+  CLAUDE_PID=1234 run sh "$BIN" stop gamma
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"gamma was started at its pane and was active 59m ago"* ]]
+  kill -0 "$oc"
+  git config claude-peer.pane-idle-minutes 30
+  CLAUDE_PID=1234 run sh "$BIN" stop gamma
+  [ "$status" -eq 0 ]
+  no kill -0 "$oc" 2>/dev/null
 }
 
 @test "claude-peer.start = auto: the pane starts a session after the settle delay, then waits" {
@@ -3483,10 +3745,27 @@ NOTE_END='A report left only in this pane reaches nobody.'
   until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
   last=$(cat "$BATS_TEST_TMPDIR/last")
   [[ "$last" == "fix thing"$'\n\n'"Hand-off from Lead. "*"$NOTE_END" ]]
-  [[ "$last" == *'${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/'* ]]
+  [[ "$last" == *'${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/proj/ '* ]]
+  for h in Asked State Decided Learned Open Session; do [[ "$last" == *"$h"* ]]; done
+  [[ "$last" != *peer-lifetime.md* ]]
+  [[ "$last" == *'Open: what is unfinished'* ]]
   cl=$(claim_of "$REPO/.claude/worktrees/alpha")
   [ "$(wc -l <"$cl" | tr -d ' ')" -eq 10 ]
   [ "$(sed -n '8,10p' "$cl" | tr '\n' ' ')" = "handoff 4242 aaaa-bbbb " ]
+}
+
+@test "start --handoff: the note points at peer-lifetime.md when that topic is deployed, and then skips the meanings" {
+  mkdir -p "$HOME/.claude-shared/topics"
+  : >"$HOME/.claude-shared/topics/peer-lifetime.md"
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  CLAUDE_PID=4242 CLAUDE_CODE_SESSION_ID=aaaa-bbbb run sh "$BIN" start alpha --handoff fix thing
+  [ "$status" -eq 0 ]
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  last=$(cat "$BATS_TEST_TMPDIR/last")
+  [[ "$last" == *"~/.claude-shared/topics/peer-lifetime.md says what goes under each"* ]]
+  for h in Asked State Decided Learned Open Session; do [[ "$last" == *"$h"* ]]; done
+  [[ "$last" != *'Open: what is unfinished'* ]]
+  [[ "$last" == *"$NOTE_END" ]]
 }
 
 @test "start without --handoff: the prompt is untouched, the claim ends - pid sid, and stderr says nobody is told" {

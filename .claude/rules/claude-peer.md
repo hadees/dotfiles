@@ -220,15 +220,12 @@ The prompt is one argument, last, never re-parsed by a shell; `-` reads it from
 stdin, and one that begins with `-` is a usage error. With several leaders'
 panes waiting only those of `--leader` (default the caller's directory) are
 candidates; the pane whose own slot is the one asked for wins, else the first
-by label. `stop <slot> [--force]` sends TERM to the claude under the claim's pid
-whose `sessions/<pid>.json` record, in `$CLAUDE_CONFIG_DIR`, Claude Code's own default `~/.claude` (what an unset one means) or a
-`claude.profile.*` directory, says `idle` (that layout is observed, not an
-interface); a busy or unknown session is refused unless `--force`, which stops
-every process under the claim. The worktree and transcript are never touched.
+by label. `stop <slot> [--force]` is described in `claude-peer-handoff.md`; the
+worktree and transcript are never touched.
 `slots [<dir>]` prints `slot<TAB>running|waiting<TAB>worktree<TAB>pid<TAB>
 leader<TAB>session name` for the repository. Exit codes: 0 done; 1 failed; 2
 usage; 3 already in the requested state (running, not running, no slot free);
-4 nothing to act on (no pane waiting); 5 refused because busy.
+4 nothing to act on (no pane waiting); 5 refused by `stop`.
 
 **Lead**, the one session that may start, stop and re-task its peers unasked, is in `claude-peer-handoff.md`.
 
@@ -294,7 +291,7 @@ on). A pane writes `3` as line 2 of its wait file (the protocol); `start
 --context` to a pane below 2 is exit 4 (`predates contexts; reopen its tab`),
 `start --handoff` to one below 3 is exit 4 (`predates hand-offs`), a plain
 `start` to it works. `pane_go` is the one place that builds the `claude` arguments, in this
-order: `-n <repo>-<slot> [--continue] [definition args] [--agent A] [--model M]
+order: `-n <repo>-<slot> [--continue] [definition args] [--permission-mode P] [--agent A] [--model M]
 [--effort E] [--append-system-prompt S] [prompt]`; it reads `PG_CTX`,
 `PG_CTXNAME`, `PG_BY` and `PG_TASK` and clears them. The claim gains lines 4-7:
 who started it (`Lead`, a slot label, a directory name, `pane` for Return, `-`
@@ -312,7 +309,9 @@ resumed session keeps its model and cache. A value that is empty is unset; one
 that starts with `-` or holds whitespace is ignored with one stderr line. It is
 read inside `pane_go`, each time a session starts, not when the pane opens: a
 waiting pane takes a change at its next session, with no reopening. Hermes and
-Lead do not go through `pane_go`.
+Lead do not go through `pane_go`. `claude-peer.permission-mode` (`peer_mode`), read the
+same way, goes to every start unless the definition has `--permission-mode`;
+`bypassPermissions` or an unlisted mode is ignored with one stderr line.
 
 **Names, hand-offs, how a session ended** are in `claude-peer-handoff.md`.
 
