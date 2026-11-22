@@ -24,8 +24,10 @@
 # quiet ones: cc-status re-reads the stored count on Notification(idle_prompt)
 # a minute after Stop and repaints "working · N background tasks running".
 # The paint sends the full field set, so a cc-status that failed cannot leave
-# a half-painted row. Items also get the id and status keys that cc-status
-# (written against an older Claude Code) reads and 2.1.289 no longer sends.
+# a half-painted row. Claude Code 2.1.325 keys a task by id and type (2.1.289
+# sent task_id and task_type); both are read, and a finished task still listed
+# is dropped as iTerm2's handler drops it. Legacy mode gives each fed item the
+# id and status keys that cc-status reads.
 #
 # Subagent seats (plan-fable, unstick-fable, review-fable, work-sonnet,
 # scout-haiku, or any agent_type given a tabstatus.color.<agent_type>) get a
@@ -474,21 +476,38 @@ def tasks_write(recs):
     except (OSError, TypeError):
         pass
 
+# Claude Code 2.1.325 sends id/type/status per task; an older one sent task_id/task_type. Read both.
+def tid_of(t):
+    if isinstance(t, dict):
+        for k in ("task_id", "id"):
+            if isinstance(t.get(k), str) and t[k]:
+                return t[k]
+    return None
+
+def kind_of(t):
+    return (t.get("task_type") or t.get("type")) if isinstance(t, dict) else None
+
+# The handler's own filter for a task that is over but still listed, so both count alike.
+FINISHED = {"completed", "failed", "cancelled", "canceled", "killed", "stopped", "done"}
+
 def label(t):
-    return str(t.get("description") or t.get("task_type") or "?") if isinstance(t, dict) else "?"
+    return str(t.get("description") or kind_of(t) or "?") if isinstance(t, dict) else "?"
 
 now = time.time()
 scratch = payload.get("scratchpad_dir")
 active, quiet, rows, fed = [], [], [], None
 stalled, busy_cpu, keep, quiet_ages = [], set(), {}, []
 n_raw = 0   # entries a SubagentStop listed, before the stopped agent is dropped
+if isinstance(tasks, list):
+    tasks = [t for t in tasks if not (isinstance(t, dict) and isinstance(t.get("status"), str)
+                                      and t["status"].lower() in FINISHED)]
 if event in ("Stop", "StopFailure", "SubagentStop") and isinstance(tasks, list) and tasks:
     n_raw = len(tasks)
     if event == "SubagentStop" and aid:
-        tasks = [t for t in tasks if not (isinstance(t, dict) and t.get("task_id") == aid)]
+        tasks = [t for t in tasks if tid_of(t) != aid]
     prior = tasks_read()
     for t in tasks:
-        tid = t.get("task_id") if isinstance(t, dict) else None
+        tid = tid_of(t)
         state, age, probe = "unknown", None, ""
         if isinstance(tid, str) and tid in prior:
             keep[tid] = prior[tid]
@@ -527,10 +546,9 @@ if event in ("Stop", "StopFailure", "SubagentStop") and isinstance(tasks, list) 
                 if os.path.islink(p):   # an agent whose transcript is gone
                     state = "quiet"
         (quiet if state == "quiet" else active).append(t)
-        kind, d = (t.get("task_type"), t.get("description")) if isinstance(t, dict) else (None, None)
+        kind, d = kind_of(t), (t.get("description") if isinstance(t, dict) else None)
         rows.append(f"task {tid} {kind} {state} age={'-' if age is None else int(age)}{probe}  {d or ''}")
-    fed = [{**t, "id": t["task_id"], "status": "running"} if isinstance(t, dict) and "task_id" in t else t
-           for t in active]
+    fed = [{**t, "id": tid_of(t), "status": t.get("status") or "running"} if tid_of(t) else t for t in active]
     if not explain:
         tasks_write(keep)
 
@@ -573,7 +591,7 @@ def session_title():
     return ((f"[{group}] " if group else "") + name)[:80], "", role
 
 # A running seat among the active tasks: the row stays that seat's colour, not the parent's.
-ids = {t.get("task_id") for t in active if isinstance(t, dict)}
+ids = {tid_of(t) for t in active}
 busy = [t for a, t in live if a in ids and seat_color(t)]
 in_seat_tool = bool(seat) and event in ("PreToolUse", "PostToolUse")
 paint_stalled = bool(stalled) and not active
@@ -585,7 +603,7 @@ def stalled_text():
 
 def quiet_text():
     n = len(quiet)
-    what = ", ".join(label(t) + (" (cpu busy)" if isinstance(t, dict) and t.get("task_id") in busy_cpu else "")
+    what = ", ".join(label(t) + (" (cpu busy)" if tid_of(t) in busy_cpu else "")
                      for t in quiet)
     # the shortest silence among the quiet tasks; a task with no file has no age
     since = f", quiet {int(min(quiet_ages) // 60)} min" if quiet_ages else ""
