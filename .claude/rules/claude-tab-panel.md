@@ -183,13 +183,16 @@ external resource and no framework, deployed to
 `~/.local/share/claude-tab/panel.html` on macOS only (`.chezmoiignore`). It
 polls `/snapshot.json` every 2 seconds and draws the `needs` list in up to
 three sections (`Blocked on you`, `Your move`, `Check`) with a closed `<n>
-others` disclosure over the sessions by group; a click on a row posts `/go`, the
+others` disclosure over the sessions by group; a click on a row posts `/go`
+(`claude-tab focus`, whose `reveal` route lands in a buried peer's pane), the
 `✓` posts `/seen`, a 409's `error` shows in the status line for ten seconds.
-Text reaches the page only through `textContent` (a label is a directory's
-name), and the test refuses `innerHTML`, `document.write`, `eval`, any
+A row's reason is shortened (`permission prompt` reads `prompt`) so the name
+keeps the width; the tooltip holds the whole word. Text reaches the page only
+through `textContent` (a label is a directory's name), and the test refuses `innerHTML`, `document.write`, `eval`, any
 `http:`, `https:` or `//` address and any private-use glyph. Rows are updated in
 place by pid and kind, so a poll neither resets a hover nor re-fades a row. It
-looks like the Toolbelt's neighbours: Base16 Eighties (`#1a1a1a`) in a
+looks like the Toolbelt's neighbours: Base16 Eighties on `#282828` (a step
+lighter than the terminal, to sit level with the Toolbelt's grey panels) in a
 monospace face by default, a light variant under `prefers-color-scheme: light`,
 and the kind colours of Session Status (`blocked` blue, `asked` yellow,
 `failed` red, `quiet` amber, `finished` green, everything else grey). The

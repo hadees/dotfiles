@@ -7,7 +7,7 @@
 <style>
   :root {
     color-scheme: dark light;
-    --bg: #1a1a1a; --fg: #d3d0c8; --dim: #747369; --hover: #2a2a2a; --fade: #2d2d2d;
+    --bg: #282828; --fg: #d3d0c8; --dim: #8a897f; --hover: #343434; --fade: #3c3c3c;
   }
   @media (prefers-color-scheme: light) {
     :root { --bg: #f2f0ec; --fg: #2d2d2d; --dim: #747369; --hover: #e6e3dc; --fade: #dcd9d2; }
@@ -30,7 +30,7 @@
   .row.seen { opacity: .55; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: #888888; }
   .name { font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .why { max-width: 11em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .why { max-width: 7em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .age, .ok { grid-column: 4; grid-row: 1; text-align: right; color: var(--dim); }
   .ok { opacity: 0; color: var(--fg); }
   .row:hover .ok, .row:focus-within .ok { opacity: 1; }
@@ -74,6 +74,8 @@ var COLOR = {
   finished: "#00d75f", "finished-bg": "#00d75f"
 };
 var GREY = "#888888";
+/* the reason is short so that the name keeps the width; the tooltip holds the whole word */
+var SHORT = { "permission prompt": "prompt", "input needed": "input", "finished, background task": "finished bg" };
 /* the kinds of the list; the others view also shows working, idle and idle-bg in grey */
 var SECTION = {
   blocked: "blocked", failed: "move", asked: "move", finished: "move", "finished-bg": "move",
@@ -155,11 +157,11 @@ function makeRow() {
 function updateRow(row, r) {
   var c = COLOR[r.kind] || GREY, k = row.children;
   row.dataset.pid = r.pid;
-  row.title = [r.profile, r.role, "pid " + r.pid, r.kind].join(" · ");
+  row.title = [r.profile, r.role, "pid " + r.pid, r.kind, r.reason].join(" · ");
   row.classList.toggle("seen", !!r.seen);
   k[0].style.background = c;
   setText(k[1], r.label);
-  setText(k[2], r.reason || r.kind);
+  setText(k[2], SHORT[r.reason] || r.reason || r.kind);
   k[2].style.color = c;
   setText(k[3], age(r.since));
 }

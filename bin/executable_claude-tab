@@ -488,8 +488,25 @@ group_tty() {
   done
 }
 
+# Hand iTerm2 its own reveal URL for session <guid> (it searches tabs, buried
+# sessions and peer ports), then read the front tty up to five times, 0.2 s
+# apart. Returns 0 only when the front tty is <tty>: the opener answers 0
+# whatever iTerm2 did, so the front tty is the only proof. Read-only osascript,
+# one try each, so a failing read costs a second, not the retries of run_script.
+reveal_session() { # guid tty
+  rs_tty=$2 rs_i=0
+  "${CLAUDE_TAB_OPEN:-/usr/bin/open}" "iterm2:reveal?sessionid=x:$1" >/dev/null 2>&1 || return 1
+  while [ "$rs_i" -lt 5 ]; do
+    [ "$(front_tty_script | osascript - 2>/dev/null)" != "$rs_tty" ] || return 0
+    rs_i=$((rs_i + 1))
+    [ "$rs_i" -ge 5 ] || sleep 0.2
+  done
+  return 1
+}
+
 # Bring session <pid> forward; FOCUS_ROUTE says how: tab (its own tab is in
-# front), swap (buried, `it2 session focus` took it), group (buried, a visible
+# front), reveal (iTerm2's reveal URL put its pane in front, a buried peer
+# included), swap (buried, `it2 session focus` took it), group (buried, a visible
 # member of its workgroup came forward instead). Returns 1 with one line when
 # none applies. <where> is list's: "other" is a buried one, so its tab is not tried.
 focus_session() { # pid tty where guid cwd
@@ -501,6 +518,7 @@ focus_session() { # pid tty where guid cwd
     fs_out=$(focus_script "$fs_tty" | run_script) || { warn "$OSA_HINT"; return 1; }
     [ "$fs_out" != ok ] || { FOCUS_ROUTE=tab; return 0; }
   fi
+  if [ -n "$fs_guid" ] && [ "$fs_guid" != - ] && reveal_session "$fs_guid" "$fs_tty"; then FOCUS_ROUTE=reveal; return 0; fi
   if [ "$fs_guid" != - ] && it2_focus "$fs_guid"; then FOCUS_ROUTE=swap; return 0; fi
   fs_gtty=$(group_tty "$fs_cwd")
   if [ -n "$fs_gtty" ]; then
