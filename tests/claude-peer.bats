@@ -3746,10 +3746,26 @@ NOTE_END='A report left only in this pane reaches nobody.'
   last=$(cat "$BATS_TEST_TMPDIR/last")
   [[ "$last" == "fix thing"$'\n\n'"Hand-off from Lead. "*"$NOTE_END" ]]
   [[ "$last" == *'${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/proj/ '* ]]
-  for h in Asked State Decided Learned Open Session peer-lifetime.md; do [[ "$last" == *"$h"* ]]; done
+  for h in Asked State Decided Learned Open Session; do [[ "$last" == *"$h"* ]]; done
+  [[ "$last" != *peer-lifetime.md* ]]
+  [[ "$last" == *'Open: what is unfinished'* ]]
   cl=$(claim_of "$REPO/.claude/worktrees/alpha")
   [ "$(wc -l <"$cl" | tr -d ' ')" -eq 10 ]
   [ "$(sed -n '8,10p' "$cl" | tr '\n' ' ')" = "handoff 4242 aaaa-bbbb " ]
+}
+
+@test "start --handoff: the note points at peer-lifetime.md when that topic is deployed, and then skips the meanings" {
+  mkdir -p "$HOME/.claude-shared/topics"
+  : >"$HOME/.claude-shared/topics/peer-lifetime.md"
+  FAKE_SHELL_SLEEP=2 FAKE_SHELL_LAST="$BATS_TEST_TMPDIR/last" pane alpha
+  CLAUDE_PID=4242 CLAUDE_CODE_SESSION_ID=aaaa-bbbb run sh "$BIN" start alpha --handoff fix thing
+  [ "$status" -eq 0 ]
+  until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
+  last=$(cat "$BATS_TEST_TMPDIR/last")
+  [[ "$last" == *"~/.claude-shared/topics/peer-lifetime.md says what goes under each"* ]]
+  for h in Asked State Decided Learned Open Session; do [[ "$last" == *"$h"* ]]; done
+  [[ "$last" != *'Open: what is unfinished'* ]]
+  [[ "$last" == *"$NOTE_END" ]]
 }
 
 @test "start without --handoff: the prompt is untouched, the claim ends - pid sid, and stderr says nobody is told" {

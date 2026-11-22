@@ -79,7 +79,9 @@ prompt, `pane_go` appends an empty line and `handoff_note`, a fixed paragraph
 report and telling the peer to write it under
 `${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<rname>/` (`$rname`, the
 session-name prefix, not the slot) with the headings Asked, State, Decided, Learned,
-Open and Session (`peer-lifetime.md` in the shared topics says what goes under each)
+Open and Session (a pointer to `peer-lifetime.md` in the shared topics only when
+`~/.claude-shared/topics/peer-lifetime.md` exists, else a one-line meaning of each
+heading, so the note stands alone on an `ephemeral` box)
 and end with `claude-peer log done "<STATUS>: …"`; a context's body gets it after
 substitution. A plain start
 with a prompt or context from a Claude session warns on stderr `not a

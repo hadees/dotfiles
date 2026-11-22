@@ -594,10 +594,19 @@ dur_of() {
 }
 
 # What a hand-off adds to the peer's prompt: literal, but for the report's
-# directory, this repository's session-name prefix, $rname.
+# directory (this repository's session-name prefix, $rname) and the line that
+# says what each heading holds: a pointer to the shared topic when it is
+# deployed, the meanings themselves when it is not (an ephemeral box has no
+# ~/.claude-shared).
 handoff_note() {
+  if [ -f "$HOME/.claude-shared/topics/peer-lifetime.md" ]; then
+    what='~/.claude-shared/topics/peer-lifetime.md says what goes under each'
+  else
+    # shellcheck disable=SC2016
+    what='Asked: the task and who gave it; State: branch, last commit, pull request, anything uncommitted or unpushed; Decided: each decision and why; Learned: what was tried and failed, what surprised you; Open: what is unfinished, the next step, questions waiting; Session: $CLAUDE_CODE_SESSION_ID and the worktree'
+  fi
   # shellcheck disable=SC2016
-  printf 'Hand-off from Lead. This session is for this one task and is stopped once Lead has read your report. When you finish, or cannot go on, write the report to a file under ${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/%s/ with the headings Asked, State, Decided, Learned, Open and Session (~/.claude-shared/topics/peer-lifetime.md says what goes under each), and then run: claude-peer log done "<DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT>: <one line; the commit or pull request; the report'"'"'s path>". That line reaches Lead by itself. A report left only in this pane reaches nobody.\n' "$rname"
+  printf 'Hand-off from Lead. This session is for this one task and is stopped once Lead has read your report. When you finish, or cannot go on, write the report to a file under ${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/%s/ with the headings Asked, State, Decided, Learned, Open and Session (%s), and then run: claude-peer log done "<DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT>: <one line; the commit or pull request; the report'"'"'s path>". That line reaches Lead by itself. A report left only in this pane reaches nobody.\n' "$rname" "$what"
 }
 
 # One line of at most 80 characters, tabs as spaces, for a claim and the pane's
