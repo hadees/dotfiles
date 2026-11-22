@@ -593,10 +593,11 @@ dur_of() {
   elif [ "$1" -lt 86400 ]; then echo "$(( $1 / 3600 ))h"; else echo "$(( $1 / 86400 ))d"; fi
 }
 
-# What a hand-off adds to the peer's prompt, printed literally.
+# What a hand-off adds to the peer's prompt: literal, but for the report's
+# directory, this repository's session-name prefix, $rname.
 handoff_note() {
   # shellcheck disable=SC2016
-  printf '%s\n' 'Hand-off from Lead. When you finish, or cannot go on, write your report to a file under ${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<this repository'"'"'s directory name>/ and then run: claude-peer log done "<DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT>: <one line; the commit or pull request; the report'"'"'s path>". That line reaches Lead by itself. A report left only in this pane reaches nobody.'
+  printf 'Hand-off from Lead. This session is for this one task and is stopped once Lead has read your report. When you finish, or cannot go on, write the report to a file under ${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/%s/ with the headings Asked, State, Decided, Learned, Open and Session (~/.claude-shared/topics/peer-lifetime.md says what goes under each), and then run: claude-peer log done "<DONE|DONE_WITH_CONCERNS|BLOCKED|NEEDS_CONTEXT>: <one line; the commit or pull request; the report'"'"'s path>". That line reaches Lead by itself. A report left only in this pane reaches nobody.\n' "$rname"
 }
 
 # One line of at most 80 characters, tabs as spaces, for a claim and the pane's
@@ -612,6 +613,18 @@ default_model() {
     '') ;;
     -*|*[[:space:]]*) warn "claude-peer.model '$dm_v' is not a model name; ignored";;
     *) printf '%s\n' "$dm_v";;
+  esac
+}
+
+# git config claude-peer.permission-mode, read where the caller stands each time
+# a session starts: one of the modes `claude --help` lists for --permission-mode
+# except bypassPermissions, or nothing (unset, or anything else, said once).
+peer_mode() {
+  pm_v=$(git config --get claude-peer.permission-mode 2>/dev/null) || pm_v=
+  case $pm_v in
+    '') ;;
+    acceptEdits|auto|manual|dontAsk|plan) printf '%s\n' "$pm_v";;
+    *) warn "claude-peer.permission-mode '$pm_v' is not a permission mode; ignored";;
   esac
 }
 
@@ -660,6 +673,11 @@ $(handoff_note)"; fi
   # only a fresh start with no model of its own: a resumed session keeps its model
   # and cache, an agent definition carries its model
   [ "$pg_mode" != fresh ] || [ -n "$pg_cm" ] || [ -n "$pg_ca" ] || pg_cm=$(default_model)
+  # not when the definition's own arguments already carry one
+  pg_has= pg_pm=
+  for pg_a in "$@"; do [ "$pg_a" != --permission-mode ] || pg_has=1; done
+  [ -n "$pg_has" ] || pg_pm=$(peer_mode)
+  [ -z "$pg_pm" ] || set -- "$@" --permission-mode "$pg_pm"
   [ -z "$pg_ca" ] || set -- "$@" --agent "$pg_ca"
   [ -z "$pg_cm" ] || set -- "$@" --model "$pg_cm"
   [ -z "$pg_ce" ] || set -- "$@" --effort "$pg_ce"

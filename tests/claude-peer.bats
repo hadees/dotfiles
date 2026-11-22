@@ -802,6 +802,39 @@ modelfix() {
   no grep -q -- "--model" "$FAKE_SHELL_LOG"
 }
 
+@test "claude-peer.permission-mode: a fresh and a continued start get --permission-mode, an unset key none" {
+  git -C "$REPO" config claude-peer.permission-mode auto
+  FAKE_SHELL_SLEEP=2 pane alpha
+  run sh "$BIN" start alpha fix the thing
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha --permission-mode auto fix the thing\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  run sh "$BIN" start alpha --continue go on
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha --continue --permission-mode auto go on\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  git -C "$REPO" config --unset claude-peer.permission-mode
+  run sh "$BIN" start alpha plain
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha plain\$" "$FAKE_SHELL_LOG"'
+  [ "$(grep -c -- "--permission-mode" "$FAKE_SHELL_LOG")" -eq 2 ]
+}
+
+@test "claude-peer.permission-mode: bypassPermissions and a value with a space are ignored with one stderr line" {
+  git -C "$REPO" config claude-peer.permission-mode bypassPermissions
+  FAKE_SHELL_SLEEP=2 pane alpha
+  run sh "$BIN" start alpha fix the thing
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "claude-peer proj-alpha fix the thing\$" "$FAKE_SHELL_LOG"'
+  [ "$(grep -c "claude-peer: claude-peer.permission-mode 'bypassPermissions' is not a permission mode; ignored" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 1 ]
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  git -C "$REPO" config claude-peer.permission-mode 'two words'
+  run sh "$BIN" start alpha again
+  until_ok 'grep -q "claude-peer proj-alpha again\$" "$FAKE_SHELL_LOG"'
+  grep -q "claude-peer.permission-mode 'two words' is not a permission mode; ignored" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  no grep -q -- "--permission-mode" "$FAKE_SHELL_LOG"
+}
+
 @test "start: no waiting pane is 4, a running slot is 3, a prompt that begins with - is 2" {
   run sh "$BIN" start alpha
   [ "$status" -eq 4 ]
@@ -3707,7 +3740,8 @@ NOTE_END='A report left only in this pane reaches nobody.'
   until_ok '[ -s "$BATS_TEST_TMPDIR/last.n" ]'
   last=$(cat "$BATS_TEST_TMPDIR/last")
   [[ "$last" == "fix thing"$'\n\n'"Hand-off from Lead. "*"$NOTE_END" ]]
-  [[ "$last" == *'${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/'* ]]
+  [[ "$last" == *'${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/proj/ '* ]]
+  for h in Asked State Decided Learned Open Session peer-lifetime.md; do [[ "$last" == *"$h"* ]]; done
   cl=$(claim_of "$REPO/.claude/worktrees/alpha")
   [ "$(wc -l <"$cl" | tr -d ' ')" -eq 10 ]
   [ "$(sed -n '8,10p' "$cl" | tr '\n' ' ')" = "handoff 4242 aaaa-bbbb " ]
