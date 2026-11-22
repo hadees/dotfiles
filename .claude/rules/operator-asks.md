@@ -27,12 +27,19 @@ session does.
   `permission-mode` record of each worktree-project session); `denied:<reason>`
   and `prompts` from the two logs. The patterns are frozen so weeks compare:
   changing one starts a new baseline.
-- **A denied profile is never read.** The running profile's
-  `permissions.deny` (its `settings.json`, `Read(~/...)` and `Read(//...)`
-  entries) is checked against the target's `projects` directory, and a match
-  exits 1 before any transcript is opened. This is the reason `--dir` is safe
-  to offer: a profile that may not read another's transcripts cannot count
-  them either. A settings file it cannot read denies nothing, as for any tool.
+- **A denied project is never read.** There is no deny parser here: every
+  test is `denyguard check --profile <running profile>` (see the `denyguard`
+  rule), found on `PATH`. It is asked about the target's `projects` directory
+  (a match exits 1 before any transcript is opened), then, for each project,
+  about the project directory and the `cwd` its records name (the first
+  record that has one is the only part read first). A project that fails is
+  skipped in `count` and `list` alike, and only a total is reported, on
+  stderr: `N projects skipped (denied)`; its name, path and cwd are never
+  printed. Fail closed: only exit 0 allows, so exit 1, exit 2 (a rule
+  denyguard cannot evaluate), a hang, a missing denyguard and a project whose
+  records name no `cwd` all deny. This is the reason `--dir` is safe to offer:
+  a profile may not count sessions held in a repo it may not read, whichever
+  profile's directory they sit in.
 - `hook denied` (PermissionDenied) and `hook prompt` (PermissionRequest) append
   to `${XDG_STATE_HOME:-$HOME/.local/state}/operator-asks/denials.tsv` and
   `prompts.tsv`: UTC time, profile label (the base name of

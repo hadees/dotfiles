@@ -28,6 +28,8 @@ setup() {
   chmod +x "$BIN/python3"
   export PATH="$BIN:$PATH"
 
+  ln -s "$BATS_TEST_DIRNAME/../bin/executable_denyguard" "$BIN/denyguard"
+
   OA="$BATS_TEST_DIRNAME/../bin/executable_operator-asks"
   DENIALS="$XDG_STATE_HOME/operator-asks/denials.tsv"
   PROMPTS="$XDG_STATE_HOME/operator-asks/prompts.tsv"
@@ -85,17 +87,17 @@ peer = [
 ]
 
 
-def put(project, name, records):
+def put(project, name, records, cwd):
     d = os.path.join(root, "projects", project)
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, name + ".jsonl"), "w") as f:
         for r in records:
-            f.write(json.dumps(r) + "\n")
+            f.write(json.dumps(dict(r, cwd=cwd)) + "\n")
         f.write("not json\n")
 
 
-put("-home-demo", "aaaa", main)
-put("-home-demo--claude-worktrees-beta", "bbbb", peer)
+put("-home-demo", "aaaa", main, home + "/demo")
+put("-home-demo--claude-worktrees-beta", "bbbb", peer, home + "/demo/.claude/worktrees/beta")
 PY
 }
 
@@ -121,7 +123,7 @@ PY
   [ "$status" -eq 0 ]
   printf '%s\n' "$output" | grep -q "$(printf '\tdemo-lead\telsewhere\tType /exit in the beta pane\.$')"
   printf '%s\n' "$output" | grep -q "$(printf '\tdemo-lead\tsteps\tThis is yours to merge')"
-  ! printf '%s\n' "$output" | grep -q 'old pane'
+  ! printf '%s\n' "$output" | grep -q 'old pane' || false
 }
 
 @test "--since keeps the stale record in range" {
@@ -160,6 +162,94 @@ PY
   [ "$status" -eq 0 ]
 }
 
+# Adds to the profile directory $1 one project whose records name the working
+# directory $2 and hold a step line and an answered question, so a project that
+# is read shows in both verbs.
+extra_project() {
+  python3 -I - "$1" "$2" <<'PY'
+import json, os, sys, time
+
+root, cwd = sys.argv[1:3]
+now = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+d = os.path.join(root, "projects", "-extra")
+os.makedirs(d, exist_ok=True)
+with open(os.path.join(d, "cccc.jsonl"), "w") as f:
+    for r in (
+        {"type": "assistant", "timestamp": now, "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "Type /exit in the hidden pane."}]}},
+        {"type": "user", "timestamp": now, "toolUseResult": {
+            "questions": [{"question": "Q?", "options": [{"label": "a"}]}], "answers": {"Q?": "a"}}},
+    ):
+        f.write(json.dumps(dict(r, cwd=cwd) if cwd else r) + "\n")
+PY
+}
+
+@test "a project whose cwd is denied is skipped in count and list, and only counted" {
+  fixture "$CLAUDE_CONFIG_DIR"
+  extra_project "$CLAUDE_CONFIG_DIR" "$HOME/code/octo-secret/sub"
+  printf '{"permissions":{"deny":["Read(~/code/octo-secret/**)"]}}\n' > "$CLAUDE_CONFIG_DIR/settings.json"
+  run --separate-stderr "$OA" count
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "operator-asks: 1 projects skipped (denied)" ]
+  printf '%s\n' "$output" | grep -q "$(printf '^questions\t2$')"
+  run --separate-stderr "$OA" list
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "operator-asks: 1 projects skipped (denied)" ]
+  ! printf '%s\n' "$output" | grep -q hidden || false
+  # without the rule the same project is read
+  rm "$CLAUDE_CONFIG_DIR/settings.json"
+  run --separate-stderr "$OA" list
+  [ -z "$stderr" ]
+  printf '%s\n' "$output" | grep -q hidden
+}
+
+@test "a denied project's cwd is checked in another profile read by --dir" {
+  fixture "$HOME/.other"
+  extra_project "$HOME/.other" "$HOME/code/octo-secret"
+  printf '{"permissions":{"deny":["Read(~/code/octo-secret/**)"]}}\n' > "$CLAUDE_CONFIG_DIR/settings.json"
+  run --separate-stderr "$OA" list --dir "$HOME/.other"
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "operator-asks: 1 projects skipped (denied)" ]
+  ! printf '%s\n' "$output" | grep -q hidden || false
+  printf '%s\n' "$output" | grep -q 'beta pane'
+}
+
+@test "a denyguard that exits 2 for a project denies it, whatever else it says" {
+  fixture "$CLAUDE_CONFIG_DIR"
+  extra_project "$CLAUDE_CONFIG_DIR" "$HOME/stubbed"
+  mkdir "$BATS_TEST_TMPDIR/stub"
+  cat > "$BATS_TEST_TMPDIR/stub/denyguard" <<'EOF'
+#!/bin/sh
+for a; do case "$a" in */stubbed) exit 2 ;; esac; done
+exit 0
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/stub/denyguard"
+  PATH="$BATS_TEST_TMPDIR/stub:$PATH" run --separate-stderr "$OA" list
+  [ "$status" -eq 0 ]
+  [ "$stderr" = "operator-asks: 1 projects skipped (denied)" ]
+  ! printf '%s\n' "$output" | grep -q hidden || false
+  printf '%s\n' "$output" | grep -q 'beta pane'
+}
+
+@test "a project whose records name no cwd is skipped" {
+  fixture "$CLAUDE_CONFIG_DIR"
+  extra_project "$CLAUDE_CONFIG_DIR" ""
+  run --separate-stderr "$OA" list
+  [ "$stderr" = "operator-asks: 1 projects skipped (denied)" ]
+  ! printf '%s\n' "$output" | grep -q hidden || false
+}
+
+@test "without denyguard nothing is read, in either verb" {
+  fixture "$CLAUDE_CONFIG_DIR"
+  rm "$BIN/denyguard"
+  for cmd in count list; do
+    PATH="$BIN:/usr/bin:/bin" run --separate-stderr "$OA" "$cmd"
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"could not be checked"* ]]
+  done
+}
+
 @test "hook denied writes the reason label and tool name, never the command text" {
   run "$OA" hook denied <<'EOF'
 {"reason":"[Merge Without Review] gh pr merge 12 --admin secret-token","tool_name":"Bash","tool_input":{"command":"gh pr merge 12 secret-token"},"session_id":"abc-123","cwd":"/x/y"}
@@ -168,7 +258,7 @@ EOF
   [ -z "$output" ]
   [ "$(wc -l < "$DENIALS" | tr -d ' ')" -eq 1 ]
   grep -q "$(printf '\t.claude-test\t\[Merge Without Review\]\tBash$')" "$DENIALS"
-  ! grep -q -e secret-token -e abc-123 -e merge "$DENIALS"
+  ! grep -q -e secret-token -e abc-123 -e merge "$DENIALS" || false
 }
 
 @test "hook prompt writes the tool name and nothing else" {
@@ -178,7 +268,7 @@ EOF
   [ "$status" -eq 0 ]
   [ -z "$output" ]
   grep -q "$(printf '\t.claude-test\tmcp__demo__thing$')" "$PROMPTS"
-  ! grep -q -e secret-token -e abc-123 "$PROMPTS"
+  ! grep -q -e secret-token -e abc-123 "$PROMPTS" || false
 }
 
 @test "a hook payload that is not JSON writes nothing and exits 0" {

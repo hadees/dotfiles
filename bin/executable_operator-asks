@@ -10,9 +10,12 @@
 # log). Every `hook` route prints nothing and exits 0, so a broken hook never
 # blocks a session or tells the model to retry.
 #
-# A profile's transcripts are read only when the running profile does not deny
-# them: `permissions.deny` of the running profile's settings.json is checked
-# against the transcript directory, and a denied one is refused unread.
+# A transcript is read only when the running profile does not deny it:
+# `denyguard check --profile <running profile>` is asked about the target's
+# projects directory and, for each project, about the project directory and the
+# `cwd` its records name, before any other record of it is read. A denied
+# project is skipped and only counted ("N projects skipped (denied)" on
+# stderr). Anything but an allow, a missing denyguard included, is a denial.
 #
 # Usage:
 #   operator-asks count [--since DAYS] [--dir PROFILE_DIR]   metric<TAB>count
@@ -23,6 +26,7 @@
 # env:
 #   CLAUDE_CONFIG_DIR   the running profile (else $HOME/.claude); the default PROFILE_DIR.
 #   XDG_STATE_HOME      where denials.tsv and prompts.tsv live.
+#   PATH                must find denyguard (~/bin/denyguard); without it nothing is read.
 set -eu
 
 # The payload reaches python on fd 3 through an already-unlinked file, because
@@ -48,11 +52,12 @@ esac
 
 rc=0
 python3 -I - "$@" <<'PY' || rc=$?
-import fnmatch
 import glob
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 
@@ -84,30 +89,31 @@ def stamp(t=None):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
 
 
-def denied(target):
-    # Fails closed on a rule it can read; a settings file it cannot read denies nothing.
-    try:
-        with open(os.path.join(config_dir(), "settings.json"), encoding="utf-8") as f:
-            rules = json.load(f)["permissions"]["deny"]
-    except (OSError, ValueError, KeyError, TypeError):
+def allowed(*paths):
+    # The one deny definition is denyguard's; only its exit 0 allows. A missing
+    # denyguard, exit 1 (denied), exit 2 (cannot tell) or a hang all deny.
+    dg = shutil.which("denyguard")
+    if not dg:
         return False
-    probes = {os.path.join(p, "projects", "x", "x.jsonl") for p in (target, os.path.realpath(target))}
-    for rule in rules if isinstance(rules, list) else ():
-        m = re.fullmatch(r"Read\((.*)\)", rule) if isinstance(rule, str) else None
-        if not m:
-            continue
-        pat = m.group(1)
-        if pat.startswith("//"):
-            pat = pat[1:]
-        elif pat.startswith("~/"):
-            pat = HOME + pat[1:]
-        else:
-            continue
-        glob_pat = pat.replace("**", "*")
-        for probe in probes:
-            if fnmatch.fnmatchcase(probe, glob_pat) or probe.startswith(pat.rstrip("/") + "/"):
-                return True
-    return False
+    try:
+        r = subprocess.run([dg, "check", "--profile", config_dir()] + list(paths),
+                           stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0
+
+
+def first_cwd(path):
+    # The `cwd` of the first record that has one; nothing else of the file is kept.
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                r = _load(line)
+                if r is not None and isinstance(r.get("cwd"), str) and r["cwd"]:
+                    return r["cwd"]
+    except OSError:
+        pass
+    return None
 
 
 def parse_args(argv):
@@ -127,15 +133,31 @@ def squeeze(line):
     return " ".join(re.sub(r"\d+", "N", line).split())
 
 
-def scan(since, target):
+def scan(since, target, skipped):
     # Yields (kind, session name, time, text) for every counted event of the
-    # main conversation (sidechain records are skipped).
+    # main conversation (sidechain records are skipped). A project the running
+    # profile denies, or whose cwd it cannot place, is added to `skipped` and
+    # none of its records is read.
     cut_t = time.time() - since * DAY
     cut = stamp(cut_t)
+    projects = {}
     for path in sorted(glob.glob(os.path.join(target, "projects", "*", "*.jsonl"))):
         try:
-            if os.path.getmtime(path) < cut_t:
-                continue
+            if os.path.getmtime(path) >= cut_t:
+                projects.setdefault(os.path.dirname(path), []).append(path)
+        except OSError:
+            continue
+    for proj, paths in projects.items():
+        cwds = {first_cwd(p) for p in paths}
+        if None in cwds or not allowed(proj, *cwds):
+            skipped.add(proj)
+            continue
+        yield from _scan_files(paths, cut)
+
+
+def _scan_files(paths, cut):
+    for path in paths:
+        try:
             with open(path, encoding="utf-8", errors="replace") as f:
                 records = [r for r in (_load(line) for line in f) if r is not None]
         except OSError:
@@ -208,11 +230,12 @@ def cmd_count(argv):
     if args is None:
         return usage()
     since, target = args
-    if denied(target):
-        sys.stderr.write("operator-asks: %s is denied to this profile, not read\n" % target)
+    if not allowed(os.path.join(target, "projects")):
+        sys.stderr.write("operator-asks: %s is denied to this profile or could not be checked, not read\n" % target)
         return 1
+    skipped = set()
     counts = {"questions": 0, "first-option": 0, "steps": 0, "elsewhere": 0, "prompts": 0}
-    for kind, _, _, _ in scan(since, target):
+    for kind, _, _, _ in scan(since, target, skipped):
         # `elsewhere` is the subset of `steps` that matches pattern 1.
         for k in ("steps", "elsewhere") if kind == "elsewhere" else (kind,):
             counts[k] = counts.get(k, 0) + 1
@@ -226,7 +249,14 @@ def cmd_count(argv):
             counts[k] = counts.get(k, 0) + 1
     for k in sorted(counts):
         print("%s\t%d" % (k, counts[k]))
+    note_skipped(skipped)
     return 0
+
+
+def note_skipped(skipped):
+    # A count only: a skipped project's name, path and cwd are never printed.
+    if skipped:
+        sys.stderr.write("operator-asks: %d projects skipped (denied)\n" % len(skipped))
 
 
 def _lines(path):
@@ -242,12 +272,14 @@ def cmd_list(argv):
     if args is None:
         return usage()
     since, target = args
-    if denied(target):
-        sys.stderr.write("operator-asks: %s is denied to this profile, not read\n" % target)
+    if not allowed(os.path.join(target, "projects")):
+        sys.stderr.write("operator-asks: %s is denied to this profile or could not be checked, not read\n" % target)
         return 1
-    rows = sorted((ts, name, kind, text) for kind, name, ts, text in scan(since, target) if text)
+    skipped = set()
+    rows = sorted((ts, name, kind, text) for kind, name, ts, text in scan(since, target, skipped) if text)
     for row in rows:
         print("\t".join(row))
+    note_skipped(skipped)
     return 0
 
 
