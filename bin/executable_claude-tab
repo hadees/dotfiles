@@ -51,6 +51,11 @@
 #                            peers (claude-peer start --continue, retried up to
 #                            --peer-wait seconds, default 60, while their pane
 #                            is not waiting yet)
+#   panel tick [--state <file>] [--now <epoch>] [--focus <tty>|-|?]
+#                            one pass of the needs-you list: reads the registry
+#                            of every profile, updates the state file, prints
+#                            the snapshot as one line of JSON (--focus: the tty
+#                            in front, - for none, ? for unknown)
 set -u
 
 TAB=$(printf '\t')
@@ -852,6 +857,367 @@ EOF_PLAN
   fi
 }
 
+# --- the needs-you list ------------------------------------------------------
+
+# One pass of the list: the registry of every profile in, a state file and one
+# line of JSON out (the snapshot). Every rule of the list lives in this program;
+# .claude/rules/claude-tab-panel.md says what they are. A fourth registry reader,
+# for the reason of the other three, and it keeps the same filter: only
+# `<digits>.json`, a positive int pid that answers kill 0 (PermissionError is
+# alive). The mode word is the first argument.
+panel_py() {
+  python3 -I - "$@" <<'PANEL_PY'
+import json, os, re, subprocess, sys, time
+
+V = 1
+APPEAR = {"blocked": 4, "asked": 4, "failed": 4, "quiet": 0, "unknown": 60}
+RANK = {"blocked": 0, "failed": 1, "asked": 1, "finished": 2, "finished-bg": 2,
+        "quiet": 3, "unknown": 3}
+STICKY = ("blocked", "asked", "failed")
+CALM = ("finished", "finished-bg", "quiet", "unknown")
+TALLY = ("ticks", "transitions", "entered", "left", "hidden_prompts",
+         "seen_focus", "seen_click", "focus_reads", "focus_failures")
+IDLE_KIND = {"busy": "working", "idle": "idle", "shell": "idle-bg"}
+
+
+def die(msg):
+    sys.stderr.write("claude-tab: panel tick: %s\n" % msg)
+    sys.exit(2)
+
+
+def num(v):
+    return type(v) in (int, float)
+
+
+def posint(v, default):
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return default
+    return n if n > 0 else default
+
+
+def parse(argv):
+    o = {"state": None, "now": None, "focus": "?", "profiles": [], "quiet": 900,
+         "finished": 60, "life": {}, "build": "-"}
+    i = 0
+    while i < len(argv):
+        k = argv[i]
+        if k not in ("--state", "--now", "--focus", "--profile", "--quiet",
+                     "--finished", "--life", "--build") or i + 1 >= len(argv):
+            die("bad argument '%s'" % k)
+        v = argv[i + 1]
+        i += 2
+        if k == "--profile":
+            d, _, label = v.rpartition("=")
+            o["profiles"].append((d, label))
+        elif k == "--life":
+            p, _, t = v.partition("=")
+            try:
+                o["life"][int(p)] = float(t)
+            except ValueError:
+                die("bad --life '%s'" % v)
+        elif k == "--now":
+            try:
+                o["now"] = float(v)
+            except ValueError:
+                die("bad --now '%s'" % v)
+        elif k in ("--quiet", "--finished"):
+            o[k[2:]] = posint(v, o[k[2:]])
+        else:
+            o[k[2:]] = v
+    return o
+
+
+def state_base():
+    return os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+
+
+def read_registry(profiles):
+    recs, unreadable, nprof, headless = [], 0, 0, 0
+    for d, label in profiles:
+        sd = os.path.join(d, "sessions")
+        try:
+            names = sorted(os.listdir(sd))
+        except OSError:
+            continue
+        nprof += 1
+        for n in names:
+            if not re.fullmatch(r"\d+\.json", n):
+                continue
+            try:
+                with open(os.path.join(sd, n)) as fh:
+                    r = json.load(fh)
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError):
+                unreadable += 1
+                continue
+            if type(r) is not dict:
+                unreadable += 1
+                continue
+            pid = r.get("pid")
+            if type(pid) is not int or pid <= 0:
+                continue
+            try:
+                os.kill(pid, 0)
+            except PermissionError:
+                pass  # alive, just not ours
+            except OSError:
+                continue
+            if "kind" in r and r["kind"] != "interactive":
+                headless += 1
+                continue
+            recs.append({"dir": d, "profile": label, "pid": pid, "r": r})
+    return recs, unreadable, nprof, headless
+
+
+def load_state(path):
+    try:
+        with open(path) as fh:
+            st = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if type(st) is not dict or st.get("v") != 1 or not num(st.get("saved_at")):
+        return None
+    if type(st.get("sessions")) is not dict or type(st.get("tally")) is not dict:
+        return None
+    return st
+
+
+def sane(e):
+    return (type(e) is dict and type(e.get("status")) is str and num(e.get("since"))
+            and (e.get("kind") is None or type(e["kind"]) is str)
+            and (e.get("cond_since") is None or num(e["cond_since"]))
+            and (e.get("seen_at") is None or num(e["seen_at"]))
+            and (e.get("entered_at") is None or num(e["entered_at"]))
+            and type(e.get("hits")) is int and type(e.get("listed")) is bool)
+
+
+def read_tty(pid):
+    try:
+        out = subprocess.run(["ps", "-o", "tty=", "-p", str(pid)], capture_output=True,
+                             text=True, timeout=3).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return None if out in ("", "?", "??") else "/dev/" + out
+
+
+def turn_record(sid, since, now):
+    """The turn record of a session when it is valid, else None."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", sid):
+        return None
+    try:
+        with open(os.path.join(state_base(), "tabstatus", sid + ".turn")) as fh:
+            t = json.loads(fh.readline())
+    except (OSError, ValueError):
+        return None
+    if type(t) is not dict or type(t.get("at")) is not int or t.get("end") not in ("question", "error", "plain"):
+        return None
+    return t if since - 15 <= t["at"] <= now + 5 else None
+
+
+def condition(status, since, now, wait_for, turn, life, quiet):
+    """(kind, cond_since, reason) of a session, first match wins; kind None is no condition."""
+    if status == "waiting":
+        return "blocked", since, wait_for or "waiting"
+    if status in ("idle", "shell"):
+        if turn and turn["end"] == "error":
+            return "failed", since, "failed"
+        if turn and turn["end"] == "question":
+            return "asked", since, "asked"
+        if status == "idle":
+            return "finished", since, "finished"
+        return "finished-bg", since, "finished, background task"
+    if status == "busy":
+        if life is not None and now - max(since, life) >= quiet:
+            return "quiet", max(since, life) + quiet, "quiet"
+        return None, None, None
+    return "unknown", since, "unknown: %s" % status
+
+
+def end_instance(e, tally):
+    """An instance ended: a row leaving, or a prompt that was never shown."""
+    if e["kind"] is None:
+        return
+    if e["listed"]:
+        tally["left"] += 1
+    elif e["kind"] == "blocked" and e["entered_at"] is None:
+        tally["hidden_prompts"] += 1
+
+
+def mark_seen(state, pid, now):
+    """A click on the row of pid: its current instance counts as seen."""
+    for key, e in state["sessions"].items():
+        if key.rsplit("|", 2)[1] == str(pid) and e["kind"] is not None and e["seen_at"] is None:
+            e["seen_at"] = now
+            state["tally"]["seen_click"] += 1
+
+
+def tick(prev, o, now):
+    recs, unreadable, nprof, headless = read_registry(o["profiles"])
+    fresh = prev is None or now - prev["saved_at"] > 86400
+    old_sessions = {} if prev is None else prev["sessions"]
+    tally = dict((k, 0) for k in TALLY)
+    if prev is not None:
+        for k in TALLY:
+            if type(prev["tally"].get(k)) is int:
+                tally[k] = prev["tally"][k]
+    tally["ticks"] += 1
+    focus = o["focus"]
+    sessions, rows = {}, []
+    turn_records = life_unknown = 0
+    for rec in recs:
+        r, pid = rec["r"], rec["pid"]
+        sid = r.get("sessionId")
+        sid = sid if type(sid) is str and sid else "-"
+        key = "%s|%d|%s" % (rec["dir"], pid, sid)
+        old = old_sessions.get(key)
+        if old is not None and not sane(old):
+            old = None
+        st = r.get("status")
+        status = st if type(st) is str else ("" if st is None else str(st))
+        sa = r.get("statusUpdatedAt")
+        if num(sa) and sa > 0:
+            since = sa / 1000.0
+        elif old is not None and old["status"] == status:
+            since = old["since"]
+        else:
+            since = now
+        if old is not None and old["status"] != status:
+            tally["transitions"] += 1
+        turn = None
+        if status in ("idle", "shell"):
+            turn = turn_record(sid, since, now)
+            if turn:
+                turn_records += 1
+        life = None
+        if status == "busy" and now - since >= o["quiet"]:
+            life = o["life"].get(pid)
+            if life is None:
+                life_unknown += 1
+        wf = r.get("waitingFor")
+        kind, cond_since, reason = condition(status, since, now, wf if type(wf) is str and wf else None,
+                                             turn, life, o["quiet"])
+        if old is not None and old["kind"] == kind and old["cond_since"] == cond_since:
+            e = dict(old)
+        else:
+            if old is not None:
+                end_instance(old, tally)
+            e = {"kind": kind, "cond_since": cond_since, "seen_at": None, "hits": 0,
+                 "listed": False, "entered_at": None}
+            # starting calm: what finished before the list had a memory is not news
+            if kind in CALM and (fresh or (old is None and cond_since <= prev["saved_at"])):
+                e["seen_at"] = now
+        e["status"], e["since"] = status, since
+        e["tty"] = old["tty"] if old is not None and "tty" in old else read_tty(pid)
+        # capped at 2: a session left in front must not make the state change every tick
+        e["hits"] = min(e["hits"] + 1, 2) if focus[:1] == "/" and e["tty"] == focus else 0
+        if kind is not None and e["seen_at"] is None and e["hits"] >= 2:
+            e["seen_at"] = now
+            tally["seen_focus"] += 1
+        eligible = False
+        if kind is not None:
+            appear = {"finished": o["finished"], "finished-bg": o["quiet"]}.get(kind, APPEAR.get(kind))
+            eligible = (now - cond_since >= appear and e["hits"] == 0
+                        and (kind in STICKY or e["seen_at"] is None))
+        if eligible and not e["listed"]:
+            e["listed"], e["entered_at"] = True, now
+            tally["entered"] += 1
+        elif not eligible and e["listed"]:
+            e["listed"] = False
+            tally["left"] += 1
+        sessions[key] = e
+        cwd = r.get("cwd")
+        label = (os.path.basename(cwd.rstrip("/")) if type(cwd) is str else "") or "-"
+        rk = kind if e["listed"] or kind not in (None, "finished", "finished-bg") else IDLE_KIND.get(status, kind)
+        rows.append((e, {"pid": pid, "profile": rec["profile"], "label": label, "group": label,
+                         "role": "plain", "kind": rk, "reason": reason or status,
+                         "since": int(since), "seen": e["seen_at"] is not None, "tty": e["tty"]}))
+    for key, old in old_sessions.items():
+        if key not in sessions and sane(old):
+            end_instance(old, tally)
+    needs, groups = [], {}
+    for e, row in rows:
+        if e["listed"]:
+            needs.append((RANK[e["kind"]], e["entered_at"], row["pid"], dict(row, since=int(e["cond_since"]))))
+        g = groups.setdefault(row["group"], {"group": row["group"], "needs": 0, "working": 0,
+                                             "idle": 0, "rows": []})
+        g["rows"].append(row)
+        g["needs" if e["listed"] else "working" if e["status"] == "busy" else "idle"] += 1
+    needs.sort(key=lambda t: t[:3])
+    for g in groups.values():
+        g["rows"].sort(key=lambda x: (x["label"], x["pid"]))
+    snap = {"v": 1, "generated_at": float(now), "build": o["build"],
+            "health": {"profiles": nprof, "sessions": len(recs), "headless": headless,
+                       "unreadable": unreadable,
+                       "focus": "ok" if focus[:1] == "/" else ("none" if focus == "-" else "unknown"),
+                       "turn_records": turn_records, "life_unknown": life_unknown,
+                       "want_focus": any(e["kind"] is not None and e["seen_at"] is None for e, _ in rows)},
+            "needs": [t[3] for t in needs], "others": [groups[k] for k in sorted(groups)],
+            "tally": tally}
+    return {"v": 1, "saved_at": now, "sessions": sessions, "tally": tally}, snap
+
+
+def save_state(path, state, prev, now):
+    """Write when something changed, or the file is a minute old."""
+    def core(st):
+        return (st["sessions"], dict((k, v) for k, v in st["tally"].items() if k != "ticks"))
+    if prev is not None and now - prev["saved_at"] < 60 and core(prev) == core(state):
+        return
+    try:
+        os.makedirs(os.path.dirname(path) or ".", mode=0o700, exist_ok=True)
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump(state, fh, sort_keys=True)
+        os.replace(tmp, path)
+    except OSError as err:
+        sys.stderr.write("claude-tab: cannot write %s: %s\n" % (path, err))
+
+
+def main(argv):
+    if not argv or argv[0] != "tick":
+        die("unknown mode")
+    o = parse(argv[1:])
+    now = o["now"] if o["now"] is not None else time.time()
+    path = o["state"] or os.path.join(state_base(), "claude-tab", "panel-state.json")
+    prev = load_state(path)
+    state, snap = tick(prev, o, now)
+    save_state(path, state, prev, now)
+    sys.stdout.write(json.dumps(snap, sort_keys=True) + "\n")
+
+
+main(sys.argv[1:])
+PANEL_PY
+}
+
+cmd_panel_tick() {
+  need_python
+  q=$(git config --get tabstatus.quiet-minutes 2>/dev/null) || q=''
+  case $q in ''|*[!0-9]*|0*) q=15;; esac
+  f=$(git config --get claude-tab.finished-seconds 2>/dev/null) || f=''
+  case $f in ''|*[!0-9]*|0*) f=60;; esac
+  set -- --quiet "$((q * 60))" --finished "$f" "$@"
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    set -- --profile "$d=$(profile_label "$d")" "$@"
+  done <<EOF_PROFILES
+$(profile_dirs)
+EOF_PROFILES
+  panel_py tick "$@"
+}
+
+cmd_panel() {
+  [ $# -ge 1 ] || usage
+  verb=$1
+  shift
+  case $verb in
+    tick) cmd_panel_tick "$@";;
+    *)    usage;;
+  esac
+}
+
 # --- dispatch ----------------------------------------------------------------
 
 [ $# -ge 1 ] || usage
@@ -866,6 +1232,7 @@ case $cmd in
   focus)     cmd_focus "$@";;
   save)      cmd_save "$@";;
   restore)   cmd_restore "$@";;
+  panel)     cmd_panel "$@";;
   -h|--help|help) usage;;
   *)         die "unknown command '$cmd' (claude-tab help)";;
 esac
