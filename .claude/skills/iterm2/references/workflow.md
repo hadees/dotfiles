@@ -314,6 +314,20 @@ The Python API can register **dynamic tools** as well — the binary posts
 `iTermToolbeltDidRegisterDynamicToolNotification` — so a long-running script
 can add its own panel. See `references/python-api.md`.
 
+A **web-view tool** (`tool.async_register_web_view_tool(connection, name,
+identifier, reveal_if_already_registered, url)`) is stored in the preference
+`NoSyncDynamicTools` (`iTermToolbeltView.m:87` at tag `v3.7.7`),
+a key that never reaches the custom prefs folder, and is registered again from it
+at every launch (`:108-111`); the name joins `ToolbeltTools` at the end, which
+iTerm2 does save into the plist. Registering the same name and URL again reloads
+every open copy (`:160-169`). The URL must have a host (`iTermAPIHelper.m:2318-2323`)
+and a name equal to a built-in tool's is refused (`:2325-2329`). The view is a bare
+`WKWebView` whose only bridge to the app is a console logger, so a click in the page
+cannot call iTerm2; it can call the server it was loaded from, and the installed
+`Info.plist` allows plain HTTP to `127.0.0.1`. Run live: a page served from
+`127.0.0.1` loads in the Toolbelt and a second registration reloads it. The
+Needs You panel (`claude-tab panel register`) is one.
+
 ### Captured Output is the one worth setting up
 
 <https://iterm2.com/documentation-captured-output.html>

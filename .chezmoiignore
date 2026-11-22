@@ -62,6 +62,8 @@ bin/screen-heads-up
 bin/pane-sight
 bin/pane-read
 bin/pane-shot
+# The needs-you page is served by claude-tab panel, which is macOS-only
+.local/share/claude-tab
 {{ end -}}
 
 {{ if or (ne .chezmoi.os "darwin") (ne .machineClass "mac") (not (stat (joinPath .chezmoi.homeDir ".cargo/bin/claude-codex"))) -}}

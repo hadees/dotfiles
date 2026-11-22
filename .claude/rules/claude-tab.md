@@ -89,9 +89,13 @@ columns.
 `<label>: <reason>, waiting <dur>`; `--dry-run` prints
 `<label><TAB><where><TAB><guid>` and goes nowhere. Exit 0 focused, 1 failed, 2
 usage, 3 nobody waiting (`claude-tab: nobody is waiting` on stderr). `focus
-<pid>` goes through the same `focus_session`, which takes one of three routes
-and sets `FOCUS_ROUTE`: `tab` (the session is in front: AppleScript by tty),
-`swap` (it is a buried workgroup peer and `it2 session focus <guid>` exited 0;
+<pid>` goes through the same `focus_session`, which takes one of four routes
+in this order and sets `FOCUS_ROUTE`: `tab` (the session is in front:
+AppleScript by tty), `reveal` (the session has a guid: `open
+'iterm2:reveal?sessionid=x:<guid>'`, the opener `/usr/bin/open` or
+`$CLAUDE_TAB_OPEN`, believed only when the front tty then reads as the
+session's, up to five reads 0.2 s apart; it reaches a buried peer), `swap` (it
+is a buried workgroup peer and `it2 session focus <guid>` exited 0;
 `$CLAUDE_TAB_IT2`, default `~/.config/iterm2/it2`, five seconds, the API cookie
 exported only when newer than iTerm2's socket), `group` (swap refused or `it2`
 absent: a visible member of the same workgroup, found through `claude-peer
@@ -105,8 +109,10 @@ Script Filter JSON, and `alfred/claude-tab/info.plist` (keyword `cn`, a
     cd "$(chezmoi source-path)/alfred/claude-tab" && zip -q -j -r "$TMPDIR/claude-tab.alfredworkflow" .
     open "$TMPDIR/claude-tab.alfredworkflow"
 
-**Not yet proven.** The live probe on the running app was skipped, so three
-things are unverified. Whether Claude Code's own status reports put member rows
+**Not yet proven.** The `reveal` route was run live (3.7.7): the URL brought
+forward a background tab and a buried peer. The rest of this paragraph predates
+it, and the live probe on the running app was skipped, so three things are
+unverified. Whether Claude Code's own status reports put member rows
 under a tab's merged Session Status row (read from source and docs only).
 Whether the shim's paints and those reports can share a row, or the last
 writer wins. Whether `it2 session focus` swaps a buried peer in (source says it

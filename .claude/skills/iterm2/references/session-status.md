@@ -216,6 +216,17 @@ Read from the v3.7.7 source:
   Diff peer; only the builtin does.)
 - The only ways in are the Shell > Workgroups menu and triggers; there is no
   sdef, `it2` or Python API verb (`WorkgroupMenu.swift:10-16`).
+- **`open 'iterm2:reveal?sessionid=x:<guid>'` reveals any session, a buried
+  peer included.** The app handles its own scheme
+  (`iTermApplicationDelegate.m:2414-2416`); path `reveal` takes `sessionid`,
+  drops everything up to the first colon and calls `revealSessionWithGUID:`
+  (`:2093-2114`, `iTermController.m:1717-1727`: tabs, buried sessions and peer
+  ports), the same `reveal` a Session Status row click runs
+  (`ToolStatus.swift:1477`, `PTYSession.m:17565-17593`). No cookie, AppleScript
+  or grant; it brought forward both a background tab and a buried peer on the
+  live app (3.7.7). `it2 session focus` is refused for a buried peer
+  (`iTermAPIHelper.m:3180-3196`). The opener exits 0 whatever iTerm2 did, so
+  confirm by the front session's tty.
 - The Enter trigger does nothing in a session already in a workgroup, and the
   Exit trigger is `leaderOnly`: the leader's job ending exits the group, a
   peer's does not (`PTYSession.m:27008-27019, 27050-27066`).
