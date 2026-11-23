@@ -1,0 +1,6 @@
+name: four-kinds
+role: lead
+fail: you (need to|should|will have to) restart
+pass: token
+
+The deploy of the worker needs an API token that is not in the vault yet, and the worker has to be restarted once the deploy lands. What happens next?
