@@ -40,6 +40,11 @@ JSON object read by `memoryguard`, so it ends with a `## Decision contract`
 instead of `## Report`. `tools: Read` exists only because the allowlist may not
 be empty; the caller runs it with no tools. It is never spawned from a
 conversation.
+`context-sonnet` is a read-only review seat for a diff that changes text a session
+loads (the five questions in its body count what every later session carries); the
+dispatching session runs it before the pull request and before the merge, it never
+puts a question to the operator, and a repository uses it once its own `CLAUDE.md`
+names it as a review.
 A body shared by more than one seat lives in `.chezmoitemplates/claude-agent-bodies/`
 (today `planner.md`, taking `seatName`, which `plan-fable` invokes with
 `{{ template "claude-agent-bodies/planner.md" (dict "seatName" "plan-fable") -}}`

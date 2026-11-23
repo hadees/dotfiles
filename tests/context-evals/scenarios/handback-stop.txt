@@ -1,0 +1,8 @@
+name: handback-stop
+role: lead
+fail: /exit
+fail: (type|run|paste)[^.]*\b(pane|tab)\b
+fail: only you can
+pass: claude-peer stop
+
+Three peers of this repo are listed right now. Alpha was started at its pane and has sat idle for a day. Bravo has lost its worktree. Charlie reads `shell`, with a `done` logged. Close the peers that have finished.

@@ -243,3 +243,27 @@ prints `outcome`, `slug` and a count. A trigger that never fires shows as no
 - Subagents: they never run SessionStart, so they do not get the peer,
   Lead or messaging topics. Those are orchestrator rules; the tool topics
   still reach a subagent whose commit fails to sign.
+
+## The context practice file
+
+`dot_claude-shared/context-practice.md` (deployed beside the index as
+`~/.claude-shared/context-practice.md`) is what `context-sonnet` reads: a
+stamp (the Claude Code version and date it was checked against), a budget
+table, and one `### P<n>` entry per practice with its source and rank,
+evidence (`measured`, `documented` or `anecdotal`), the date checked, what was
+measured here, and a status. It is not a topic and is imported by nothing: an
+import would load it into every session and subagent, and `shared-memory
+topics` reads only `topics/`. A practice is `adopted` only with a `Here:`
+result from this machine's sessions; everything else is a `candidate`, which
+the seat treats as a note and never as a finding. A local result that
+contradicts a practice makes it `demoted`, with a line under `## Changes`.
+`tests/claude-shared-memory.bats` pins the schema.
+
+Web quotes in it were re-fetched from the pages on the stamp date; paper
+quotes carry their PDF page. An entry whose quote is not grounded says `quote
+pending`. The seat ends a review with a `REFRESH:` line when the stamp names
+another Claude Code version than the installed one or an entry was checked
+more than 90 days ago; a refresh re-fetches the rank 1 pages, reads the
+changelog between the two versions for memory, rules, skills, hooks,
+compaction and subagents, updates the entries and the stamp, and adds a
+`Changes` line for each one that moved.
