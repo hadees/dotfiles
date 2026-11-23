@@ -802,8 +802,6 @@ $b|start Beta --continue -- pick up" ]
   printf '#!/bin/sh\necho "\\"Lead (claude)\\""\n' > "$CLAUDE_TAB_IT2"
   chmod +x "$CLAUDE_TAB_SHIM" "$CLAUDE_TAB_IT2"
   # Claude is not up until the first poll sleeps: its registry row and environment appear then.
-  live_pid
-  export HEAL_PID=$LIVE HEAL_CWD=$a
   cat > "$BIN/sleep" <<'STUB'
 #!/bin/sh
 case "${1:-0}" in 300) exec /bin/sleep 300;; esac
@@ -813,6 +811,10 @@ printf '{"pid":%s,"sessionId":"sid-a","cwd":"%s","kind":"interactive"}\n' "$HEAL
 echo "claude ITERM_SESSION_ID=w0t0p0:GUID-A" > "$PS_ENV_DIR/$HEAL_PID"
 STUB
   chmod +x "$BIN/sleep"
+  # Only now: a sleeper started from the old stub dies when a shell that reads its
+  # script as it runs (bash as sh) finds the file rewritten under it.
+  live_pid
+  export HEAL_PID=$LIVE HEAL_CWD=$a
   run --separate-stderr sh "$CT" restore "$SAVED"
   [ "$status" -eq 0 ]
   [ "$(cat "$SHIM_LOG")" = "w0t0p0:GUID-A" ]
