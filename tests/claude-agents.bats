@@ -270,11 +270,16 @@ shared_templates() {
   grep -q 'claude-reports/<repository name>/plan-fable-<short slug>.md' "$RENDERED/plan-fable.md"
 }
 
+@test "both rendered planners ask for a Sign-off section in the report" {
+  grep -qF '**Sign-off**' "$RENDERED/plan-fable.md"
+  grep -qF '**Sign-off**' "$RENDERED/plan-gpt.md"
+}
+
 # plan-fable's rendered body, byte for byte, as it was when the planner body
 # moved into a shared fragment (sha256 of everything after the frontmatter).
 # plan-gpt's one permitted difference is the marked block below, so a change to
 # the shared body that is meant to reach both seats means updating this pin.
-FABLE_BODY_SHA256=6e855306dca15020fdb4412677f5501093aeec4413e16666bf32a8120666f4e9
+FABLE_BODY_SHA256=1797e97a988edbe00d1c972ee0fa9360748094e3cf682f828f614989cdd26954
 GPT_BLOCK_START='<!-- gpt-assumptions:start -->'
 GPT_BLOCK_END='<!-- gpt-assumptions:end -->'
 
@@ -379,7 +384,7 @@ raw_body() {
   # imports): the always-loaded part. On-demand topics are bounded per hook
   # output by tests/claude-shared-memory.bats. Lower it, never raise it.
   n="$(shared_memory_expanded | python3 -c 'import sys; print(len(sys.stdin.read()))')"
-  [ "$n" -le 17200 ] || { echo "shared memory is $n characters, limit 17200"; false; }
+  [ "$n" -le 16200 ] || { echo "shared memory is $n characters, limit 16200"; false; }
 }
 
 @test "the shared memory carries the Lead rule, and names the line postbox prints" {
@@ -388,7 +393,7 @@ raw_body() {
   local shared p
   shared="$(shared_memory_all | tr '\n' ' ' | tr -s ' ')"
   for p in 'postbox: you are Lead of' 'Unless you are Lead' 'only when I ask' 'One at a time' \
-    'gh pr update-branch' 'Never `--admin`' 'Never `stop --force`' 'Lead still asks before' \
+    'gh pr update-branch' 'Never `--admin`' 'never `--force` unasked' 'Lead still asks before' \
     'see or feel' 'reaches beyond this machine' 'cannot be undone' 'spends money' \
     'One go covers what I named to its end' 'no second ask per step'; do
     grep -qF -- "$p" <<< "$shared" || { echo "shared memory: no '$p'"; false; }
