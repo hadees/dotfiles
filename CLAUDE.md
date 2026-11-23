@@ -148,8 +148,11 @@ these run in every repo on the machine:
   (`.github/rulesets/main.json`) requires the six CI checks on a branch that
   contains main's tip, so `gh pr merge` refuses a stale or red pull request
   and `--auto` waits for it. The review a merge here needs is
-  `public-clone-advocate` on the final diff; merging main into the branch
-  does not void it, a new commit of the branch's own does. After a merge,
+  `public-clone-advocate` on the final diff; a diff that changes text a
+  session loads (this file, `.claude/rules`, `dot_claude-shared`, an agent or
+  skill description, hook-added text) also needs `context-sonnet`; merging
+  main into the branch does not void it, a new commit of the branch's own
+  does. After a merge,
   Lead runs `dotfiles` itself to deploy it, unasked, with this checkout on
   `main` and pulled: `dotfiles` applies whatever branch the clone is on.
 - **Signing** is SSH-format through 1Password and machine-local: the
