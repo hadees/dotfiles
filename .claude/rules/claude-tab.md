@@ -61,6 +61,22 @@ Nothing alive is started twice: a row whose session is live is `skip:live`.
 `iterm2-relaunch` is the main caller: it runs `save` before the quit and
 `restore` after, with the two prompts (`iterm2-relaunch.md`).
 
+**Last, `restore` puts the names back** (`heal_names`). The workgroup's Enter
+trigger renames a leader to the root's name ("Lead") after the shim named it
+at SessionStart, and a restored session sits idle, so no Stop heals it
+(`cc-status-shim.md`, observed 2026-11-23). For each resumed row (matched in
+the registry by session id or cwd, like the live check; the session's guid is
+`guid_of`) it asks the shim `explain after` on a SessionStart payload of the
+cwd for `name=`, reads `it2 session get-var name`, and when that does not
+contain the name runs `cc-status after` on the same payload with
+`ITERM_SESSION_ID=w0t0p0:<guid>`; no second naming code. It polls every two
+seconds for 20 at most: a row leaves the list once healed or when the shim has
+no name for it, and nothing says the workgroup has settled, so a session that
+needed no heal waits out the 20. Each heal is `claude-tab: renamed <name> back
+from <old>`. Without `it2` or the shim (`$CLAUDE_TAB_SHIM`) it does nothing.
+The payload is compact JSON because the shim's gate matches `"hook_event_name":
+"SessionStart"` literally.
+
 `bin/claude-tab` reads the other side of the same join: `list` prints one
 row per live Claude Code session across every profile (from each profile's
 `sessions/<pid>.json` registry, the files `claude_sessions_here` reads),
