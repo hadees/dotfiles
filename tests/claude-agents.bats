@@ -412,3 +412,18 @@ raw_body() {
     grep -qF -- "$p" <<< "$shared" || { echo "shared memory: no '$p'"; false; }
   done
 }
+
+@test "context-sonnet renders in every stub directory, keeps a short description, and carries its method" {
+  local d b p
+  for d in "${STUB_DIRS[@]}"; do
+    [ -f "$d/context-sonnet.md.tmpl" ] || { echo "missing stub in $d"; false; }
+  done
+  d="$(fmval "$RENDERED/context-sonnet.md" description)"
+  [ "${#d}" -lt 400 ] || { echo "description is ${#d} characters"; false; }
+  # A reviewer starts no helpers of its own.
+  ! grep -qw 'Agent' <<< "$(fmval "$RENDERED/context-sonnet.md" tools)" || { echo "reviewer can dispatch"; false; }
+  b="$(body "$RENDERED/context-sonnet.md")"
+  for p in 'The five questions' 'moved and not trimmed' 'never ask the operator' 'REFRESH:' 'context-practice.md'; do
+    grep -qF -- "$p" <<< "$b" || { echo "context-sonnet: no '$p'"; false; }
+  done
+}

@@ -1,0 +1,139 @@
+#!/bin/sh
+# context-evals/run — asks whether a rule in the shared Claude memory is still
+# followed. For each scenario it builds the memory a session of the scenario's
+# role would hold, hands it to a headless `claude -p` as system-prompt text,
+# sends the situation as the user's message, and greps the reply.
+#
+#   tests/context-evals/run [--runs N] [--model M] [--memory DIR] <scenario>...
+#
+# Prints name<TAB>runs<TAB>passed<TAB>memory characters per scenario. Exits 1
+# only on a harness error (bad usage, a failed claude call), never on a failed
+# scenario. --memory is a shared-memory source directory (default
+# dot_claude-shared), so before-and-after is the same scenarios run against two
+# checkouts. Each call spends up to $0.25; the weekly count is the caller's.
+#
+# A proxy: the memory arrives as system-prompt text, not as loaded CLAUDE.md,
+# and there are no tools. --bare reads ANTHROPIC_API_KEY, not a login.
+#
+# Scenario file: `key: value` header lines (name, role lead|peer|plain, pad
+# "<N> first|last", fail and pass as extended regular expressions, either may
+# repeat), a blank line, then the situation.
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+runs=5 model=sonnet mem=$root/dot_claude-shared
+
+die() { printf 'context-evals: %s\n' "$*" >&2; exit 1; }
+
+while [ $# -gt 0 ]; do
+  case $1 in
+  --runs) [ $# -gt 1 ] || die "--runs needs a number"; runs=$2; shift 2 ;;
+  --model) [ $# -gt 1 ] || die "--model needs a name"; model=$2; shift 2 ;;
+  --memory) [ $# -gt 1 ] || die "--memory needs a directory"; mem=$2; shift 2 ;;
+  --) shift; break ;;
+  -*) die "unknown option $1" ;;
+  *) break ;;
+  esac
+done
+[ $# -gt 0 ] || die "usage: run [--runs N] [--model M] [--memory DIR] <scenario>..."
+case $runs in '' | *[!0-9]* | 0) die "--runs must be a positive number" ;; esac
+[ -f "$mem/CLAUDE.md" ] || die "no $mem/CLAUDE.md"
+mem=$(cd "$mem" && pwd)
+
+sandbox=$(mktemp -d "${TMPDIR:-/tmp}/context-evals.XXXXXX") || die "no temp directory"
+trap 'rm -rf "$sandbox"' EXIT
+
+# An asdf-style python3 shim cannot resolve a version under a fake HOME, so the
+# hook gets the real interpreter on its PATH.
+py=$(python3 -c 'import sys; print(sys.executable)') || die "python3 not found"
+mkdir "$sandbox/bin"
+ln -s "$py" "$sandbox/bin/python3"
+
+# The index with each `@path` line replaced by the file it names.
+expand_index() {
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in
+    @*) cat "$mem/${line#@}"; printf '\n' ;;
+    *) printf '%s\n' "$line" ;;
+    esac
+  done <"$mem/CLAUDE.md"
+}
+
+# The output of the SessionStart hook for a session of this role, in a sandbox
+# state directory and a HOME that holds nothing that could widen the role.
+start_hook() {
+  case $1 in
+  lead) payload='{"session_id":"eval","session_title":"eval-lead"}' peer= ;;
+  peer) payload='{"session_id":"eval"}' peer=$sandbox ;;
+  plain) payload='{"session_id":"eval"}' peer= ;;
+  *) die "unknown role $1" ;;
+  esac
+  mkdir -p "$sandbox/home" "$sandbox/state"
+  printf '%s' "$payload" | env -u MEMORYGUARD_DEPTH -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_PROJECT_DIR -u CLAUDE_PEER_WORKTREE \
+    PATH="$sandbox/bin:$PATH" HOME="$sandbox/home" XDG_STATE_HOME="$sandbox/state" CLAUDE_CONFIG_DIR="$sandbox/home/.claude" \
+    SHARED_MEMORY_DIR="$mem" SHARED_MEMORY_CLAUDE_PEER=/nonexistent ${peer:+CLAUDE_PEER_WORKTREE="$peer"} \
+    sh "$root/bin/executable_shared-memory" hook start
+}
+
+# N lines of filler-rules.txt, repeated from the top when it runs short.
+filler() {
+  awk -v n="$1" '{ l[NR] = $0 } END { for (i = 0; i < n; i++) print l[i % NR + 1] }' "$here/filler-rules.txt"
+}
+
+for file in "$@"; do
+  [ -f "$file" ] || die "no scenario $file"
+  name= role=plain pad= fails= passes= situation=
+  inhead=1
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ -n "$inhead" ]; then
+      case $line in
+      '') inhead= ;;
+      name:*) name=${line#name: } ;;
+      role:*) role=${line#role: } ;;
+      pad:*) pad=${line#pad: } ;;
+      fail:*) fails="$fails${line#fail: }
+" ;;
+      pass:*) passes="$passes${line#pass: }
+" ;;
+      *) die "$file: unknown header line: $line" ;;
+      esac
+    else
+      situation="$situation$line
+"
+    fi
+  done <"$file"
+  [ -n "$name" ] || die "$file: no name"
+
+  memory=$(expand_index; printf '\n'; start_hook "$role")
+  if [ -n "$pad" ]; then
+    n=${pad%% *} where=${pad#* }
+    case $n in '' | *[!0-9]*) die "$file: bad pad: $pad" ;; esac
+    case $where in
+    first) memory=$(filler "$n"; printf '\n%s' "$memory") ;;
+    last) memory=$(printf '%s\n\n' "$memory"; filler "$n") ;;
+    *) die "$file: bad pad: $pad" ;;
+    esac
+  fi
+  chars=$(printf '%s' "$memory" | wc -m | tr -d ' ')
+
+  passed=0 i=0
+  while [ "$i" -lt "$runs" ]; do
+    i=$((i + 1))
+    reply=$(claude -p --bare --tools "" --no-session-persistence --max-budget-usd 0.25 \
+      --model "$model" --append-system-prompt "$memory" "$situation") || die "$name: claude failed on run $i"
+    ok=1
+    while IFS= read -r re; do
+      [ -z "$re" ] || ! printf '%s\n' "$reply" | grep -Eiq -e "$re" || ok=
+    done <<EOT
+$fails
+EOT
+    while IFS= read -r re; do
+      [ -z "$re" ] || printf '%s\n' "$reply" | grep -Eiq -e "$re" || ok=
+    done <<EOT
+$passes
+EOT
+    [ -z "$ok" ] || passed=$((passed + 1))
+  done
+  printf '%s\t%s\t%s\t%s\n' "$name" "$runs" "$passed" "$chars"
+done

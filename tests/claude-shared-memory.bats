@@ -176,6 +176,54 @@ PY
   done
 }
 
+# The practice file the context review seat reads: not a topic, imported by
+# nothing, and every entry carries its source, evidence, date, local result
+# and status in a fixed order. Prints one line per problem.
+practice_problems() {
+  awk '
+    function bad(m) { print NR ": " m }
+    function date_ok(s) { return s ~ /^[0-9][0-9][0-9][0-9]-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$/ }
+    function close_block() {
+      if (inblock && n != 5) bad(blk ": expected 5 keys, found " n)
+      if (status == "adopted" && here ~ /^untested/) bad(blk ": adopted with no local result")
+    }
+    /^@/ { bad("a line starting @ would import") }
+    /^Stamp:/ { stamp++; if ($0 !~ /^Stamp: checked against Claude Code [0-9.]+ on [0-9-]+\.$/) bad("malformed stamp") }
+    /^### / { close_block(); inblock = 1; n = 0; status = ""; here = ""; blk = $0; if ($0 !~ /^### P[0-9]+\. /) bad(blk ": heading is not ### P<n>.") ; next }
+    /^## / { close_block(); inblock = 0; next }
+    inblock && /^- / {
+      split($0, kv, ": "); key = substr(kv[1], 3); val = substr($0, length(kv[1]) + 3)
+      want = (n == 0) ? "Source" : (n == 1) ? "Evidence" : (n == 2) ? "Checked" : (n == 3) ? "Here" : "Status"
+      n++
+      if (key != want) { bad(blk ": key " n " is " key ", expected " want); next }
+      if (key == "Source" && val !~ /; rank [1-4]$/) bad(blk ": Source does not end in rank 1-4")
+      if (key == "Evidence" && val !~ /^(measured|documented|anecdotal)$/) bad(blk ": Evidence is " val)
+      if (key == "Checked" && !date_ok(val)) bad(blk ": Checked is not a date")
+      if (key == "Here") { here = val; if (val !~ /^untested/ && !date_ok(substr(val, 1, 10))) bad(blk ": Here is neither untested nor dated") }
+      if (key == "Status") { status = val; if (val !~ /^(adopted|candidate|demoted)$/) bad(blk ": Status is " val) }
+    }
+    /^- [0-9-]+: / && !inblock { if (!date_ok(substr($0, 3, 10))) bad("Changes line has no date") }
+    END { close_block(); if (stamp != 1) bad("expected one Stamp line, found " stamp+0) }
+  ' "$1"
+}
+
+@test "the context practice file follows its schema and is not a topic" {
+  local f="$BATS_TEST_DIRNAME/../dot_claude-shared/context-practice.md"
+  [ -f "$f" ]
+  [ -z "$(practice_problems "$f")" ] || { practice_problems "$f"; false; }
+  [ "$(grep -c '^### P' "$f")" -gt 0 ]
+  [ ! -e "$TOPICS/context-practice.md" ]
+  ! grep -q 'context-practice' "$SHARED_MEMORY" || { echo "the index names the practice file"; false; }
+}
+
+@test "the practice schema check catches an adopted entry with no local result and a bad rank" {
+  local f="$BATS_TEST_DIRNAME/../dot_claude-shared/context-practice.md" bad="$BATS_TEST_TMPDIR/bad.md"
+  awk '/^- Status: candidate$/ && !d { print "- Status: adopted"; d = 1; next } { print }' "$f" > "$bad"
+  [[ "$(practice_problems "$bad")" == *"adopted with no local result"* ]]
+  awk '/; rank [1-4]$/ && !d { sub(/rank [1-4]$/, "rank 9"); d = 1 } { print }' "$f" > "$bad"
+  [[ "$(practice_problems "$bad")" == *"rank 1-4"* ]]
+}
+
 # A role topic is listed in the index once, never imported, loaded by the class
 # its role needs, opens with its heading and keeps the phrases a session acts on.
 # Args: slug, class, heading, then the phrases.

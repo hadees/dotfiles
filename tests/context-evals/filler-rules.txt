@@ -1,0 +1,20 @@
+- Keep functions short enough to read without scrolling.
+- Name a variable for what it holds, not for its type.
+- Prefer a plain loop to a clever one-liner when the two do the same thing.
+- Write a comment only where the code cannot say why.
+- Run the formatter before committing, not after review.
+- Delete dead code instead of commenting it out.
+- Keep a commit to one change that can be reverted on its own.
+- Put a test next to every bug fix, named for the bug.
+- Pin a dependency version when a build has to be reproducible.
+- Return early on bad input instead of nesting the happy path.
+- Write log lines that say what happened, not that a function ran.
+- Quote shell variables unless word splitting is the point.
+- Use absolute paths in scripts that may run from any directory.
+- Keep configuration in one place and read it once at startup.
+- Treat a warning in the build output as a failure to explain.
+- Check an assumption with a command before building on it.
+- Keep a changelog entry to a line a stranger can follow.
+- Close a file or connection in the same scope that opened it.
+- Round money in integers of the smallest unit, never in floats.
+- Date every note that another person will read later.
