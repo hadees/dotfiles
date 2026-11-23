@@ -15,7 +15,7 @@ yet grounded in a verbatim quote.
 
 | Layer | Budget | Hard limit, and where it comes from |
 | --- | --- | --- |
-| Shared memory, always loaded | 16,200 characters | the test ceiling in `tests/claude-agents.bats`, 17,200 until the signed lowering lands; lower it when the text shrinks, never raise it |
+| Shared memory, always loaded | 16,200 characters | the test ceiling in `tests/claude-agents.bats`; lower it when the text shrinks, never raise it |
 | A repository's CLAUDE.md | 200 lines | Anthropic's target; this repository's test allows 25,000 characters |
 | Start bundle | Lead 7,600; peer 4,000; other 3,300 (proposed per-role bounds) | 9,000 (`INJECT_MAX` in `bin/executable_shared-memory`), under Claude Code's 10,000 per hook output |
 | One tool-added topic | 4,000 (proposed) | 9,000 (`INJECT_MAX`) |
