@@ -273,6 +273,7 @@ rule first.
 | `claude-peer-caduceus` | the Hermes pane's figure and glint, read from the installed Hermes |
 | `claude-tab` | `claude-tab` list, attention, next, focus, save, restore; `tabname` |
 | `claude-tab-panel` | the needs-you list: its kinds, the tick, the server, the page |
+| `workboard` | the work board: cards and stages, the who and inbox contracts, the readers, the server and its plug-ins, the page |
 | `pane-sight` | reading and picturing another pane, its scope gate and audit log, screen-heads-up |
 | `branchname` | the branch label a prompt or status line shows, the detached-slot base record |
 | `postbox` | cross-profile session mail, its hooks, the courier, the roll-call |
