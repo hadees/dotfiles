@@ -1,10 +1,10 @@
 ## GPT seats
 
 - `plan-gpt` is an additional planner, `plan-fable`'s rules on `gpt-6-astra`.
-  The plan ownership, one-step-per-worker sequencing, verification and revision
+  The plan ownership, dispatch, verification and revision
   rules in the delegation section apply to its accepted plans exactly as they
   do to `plan-fable`'s: read the plan here, then one step per `work-sonnet`
-  brief, dispatched in order and verified before the next. The planner that
+  brief, as in the delegation section. The planner that
   owns the accepted report owns its revisions; a replacement planner reads the
   existing report before revising it. An advisor assesses assumptions only and
   never owns or redesigns the plan. The operator's approval to build is

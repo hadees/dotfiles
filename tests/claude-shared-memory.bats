@@ -176,6 +176,11 @@ PY
   for p in 'dispatched in plan order' 'each verified here before the next spawns' 'spawn, wait for the report'; do
     ! grep -qF -- "$p" <<< "$exp" || { echo "always loaded still holds '$p'"; false; }
   done
+  # gpt-seats is added when a plan-gpt plan is accepted, beside the rule above.
+  gpt=$(tr '\n' ' ' < "$TOPICS/gpt-seats.md" | tr -s ' ')
+  for p in 'dispatched in order' 'one-step-per-worker sequencing'; do
+    ! grep -qF -- "$p" <<< "$gpt" || { echo "gpt-seats still holds '$p'"; false; }
+  done
   for p in '**Effort is fixed in the agent file' "**Each profile's \`settings.json\` is owned" '**The wrapper exports four defaults**' \
     '**Cache discipline.**' '**Metering on Max**' '**Lever order, Anthropic' 'Measurements behind these rules'; do
     grep -qF -- "$p" <<< "$flat" || { echo "delegation-reference: no '$p'"; false; }
