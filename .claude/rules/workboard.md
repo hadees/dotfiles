@@ -6,6 +6,7 @@ paths:
   - "**/tests/workboard-*.bats"
   - "**/tests/workboard-stubs/**"
   - "**/tests/helpers/workboard*"
+  - "**/tests/fixtures/workboard/**"
 ---
 
 # The work board
@@ -22,8 +23,7 @@ serves one HTML page (`dot_local/share/workboard/board.html`) on
 the entry script, tested alone against fixtures and together in
 `tests/workboard-e2e.bats`. **None of it has run
 against the live machine yet**: no live GitHub pass, no deploy, no look at the
-real board. The five optional modules the server looks for (`verbs`,
-`mcp_endpoint`, `service`, `notice`, `pane`) do not exist, so there is no verb
+real board. The optional plug-in modules (below) do not exist, so there is no verb
 that writes, no MCP endpoint and no LaunchAgent, and `workboard list` is exit 2.
 
 ## What a card is
@@ -47,28 +47,8 @@ worktree qualifies when a who row stands in it and it has a claim task, an open
 `log claim`, or a branch other than the repository's default. A merged pull
 request that closed an issue not on the board takes that issue's key and title.
 
-**Stage**, first match: an `OPEN` pull request that is not a draft and whose
-review is not `CHANGES_REQUESTED` is `review`; any other open one is
-`building`; a merged one is `landed`; a `taken` queue row is `building`; a
-`local` card, a card with a session on it, or an issue assigned to the account
-is `building`; anything else is `inbox`. An open issue whose pull requests
-merged stays `landed` until somebody closes it, with `trial_day = 1 + (now -
-newest merged_at) // 86400`; the trial window (`workboard.trial-days`, default
-7) limits only a merged pull request with no issue card. **Needs you** is the
-panel's `needs` list, not a stage: a card in it is drawn there, not in its
-column.
-
-Flags, not columns: `unattended` is `building` with no session, no open pull
-request and no `taken` queue row; `mine` is author equals the account's login,
-`assigned` the login among the assignees (both false for a queue card);
-`takeable` is `no` outside `inbox` and for a queue card, else `yes` when
-`assigned`, `mine` or `take` allows it (`auto`, or `auto:<label>` and the card
-has it), else `ask`.
-
-**Order**: by stage `inbox`, `building`, `review`, `landed`. In `inbox`, queued
-cards first (`tier`, then `score` as a number descending), then the rest by
-`updated_at` descending; `building` puts cards with a session first, `review`
-failing checks first. The model never computes a score.
+**Stage, flags and order** are `_stage`, `_sort_key` and the `takeable` branch of
+`build_board` in `dot_local/libexec/workboard/model.py`; read them there.
 
 ## Nothing is stored
 
@@ -254,8 +234,8 @@ everything else is `board.py cli <verb>`: `status`, `url`, the readers (`model`,
 command line), then a verb a plug-in registered, else exit 2. The port is git
 config `workboard.port`, else 47601; the panel is `workboard.panel-url`, else
 `claude-tab.panel-port` on loopback. With `local.workboard`
-loaded, `start`, `stop` and `restart` go through `launchctl` (`bootout`, because
-`KeepAlive` undoes a kill); otherwise `start` detaches a server of its own and
+loaded, `start` is `launchctl kickstart`, `restart` is `kickstart -k` and `stop`
+is `bootout` (because `KeepAlive` undoes a kill); otherwise `start` detaches a server of its own and
 `stop` signals the pid in `<state>/pid`. `open` is macOS-only and ends in `open-as iterm2 <url>`.
 
 **The plug-in interface.** `board.py`, in the server and the client alike,
@@ -291,33 +271,22 @@ something already answers there, so beside a real server the port must differ.
 
 ## The tests
 
-`tests/fixtures/workboard/demo/` holds the five documents of one scenario (two
-repositories, `now` 1,800,000,000, a seven-day trial, twelve cards) and the
-board they make, with `rev` 1 and `build` `fixture`. Names are invented
-(`octo-work-org`, `work-acct`, `proj-one`, ...); no real account, organisation,
-repository or session name belongs in a test, fixture or commit message.
-`tests/workboard-stubs/` has a stand-in for every module that returns the
-scenario, each headed `# TEST STAND-IN`; `tests/helpers/workboard-shape.py` is
-the checker, which names a key missing, added or of the wrong kind;
-`tests/helpers/workboard.bash` is what every test file loads. **A part is tested
-alone**: `wb_modules <real module names>` builds a directory of symlinks to the
+`tests/fixtures/workboard/demo/` holds one scenario's five documents and the
+board they make. Names are invented; no real
+account, organisation, repository or session name belongs in a test, fixture or
+commit message. `tests/workboard-stubs/` has a stand-in for every module, each
+headed `# TEST STAND-IN`. **A part is tested alone**: `wb_modules <real module
+names>` builds a directory of symlinks to the
 real files named and to the stubs for the rest. A test that finds the helper, a
-stub or a fixture wrong says so and does not patch it. The e2e file runs the
-real parts together.
-
-Tests keep state under `BATS_TEST_TMPDIR`, poll their waits and give each
-server a free port from python. Each external command sits behind a
-`WORKBOARD_*` handle (`GH`, `WORKTABS`, `CLAUDE_PEER`, `OPEN`, `OPEN_AS`,
-`LAUNCHCTL`, `PYTHON`); the serve tests set `WORKBOARD_LAUNCHCTL=false` so a run
-on a Mac with the agent loaded cannot kick it.
+stub or a fixture wrong says so and does not patch it. The serve tests set `WORKBOARD_LAUNCHCTL=false` so a Mac with the agent loaded
+cannot be kicked by a run.
 
 **`-I`, `-B` and the `sys.path` line.** `-I` leaves the script's directory off
 `sys.path`, so a file that imports a sibling first runs
-`sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))`: `abspath`, not
-`realpath`, so a directory of symlinks imports from itself. `-B` is required
-because a `__pycache__` in the source directory would be deployed by chezmoi,
-which reads the working tree and not git; `.chezmoiignore` also names it, and
-every test file ends with `wb_no_pycache`. The whole tool deploys on macOS only.
+`sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))` (`abspath`, not
+`realpath`, so a directory of symlinks imports from itself). `-B` keeps a
+`__pycache__` out of the source directory, which chezmoi would deploy; every
+test file ends with `wb_no_pycache`.
 
 ## The tells
 
