@@ -1419,6 +1419,36 @@ function remote-mcp-doctor() {
 	command remote-mcp status 2>&1 | sed 's/^/  /';
 }
 
+# workboard is the work board's server and client: one process that holds
+# the GitHub and local state and serves the board page and its tools. It is a
+# script, not a wrapper, so nothing routes; what can silently be wrong is the
+# server (detached, or the `local.workboard` LaunchAgent that ships disabled
+# and that `workboard install` loads) not answering, and an account with no
+# token. `workboard status` reports those from the running server's counts
+# alone — no title, label or repository name — so this is safe in `doctor`.
+function workboard-doctor() {
+	emulate -L zsh;
+	print -r -- "wrapper: <none — workboard is a script, not a shell wrapper>";
+	print -r -- "defined: <none — this doctor calls no helpers>";
+	if (( $+commands[workboard] )); then
+		print -r -- "script:  ${commands[workboard]}";
+		if [[ ${commands[workboard]} != "$HOME/bin/workboard" ]]; then
+			print -r -- "         WARNING: that is not ~/bin/workboard — another package owns the name on PATH";
+		fi;
+	else
+		print -r -- "script:  NOT FOUND — ~/bin/workboard is not on PATH (chezmoi apply)";
+	fi;
+	if [[ ! -f $HOME/Library/LaunchAgents/local.workboard.plist ]]; then
+		print -r -- "agent:   no plist";
+	elif command ${WORKBOARD_LAUNCHCTL:-launchctl} print "gui/$UID/local.workboard" >/dev/null 2>&1; then
+		print -r -- "agent:   loaded";
+	else
+		print -r -- "agent:   deployed, not loaded (workboard install)";
+	fi;
+	(( $+commands[workboard] )) || return 0;
+	command workboard status 2>&1 | sed 's/^/  /';
+}
+
 # The profile a working set's session runs under, and whether every member
 # is even readable from it — the two questions `workset open` (below) must
 # answer before it launches anything, extracted so workset-doctor and the
@@ -4039,7 +4069,7 @@ function doctor() {
 	local d;
 	print -r -- "shell:   $(shell_trace)";
 	print -r -- "";
-	for d in git gh claude wrangler hermes tailnet worktabs postbox remote-mcp workset onepassword iterm2; do
+	for d in git gh claude wrangler hermes tailnet worktabs postbox remote-mcp workboard workset onepassword iterm2; do
 		print -r -- "== $d-doctor";
 		"$d-doctor";
 		print -r -- "";
