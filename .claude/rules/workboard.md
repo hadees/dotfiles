@@ -199,7 +199,7 @@ state directory: it posts `/api/url` with `X-Workboard-Profile`
 (`CLAUDE_CONFIG_DIR`, else `~/.claude`) and the server answers the URL bound to
 that profile (code 2 for a header naming no profile directory). **The full
 token is never an answer to an HTTP request.** Closing the state directory to a
-session is a deny row in the two personal-side profiles' settings.
+session is a deny row in the profiles' settings (the overlays).
 
 **What the guard stops, and what it does not.** It binds `127.0.0.1` only;
 answers 403 to a `Host` that is not `127.0.0.1:<port>` or `localhost:<port>`
