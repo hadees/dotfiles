@@ -26,11 +26,11 @@ setup() {
   git config --file "$GIT_CONFIG_GLOBAL" workboard.port "$PORT"
   git config --file "$GIT_CONFIG_GLOBAL" workboard.panel-url "http://127.0.0.1:$PANEL_PORT"
   git config --file "$GIT_CONFIG_GLOBAL" user.name "Fixture Author"
-  git config --file "$GIT_CONFIG_GLOBAL" user.email "fixture@example.invalid"
+  git config --file "$GIT_CONFIG_GLOBAL" user.email "fixture@example.com"
   export WORKBOARD_TICK=0.1
   export WORKBOARD_LAUNCHCTL=false   # never the real agent
   export WORKBOARD_HTML="$BATS_TEST_TMPDIR/board.html"
-  printf '<!doctype html>\n<title>fixture</title>\n<p>board</p>\n' > "$WORKBOARD_HTML"
+  printf '<!doctype html>\n<head>\n<!--workboard:token-->\n<title>fixture</title>\n</head>\n<p>board</p>\n' > "$WORKBOARD_HTML"
   STATE="$HOME/.local/state/workboard"
   SNAPSHOT="$BATS_TEST_TMPDIR/snapshot.json"
   SERVE_PID="" PANEL_PID=""
@@ -59,6 +59,7 @@ teardown() {
   "$WB" stop >/dev/null 2>&1 || true
   [ -z "$SERVE_PID" ] || kill "$SERVE_PID" 2>/dev/null || true
   [ -z "$PANEL_PID" ] || kill "$PANEL_PID" 2>/dev/null || true
+  wb_teardown
   return 0
 }
 
@@ -148,15 +149,31 @@ PY
   wait_for $WB_PY -c "import socket; socket.create_connection(('127.0.0.1', $PANEL_PORT), 1)" 2>/dev/null
 }
 
-# hreq METHOD PATH: sets STATUS and BODY (and leaves the body in resp.body).
+# hreq [--local] METHOD PATH [-H 'Name: value']... [-d body]: sets STATUS and BODY (and
+# leaves the body in resp.body). --local speaks to the Unix socket, else TCP.
 # Call it plainly, not in $( ).
 hreq() {
+  local sock=""
+  if [ "$1" = --local ]; then sock="$WORKBOARD_RUNTIME/workboard/$PORT.sock"; shift; fi
   rm -f "$BATS_TEST_TMPDIR"/resp.*
-  $WB_PY - "$PORT" "$@" <<'PY' || return 1
-import http.client, os, sys
-port, method, path = int(sys.argv[1]), sys.argv[2], sys.argv[3]
-c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-c.request(method, path)
+  $WB_PY - "$PORT" "$sock" "$@" <<'PY' || return 1
+import http.client, os, socket, sys
+port, sock, method, path, rest = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5:]
+headers, body = {}, None
+while rest:
+    if rest[0] == "-H":
+        k, v = rest[1].split(": ", 1)
+        headers[k] = v
+    else:
+        body = rest[1].encode()
+    rest = rest[2:]
+class Unix(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.settimeout(10)
+        self.sock.connect(sock)
+c = Unix("localhost", timeout=10) if sock else http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+c.request(method, path, body=body, headers=headers)
 r = c.getresponse()
 data = r.read()
 d = os.environ["BATS_TEST_TMPDIR"]
@@ -165,6 +182,15 @@ open(d + "/resp.body", "wb").write(data)
 PY
   STATUS="$(cat "$BATS_TEST_TMPDIR/resp.status")"
   BODY="$(cat "$BATS_TEST_TMPDIR/resp.body")"
+}
+
+# link_token <link>: fetches the single-use link and prints the page token its
+# answer holds in the meta tag.
+link_token() {
+  local p="${1#http://127.0.0.1:$PORT}"
+  hreq GET "${p%%#*}" || return 1
+  [ "$STATUS" = 200 ] || return 1
+  sed -n 's|.*<meta name="workboard-token" content="\([0-9a-f]*\)">.*|\1|p' <<< "$BODY"
 }
 
 # jget <file> <python expression of d>: prints it.
@@ -186,12 +212,12 @@ wait_for() {
 }
 
 # The page is asked for each time, which is what keeps the who clock running.
-fetch_board() { hreq GET "/b/$TOK/board.json" && [ "$STATUS" = 200 ]; }
+fetch_board() { hreq GET /b/board.json -H "Authorization: Bearer $TOK" && [ "$STATUS" = 200 ]; }
 
 # Every source has answered once: GitHub, the local pass, and the panel's three
 # sessions that have a registry record.
 loaded() {
-  fetch_board && hreq GET /status.json &&
+  fetch_board && hreq --local GET /status.json &&
     [ "$(bget 'd["tally"].get("github_passes", 0) >= 1 and d["tally"].get("local_passes", 0) >= 1 and d["who"]["sessions"] >= 4')" = True ]
 }
 
@@ -200,7 +226,7 @@ boot() {
   [ "${1-}" = nopanel ] || start_panel
   run "$WB" start
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
-  TOK="$("$WB" url | sed -n 's|.*/b/\([0-9a-f]*\)/.*|\1|p')"
+  TOK="$(link_token "$("$WB" url)")"
   wait_for loaded || { fetch_board; echo "$BODY"; tail -5 "$STATE/log"; return 1; }
 }
 
@@ -262,7 +288,7 @@ boot() {
 
 @test "gh is asked once per account per pass for the board, and no token is ever an argument" {
   boot
-  hreq GET /status.json
+  hreq --local GET /status.json
   passes="$(jget "$BATS_TEST_TMPDIR/resp.body" 'd["tally"]["github_passes"]')"
   [ "$passes" -eq 1 ]
   # the board query carries $login; the login lookup is the other graphql call
@@ -309,7 +335,7 @@ PY
   SERVE_PID=$!
   up() { grep -q "^workboard: on http://127.0.0.1:$PORT/" "$BATS_TEST_TMPDIR/serve.out"; }
   wait_for up
-  TOK="$("$WB" url | sed -n 's|.*/b/\([0-9a-f]*\)/.*|\1|p')"
+  TOK="$(link_token "$("$WB" url)")"
   fetch_board
   wb_shape board "$BATS_TEST_TMPDIR/resp.body"
   [ "$(bget 'len(d["cards"])')" = 12 ]
@@ -343,7 +369,7 @@ PY
 @test "after twenty ticks no file under the state directory or the home holds a fixture title, body, label or claim task" {
   boot
   # twenty who passes: one tick each while the page is being asked for
-  twenty() { fetch_board && hreq GET /status.json && [ "$(bget 'd["tally"].get("who_passes", 0)')" -ge 20 ]; }
+  twenty() { fetch_board && hreq --local GET /status.json && [ "$(bget 'd["tally"].get("who_passes", 0)')" -ge 20 ]; }
   wait_for twenty
   # the board does hold them in memory, so the check below can fail
   fetch_board
@@ -354,6 +380,57 @@ PY
   [ "$status" -eq 1 ] || { echo "$output"; false; }
   run grep -rlw -e bug "$HOME" "$STATE"
   [ "$status" -eq 1 ] || { echo "$output"; false; }
+}
+
+@test "no page token, link nonce or tool key is in a process's arguments or in a file under the home, the state directory or the runtime directory" {
+  boot
+  nonce="$("$WB" url | sed -n 's|.*/enter/\([^#]*\).*|\1|p')"
+  [ -n "$nonce" ]
+  hreq --local POST /api/bearer -H "X-Workboard: 1" -H "X-Workboard-Profile: $HOME/.claude" -d '{}'
+  tool="$(bget 'd["text"]')"
+  [[ "$tool" =~ ^[0-9a-f]{32}$ ]]
+  [ "$tool" != "$TOK" ]
+  run ps -axo args=
+  [[ "$output" != *"$TOK"* && "$output" != *"$tool"* && "$output" != *"$nonce"* ]]
+  "$WB" stop >/dev/null
+  run grep -rlF -e "$TOK" -e "$tool" -e "$nonce" "$HOME" "$STATE" "$WORKBOARD_RUNTIME"
+  [ "$status" -eq 1 ] || { echo "$output"; false; }
+}
+
+@test "with the real page, /enter holds the meta tag where the marker was, and /b/ holds neither" {
+  export WORKBOARD_HTML="$WB_ROOT/dot_local/share/workboard/board.html"
+  boot
+  link="$("$WB" url)"
+  hreq GET "${link#http://127.0.0.1:$PORT}"
+  [ "$STATUS" = 200 ]
+  [[ "$BODY" != *"<!--workboard:token-->"* ]]
+  [ "$(grep -c '<meta name="workboard-token" content="[0-9a-f]\{32\}">' <<< "$BODY")" -eq 1 ]
+  # the answer is the page file with the one marker line swapped for the tag
+  $WB_PY - "$WORKBOARD_HTML" "$BATS_TEST_TMPDIR/resp.body" <<'PY'
+import re, sys
+page, got = open(sys.argv[1]).read(), open(sys.argv[2]).read()
+assert page.count("<!--workboard:token-->") == 1
+want = re.sub(r'<meta name="workboard-token" content="[0-9a-f]{32}">', "<!--workboard:token-->", got)
+assert want == page, "the /enter answer differs from the page file beyond the marker"
+PY
+  hreq GET /b/
+  [ "$STATUS" = 200 ]
+  [[ "$BODY" != *"<!--workboard:token-->"* && "$BODY" != *'<meta name="workboard-token"'* ]]
+}
+
+@test "a caller on plain TCP with no key gets only {\"ok\": true} from /health, 404 from /status.json and /api/url, 403 from /b/board.json" {
+  boot
+  hreq GET /health
+  [ "$STATUS" = 200 ]
+  [ "$(bget 'd')" = "{'ok': True}" ]
+  hreq GET /status.json
+  [ "$STATUS" = 404 ]
+  hreq POST /api/url -H "X-Workboard: 1" -H "X-Workboard-Profile: $HOME/.claude" -d '{}'
+  [ "$STATUS" = 404 ]
+  hreq GET /b/board.json
+  [ "$STATUS" = 403 ]
+  hreq GET /b/board.json -H "Authorization: Bearer $(printf '0%.0s' $(seq 32))"
+  [ "$STATUS" = 403 ]
 }
 
 @test "no __pycache__ is left in the source tree" {
