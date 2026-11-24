@@ -47,8 +47,9 @@
 - **Once `plan-fable` has it, the plan is that seat's and `work-sonnet` builds
   it:** read the plan here, then one plan step per brief — the plan's path and
   step number plus what earlier steps produced, never the plan pasted in —
-  dispatched in plan order, one at a time, each verified here before the next
-  spawns. The main conversation orchestrates and verifies; it builds no step
+  dispatched as soon as the steps it needs are verified here, independent
+  steps together, each in its own worktree. A step waits only for what it
+  needs. The main conversation orchestrates and verifies; it builds no step
   itself and redesigns nothing. A step that cannot land as written (a worker
   hands it back, a gate stays red, an Unverified item proves false) goes back
   to `plan-fable` for a revised plan, never quietly into the code; a failure
