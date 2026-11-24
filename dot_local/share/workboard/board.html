@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <title>Work board</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!--workboard:token-->
 <style>
   :root {
     color-scheme: dark light;
@@ -120,6 +121,17 @@ const store = {
   get(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } },
   set(k, v) { try { sessionStorage.setItem(k, v); } catch (e) { /* no storage: nothing is remembered */ } },
 };
+/* the key arrives once, in a meta tag of the /enter answer; after that it lives in this tab's storage and an Authorization header, never in an address */
+let TOKEN = null;
+{
+  const m = document.querySelector('meta[name="workboard-token"]');
+  if (m) {
+    TOKEN = m.getAttribute("content");
+    m.remove();
+    store.set("wb-token", TOKEN);
+    history.replaceState(null, "", "/b/" + location.hash);
+  } else TOKEN = store.get("wb-token");
+}
 {
   let s = null;
   try { s = JSON.parse(store.get("wb.shut") || "null"); } catch (e) { s = null; }
@@ -433,7 +445,7 @@ function renderDrawer() {
 
 /* actions: go and open post to the server; a refusal shows in the bar for ten seconds */
 function post(path, body) {
-  fetch(path, { method: "POST", headers: { "X-Workboard": "1", "Content-Type": "application/x-www-form-urlencoded" }, body: body })
+  fetch(path, { method: "POST", headers: { "Authorization": "Bearer " + TOKEN, "X-Workboard": "1", "Content-Type": "application/x-www-form-urlencoded" }, body: body })
     .then(function (r) {
       if (r.ok) return;
       r.text().then(function (t) { say(t.trim() || "error " + r.status); });
@@ -443,8 +455,8 @@ function post(path, body) {
 document.addEventListener("click", function (ev) {
   const t = ev.target.closest ? ev.target.closest("[data-pid], [data-close], [data-open], [data-col], [data-key]") : null;
   if (!t) return;
-  if (t.dataset.pid) { if (/^[0-9]+$/.test(t.dataset.pid)) post("go", "pid=" + t.dataset.pid); return; }
-  if (t.dataset.open) { post("open", "key=" + encodeURIComponent(t.dataset.open)); return; }
+  if (t.dataset.pid) { if (/^[0-9]+$/.test(t.dataset.pid)) post("/b/go","pid=" + t.dataset.pid); return; }
+  if (t.dataset.open) { post("/b/open","key=" + encodeURIComponent(t.dataset.open)); return; }
   if (t.dataset.close) drawerKey = null;
   else if (t.dataset.col) {
     if (shut.has(t.dataset.col)) shut.delete(t.dataset.col); else shut.add(t.dataset.col);
@@ -489,11 +501,21 @@ function silence() {
   quiet.hidden = s <= 6;
   quiet.textContent = "no data for " + s + "s";
 }
+function nokey() {
+  clearInterval(tick);
+  clearInterval(pollTimer);
+  document.getElementById("bar").hidden = true;
+  document.getElementById("work").hidden = true;
+  document.getElementById("dead").hidden = false;
+  document.getElementById("deadwhen").textContent = "This page has no key.";
+  document.getElementById("deadwhen").nextElementSibling.textContent = "Run workboard open.";
+}
 function poll() {
-  const headers = {};
+  const headers = { "Authorization": "Bearer " + TOKEN };
   if (etag) headers["If-None-Match"] = etag;
-  fetch("board.json", { headers: headers })
+  fetch("/b/board.json", { headers: headers })
     .then(function (r) {
+      if (r.status === 403) { nokey(); return null; }
       if (r.status === 304) { lastAnswer = Date.now(); return null; }
       if (!r.ok) throw new Error("status " + r.status);
       etag = r.headers.get("ETag");
@@ -509,9 +531,9 @@ function poll() {
     })
     .catch(function () { /* the silence timer tells the story */ });
 }
-setInterval(function () { paint(); silence(); }, 1000);
-setInterval(poll, 2000);
-poll();
+const tick = TOKEN ? setInterval(function () { paint(); silence(); }, 1000) : 0;
+const pollTimer = TOKEN ? setInterval(poll, 2000) : 0;
+if (TOKEN) poll(); else nokey();
 </script>
 </body>
 </html>
