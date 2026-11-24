@@ -19,7 +19,8 @@ serves one HTML page (`dot_local/share/workboard/board.html`) on
 `127.0.0.1:47601`; `bin/executable_workboard` (POSIX `sh`) starts it.
 
 **What exists today.** The model, the three readers, the page, the server and
-the entry script, each tested alone against fixtures. **None of it has run
+the entry script, tested alone against fixtures and together in
+`tests/workboard-e2e.bats`. **None of it has run
 against the live machine yet**: no live GitHub pass, no deploy, no look at the
 real board. The five optional modules the server looks for (`verbs`,
 `mcp_endpoint`, `service`, `notice`, `pane`) do not exist, so there is no verb
@@ -218,7 +219,7 @@ state directory: it posts `/api/url` with `X-Workboard-Profile`
 (`CLAUDE_CONFIG_DIR`, else `~/.claude`) and the server answers the URL bound to
 that profile (code 2 for a header naming no profile directory). **The full
 token is never an answer to an HTTP request.** Closing the state directory to a
-session is a deny row in the profiles' settings (the overlays), not tested here.
+session is a deny row in the two personal-side profiles' settings.
 
 **What the guard stops, and what it does not.** It binds `127.0.0.1` only;
 answers 403 to a `Host` that is not `127.0.0.1:<port>` or `localhost:<port>`
@@ -301,8 +302,8 @@ the checker, which names a key missing, added or of the wrong kind;
 `tests/helpers/workboard.bash` is what every test file loads. **A part is tested
 alone**: `wb_modules <real module names>` builds a directory of symlinks to the
 real files named and to the stubs for the rest. A test that finds the helper, a
-stub or a fixture wrong says so and does not patch it. No test yet runs the real
-parts together.
+stub or a fixture wrong says so and does not patch it. The e2e file runs the
+real parts together.
 
 Tests keep state under `BATS_TEST_TMPDIR`, poll their waits and give each
 server a free port from python. Each external command sits behind a
