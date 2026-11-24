@@ -52,6 +52,10 @@ SH
   wb_modules github >/dev/null
 }
 
+teardown() {
+  wb_teardown
+}
+
 PRE='
 import calendar, json, os, time, github
 W = {"slug": "octo-work-org/proj-one", "account": "work-acct", "intake": "all"}
