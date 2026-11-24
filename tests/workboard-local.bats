@@ -36,6 +36,10 @@ SH
   export STUB="$S" WORKBOARD_WORKTABS="$BATS_TEST_TMPDIR/bin/worktabs" WORKBOARD_CLAUDE_PEER="$BATS_TEST_TMPDIR/bin/claude-peer"
 }
 
+teardown() {
+  wb_teardown
+}
+
 # mkrepo <name> <origin url or ->: a repository with one commit under $CODE.
 mkrepo() {
   git init -q -b main "$CODE/$1"

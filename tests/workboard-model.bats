@@ -111,6 +111,10 @@ with open(os.path.join(T, "board.json"), "w") as f:
 PY
 }
 
+teardown() {
+  wb_teardown
+}
+
 # board <python> [model args]: build the documents, run the model, and require
 # the output to pass the board checker.
 board() {

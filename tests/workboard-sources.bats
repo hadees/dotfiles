@@ -41,6 +41,10 @@ PY
   # 4202 and 4301 have no record at all.
 }
 
+teardown() {
+  wb_teardown
+}
+
 # record <pid> <default|personal> <cwd>
 record() {
   local d="$HOME/.claude"
