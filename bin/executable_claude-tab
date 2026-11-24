@@ -50,7 +50,9 @@
 #                            tab. --no-peers: do not restart the noted slot
 #                            peers (claude-peer start --continue, retried up to
 #                            --peer-wait seconds, default 60, while their pane
-#                            is not waiting yet)
+#                            is not waiting yet). Last, a restored session the
+#                            workgroup renamed ("Lead") is named again by the
+#                            cc-status shim (up to 20 s of polling)
 #   panel tick [--state <file>] [--now <epoch>] [--focus <tty>|-|?]
 #                            one pass of the needs-you list: reads the registry
 #                            of every profile, updates the state file, prints
@@ -78,6 +80,7 @@ TAB=$(printf '\t')
 TABNAME=${CLAUDE_TAB_TABNAME:-$HOME/bin/tabname}
 PEERCMD=${CLAUDE_TAB_PEER:-$HOME/bin/claude-peer}
 IT2=${CLAUDE_TAB_IT2:-$HOME/.config/iterm2/it2}
+SHIM=${CLAUDE_TAB_SHIM:-$HOME/.local/libexec/cc-status-shim/cc-status}
 NL='
 '
 CR=$(printf '\r')
@@ -551,6 +554,46 @@ focus_session() { # pid tty where guid cwd
   return 1
 }
 
+# After a restore: the workgroup's Enter trigger can rename a leader to the
+# workgroup root's name ("Lead") after the shim named it at SessionStart, and an
+# idle session has no Stop to heal it. $2 is rows of "<profile><TAB><session
+# id><TAB><cwd>". Per row the shim says what it would name the session (`explain
+# after` on a SessionStart payload) and, where iTerm2's name for it lacks that,
+# sets it (`after`, the same payload): the shim stays the only naming code.
+# Polled every two seconds for $1 seconds; a row leaves the list once healed or
+# when the shim has no name for it, and the rest wait out the bound (nothing
+# says the workgroup has settled).
+heal_names() {
+  [ -x "$IT2" ] && [ -x "$SHIM" ] || return 0
+  hn_left=$2 hn_waited=0
+  while [ -n "$hn_left" ]; do
+    hn_live=$(registry_full)
+    hn_next=''
+    while IFS=$TAB read -r hn_p hn_s hn_c; do
+      [ -n "$hn_p" ] || continue
+      hn_pid=$(printf '%s\n' "$hn_live" | P=$hn_p S=$hn_s C=$hn_c awk -F'\t' \
+        '$2 == ENVIRON["P"] && ($3 == ENVIRON["S"] || $5 == ENVIRON["C"]) { print $1; exit }')
+      hn_guid=-
+      [ -z "$hn_pid" ] || hn_guid=$(guid_of "$hn_pid")
+      if [ "$hn_guid" = - ]; then hn_next="$hn_next$hn_p$TAB$hn_s$TAB$hn_c$NL"; continue; fi
+      hn_json=$(python3 -I -c 'import json, sys; print(json.dumps({"hook_event_name": "SessionStart", "cwd": sys.argv[1]}, separators=(",", ":")))' "$hn_c") || continue
+      hn_want=$(printf '%s' "$hn_json" | ITERM_SESSION_ID="w0t0p0:$hn_guid" "$SHIM" explain after 2>/dev/null | sed -n 's/^name=//p')
+      case $hn_want in ''|none) continue;; esac
+      hn_cur=$( (api_cookie_env || :; "$IT2" session get-var name --session "$hn_guid") 2>/dev/null </dev/null)
+      case $hn_cur in
+        *"$hn_want"*) hn_next="$hn_next$hn_p$TAB$hn_s$TAB$hn_c$NL";;
+        *) printf '%s' "$hn_json" | ITERM_SESSION_ID="w0t0p0:$hn_guid" "$SHIM" after >/dev/null 2>&1
+           warn "renamed $hn_want back from $hn_cur";;
+      esac
+    done <<EOF_HEAL
+$hn_left
+EOF_HEAL
+    hn_left=$hn_next
+    [ -n "$hn_left" ] && [ "$hn_waited" -lt "$1" ] || break
+    sleep 2; hn_waited=$((hn_waited + 2))
+  done
+}
+
 # --- commands ----------------------------------------------------------------
 
 cmd_tabs() {
@@ -823,7 +866,7 @@ EOF_TABS
 
   SAVED_PROFILES=$(awk -F'\t' '$1 != "" && $1 !~ /^#/ { print $1 }' "$file")
   live=$(registry_full)
-  plan='' f=0 n=0 s=0
+  plan='' resumed='' f=0 n=0 s=0
   while IFS=$TAB read -r profile sid cwd label _ _ _ _ st; do
     case $profile in ''|'#'*) continue;; esac
     cmd=- tty=-
@@ -849,6 +892,7 @@ EOF_TABS
       cmd="cd -- $(sq "$cwd") && CLAUDE_PROFILE=$(sq "$profile") claude --resume $sid"
       if [ -n "$pfor" ] && [ "$sid" = "$pfor" ]; then cmd="$cmd $(sq "$pfor_text")"
       elif [ -n "$ptext" ] && [ "${st-}" != idle ]; then cmd="$cmd $(sq "$ptext")"; fi
+      resumed="$resumed$profile$TAB$sid$TAB$cwd$NL"
       if [ -n "$empty" ]; then
         act=fill tty=${empty%%"$NL"*} empty=${empty#*"$NL"} f=$((f + 1))
       else
@@ -914,6 +958,9 @@ EOF_PLAN
     done < "$file.peers"
     warn "peers: $pk_s started, $pk_a already running, $pk_f not started"
   fi
+
+  # Last: the workgroups are entered by now, so a leader renamed "Lead" can be put back.
+  heal_names 20 "$resumed"
 }
 
 # --- the needs-you list ------------------------------------------------------

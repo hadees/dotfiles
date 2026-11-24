@@ -792,6 +792,35 @@ $b|start Beta --continue -- pick up" ]
   [[ "$stderr" == *"peers: 0 started, 0 already running, 1 not started" ]]
 }
 
+@test "restore: a leader the workgroup renamed after the shim named it is named again by the shim" {
+  restore_world
+  a=$(make_repo alpha); saved_row "$HOME/.claude-personal" sid-a "$a" alpha
+  # The shim: `explain after` says the name it would set, `after` logs the session it was given.
+  export CLAUDE_TAB_SHIM="$BATS_TEST_TMPDIR/shim" SHIM_LOG="$BATS_TEST_TMPDIR/shim-log"
+  printf '#!/bin/sh\ncase "$1" in explain) echo name=alpha;; after) echo "$ITERM_SESSION_ID" >> "$SHIM_LOG";; esac\n' > "$CLAUDE_TAB_SHIM"
+  export CLAUDE_TAB_IT2="$BATS_TEST_TMPDIR/it2"
+  printf '#!/bin/sh\necho "\\"Lead (claude)\\""\n' > "$CLAUDE_TAB_IT2"
+  chmod +x "$CLAUDE_TAB_SHIM" "$CLAUDE_TAB_IT2"
+  # Claude is not up until the first poll sleeps: its registry row and environment appear then.
+  cat > "$BIN/sleep" <<'STUB'
+#!/bin/sh
+case "${1:-0}" in 300) exec /bin/sleep 300;; esac
+printf '%s\n' "$*" >> "$SLEEP_LOG"
+mkdir -p "$HOME/.claude-personal/sessions"
+printf '{"pid":%s,"sessionId":"sid-a","cwd":"%s","kind":"interactive"}\n' "$HEAL_PID" "$HEAL_CWD" > "$HOME/.claude-personal/sessions/$HEAL_PID.json"
+echo "claude ITERM_SESSION_ID=w0t0p0:GUID-A" > "$PS_ENV_DIR/$HEAL_PID"
+STUB
+  chmod +x "$BIN/sleep"
+  # Only now: a sleeper started from the old stub dies when a shell that reads its
+  # script as it runs (bash as sh) finds the file rewritten under it.
+  live_pid
+  export HEAL_PID=$LIVE HEAL_CWD=$a
+  run --separate-stderr sh "$CT" restore "$SAVED"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$SHIM_LOG")" = "w0t0p0:GUID-A" ]
+  [[ "$stderr" == *'claude-tab: renamed alpha back from "Lead (claude)"' ]]
+}
+
 @test "restore --no-peers and --dry-run start no peer; --dry-run lists them" {
   restore_world; stub_start
   a=$(make_repo alpha)

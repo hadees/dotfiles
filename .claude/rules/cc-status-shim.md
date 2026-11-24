@@ -100,7 +100,15 @@ cc-status call and before the paints, which keeps a paint the last `it2` call of
 a turn end. Known cost: where the `claude` job-start trigger, not the wrapper's
 variable, enters the workgroup after SessionStart, the workgroup may record this
 name as the title to restore, and the tab keeps it after `claude` exits (fix by
-hand as below). Not observed yet. The title has control characters dropped and is cut
+hand as below). Observed 2026-11-23 after `iterm2-relaunch`: `claude-tab restore`
+resumed 11 sessions and the four whose repo has a Claude Peers workgroup
+came back as `Lead (claude)` in the tab and the row, because iTerm2 entered
+the workgroup after SessionStart and the idle sessions had no Stop to heal
+it. `claude-tab restore` now heals it itself, last (`claude-tab.md`): per
+restored session it reads `explain after`'s `name=` for a SessionStart payload
+of its cwd, compares it with `it2 session get-var name`, and where that lacks
+it runs `cc-status after` on the same payload, so this file stays the only
+code that names a session. The title has control characters dropped and is cut
 at 80 characters. `$WORKSET` needs no `tabname`; without it, no `tabname`, no `cwd`,
 or a directory outside a repo means no rename, never an empty one (iTerm2 would
 show its profile name). `set-name` is
