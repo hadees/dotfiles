@@ -36,7 +36,7 @@ setup() {
 }
 
 # Writes the fixture transcripts into the profile directory $1: one main
-# session (every metric once or repeated), one sidechain-only record, one stale
+# session (every metric once or repeated, and a pair of writer dispatches), one sidechain-only record, one stale
 # record, and one session of a worktree project.
 fixture() {
   python3 -I - "$1" "$HOME" <<'PY'
@@ -62,6 +62,16 @@ def read(p):
     return {"type": "tool_use", "name": "Read", "input": {"file_path": p}}
 
 
+def agent(seat, desc, prompt, **extra):
+    return {"type": "tool_use", "id": "t-" + desc, "name": "Agent",
+            "input": dict(extra, subagent_type=seat, description=desc, prompt=prompt)}
+
+
+def with_id(mid, rec):
+    rec["message"]["id"] = mid
+    return rec
+
+
 def answer(*pairs):
     qs = [{"question": q, "options": [{"label": a}, {"label": b}]} for q, a, b, _ in pairs]
     return {"type": "user", "isSidechain": False, "timestamp": ts(), "sessionId": "s",
@@ -79,6 +89,10 @@ main = [
     answer(("Which two?", "first", "second", "second")),
     assistant(read(home + "/.claude-shared/approvals-ledger.md"), read(home + "/.claude-shared/topics/lead.md")),
     assistant(read(home + "/dot_claude-shared/topics/lead.md"), read(home + "/work/topics/lead.md")),
+    # two writers sent in one assistant message, naming one plan; the second is not isolated
+    with_id("m1", assistant(
+        agent("work-sonnet", "build one", "Plan: /x/claude-reports/demo/plan-alpha.md step 1", isolation="worktree"),
+        agent("unstick-fable", "build two", "Plan: /x/claude-reports/demo/plan-alpha.md step 2"))),
 ]
 peer = [
     {"type": "permission-mode", "permissionMode": "auto", "sessionId": "p"},
@@ -105,7 +119,8 @@ PY
   fixture "$CLAUDE_CONFIG_DIR"
   run "$OA" count
   [ "$status" -eq 0 ]
-  expected="$(printf '%s\t%s\n' elsewhere 1 first-option 1 peer-mode:auto 1 prompts 0 questions 2 read:approvals-ledger.md 1 read:lead.md 1 steps 3)"
+  expected="$(printf '%s\t%s\n' dispatch:alone 0 dispatch:beside 2 dispatch:over-three 0 dispatch:same-plan 2 dispatch:unisolated 1 \
+    elsewhere 1 first-option 1 peer-mode:auto 1 prompts 0 questions 2 read:approvals-ledger.md 1 read:lead.md 1 start-mode:default 1 steps 3)"
   [ "$output" = "$expected" ]
 }
 
@@ -114,7 +129,7 @@ PY
   run "$OA" list
   [ "$status" -eq 0 ]
   [ "$(printf '%s\n' "$output" | grep -c 'Run `go')" -eq 1 ]
-  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 3 ]
+  [ "$(printf '%s\n' "$output" | grep -vc "$(printf '\tdispatch\t')")" -eq 3 ]
 }
 
 @test "list prints time, session name, kind and text, and ignores sidechain and stale records" {
@@ -362,6 +377,233 @@ EOF
   run --separate-stderr "$OA" count
   [ "$status" -eq 1 ]
   [ "$stderr" = "operator-asks: $CLAUDE_CONFIG_DIR is denied to this profile or could not be checked, not read" ]
+}
+
+# Writes a main session of invented writer dispatches into the profile
+# directory (project -home-demo, not a worktree). The Python on stdin runs after
+# a prelude that defines T0 (the epoch the offsets count from: six hours ago),
+# dispatch(), launched(), finished(), notified() and put(), each taking an
+# offset in seconds from T0.
+dfix() {
+  {
+    cat <<'PY'
+import json, os, sys, time
+
+root, home = sys.argv[1:3]
+T0 = time.time() - 6 * 3600
+recs = []
+
+
+def ts(sec):
+    return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(T0 + sec))
+
+
+def dispatch(sec, tid, seat="work-sonnet", mid=None, prompt="brief", side=False, **extra):
+    recs.append({"type": "assistant", "isSidechain": side, "timestamp": ts(sec), "message": {
+        "id": mid or "m-" + tid, "role": "assistant", "content": [{
+            "type": "tool_use", "id": tid, "name": "Agent",
+            "input": dict(extra, subagent_type=seat, description="job " + tid, prompt=prompt)}]}})
+
+
+def result(sec, tid, text):
+    recs.append({"type": "user", "isSidechain": False, "timestamp": ts(sec), "message": {
+        "role": "user", "content": [{"type": "tool_result", "tool_use_id": tid,
+                                     "content": [{"type": "text", "text": text}]}]}})
+
+
+def launched(sec, tid):
+    result(sec, tid, "Async agent launched successfully.\nagentId: id-%s (internal ID)\nThe agent is working." % tid)
+
+
+def finished(sec, tid):
+    result(sec, tid, "The report, in full.")
+
+
+def notified(sec, tid, as_user=False):
+    note = "<task-notification>\n<task-id>id-%s</task-id>\n<status>completed</status>\n</task-notification>" % tid
+    if as_user:
+        recs.append({"type": "user", "isSidechain": False, "timestamp": ts(sec),
+                     "message": {"role": "user", "content": note}})
+    else:
+        recs.append({"type": "queue-operation", "operation": "enqueue", "timestamp": ts(sec), "content": note})
+
+
+def put():
+    d = os.path.join(root, "projects", "-home-demo")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "dddd.jsonl"), "w") as f:
+        for r in recs:
+            f.write(json.dumps(dict(r, cwd=home + "/demo")) + "\n")
+PY
+    cat
+  } > "$BATS_TEST_TMPDIR/dfix.py"
+  python3 -I "$BATS_TEST_TMPDIR/dfix.py" "$CLAUDE_CONFIG_DIR" "$HOME"
+}
+
+# The dispatch metrics of `count` as one line of name=value pairs.
+dispatch_counts() {
+  "$OA" count "$@" | grep '^dispatch:' | tr '\t\n' '= ' | sed 's/ $//; s/dispatch://g'
+}
+
+@test "a writer dispatch with nothing else running is alone, and list says so" {
+  dfix <<'PY'
+dispatch(0, "w1")
+launched(1, "w1")
+notified(60, "w1")
+put()
+PY
+  [ "$(dispatch_counts)" = "alone=1 beside=0 over-three=0 same-plan=0 unisolated=1" ]
+  run "$OA" list
+  [ "$(printf '%s\n' "$output" | grep -c "$(printf '\tdispatch\talone - job w1$')")" -eq 1 ]
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 1 ]
+}
+
+@test "two writers sent in one assistant message are each beside the other, and not over three" {
+  dfix <<'PY'
+dispatch(0, "w1", mid="one")
+dispatch(0, "w2", mid="one")
+launched(1, "w1")
+launched(1, "w2")
+put()
+PY
+  [ "$(dispatch_counts)" = "alone=0 beside=2 over-three=0 same-plan=0 unisolated=2" ]
+  run "$OA" list
+  [ "$(printf '%s\n' "$output" | grep -c "$(printf '\tdispatch\tbeside 1 - job ')")" -eq 2 ]
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 2 ]
+}
+
+@test "a writer started while another runs is beside it; one started after the notification is alone" {
+  dfix <<'PY'
+dispatch(0, "w1")
+launched(1, "w1")
+dispatch(60, "w2")
+launched(61, "w2")
+notified(120, "w1")
+notified(200, "w2", as_user=True)
+dispatch(300, "w3")
+launched(301, "w3")
+put()
+PY
+  [ "$(dispatch_counts)" = "alone=2 beside=1 over-three=0 same-plan=0 unisolated=3" ]
+  run "$OA" list
+  printf '%s\n' "$output" | grep -q "$(printf '\tdispatch\talone - job w1$')"
+  printf '%s\n' "$output" | grep -q "$(printf '\tdispatch\tbeside 1 - job w2$')"
+  printf '%s\n' "$output" | grep -q "$(printf '\tdispatch\talone - job w3$')"
+}
+
+@test "two writers that name one plan file are same-plan, and two that name different plans are not" {
+  dfix <<'PY'
+dispatch(0, "w1", mid="one", prompt="Plan: /s/claude-reports/demo/plan-alpha.md, step 1")
+dispatch(0, "w2", mid="one", prompt="Plan: /s/claude-reports/demo/plan-alpha.md, step 2")
+put()
+PY
+  [[ "$(dispatch_counts)" == *"same-plan=2"* ]]
+  run "$OA" list
+  printf '%s\n' "$output" | grep -q "$(printf '\tdispatch\tbeside 1 plan-alpha job w1$')"
+  dfix <<'PY'
+dispatch(0, "w1", mid="one", prompt="Plan: /s/claude-reports/demo/plan-alpha.md, step 1")
+dispatch(0, "w2", mid="one", prompt="Plan: /s/claude-reports/demo/plan-beta.md, step 2")
+dispatch(0, "w3", mid="one", prompt="no plan at all")
+put()
+PY
+  [ "$(dispatch_counts)" = "alone=0 beside=3 over-three=0 same-plan=0 unisolated=3" ]
+}
+
+@test "a foreground dispatch ends at its own result" {
+  dfix <<'PY'
+dispatch(0, "w1")
+finished(30, "w1")
+dispatch(60, "w2")
+finished(90, "w2")
+put()
+PY
+  [[ "$(dispatch_counts)" == "alone=2 beside=0 "* ]]
+}
+
+@test "a background dispatch with no notification ends at the cap, so one three hours later is alone" {
+  dfix <<'PY'
+dispatch(0, "w1")
+launched(1, "w1")
+dispatch(60, "w2")
+launched(61, "w2")
+dispatch(3 * 3600, "w3")
+launched(3 * 3600 + 1, "w3")
+put()
+PY
+  [[ "$(dispatch_counts)" == "alone=2 beside=1 "* ]]
+}
+
+@test "unisolated is a dispatch with neither isolation worktree nor a worktree path in its prompt" {
+  dfix <<'PY'
+dispatch(0, "w1", isolation="worktree")
+finished(10, "w1")
+dispatch(20, "w2", prompt="Work in /r/.claude/worktrees/step-two, branch x")
+finished(30, "w2")
+dispatch(40, "w3")
+finished(50, "w3")
+put()
+PY
+  [ "$(dispatch_counts)" = "alone=3 beside=0 over-three=0 same-plan=0 unisolated=1" ]
+}
+
+@test "a fourth writer while three run is over three, and the third is not" {
+  dfix <<'PY'
+for i, sec in enumerate((0, 10, 20, 30)):
+    dispatch(sec, "w%d" % i, isolation="worktree")
+    launched(sec + 1, "w%d" % i)
+put()
+PY
+  [ "$(dispatch_counts)" = "alone=1 beside=3 over-three=1 same-plan=0 unisolated=0" ]
+}
+
+@test "a writer that started before the window still counts as running, and is not itself counted" {
+  dfix <<'PY'
+T0 = time.time() - 86400 - 600
+dispatch(0, "w1")
+launched(1, "w1")
+dispatch(700, "w2")
+launched(701, "w2")
+put()
+PY
+  [[ "$(dispatch_counts --since 1)" == "alone=0 beside=1 "* ]]
+  run "$OA" list --since 1
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 1 ]
+}
+
+@test "other seats, sidechain records and a denied project add nothing to the dispatch metrics" {
+  dfix <<'PY'
+dispatch(0, "s1", seat="scout-haiku")
+dispatch(10, "p1", seat="plan-fable")
+dispatch(20, "c1", side=True)
+put()
+PY
+  extra_project "$CLAUDE_CONFIG_DIR" "$HOME/code/octo-secret/sub"
+  python3 -I - "$CLAUDE_CONFIG_DIR" "$HOME/code/octo-secret/sub" <<'PY'
+import json, os, sys, time
+root, cwd = sys.argv[1:3]
+now = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+with open(os.path.join(root, "projects", "-extra", "cccc.jsonl"), "a") as f:
+    for r in ({"type": "permission-mode", "permissionMode": "bypassPermissions"},
+              {"type": "assistant", "timestamp": now, "message": {"id": "x", "role": "assistant", "content": [
+                  {"type": "tool_use", "id": "t", "name": "Agent",
+                   "input": {"subagent_type": "work-sonnet", "description": "hidden", "prompt": "p"}}]}}):
+        f.write(json.dumps(dict(r, cwd=cwd)) + "\n")
+PY
+  printf '{"permissions":{"deny":["Read(~/code/octo-secret/**)"]}}\n' > "$CLAUDE_CONFIG_DIR/settings.json"
+  run --separate-stderr "$OA" count
+  [ "$stderr" = "operator-asks: 1 projects skipped (denied)" ]
+  [ "$(dispatch_counts)" = "alone=0 beside=0 over-three=0 same-plan=0 unisolated=0" ]
+  ! printf '%s\n' "$output" | grep -q -e start-mode:bypass -e hidden || false
+  run "$OA" list
+  ! printf '%s\n' "$output" | grep -q -e hidden -e 'job ' || false
+}
+
+@test "start-mode counts a plain session's first permission mode, and a worktree session only as peer-mode" {
+  fixture "$CLAUDE_CONFIG_DIR"
+  run "$OA" count
+  printf '%s\n' "$output" | grep -q "$(printf '^start-mode:default\t1$')"
+  ! printf '%s\n' "$output" | grep -q 'start-mode:auto' || false
+  printf '%s\n' "$output" | grep -q "$(printf '^peer-mode:auto\t1$')"
 }
 
 @test "settings prints both hook entries and edits nothing" {
