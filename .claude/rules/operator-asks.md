@@ -9,8 +9,9 @@ paths:
 Counts how often a session made the operator a step: a question put to them,
 a line telling them to type or run something, a permission prompt, a
 permission the classifier refused. It exists so "is the operator needed less"
-has a number that weeks can be compared on. Nothing here changes what a
-session does.
+has a number that weeks can be compared on. It also reports how work was
+dispatched and the permission mode sessions start in. Nothing here changes
+what a session does.
 
 - `count [--since DAYS] [--dir PROFILE_DIR]` prints `metric<TAB>count`,
   sorted. `list` prints the step lines themselves (time, session name, kind,
@@ -49,10 +50,7 @@ session does.
   `.claude/worktrees/` in the prompt) and `dispatch:over-three` (three or more
   earlier dispatches, in file order, still running). All five print even at
   0. `list` gains one `dispatch` row per dispatch, `alone` or `beside N`, the
-  plan key or `-`, and the description. The shapes (the launch result text,
-  `agentId:`, `<task-id>` notifications, `message.id`, the `isolation` input)
-  are those of Claude Code 2.1.330; one that changes shows as a kind falling
-  to zero, never as an error.
+  plan key or `-`, and the description.
 - **A denied project is never read.** There is no deny parser here: every
   test is `denyguard check --profile <running profile>` (see the `denyguard`
   rule), found on `PATH`. It is asked about the target's `projects` directory
@@ -84,5 +82,7 @@ session does.
   to retry. `settings` prints the two entries to paste; each profile's
   `settings.json` belongs to its overlay, so nothing here wires them.
 - The record shapes (`toolUseResult.answers`, `permission-mode`, `customTitle`)
-  are those of Claude Code 2.1.325. A shape that changes shows as a metric
-  falling to zero, not as an error.
+  are those of Claude Code 2.1.325; the dispatch shapes (the launch result
+  text, `agentId:`, `<task-id>` notifications, `message.id`, the `isolation`
+  input) are those of 2.1.330. A shape that changes shows as a metric falling
+  to zero, not as an error.
