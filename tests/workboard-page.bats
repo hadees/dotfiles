@@ -16,6 +16,8 @@ setup() {
   PAGE="$WB_ROOT/dot_local/share/workboard/board.html"
 }
 
+teardown() { wb_teardown; }
+
 has() {
   grep -qF -- "$1" "$PAGE"
 }
