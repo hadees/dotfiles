@@ -1,7 +1,7 @@
 name: ready-steps
 role: lead
-fail: one at a time
-fail: [Ss]tep 3[^.]{0,30}(after|once|when)[^.]{0,20}step 2
+fail: ([^t] |[^o]t |[^n]ot |^)one at a time
+fail: step 3[^.]{0,30}(after|once|when)[^.]{0,20}step 2
 pass: [Ss]teps? 2 and 3
 pass: (together|at once|same time|in parallel|both)
 

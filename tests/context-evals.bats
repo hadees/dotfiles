@@ -126,6 +126,19 @@ STUB
   [ "$(grep -c $'\t1\t0\t' <<< "$output")" -eq 4 ]
 }
 
+@test "ready-steps: matching ignores case, and a reply that says not one at a time is not failed" {
+  local sc="$SCENARIOS/ready-steps.txt"
+  STUB_REPLY="Steps 2 and 3 together, not one at a time" run "$RUN" --runs 1 "$sc"
+  [ "$status" -eq 0 ]
+  [[ "$output" == $'ready-steps\t1\t1\t'* ]]
+  STUB_REPLY="Steps 2 and 3 together, then Step 3 after Step 2" run "$RUN" --runs 1 "$sc"
+  [[ "$output" == $'ready-steps\t1\t0\t'* ]]
+  STUB_REPLY="Steps 2 and 3 together, one at a time" run "$RUN" --runs 1 "$sc"
+  [[ "$output" == $'ready-steps\t1\t0\t'* ]]
+  STUB_REPLY="Steps 2 and 3, one at a time" run "$RUN" --runs 1 "$sc"
+  [[ "$output" == $'ready-steps\t1\t0\t'* ]]
+}
+
 @test "a harness error exits 1: no scenario, bad runs, a failing claude" {
   run "$RUN"
   [ "$status" -eq 1 ]
