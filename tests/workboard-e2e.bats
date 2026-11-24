@@ -390,7 +390,9 @@ PY
   tool="$(bget 'd["text"]')"
   [[ "$tool" =~ ^[0-9a-f]{32}$ ]]
   [ "$tool" != "$TOK" ]
-  run ps -axo args=
+  run ps -A -o args=
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"board.py serve"* ]]   # the snapshot holds the server, so the next line tests something
   [[ "$output" != *"$TOK"* && "$output" != *"$tool"* && "$output" != *"$nonce"* ]]
   "$WB" stop >/dev/null
   run grep -rlF -e "$TOK" -e "$tool" -e "$nonce" "$HOME" "$STATE" "$WORKBOARD_RUNTIME"

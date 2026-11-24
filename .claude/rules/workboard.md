@@ -215,7 +215,7 @@ script and style, `connect-src 'self'`), its marker `<!--workboard:token-->` in
 spent or late link is 403, a page file without the marker 500. The page moves
 the token into `sessionStorage`, rewrites its address to `/b/` and sends
 `Authorization: Bearer` from then on, so argv and the browser's history keep
-only a spent nonce. A reload works; a new tab on `/b/` says "This page has no
+only a spent nonce (a browser may still save `sessionStorage` to disk). A reload works; a new tab on `/b/` says "This page has no
 key." `/api/bearer` needs `X-Workboard-Profile`. Closing the state directory to sessions is
 a `permissions.deny` row in each profile's `settings.json`, the overlays' own;
 not tested here.
