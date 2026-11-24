@@ -20,12 +20,9 @@ serves one HTML page (`dot_local/share/workboard/board.html`) on
 `127.0.0.1:47601`; `bin/executable_workboard` (POSIX `sh`) starts it. **The whole
 tool deploys on macOS only** (`.chezmoiignore`).
 
-**What exists today.** The model, the three readers, the page, the server and
-the entry script, tested alone against fixtures and together in
-`tests/workboard-e2e.bats`. **None of it has run
-against the live machine yet**: no live GitHub pass, no deploy, no look at the
-real board. The optional plug-in modules (below) do not exist, so there is no verb
-that writes, no MCP endpoint and no LaunchAgent, and `workboard list` is exit 2.
+**What exists today.** The read side, tested alone and together in
+`tests/workboard-e2e.bats`; nothing has run live yet. The plug-in modules
+(below) do not exist, so nothing writes and `workboard list` is exit 2.
 
 ## What a card is
 
@@ -199,7 +196,7 @@ profile's (`profile:<abs dir>`, that profile's repositories and who rows); a
 tool key (`mcp:<abs dir>`, a plug-in's gated routes as that profile); the ask
 proof (`ask:all`, sent as `X-Workboard-Ask`, makes `/api/url` full scope).
 
-**No token is ever in a URL, a command line, an environment variable, a log or
+**No page token or tool key is ever in a URL, argv, the environment, a log or
 `/status.json`.** A page token is in one `/enter` answer, the page's memory and
 tab storage, and an `Authorization` header; a tool key in one `/api/bearer`
 answer and an `Authorization` header. The tools' key, and the `connect` that
@@ -219,11 +216,11 @@ spent or late link is 403, a page file without the marker 500. The page moves
 the token into `sessionStorage`, rewrites its address to `/b/` and sends
 `Authorization: Bearer` from then on, so argv and the browser's history keep
 only a spent nonce. A reload works; a new tab on `/b/` says "This page has no
-key." `/api/bearer` needs the header. Closing the state directory to sessions is
+key." `/api/bearer` needs `X-Workboard-Profile`. Closing the state directory to sessions is
 a `permissions.deny` row in each profile's `settings.json`, the overlays' own;
 not tested here.
 
-**Under a page token.** `board.json` is the scoped board plus `rev` and `build`
+**Under a page token.** `board.json` is the scoped board plus `rev` and `build`.
 `go` (`pid=<digits>`) is relayed to the panel's `/go` only for a pid a row of
 that scope carries, else 404, and a silent panel is 502; `open` (`key=<card
 key>`) looks the url up itself, so the page supplies none.
@@ -235,7 +232,7 @@ and tab.
 **What the guard stops, and what it does not.** The socket's directory and the
 keys keep other users out. TCP answers 403 to a `Host` that is not
 `127.0.0.1:<port>` or `localhost:<port>` and to a present `Origin` that is not
-its own; every `POST` to `/api`, `/go` and `/open` needs `X-Workboard: 1` (a
+its own; every `POST` to `/api`, `/b/go` and `/b/open` needs `X-Workboard: 1` (a
 form on another page cannot set it); a body is capped at 65,536 bytes. **Between
 one user's profiles the guard is lexical.** Any process of that user can open
 the socket, so a session that puts another profile's directory in the header
