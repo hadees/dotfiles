@@ -1,7 +1,8 @@
 # The work board's MCP endpoint (step 9): POST /mcp speaks JSON-RPC 2.0 over
 # plain HTTP (no sessions, no streaming), and `workboard connect` / `disconnect`
-# register or remove the `board` server in each Claude profile. Standard
-# library only. The four tools call verbs.py; this file holds no board rule.
+# register or remove the `board` server in each Claude profile. The board gates
+# /mcp by a per-profile key (`Authorization: Bearer`), which `connect` stores in
+# that profile's own configuration and never prints. Standard library only. The four tools call verbs.py; this file holds no board rule.
 import json
 import os
 import shlex
@@ -12,7 +13,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 SERVER = "board"
-HEADER = "X-Workboard-Profile"
+AUTH = "Authorization"
+ADD_ARGV = ["mcp", "add-json", "--scope", "user", SERVER, "-"]
 VERSIONS = ("2025-03-26", "2025-06-18", "2025-11-25")
 CLAUDE_TIMEOUT = 30
 
@@ -181,32 +183,44 @@ def _entry(d):
     return entry if isinstance(entry, dict) else None
 
 
-def _connected(d):
+def _state(d, key):
+    """connected, stale (another value, or the old header form) or not."""
     entry = _entry(d)
-    return bool(entry) and (entry.get("headers") or {}).get(HEADER) == d
+    if not entry:
+        return "not"
+    return "connected" if (entry.get("headers") or {}).get(AUTH) == "Bearer " + key else "stale"
+
+
+def _entry_json(port, key):
+    return json.dumps({"type": "http", "url": "http://127.0.0.1:%d/mcp" % port,
+                       "headers": {AUTH: "Bearer " + key}})
+
+
+def _world_readable(d):
+    try:
+        return bool(os.stat(_config_of(d)).st_mode & 0o077)
+    except OSError:
+        return False
 
 
 def _claude():
     return os.environ.get("WORKBOARD_CLAUDE") or "claude"
 
 
-def _run_as(d, argv):
+def _run_as(d, argv, stdin=None):
     env = dict(os.environ)
     if _is_default(d):
         env.pop("CLAUDE_CONFIG_DIR", None)
     else:
         env["CLAUDE_CONFIG_DIR"] = d
     try:
-        subprocess.run([_claude()] + argv, env=env, stdin=subprocess.DEVNULL,
+        # The key travels on standard input, never in argv, where ps shows it to every user.
+        subprocess.run([_claude()] + argv, env=env, input=stdin and stdin.encode("utf-8"),
+                       stdin=None if stdin else subprocess.DEVNULL,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                        timeout=CLAUDE_TIMEOUT)
     except (OSError, subprocess.SubprocessError):
         pass
-
-
-def _add_argv(d, port):
-    return ["mcp", "add", "--scope", "user", "--transport", "http", SERVER,
-            "http://127.0.0.1:%d/mcp" % port, "-H", "%s: %s" % (HEADER, d)]
 
 
 def register(app):
@@ -218,7 +232,7 @@ def register(app):
             msg = json.loads(req.body.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
             return 400, {"Content-Type": "text/plain"}, b"not JSON\n"
-        status, out = handle(app.ctx, msg, req.header(HEADER), tally)
+        status, out = handle(app.ctx, msg, req.profile, tally)
         if out is None:
             return status, {}, b""
         return status, {"Content-Type": "application/json"}, json.dumps(out).encode("utf-8")
@@ -229,7 +243,8 @@ def register(app):
     def status():
         out = dict(tally)
         for label, d in sorted(app.ctx.profile_dirs().items()):
-            out[label] = "connected" if _connected(d) else "not"
+            code, key = app.ctx.ask("bearer", {}, profile=d)
+            out[label] = _state(d, key) if code == 0 else "not"
         return out
 
     def connect(argv):
@@ -241,18 +256,28 @@ def register(app):
             for _, d in profiles:
                 prefix = ("env -u CLAUDE_CONFIG_DIR " if _is_default(d)
                           else "CLAUDE_CONFIG_DIR=%s " % shlex.quote(d))
-                print(prefix + " ".join(shlex.quote(a) for a in [_claude()] + _add_argv(d, app.ctx.port)))
+                argv = " ".join(shlex.quote(a) for a in [_claude()] + ADD_ARGV)
+                print("printf %%s %s | %s%s" % (shlex.quote(_entry_json(app.ctx.port, "<key>")), prefix, argv))
             return 0
         if not shutil.which(_claude()):
             print("claude not found on PATH", file=sys.stderr)
             return 1
         bad = 0
         for label, d in profiles:
-            if _entry(d) is None:
-                _run_as(d, _add_argv(d, app.ctx.port))
-            ok = _connected(d)
+            code, key = app.ctx.ask("bearer", {}, profile=d)
+            if code != 0:
+                bad += 1
+                print("%s: not connected (the board is not running)" % label)
+                continue
+            state = _state(d, key)
+            if state == "stale":
+                _run_as(d, ["mcp", "remove", "--scope", "user", SERVER])
+            if state != "connected":
+                _run_as(d, ADD_ARGV, _entry_json(app.ctx.port, key))
+            ok = _state(d, key) == "connected"
             bad += not ok
-            print("%s: %s" % (label, "connected" if ok else "not connected"))
+            warn = " (its configuration is readable by other users)" if _world_readable(d) else ""
+            print("%s: %s%s" % (label, "connected" if ok else "not connected", warn))
         return 1 if bad else 0
 
     def disconnect(argv):

@@ -2,8 +2,11 @@
 
 # The work board's MCP endpoint (dot_local/libexec/workboard/mcp_endpoint.py),
 # alone: the registered handlers are called with small request objects, the
-# stub `verbs` answers "<name> ok", and `claude` is a stub script that writes
-# the configuration file the real one would. Names are fixtures (see CLAUDE.md).
+# stub `verbs` answers "<name> ok", the stub `ctx.ask` hands out
+# "fixture-key-<label>", and `claude` is a stub script that writes the
+# configuration file the real one would, logging its arguments and its standard
+# input apart (the key must be in the second and never in the first). Names are
+# fixtures (see CLAUDE.md).
 
 bats_require_minimum_version 1.5.0
 
@@ -27,36 +30,26 @@ write_prelude() {
   cat > "$BATS_TEST_TMPDIR/pre.py" <<'PY'
 import json, os
 import app, mcp_endpoint
-
-
-class Req:
-    def __init__(self, method="POST", path="/mcp", body=b"", headers=None):
-        self.method, self.path, self.body = method, path, body
-        self._h = {k.lower(): v for k, v in (headers or {}).items()}
-
-    def header(self, name):
-        return self._h.get(name.lower())
-
+from app import Req
 
 a = app.App()
 mcp_endpoint.register(a)
-routes = {(m, p): fn for m, p, fn in a.routes}
+routes = {(m, p): fn for m, p, fn, _ in a.routes}
 commands = dict(a.commands)
 PROFILE = os.path.expanduser("~/.claude-personal")
 
 
-def raw(body, method="POST", profile=PROFILE):
-    headers = {"X-Workboard-Profile": profile} if profile else {}
-    return routes[(method, "/mcp")](Req(method, "/mcp", body, headers))
+def raw(body, method="POST", profile=PROFILE, headers=None):
+    return routes[(method, "/mcp")](Req(method, "/mcp", body, headers, profile=profile))
 
 
-def rpc(method, params=None, id=1, profile=PROFILE):
+def rpc(method, params=None, id=1, profile=PROFILE, headers=None):
     msg = {"jsonrpc": "2.0", "method": method}
     if id is not None:
         msg["id"] = id
     if params is not None:
         msg["params"] = params
-    status, headers, body = raw(json.dumps(msg).encode(), profile=profile)
+    status, headers, body = raw(json.dumps(msg).encode(), profile=profile, headers=headers)
     return status, headers, (json.loads(body) if body else None)
 
 
@@ -77,12 +70,16 @@ setup() {
   write_expected
   write_prelude
   MODS="$(wb_modules mcp_endpoint)"
-  # A stub `claude`: logs "<CLAUDE_CONFIG_DIR or UNSET>|<args>" and, for `mcp
-  # add` / `mcp remove`, edits the configuration file the real one would write
-  # (STUB_NOHEADER=1 drops the header from the entry).
+  # A stub `claude`: logs "<CLAUDE_CONFIG_DIR or UNSET>|<args>" to claude.log
+  # and its standard input to claude.stdin, and for `mcp add-json` / `mcp
+  # remove` edits the configuration file the real one would write, mode 0600
+  # (STUB_NOHEADER=1 drops the headers from the entry).
   cat > "$BATS_TEST_TMPDIR/bin/claude-stub" <<'SH'
 #!/bin/sh
 echo "${CLAUDE_CONFIG_DIR-UNSET}|$*" >> "$BATS_TEST_TMPDIR/claude.log"
+STUB_IN="$(cat)"
+export STUB_IN
+if [ -n "$STUB_IN" ]; then printf '%s\n' "$STUB_IN" >> "$BATS_TEST_TMPDIR/claude.stdin"; fi
 if [ -n "${CLAUDE_CONFIG_DIR-}" ]; then cfg="$CLAUDE_CONFIG_DIR/.claude.json"; else cfg="$HOME/.claude.json"; fi
 python3 - "$cfg" "$@" <<'PY'
 import json, os, sys
@@ -92,24 +89,28 @@ try:
 except OSError:
     d = {}
 servers = d.setdefault("mcpServers", {})
-if args[:2] == ["mcp", "add"]:
-    name, url, header = args[args.index("http") + 1], args[args.index("http") + 2], args[-1]
-    entry = {"type": "http", "url": url}
-    if not os.environ.get("STUB_NOHEADER"):
-        k, v = header.split(": ", 1)
-        entry["headers"] = {k: v}
-    servers[name] = entry
+if args[:2] == ["mcp", "add-json"]:
+    entry = json.loads(os.environ["STUB_IN"])
+    if os.environ.get("STUB_NOHEADER"):
+        entry.pop("headers")
+    servers[args[args.index("-") - 1]] = entry
 elif args[:2] == ["mcp", "remove"]:
     servers.pop(args[-1], None)
 json.dump(d, open(cfg, "w"))
+os.chmod(cfg, 0o600)
 PY
 SH
   chmod +x "$BATS_TEST_TMPDIR/bin/claude-stub"
   export WORKBOARD_CLAUDE="$BATS_TEST_TMPDIR/bin/claude-stub"
 }
 
-@test "register: three routes, two commands, one status" {
+teardown() {
+  wb_teardown
+}
+
+@test "register: three routes, all gated, two commands, one status" {
   run drv "$MODS" <<'PY'
+assert [r[3] for r in a.routes] == [False, False, False], a.routes
 print(sorted(routes))
 print(sorted(commands))
 print([n for n, _ in a.statuses])
@@ -172,7 +173,7 @@ PY
   [ "$output" = ok ]
 }
 
-@test "tools/call: each verb answers its stub text, and the header's directory arrives as profile" {
+@test "tools/call: each verb answers its stub text, and the request's profile arrives as profile; the header is not read" {
   run drv "$MODS" <<'PY'
 import verbs
 seen = []
@@ -189,7 +190,7 @@ assert call("add", {"dir": "/wb/x", "title": "t", "body": "b", "take": True})["c
 assert call("move", {"dir": "/wb/x", "ref": "#1", "to": "done"})["content"][0]["text"] == "move ok"
 assert seen[1] == {"dir": "/wb/x", "ref": "#1", "force": True, "profile": PROFILE}, seen[1]
 seen.clear()
-call("list", {"dir": "/wb/x"}, profile=None)
+call("list", {"dir": "/wb/x"}, profile=None, headers={"X-Workboard-Profile": PROFILE})
 assert seen == [{"dir": "/wb/x", "profile": None}], seen
 print("ok")
 PY
@@ -260,7 +261,7 @@ PY
 @test "GET and DELETE are 405 with Allow: POST; a body that is not JSON is 400" {
   run drv "$MODS" <<'PY'
 for method in ("GET", "DELETE"):
-    status, headers, body = routes[(method, "/mcp")](Req(method))
+    status, headers, body = routes[(method, "/mcp")](Req(method, "/mcp"))
     assert status == 405 and headers["Allow"] == "POST", (method, status, headers)
 assert raw(b"not json")[0] == 400
 assert raw(b"\xff\xfe")[0] == 400
@@ -271,21 +272,29 @@ PY
   [ "$output" = ok ]
 }
 
-@test "status: requests, tool calls, and each profile label connected or not" {
+@test "status: requests, tool calls, and each profile label connected, stale or not" {
   run drv "$MODS" <<'PY'
 rpc("ping"); call("list", {"dir": "/wb/x"})
 s = dict(a.statuses)["mcp"]()
 assert s == {"requests": 2, "tool_calls": 1, "default": "not", "personal": "not"}, s
+commands["connect"]([])
+s = dict(a.statuses)["mcp"]()
+assert s["default"] == s["personal"] == "connected", s
+write = lambda d, h: open(d + "/.claude.json", "w").write(json.dumps({"mcpServers": {"board": {"headers": h}}}))
+write(os.path.expanduser("~/.claude-personal"), {"Authorization": "Bearer other"})
+os.remove(os.path.expanduser("~/.claude.json"))
+s = dict(a.statuses)["mcp"]()
+assert (s["default"], s["personal"]) == ("not", "stale"), s
 print("ok")
 PY
   [ "$status" -eq 0 ]
-  [ "$output" = ok ]
+  [ "${lines[-1]}" = ok ]
 }
 
-@test "connect: mcp add once per profile with that directory in the header, CLAUDE_CONFIG_DIR unset for the default; a second connect adds nothing" {
+@test "connect: asks bearer once per profile, runs mcp add-json on stdin once per profile, key not in argv, CLAUDE_CONFIG_DIR unset for the default; a second connect adds nothing" {
   run drv "$MODS" <<'PY'
-import sys
 assert commands["connect"]([]) == 0
+assert a.ctx.asks == [("bearer", {}, os.path.expanduser("~/.claude")), ("bearer", {}, PROFILE)], a.ctx.asks
 assert commands["connect"]([]) == 0
 s = dict(a.statuses)["mcp"]()
 assert s["default"] == s["personal"] == "connected", s
@@ -293,8 +302,14 @@ PY
   [ "$status" -eq 0 ]
   [ "$output" = "$(printf 'default: connected\npersonal: connected\ndefault: connected\npersonal: connected')" ]
   [ "$(wc -l < "$BATS_TEST_TMPDIR/claude.log" | tr -d ' ')" = 2 ]
-  grep -qxF "UNSET|mcp add --scope user --transport http board http://127.0.0.1:47601/mcp -H X-Workboard-Profile: $HOME/.claude" "$BATS_TEST_TMPDIR/claude.log"
-  grep -qxF "$HOME/.claude-personal|mcp add --scope user --transport http board http://127.0.0.1:47601/mcp -H X-Workboard-Profile: $HOME/.claude-personal" "$BATS_TEST_TMPDIR/claude.log"
+  grep -qxF "UNSET|mcp add-json --scope user board -" "$BATS_TEST_TMPDIR/claude.log"
+  grep -qxF "$HOME/.claude-personal|mcp add-json --scope user board -" "$BATS_TEST_TMPDIR/claude.log"
+  # the key is on standard input, never in an argument
+  ! grep -q 'fixture-key' "$BATS_TEST_TMPDIR/claude.log"
+  ! grep -q 'Bearer' "$BATS_TEST_TMPDIR/claude.log"
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/claude.stdin" | tr -d ' ')" = 2 ]
+  grep -qxF '{"type": "http", "url": "http://127.0.0.1:47601/mcp", "headers": {"Authorization": "Bearer fixture-key-default"}}' "$BATS_TEST_TMPDIR/claude.stdin"
+  grep -qxF '{"type": "http", "url": "http://127.0.0.1:47601/mcp", "headers": {"Authorization": "Bearer fixture-key-personal"}}' "$BATS_TEST_TMPDIR/claude.stdin"
   [ -f "$HOME/.claude.json" ]
   [ -f "$HOME/.claude-personal/.claude.json" ]
   [ ! -e "$HOME/.claude/.claude.json" ]
@@ -309,20 +324,71 @@ PY
   [ "${lines[0]}" = "default: not connected" ]
   [ "${lines[1]}" = "personal: not connected" ]
   [ "${lines[2]}" = 1 ]
+  ! grep -q 'fixture-key' <<<"$output"
 }
 
-@test "connect --print runs nothing and prints one line per profile; a stray argument is usage" {
+@test "connect: an entry with the old header form or another key is stale and is removed and added again" {
+  printf '%s' '{"mcpServers": {"board": {"type": "http", "url": "u", "headers": {"X-Workboard-Profile": "/old"}}}}' > "$HOME/.claude.json"
+  printf '%s' '{"mcpServers": {"board": {"type": "http", "url": "u", "headers": {"Authorization": "Bearer other-key"}}}}' > "$HOME/.claude-personal/.claude.json"
+  run drv "$MODS" <<'PY'
+print(dict(a.statuses)["mcp"]())
+assert commands["connect"]([]) == 0
+print(dict(a.statuses)["mcp"]())
+PY
+  [ "$status" -eq 0 ]
+  [[ "${lines[0]}" == *"'default': 'stale'"*"'personal': 'stale'"* ]]
+  [ "${lines[1]}" = "default: connected" ]
+  [ "${lines[2]}" = "personal: connected" ]
+  [[ "${lines[3]}" == *"'default': 'connected'"*"'personal': 'connected'"* ]]
+  [ "$(grep -c 'mcp remove --scope user board' "$BATS_TEST_TMPDIR/claude.log")" = 2 ]
+  [ "$(grep -c 'mcp add-json --scope user board -' "$BATS_TEST_TMPDIR/claude.log")" = 2 ]
+  ! grep -q 'fixture-key' "$BATS_TEST_TMPDIR/claude.log"
+}
+
+@test "connect: with the board not running each line says so and claude is not run" {
+  run drv "$MODS" <<'PY'
+a.ctx.ask = lambda name, body, profile=None: (3, "workboard: not running")
+print(commands["connect"]([]))
+PY
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "default: not connected (the board is not running)" ]
+  [ "${lines[1]}" = "personal: not connected (the board is not running)" ]
+  [ "${lines[2]}" = 1 ]
+  [ ! -e "$BATS_TEST_TMPDIR/claude.log" ]
+}
+
+@test "connect: a configuration file readable by other users adds a warning to its line" {
+  printf '%s' '{}' > "$HOME/.claude-personal/.claude.json"
+  chmod 0644 "$HOME/.claude-personal/.claude.json"
+  run drv "$MODS" <<'PY'
+import stat
+orig = mcp_endpoint._run_as
+def loose(d, argv, stdin=None):
+    orig(d, argv, stdin)
+    os.chmod(mcp_endpoint._config_of(d), 0o644)
+mcp_endpoint._run_as = loose
+assert commands["connect"]([]) == 0
+PY
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "default: connected (its configuration is readable by other users)" ]
+  [ "${lines[1]}" = "personal: connected (its configuration is readable by other users)" ]
+  ! grep -q 'fixture-key' <<<"$output"
+}
+
+@test "connect --print runs nothing, asks nothing, holds <key> and no key; a stray argument is usage" {
   run --separate-stderr drv "$MODS" <<'PY'
 print(commands["connect"](["--print"]))
 print(commands["connect"](["--nope"]))
+assert a.ctx.asks == []
 PY
   [ "$status" -eq 0 ]
   [ "${#lines[@]}" -eq 4 ]
-  [ "${lines[0]}" = "env -u CLAUDE_CONFIG_DIR $WORKBOARD_CLAUDE mcp add --scope user --transport http board http://127.0.0.1:47601/mcp -H 'X-Workboard-Profile: $HOME/.claude'" ]
-  [[ "${lines[1]}" == "CLAUDE_CONFIG_DIR=$HOME/.claude-personal "*"-H 'X-Workboard-Profile: $HOME/.claude-personal'" ]]
+  [[ "${lines[0]}" == "printf %s '"*'"Authorization": "Bearer <key>"'*"' | env -u CLAUDE_CONFIG_DIR $WORKBOARD_CLAUDE mcp add-json --scope user board -" ]]
+  [[ "${lines[1]}" == "printf %s '"*"Bearer <key>"*"' | CLAUDE_CONFIG_DIR=$HOME/.claude-personal $WORKBOARD_CLAUDE mcp add-json --scope user board -" ]]
   [ "${lines[2]}" = 0 ]
   [ "${lines[3]}" = 2 ]
   [[ "$stderr" == *usage* ]]
+  [[ "$output" != *fixture-key* ]]
   [ ! -e "$BATS_TEST_TMPDIR/claude.log" ]
 }
 
@@ -354,6 +420,8 @@ PY
   [ "${lines[7]}" = "personal: not connected" ]
   grep -qxF "UNSET|mcp remove --scope user board" "$BATS_TEST_TMPDIR/claude.log"
   [ "$(grep -c 'mcp remove' "$BATS_TEST_TMPDIR/claude.log")" = 2 ]
+  ! grep -q 'fixture-key' "$BATS_TEST_TMPDIR/claude.log"
+  [[ "$output" != *fixture-key* ]]
 }
 
 @test "the file parses under python 3.9 and leaves no __pycache__" {
