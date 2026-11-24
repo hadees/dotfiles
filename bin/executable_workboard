@@ -1,0 +1,151 @@
+#!/bin/sh
+# workboard — a board of GitHub issues and pull requests with the sessions on the cards.
+#
+#   workboard serve [--port <n>] [--fixture <dir>]   the server, in the foreground
+#   workboard start | stop | restart                 the server, detached (or the launchd agent)
+#   workboard open [--group <g>|--repo <r>] [--fixture <dir>]   the board in iTerm2's browser (macOS)
+#   workboard url [--group <g>|--repo <r>]           the board's address
+#   workboard status                                 counts, ages and fixed words
+#   workboard <verb> ...                             a verb a plug-in registered
+#
+# Everything past the five verbs this script owns is `board.py cli <verb> ...`,
+# the one Python file beside its parts (standard library only, run with -I -B:
+# -I leaves its directory off sys.path, -B keeps a __pycache__ out of a
+# directory chezmoi deploys from the working tree). The design is the
+# `.claude/rules/workboard.md` rule's.
+#
+# No account, organisation or repository name belongs in this file: the port and
+# the panel's address are git config, `workboard.*`.
+
+LIBEXEC="${WORKBOARD_LIBEXEC:-$HOME/.local/libexec/workboard}"
+BOARD="$LIBEXEC/board.py"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/workboard"
+LAUNCHCTL="${WORKBOARD_LAUNCHCTL:-launchctl}"
+LABEL="local.workboard"
+
+if [ -n "${WORKBOARD_PYTHON-}" ]; then PY="$WORKBOARD_PYTHON"
+elif [ -x /usr/bin/python3 ]; then PY=/usr/bin/python3
+else PY=python3; fi
+
+case "$0" in /*) SELF="$0" ;; *) SELF="$PWD/$0" ;; esac
+
+die() { printf 'workboard: %s\n' "$*" >&2; exit "${2:-1}"; }
+
+digits() { case "$1" in '' | *[!0-9]*) return 1 ;; esac; }
+
+PORT="$(git config --get workboard.port 2>/dev/null)"
+digits "$PORT" || PORT=47601
+PANEL="$(git config --get workboard.panel-url 2>/dev/null)"
+if [ -z "$PANEL" ]; then
+  p="$(git config --get claude-tab.panel-port 2>/dev/null)"
+  digits "$p" || p=47600
+  PANEL="http://127.0.0.1:$p"
+fi
+
+pyboard() { "$PY" -I -B "$BOARD" "$@"; }
+
+# The server's pid when /health answers on $1 (default the port), else nothing.
+alive() { pyboard ping "${1:-$PORT}" 2>/dev/null; }
+
+loaded() { "$LAUNCHCTL" print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; }
+
+# bootout returns before launchd has torn the job down (ported from postbox).
+launchd_wait_gone() {
+  i=0
+  while loaded && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+  return 0
+}
+
+# start_detached [serve args...]: the server in a session of its own, its
+# output appended to <state>/log, then /health, then <pid> <port> in <state>/pid.
+start_detached() {
+  mkdir -p "$STATE" && chmod 700 "$STATE" || die "cannot make $STATE"
+  if [ -f "$STATE/log" ] && [ "$(wc -c <"$STATE/log")" -gt 262144 ]; then mv -f "$STATE/log" "$STATE/log.prev"; fi
+  WORKBOARD_ENTRY="$SELF" WORKBOARD_PORT="$PORT" \
+    pyboard detach "$STATE/log" "$PY" -I -B "$BOARD" serve --port "$PORT" --panel-url "$PANEL" "$@"
+  i=0
+  while [ $i -lt 50 ]; do
+    pid="$(alive)" && break
+    sleep 0.1; i=$((i + 1))
+  done
+  [ -n "${pid-}" ] || die "did not answer within five seconds; see $STATE/log"
+  printf '%s %s\n' "$pid" "$PORT" >"$STATE/pid"
+  printf 'workboard: started on http://127.0.0.1:%s/\n' "$PORT"
+}
+
+cmd_start() {
+  if loaded; then "$LAUNCHCTL" kickstart "gui/$(id -u)/$LABEL"; exit $?; fi
+  [ -z "$(alive)" ] || exit 0
+  start_detached
+}
+
+cmd_stop() {
+  if loaded; then
+    "$LAUNCHCTL" bootout "gui/$(id -u)/$LABEL"; rc=$?
+    launchd_wait_gone
+    exit $rc
+  fi
+  pid="$(cut -d' ' -f1 "$STATE/pid" 2>/dev/null)"
+  if digits "$pid" && ps -p "$pid" -o command= 2>/dev/null | grep -q 'board\.py'; then
+    kill -TERM "$pid"
+    i=0
+    while [ $i -lt 50 ] && [ -n "$(alive)" ]; do sleep 0.1; i=$((i + 1)); done
+    rm -f "$STATE/pid"
+    printf 'workboard: stopped\n'
+    exit 0
+  fi
+  rm -f "$STATE/pid"
+  die "not running" 3
+}
+
+cmd_restart() {
+  if loaded; then "$LAUNCHCTL" kickstart -k "gui/$(id -u)/$LABEL"; exit $?; fi
+  ( cmd_stop ) >/dev/null 2>&1
+  cmd_start
+}
+
+cmd_serve() {
+  port="$PORT"; fixture=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --port) [ $# -ge 2 ] || die "--port wants a number" 2; port="$2"; shift 2 ;;
+      --fixture) [ $# -ge 2 ] || die "--fixture wants a directory" 2; fixture="$2"; shift 2 ;;
+      *) die "usage: workboard serve [--port <n>] [--fixture <dir>]" 2 ;;
+    esac
+  done
+  digits "$port" || die "--port wants a number" 2
+  export WORKBOARD_ENTRY="$SELF" WORKBOARD_PORT="$port"
+  if [ -n "$fixture" ]; then
+    exec "$PY" -I -B "$BOARD" serve --port "$port" --panel-url "$PANEL" --fixture "$fixture"
+  fi
+  exec "$PY" -I -B "$BOARD" serve --port "$port" --panel-url "$PANEL"
+}
+
+cmd_open() {
+  [ "$(uname -s)" = Darwin ] || die "open is macOS-only" 2
+  fixture=""; sel=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --fixture) [ $# -ge 2 ] || die "--fixture wants a directory" 2; fixture="$2"; shift 2 ;;
+      --group | --repo) [ $# -ge 2 ] || die "$1 wants a name" 2; sel="$1 $2"; shift 2 ;;
+      *) die "usage: workboard open [--group <g>|--repo <r>] [--fixture <dir>]" 2 ;;
+    esac
+  done
+  if [ -z "$(alive)" ] && ! loaded; then
+    if [ -n "$fixture" ]; then start_detached --fixture "$fixture" >/dev/null; else start_detached >/dev/null; fi
+  fi
+  # shellcheck disable=SC2086  # $sel is "--group <g>" or "--repo <r>", split on purpose
+  url="$(WORKBOARD_PORT="$PORT" pyboard cli url $sel)" || exit $?
+  exec "${WORKBOARD_OPEN_AS:-$HOME/bin/open-as}" iterm2 "$url"
+}
+
+verb="${1:-}"
+[ $# -eq 0 ] || shift
+case "$verb" in
+  serve) cmd_serve "$@" ;;
+  start) cmd_start ;;
+  stop) cmd_stop ;;
+  restart) cmd_restart ;;
+  open) cmd_open "$@" ;;
+  *) WORKBOARD_PORT="$PORT" exec "$PY" -I -B "$BOARD" cli ${verb:+"$verb"} "$@" ;;
+esac
