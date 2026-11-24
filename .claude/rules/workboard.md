@@ -17,7 +17,8 @@ is computed from what GitHub, git, the claim files and the panel already say.
 One standard-library python process
 (`dot_local/libexec/workboard/board.py`, run as `python3 -I -B`, clean on 3.9)
 serves one HTML page (`dot_local/share/workboard/board.html`) on
-`127.0.0.1:47601`; `bin/executable_workboard` (POSIX `sh`) starts it.
+`127.0.0.1:47601`; `bin/executable_workboard` (POSIX `sh`) starts it. **The whole
+tool deploys on macOS only** (`.chezmoiignore`).
 
 **What exists today.** The model, the three readers, the page, the server and
 the entry script, tested alone against fixtures and together in
@@ -128,9 +129,9 @@ the default branch and the issues its `intake` selects (`mine` is two lists,
 assigned and created, `all` and `label:<name>` one, `none` none);
 `github.build_query` has the field lists. Owner, name and label reach it only as
 JSON string literals. Over 50 open pull requests puts `more than 50 open pull
-requests; some are not shown` on the account. One measurement made before the
-code existed put the account part plus one repository at 2 points; the cost over
-the real repository list has not been recorded.
+requests; some are not shown` on the account. The cost over the real
+repository list has not been recorded (one repository plus the account part
+measured 2 points).
 
 **The budget rule.** `next_interval(cost, remaining, budget)` is `max(60,
 ceil(3600 * cost / budget))` seconds, doubled under 1,000 points remaining and
@@ -141,8 +142,7 @@ an hour after its last fetch.
 **A failed account keeps its prior data.** No token, a failed or slow (20 s)
 request or a skip leaves the account's issues and pull requests as they were,
 with `error` on the account and its repositories, so one timeout does not blank
-the cards. Failure words are fixed (`no token for <account>`, `authentication
-failed`, `request timed out`, `rate budget low`, ...); gh's stderr never
+the cards. Failure words are fixed; gh's stderr never
 reaches a document. `gh api graphql` prints the body and exits non-zero when
 the response carries `errors`, so any body with `data` is used.
 
@@ -177,40 +177,70 @@ over several pin shapes and fails, not skips, where zsh exists.
 
 ## The page and its guard
 
-**Tokens.** `<state>/secret` is made on first start. The full token is the
-first 32 hex digits of HMAC-SHA256 of `all` under it; a profile's is the same
-of `profile:<absolute profile directory>`, for each directory of
-`who.profile_dirs()`; compared in constant time. The full token serves every
-repository; a profile's serves that profile's repositories and who rows.
+**Two listeners, one process.** Loopback TCP answers every user of the machine,
+so the token-less endpoints are on a Unix socket,
+`<runtime>/workboard/<port>.sock` (mode 0600, in a 0700 directory), whose file
+permissions are the check. `<runtime>` is `$WORKBOARD_RUNTIME`, else
+`os.confstr(65537)`, else `$XDG_RUNTIME_DIR`, else `/tmp/workboard-<uid>`. It is
+not `$TMPDIR`, which a session may repoint, nor the state directory, which
+sessions may be denied and whose socket their own CLI could then not open.
+Before binding, the server checks that the directory is a real one, its own and
+closed to group and other; a bad one, a path over 100 bytes or a live socket
+(`already running`) is one line and exit 1.
 
-**Endpoints.** `GET /health`; `GET /status.json` (no token; counts, ages and
-fixed words); `GET /b/<token>/` (the page file, under a CSP of `default-src
-'none'` with inline script and style and `connect-src 'self'`); `GET
-/b/<token>/board.json` (the scoped board plus `rev` and `build`, `ETag` of the
-rev); `POST /b/<token>/go` (`pid=<digits>`, relayed to the panel's `/go`, only
-for a pid a row of that scope carries, else 404; a silent panel is 502); `POST
-/b/<token>/open` (`key=<card key>`: the server looks the url up, so the page
-never supplies one); `POST /api/url`; and `POST /api/<name>` and every plug-in
-route. A wrong token is 403 and counted; anything else is 404.
+| Listener | Serves |
+| --- | --- |
+| TCP `127.0.0.1:<port>` | `GET /health` (`{"ok": true}`); `GET /enter/<nonce>`; `GET /b/` (page, no key); `GET /b/board.json`, `POST /b/go`, `POST /b/open` (a page token); plug-in routes (a tool key unless `open`); else 404, `/status.json` and `/api/*` included. A failed gate is 403 |
+| The socket | `GET /health`, `GET /status.json`, `POST /api/<name>`; the only place `X-Workboard-Profile` is read |
 
-**`workboard url` and `/api/url`.** With `CLAUDECODE` unset the command derives
-the full token from the secret. Inside a Claude session it opens nothing in the
-state directory: it posts `/api/url` with `X-Workboard-Profile`
-(`CLAUDE_CONFIG_DIR`, else `~/.claude`) and the server answers the URL bound to
-that profile (code 2 for a header naming no profile directory). **The full
-token is never an answer to an HTTP request.** Closing the state directory to a
-session is a deny row in the profiles' settings (the overlays).
+**Tokens**, the first 32 hex digits of HMAC-SHA256 under `<state>/secret`,
+compared in constant time: the full page token (`all`, every repository); a
+profile's (`profile:<abs dir>`, that profile's repositories and who rows); a
+tool key (`mcp:<abs dir>`, a plug-in's gated routes as that profile); the ask
+proof (`ask:all`, sent as `X-Workboard-Ask`, makes `/api/url` full scope).
 
-**What the guard stops, and what it does not.** It binds `127.0.0.1` only;
-answers 403 to a `Host` that is not `127.0.0.1:<port>` or `localhost:<port>`
-(a rebinding page) and to a present `Origin` that is not its own; requires
-`X-Workboard: 1` on every `POST` to `/api`, `/go` and `/open` (a form on
-another page cannot set it); and caps a body at 65,536 bytes. **It does not
-stop** a session that puts another profile's directory in
-`X-Workboard-Profile`: the server trusts the header and returns that profile's
-URL. Nor does it stop any process of the operator's user reading `/status.json`
-or the state directory; the one process that holds every account's titles runs
-as the operator. A lexical guard, not a sandbox, the strength of `denyguard`.
+**No token is ever in a URL, a command line, an environment variable, a log or
+`/status.json`.** A page token is in one `/enter` answer, the page's memory and
+tab storage, and an `Authorization` header; a tool key in one `/api/bearer`
+answer and an `Authorization` header. The tools' key, and the `connect` that
+stores it, arrive with the write PR.
+
+**The link: `workboard url` and `/api/url`.** `POST /api/url` (body `{"group"?,
+"repo"?}`) answers `http://127.0.0.1:<port>/enter/<nonce>`, with `#g=<group>` or
+`#r=<repo>` appended. A nonce is single-use, held in memory with its scope for
+60 s, 64 at most. Scope is the full one for a valid `X-Workboard-Ask`, else the
+profile `X-Workboard-Profile` names, else code 2. With `CLAUDECODE` unset,
+`workboard url` sends the proof, read from the secret; inside a session it opens
+nothing in the state directory and sends the profile header. `/enter` answers a
+live nonce once with the page file, under its CSP (`default-src 'none'`, inline
+script and style, `connect-src 'self'`), its marker `<!--workboard:token-->` in
+`<head>` replaced by `<meta name="workboard-token" content="<page token>">`; a
+spent or late link is 403, a page file without the marker 500. The page moves
+the token into `sessionStorage`, rewrites its address to `/b/` and sends
+`Authorization: Bearer` from then on, so argv and the browser's history keep
+only a spent nonce. A reload works; a new tab on `/b/` says "This page has no
+key." `/api/bearer` needs the header. Closing the state directory to sessions is
+a `permissions.deny` row in each profile's `settings.json`, the overlays' own;
+not tested here.
+
+**Under a page token.** `board.json` is the scoped board plus `rev` and `build`
+`go` (`pid=<digits>`) is relayed to the panel's `/go` only for a pid a row of
+that scope carries, else 404, and a silent panel is 502; `open` (`key=<card
+key>`) looks the url up itself, so the page supplies none.
+
+**Why not a cookie.** One for `127.0.0.1` goes to every port there, where
+another user may listen; `sessionStorage` is scoped to origin (port included)
+and tab.
+
+**What the guard stops, and what it does not.** The socket's directory and the
+keys keep other users out. TCP answers 403 to a `Host` that is not
+`127.0.0.1:<port>` or `localhost:<port>` and to a present `Origin` that is not
+its own; every `POST` to `/api`, `/go` and `/open` needs `X-Workboard: 1` (a
+form on another page cannot set it); a body is capped at 65,536 bytes. **Between
+one user's profiles the guard is lexical.** Any process of that user can open
+the socket, so a session that puts another profile's directory in the header
+gets that profile's link and tool key, and can read `/status.json` (counts,
+ages, the pinned account names). Not a sandbox: the strength of `denyguard`.
 
 **The page.** One file, no external resource. Text reaches the DOM only through
 `textContent`; a test greps for `innerHTML` and its kin. Five columns (Needs
@@ -236,7 +266,7 @@ config `workboard.port`, else 47601; the panel is `workboard.panel-url`, else
 `claude-tab.panel-port` on loopback. With `local.workboard`
 loaded, `start` is `launchctl kickstart`, `restart` is `kickstart -k` and `stop`
 is `bootout` (because `KeepAlive` undoes a kill); otherwise `start` detaches a server of its own and
-`stop` signals the pid in `<state>/pid`. `open` is macOS-only and ends in `open-as iterm2 <url>`.
+`stop` signals the pid in `<state>/pid`. `open` ends in `open-as iterm2 <url>`.
 
 **The plug-in interface.** `board.py`, in the server and the client alike,
 imports `model github local who inbox` by name and tries `verbs`,
@@ -247,8 +277,11 @@ registered reaches the app**: `register` gets a staging copy committed only if
 it returns. `app` offers `api(name, fn)` (`POST /api/<name>`, `fn(ctx,
 profile=..., **body)` returning `(code, text)`), `cli(name, parse)` (a client
 verb posting that body; no server is exit 3), `command(name, fn)` (a client verb
-run in the client), `route(method, path, fn)`, `after_github(fn)`, `status(name,
-fn)` (numbers and fixed words, merged into `/status.json`) and `ctx`. A later part is a
+run in the client), `route(method, path, fn, open=False)` (gated by a tool key unless `open`;
+`req.profile` is its profile, none when open), `after_github(fn)`, `status(name,
+fn)` (numbers and fixed words, merged into `/status.json`) and `ctx`, whose
+`ask(name, body, profile=None)` posts `/api/<name>` on the socket, returning
+`(code, text)`. A later part is a
 new file.
 
 ## Counts by hand, and fixture mode
@@ -257,7 +290,7 @@ new file.
 <file>` makes one live pass and prints a line per account; `local.py`, `who.py`
 and `inbox.py` print one line; `workboard status` reads `/status.json` and
 prints counts, ages and fixed words (`needs: <n> (panel: <n>)` among them), with
-no title, label or repository name. **`--fixture <dir>` is the only way to a
+no title, label or repository name (it does print the pinned account names). **`--fixture <dir>` is the only way to a
 document**: the reader checks and prints `<dir>/<its document>.json` and reads
 nothing live. `model.py` has no live source.
 
@@ -297,8 +330,6 @@ test file ends with `wb_no_pycache`.
   paths and the registry's `cwd` values have stopped agreeing (a symlink, a
   moved checkout); the join is by path component.
 - **`needs` differing from the panel's count.** `workboard status` prints both;
-  they are equal by construction (`needs` is the who rows with `needs` set, and
-  `in_needs` is true exactly when a `needs` entry names the card), so a
-  difference is a model or who bug.
+  they are equal by construction so a difference is a model or who bug.
 - **`plugin_errors` above 0.** A plug-in raised on import or in `register`; the
   log line names it and the exception's class.
