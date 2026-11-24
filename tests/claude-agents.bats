@@ -279,7 +279,7 @@ shared_templates() {
 # moved into a shared fragment (sha256 of everything after the frontmatter).
 # plan-gpt's one permitted difference is the marked block below, so a change to
 # the shared body that is meant to reach both seats means updating this pin.
-FABLE_BODY_SHA256=bb0aff2b9b1884606fd054270673c240c98bab242ca94d7f9942590941fede58
+FABLE_BODY_SHA256=f2f65bed29c5b92de43322b66142b71472f7889f72319b1a720e7a60197d6db9
 GPT_BLOCK_START='<!-- gpt-assumptions:start -->'
 GPT_BLOCK_END='<!-- gpt-assumptions:end -->'
 

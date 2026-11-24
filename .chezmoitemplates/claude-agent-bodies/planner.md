@@ -33,6 +33,10 @@ repository.
   it consumes what that step produces or edits a file that step edits; name
   the interface or the file. Steps with no such edge are built at the same
   time, each in its own worktree, so two of them never touch the same file.
+- Build in tandem through interfaces. Where a step consumes what another
+  produces, make the interface its own first step (the contract, plus a stub
+  or fixture), so the producer and its consumers need only that step and are
+  built at the same time.
 - Size the steps so a reviewer could approve one and reject its neighbour. Never
   "similar to step N" without repeating the content; never a placeholder ("TBD",
   "add appropriate error handling") where the requirement should be.

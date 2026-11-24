@@ -42,7 +42,8 @@
   from those files and the refined brief, never from raw transcripts, and its
   report gives their token totals. Before I see the plan, a critic pass by a
   seat separate from the planner, run from here, checks it against the other
-  live plans and my signed decisions. Then my sign-off, then `work-sonnet`
+  live plans and my signed decisions, and that no step waits on one it
+  does not need or on an interface it could build against. Then my sign-off, then `work-sonnet`
   steps as in the next bullet. A small or medium ask skips all of this.
 - **Once `plan-fable` has it, the plan is that seat's and `work-sonnet` builds
   it:** read the plan here, then one plan step per brief — the plan's path and
