@@ -1,5 +1,5 @@
 # Sourced by every work-board test file (`load helpers/workboard`); each calls
-# wb_setup in its setup and wb_no_pycache last.
+# wb_setup in its setup, wb_teardown in its teardown and wb_no_pycache last.
 #
 # wb_demo and wb_modules export a variable AND print a path: call them plainly
 # (`wb_demo >/dev/null`), not inside $( ), or the export is lost with the
@@ -43,6 +43,16 @@ wb_setup() {
   mkdir -p "$WB_APPDIR"
   ln -sf "$WB_STUBS/app.py" "$WB_APPDIR/app.py"
   export WB_SRC WB_STUBS WB_PY WB_APPDIR
+  # The server's Unix socket lives here. Not under BATS_TEST_TMPDIR: that path
+  # is too long for a socket (sun_path is 104 bytes on macOS).
+  WORKBOARD_RUNTIME="$(mktemp -d /tmp/wb.XXXXXX)" || return 1
+  export WORKBOARD_RUNTIME
+}
+
+# wb_teardown: removes the runtime directory wb_setup made. Call it from
+# `teardown`, which bats runs after a failed test too.
+wb_teardown() {
+  if [ -n "${WORKBOARD_RUNTIME-}" ]; then rm -rf "$WORKBOARD_RUNTIME"; fi
 }
 
 # wb_demo: a copy of the demo documents with /wb-fixture replaced by a new
