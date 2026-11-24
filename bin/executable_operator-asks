@@ -54,6 +54,7 @@ esac
 
 rc=0
 python3 -I - "$@" <<'PY' || rc=$?
+import calendar
 import glob
 import json
 import os
@@ -69,6 +70,7 @@ STATE = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".lo
 DENIALS = os.path.join(STATE, "denials.tsv")
 PROMPTS = os.path.join(STATE, "prompts.tsv")
 SHARED = "/.claude-shared/"
+CAP = 7200  # seconds a background dispatch with no notification is taken to run
 
 # Frozen, so weeks compare. The first is the subset counted as `elsewhere`.
 STEP_PATTERNS = [re.compile(p, re.I) for p in (
@@ -190,11 +192,14 @@ def _scan_files(paths, cut):
                 start = r["timestamp"]
         name = names.get("custom-title") or names.get("agent-name") or sid[:8]
         name = name.replace("\t", " ").replace("\n", " ")
-        if "-claude-worktrees-" in os.path.basename(os.path.dirname(path)) and start >= cut:
+        if start >= cut:
+            # The first permission-mode record: a peer's (worktree project) or a start's.
+            kind = "peer-mode" if "-claude-worktrees-" in os.path.basename(os.path.dirname(path)) else "start-mode"
             for r in records:
                 if r.get("type") == "permission-mode":
-                    yield "peer-mode:%s" % r.get("permissionMode"), name, start, ""
+                    yield "%s:%s" % (kind, r.get("permissionMode")), name, start, ""
                     break
+        yield from _dispatches(records, name, cut)
         seen = set()
         for r in records:
             ts = r.get("timestamp")
@@ -228,6 +233,92 @@ def _scan_files(paths, cut):
                             yield ("elsewhere" if hits[0] else "steps"), name, ts, text
 
 
+def epoch(ts):
+    try:
+        frac = float(ts[19:-1]) if ts[19:20] == "." else 0
+        return calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")) + frac
+    except (TypeError, ValueError):
+        return None
+
+
+def _text(x):
+    if isinstance(x, str):
+        return x
+    if isinstance(x, list):
+        return "\n".join(_text(c.get("text") if c.get("type") == "text" else c.get("content"))
+                         for c in x if isinstance(c, dict))
+    return ""
+
+
+def _writers(records):
+    # Every writer dispatch (an `Agent` call of a work- or unstick- seat) of the
+    # main conversation, in file order, with its start and end in epoch seconds.
+    # A foreground dispatch ends at its tool_result. A background one (the
+    # result says "Async agent launched" and gives an agentId) ends at the first
+    # later record that carries that id in a <task-id> tag; with none, at the
+    # start plus CAP or the transcript's last timestamp, whichever is earlier.
+    out, by_tool, by_agent, last = [], {}, {}, 0
+    for r in records:
+        t = epoch(r.get("timestamp"))
+        if r.get("isSidechain") or t is None:
+            continue
+        last = max(last, t)
+        msg = r.get("message")
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if r.get("type") == "assistant" and isinstance(content, list):
+            for c in content:
+                inp = c.get("input") if isinstance(c, dict) else None
+                if (isinstance(inp, dict) and c.get("type") == "tool_use" and c.get("name") == "Agent"
+                        and str(inp.get("subagent_type")).startswith(("work-", "unstick-"))):
+                    prompt = str(inp.get("prompt") or "")
+                    m = re.search(r"/claude-reports/[^/\s]+/(plan-[A-Za-z0-9-]+)\.md", prompt)
+                    out.append({"ts": r["timestamp"], "start": t, "end": None, "mid": msg.get("id"),
+                                "key": m.group(1) if m else None,
+                                "unisolated": inp.get("isolation") != "worktree" and ".claude/worktrees/" not in prompt,
+                                "desc": " ".join(str(inp.get("description") or "").split())})
+                    by_tool[c.get("id")] = out[-1]
+        elif r.get("type") == "user" and isinstance(content, list):
+            for c in content:
+                d = by_tool.get(c.get("tool_use_id")) if isinstance(c, dict) and c.get("type") == "tool_result" else None
+                if d is None or d["end"] is not None:
+                    continue
+                text = _text(c.get("content"))
+                m = re.search(r"agentId: (\S+)", text)
+                if "Async agent launched" not in text:
+                    d["end"] = t
+                elif m:
+                    by_agent[m.group(1)] = d
+        note = r.get("content") if r.get("type") == "queue-operation" and r.get("operation") == "enqueue" else (
+            _text(content) if r.get("type") == "user" else "")
+        for tid in re.findall(r"<task-id>([^<]*)</task-id>", note if isinstance(note, str) else ""):
+            d = by_agent.pop(tid, None)
+            if d is not None and d["end"] is None:
+                d["end"] = t
+    for d in out:
+        if d["end"] is None:
+            d["end"] = min(d["start"] + CAP, last)
+    return out
+
+
+def _dispatches(records, name, cut):
+    out = _writers(records)
+    for i, d in enumerate(out):
+        if d["ts"] < cut:
+            continue
+        # Others: running at D's start, or sent in the same assistant message.
+        others = [e for e in out if e is not d
+                  and (e["start"] < d["start"] < e["end"] or (d["mid"] is not None and e["mid"] == d["mid"]))]
+        yield ("dispatch:beside" if others else "dispatch:alone"), name, d["ts"], ""
+        if others and d["key"] and any(e["key"] == d["key"] for e in others):
+            yield "dispatch:same-plan", name, d["ts"], ""
+        if d["unisolated"]:
+            yield "dispatch:unisolated", name, d["ts"], ""
+        if sum(1 for e in out[:i] if e["end"] > d["start"]) >= 3:
+            yield "dispatch:over-three", name, d["ts"], ""
+        text = "%s %s %s" % ("beside %d" % len(others) if others else "alone", d["key"] or "-", d["desc"])
+        yield "dispatch", name, d["ts"], text[:200]
+
+
 def _load(line):
     try:
         r = json.loads(line)
@@ -251,8 +342,12 @@ def cmd_count(argv):
     if not tree_allowed(target):
         return 1
     skipped, sids = set(), set()
-    counts = {"questions": 0, "first-option": 0, "steps": 0, "elsewhere": 0, "prompts": 0}
+    counts = {"questions": 0, "first-option": 0, "steps": 0, "elsewhere": 0, "prompts": 0,
+              "dispatch:alone": 0, "dispatch:beside": 0, "dispatch:same-plan": 0,
+              "dispatch:unisolated": 0, "dispatch:over-three": 0}
     for kind, _, _, _ in scan(since, target, skipped, sids):
+        if kind == "dispatch":  # a `list` row only
+            continue
         # `elsewhere` is the subset of `steps` that matches pattern 1.
         for k in ("steps", "elsewhere") if kind == "elsewhere" else (kind,):
             counts[k] = counts.get(k, 0) + 1

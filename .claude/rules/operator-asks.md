@@ -24,10 +24,35 @@ session does.
   calendar day and line with digits folded to `N`) and `elsewhere` (the subset
   matching pattern 1, "type it in that pane"); `read:<file>` (Read calls on
   the approvals ledger and each shared topic); `peer-mode:<mode>` (the first
-  `permission-mode` record of each worktree-project session); `denied:<reason>`
+  `permission-mode` record of each worktree-project session) and its
+  complement `start-mode:<mode>` (the same record for every other session);
+  the `dispatch:` kinds in the next bullet; `denied:<reason>`
   and `prompts` from the two logs, counted only for sessions of a project the
   scan allowed (see the hooks below). The patterns are frozen so weeks compare:
   changing one starts a new baseline.
+- **Writer dispatches** (how often Lead sent workers out side by side), read
+  from one main transcript at a time. A writer dispatch is an `Agent` tool
+  call whose `subagent_type` begins `work-` or `unstick-`; it starts at its
+  assistant record's `timestamp`. A foreground one ends at its `tool_result`.
+  A background one (the result says `Async agent launched` and gives an
+  `agentId`) ends at the first later record carrying that id in a `<task-id>`
+  tag (a `queue-operation` enqueue or a user message); with none it ends at
+  its start plus 7,200 seconds or the transcript's last `timestamp`,
+  whichever is earlier, so a lost notification cannot make every later
+  dispatch `beside`. The others of a dispatch are the writers running at its
+  start (started before, not yet ended) and those sent in the same assistant
+  message (`message.id`). `count` prints, once per dispatch started in the
+  window (the running set is worked out over the whole file): `dispatch:alone`
+  or `dispatch:beside`; and, as subsets, `dispatch:same-plan` (a `beside`
+  dispatch whose prompt names the same `claude-reports/<repo>/plan-*.md` as
+  one of its others), `dispatch:unisolated` (no `isolation: worktree` and no
+  `.claude/worktrees/` in the prompt) and `dispatch:over-three` (three or more
+  earlier dispatches, in file order, still running). All five print even at
+  0. `list` gains one `dispatch` row per dispatch, `alone` or `beside N`, the
+  plan key or `-`, and the description. The shapes (the launch result text,
+  `agentId:`, `<task-id>` notifications, `message.id`, the `isolation` input)
+  are those of Claude Code 2.1.330; one that changes shows as a kind falling
+  to zero, never as an error.
 - **A denied project is never read.** There is no deny parser here: every
   test is `denyguard check --profile <running profile>` (see the `denyguard`
   rule), found on `PATH`. It is asked about the target's `projects` directory
