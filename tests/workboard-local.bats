@@ -39,7 +39,7 @@ SH
 # mkrepo <name> <origin url or ->: a repository with one commit under $CODE.
 mkrepo() {
   git init -q -b main "$CODE/$1"
-  git -C "$CODE/$1" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m init
+  git -C "$CODE/$1" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m init
   if [ "$2" != - ]; then git -C "$CODE/$1" remote add origin "$2"; fi
 }
 
