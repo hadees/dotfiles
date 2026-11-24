@@ -45,11 +45,36 @@ PY
   [ "$status" -eq 0 ]
 }
 
-@test "the page names board.json, go, open and X-Workboard" {
-  has '"board.json"'
-  has '"go"'
-  has '"open"'
+@test "the page names board.json, go, open and X-Workboard, by absolute path" {
+  has '"/b/board.json"'
+  has '"/b/go"'
+  has '"/b/open"'
   has 'X-Workboard'
+}
+
+@test "the page holds the token marker exactly once, on a line of its own inside head" {
+  [ "$(grep -cF '<!--workboard:token-->' "$PAGE")" -eq 1 ]
+  [ "$(grep -cxF '<!--workboard:token-->' "$PAGE")" -eq 1 ]
+  local m h e
+  m="$(grep -nF '<!--workboard:token-->' "$PAGE" | cut -d: -f1)"
+  h="$(grep -n '<head>' "$PAGE" | head -1 | cut -d: -f1)"
+  e="$(grep -n '</head>' "$PAGE" | head -1 | cut -d: -f1)"
+  [ "$m" -gt "$h" ]
+  [ "$m" -lt "$e" ]
+}
+
+@test "the page takes its key from the response and keeps it in sessionStorage, not an address" {
+  local w
+  for w in workboard-token wb-token replaceState Authorization sessionStorage; do
+    has "$w"
+  done
+  run grep -nE 'fetch\("board\.json"|localStorage|document\.cookie' "$PAGE"
+  [ "$status" -eq 1 ]
+}
+
+@test "the page says what it is missing when it has no key" {
+  has 'This page has no key.'
+  has 'Run workboard open.'
 }
 
 @test "the page has all five column titles, in the signed order" {
