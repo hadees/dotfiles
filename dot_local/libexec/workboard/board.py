@@ -8,7 +8,13 @@
 Standard library only, clean on 3.9, run as `python3 -I -B board.py ...`. Nothing the
 server holds is written: the four input documents and the board live in memory. The state
 directory gets `secret`, `tally.json` (numbers), and what `bin/workboard` puts there.
+
+Two listeners, one process. Loopback TCP answers the page (a key it was handed once, in
+the body of one /enter answer) and the plug-ins' routes (a tool key). Everything that needs
+no token (/status.json, /api/*, /health in full) is on a Unix socket in a directory only
+this user can enter, so file permissions are the whole check there.
 """
+import collections
 import glob
 import hashlib
 import hmac
@@ -21,6 +27,9 @@ import re
 import runpy
 import secrets
 import signal
+import socket
+import socketserver
+import stat
 import subprocess
 import sys
 import threading
@@ -36,6 +45,9 @@ import local  # noqa: E402
 import model  # noqa: E402
 import who  # noqa: E402
 
+MARKER = b"<!--workboard:token-->"
+SOCK_MAX = 100   # sun_path is 104 bytes on macOS
+NONCE_MAX = 64
 PLUGINS = ("verbs", "mcp_endpoint", "service", "notice", "pane")
 READERS = {"model": "model", "poll": "github", "local": "local", "who": "who", "inbox": "inbox"}
 CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
@@ -84,13 +96,49 @@ def token(secret, what):
     return hmac.new(secret.encode("ascii"), what.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
 
 
-def url_text(port, tok, group=None, repo=None):
+def url_text(port, nonce, group=None, repo=None):
     frag = ""
     if group:
         frag = "#g=" + quote(group, safe="")
     elif repo:
         frag = "#r=" + quote(repo, safe="")
-    return "http://127.0.0.1:%d/b/%s/%s" % (port, tok, frag)
+    return "http://127.0.0.1:%d/enter/%s%s" % (port, nonce, frag)
+
+
+def runtime_dir():
+    """The per-user directory the OS keeps closed; never $TMPDIR or the state directory."""
+    base = os.environ.get("WORKBOARD_RUNTIME")
+    if not base:
+        try:
+            base = os.confstr(65537)  # DARWIN_USER_TEMP_DIR; raises elsewhere
+        except (ValueError, OSError, AttributeError):
+            base = None
+    if not base:
+        base = os.environ.get("XDG_RUNTIME_DIR") or "/tmp/workboard-%d" % os.getuid()
+    return os.path.join(base, "workboard")
+
+
+def sock_path(port):
+    return os.path.join(runtime_dir(), "%d.sock" % port)
+
+
+def prepare_socket_dir(port):
+    """-> (socket path, None), or (None, the one line to print) after making and checking the directory."""
+    d, path = runtime_dir(), sock_path(port)
+    if len(os.fsencode(path)) > SOCK_MAX:
+        return None, "workboard: the socket path is too long (over %d bytes): %s" % (SOCK_MAX, path)
+    try:
+        os.makedirs(os.path.dirname(d), mode=0o700, exist_ok=True)
+        try:
+            os.mkdir(d, 0o700)
+        except FileExistsError:
+            pass
+        st = os.lstat(d)
+    except OSError:
+        return None, "workboard: cannot make %s" % d
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+        return None, "workboard: %s must be a directory of this user's alone (mode 0700)" % d
+    return path, None
 
 
 def read_links():
@@ -142,6 +190,15 @@ class Ctx:
     def profile_dirs(self):
         return who.profile_dirs()
 
+    def ask(self, name, body, profile=None):
+        """POST /api/<name> on the socket -> (code, text); for a plug-in's client-side command."""
+        got = post_api(name, body, {"X-Workboard-Profile": profile} if profile else {}, self.port)
+        if got is None:
+            return 3, "workboard: not running"
+        if got[0] != 200:
+            return 1, "workboard: the server answered %d" % got[0]
+        return int(got[1]["code"]), got[1]["text"]
+
 
 class App:
     def __init__(self, ctx):
@@ -158,8 +215,8 @@ class App:
     def command(self, name, fn):
         self.commands[name] = fn
 
-    def route(self, method, path, fn):
-        self.routes[(method, path)] = fn
+    def route(self, method, path, fn, open=False):
+        self.routes[(method, path)] = (fn, bool(open))
 
     def after_github(self, fn):
         self.after_githubs.append(fn)
@@ -183,8 +240,8 @@ class Staged:
     def command(self, name, fn):
         self._calls.append(("command", (name, fn)))
 
-    def route(self, method, path, fn):
-        self._calls.append(("route", (method, path, fn)))
+    def route(self, method, path, fn, open=False):
+        self._calls.append(("route", (method, path, fn, open)))
 
     def after_github(self, fn):
         self._calls.append(("after_github", (fn,)))
@@ -226,6 +283,7 @@ class Core:
         self.lock = threading.RLock()
         self.wake = threading.Event()
         self.secret = load_secret()
+        self.nonces, self.listeners, self.sock_file = collections.OrderedDict(), [], None
         self.docs = dict((k, dict(v)) for k, v in EMPTY.items())
         self.board, self.board_key, self.rev, self.scoped = None, None, 0, {}
         self.tally = self.load_tally()
@@ -301,9 +359,18 @@ class Core:
                 pass
         return best
 
-    def reexec(self, httpd):
+    def drop_listeners(self):
+        for srv in self.listeners:
+            srv.server_close()
+        if self.sock_file:
+            try:
+                os.unlink(self.sock_file)
+            except OSError:
+                pass
+
+    def reexec(self):
         self.save_tally()
-        httpd.server_close()
+        self.drop_listeners()
         os.execv(sys.executable, [sys.executable, "-I", "-B", os.path.abspath(__file__)] + sys.argv[1:])
 
     # tokens and scope
@@ -316,6 +383,42 @@ class Core:
 
     def profile_token(self, abs_dir):
         return token(self.secret, "profile:" + abs_dir)
+
+    def tool_key(self, abs_dir):
+        return token(self.secret, "mcp:" + abs_dir)
+
+    def ask_token(self):
+        return token(self.secret, "ask:all")
+
+    def tool_profile(self, tok):
+        """The profile directory a tool key belongs to, else None."""
+        want, found = tok.encode("utf-8"), None
+        for d in self.profiles():
+            if hmac.compare_digest(self.tool_key(d).encode(), want):
+                found = d
+        return found
+
+    def profile_dir(self, profile):
+        if not profile:
+            return None
+        d = os.path.abspath(os.path.expanduser(profile))
+        return d if d in self.profiles() else None
+
+    def mint(self, scope):
+        """A single-use nonce for a scope (None is the full one), good for WORKBOARD_NONCE_TTL seconds."""
+        nonce = secrets.token_urlsafe(24)
+        ttl = float(os.environ.get("WORKBOARD_NONCE_TTL") or 60)
+        with self.lock:
+            while len(self.nonces) >= NONCE_MAX:
+                self.nonces.popitem(last=False)
+            self.nonces[nonce] = (scope, time.time() + ttl)
+        return nonce
+
+    def redeem(self, nonce):
+        """-> (scope,) once for a nonce that waits and is in time, else None."""
+        with self.lock:
+            got = self.nonces.pop(nonce, None)
+        return (got[0],) if got and got[1] >= time.time() else None
 
     def auth(self, tok):
         """(True, scope) for a valid token (scope None for the full one), else (False, None)."""
@@ -440,7 +543,7 @@ class Core:
                 self.gh_next[a] = now + (iv if iv else 300)
         return True
 
-    def run(self, httpd):
+    def run(self):
         first = True
         while True:
             if not first:
@@ -449,7 +552,7 @@ class Core:
             first = False
             now = time.time()
             if self.newest() != self.build_raw:
-                self.reexec(httpd)
+                self.reexec()
             if now - self.saved_at >= 60:
                 self.save_tally()
             if self.fixture:
@@ -517,17 +620,28 @@ class Core:
         out["plugin_errors"] = self.tally.get("plugin_errors", 0)
         return out
 
-    # /api/url
-    def api_url(self, profile, data):
-        if not profile:
-            return 2, "workboard: X-Workboard-Profile is required"
-        abs_dir = os.path.abspath(os.path.expanduser(profile))
-        if abs_dir not in self.profiles():
-            return 2, "workboard: that is not a profile directory"
+    # /api/url and /api/bearer
+    def api_url(self, profile, ask, data):
         group, repo = data.get("group"), data.get("repo")
         if not all(v is None or isinstance(v, str) for v in (group, repo)) or (group and repo):
             return 2, "workboard: want one of group, repo, as text"
-        return 0, url_text(self.port, self.profile_token(abs_dir), group, repo)
+        if ask and hmac.compare_digest(ask.encode("utf-8"), self.ask_token().encode()):
+            scope = None
+        elif not profile:
+            return 2, "workboard: X-Workboard-Profile is required"
+        else:
+            scope = self.profile_dir(profile)
+            if scope is None:
+                return 2, "workboard: that is not a profile directory"
+        return 0, url_text(self.port, self.mint(scope), group, repo)
+
+    def api_bearer(self, profile):
+        if not profile:
+            return 2, "workboard: X-Workboard-Profile is required"
+        scope = self.profile_dir(profile)
+        if scope is None:
+            return 2, "workboard: that is not a profile directory"
+        return 0, self.tool_key(scope)
 
     # /go
     def relay_go(self, pid):
@@ -546,17 +660,18 @@ class Core:
 
 
 class Req:
-    def __init__(self, handler, method, path, body):
-        self.method, self.path, self.body, self._h = method, path, body, handler.headers
+    def __init__(self, handler, method, path, body, profile=None):
+        self.method, self.path, self.body, self.profile, self._h = method, path, body, profile, handler.headers
 
     def header(self, name):
         return self._h.get(name)
 
 
-def make_handler(core):
+def make_handler(core, is_local):
     hosts = ("127.0.0.1:%d" % core.port, "localhost:%d" % core.port)
     origins = tuple("http://" + h for h in hosts)
     plain = "text/plain; charset=utf-8"
+    gone = "This link has been used or has expired. Run workboard open again."
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "workboard"
@@ -601,13 +716,22 @@ def make_handler(core):
                 except OSError:
                     pass
 
+        def bearer(self):
+            h = self.headers.get("Authorization") or ""
+            return h[7:] if h.startswith("Bearer ") else ""
+
+        def reject(self):
+            core.count("token_rejects")
+            self.reply(403, '{"error": "bad token"}')
+
         def handle_one(self, method):
             core.count("requests")
-            if self.headers.get("Host") not in hosts:
-                return self.reply(403, '{"error": "bad host"}')
-            origin = self.headers.get("Origin")
-            if origin is not None and origin not in origins:
-                return self.reply(403, '{"error": "bad origin"}')
+            if not is_local:
+                if self.headers.get("Host") not in hosts:
+                    return self.reply(403, '{"error": "bad host"}')
+                origin = self.headers.get("Origin")
+                if origin is not None and origin not in origins:
+                    return self.reply(403, '{"error": "bad origin"}')
             path = self.path.split("?", 1)[0]
             body = b""
             if method == "POST":
@@ -618,20 +742,40 @@ def make_handler(core):
                 if not 0 <= n <= 65536:
                     return self.reply(413, '{"error": "bad body"}')
                 body = self.rfile.read(n)
-            route = core.app.routes.get((method, path))
-            if route:
-                core.touch()
-                return self.run_route(route, Req(self, method, path, body))
-            parts = path.split("/")
+            if is_local:
+                return self.on_socket(method, path, body)
+            return self.on_tcp(method, path, body)
+
+        def on_socket(self, method, path, body):
             if method == "GET" and path == "/health":
                 return self.reply(200, json.dumps({"ok": True, "pid": os.getpid(), "build": core.build,
                                                    "fixture": bool(core.fixture)}))
             if method == "GET" and path == "/status.json":
                 return self.reply(200, json.dumps(core.status_doc(), sort_keys=True))
-            if len(parts) >= 3 and parts[1] == "b":
-                return self.under_token(method, parts[2], parts[3:], body)
+            parts = path.split("/")
             if method == "POST" and len(parts) == 3 and parts[1] == "api":
                 return self.api(parts[2], body)
+            self.reply(404, '{"error": "not found"}')
+
+        def on_tcp(self, method, path, body):
+            got = core.app.routes.get((method, path))
+            if got:
+                fn, is_open = got
+                profile = None
+                if not is_open:
+                    profile = core.tool_profile(self.bearer())
+                    if profile is None:
+                        return self.reject()
+                core.touch()
+                return self.run_route(fn, Req(self, method, path, body, profile))
+            if method == "GET" and path == "/health":
+                return self.reply(200, '{"ok": true}')
+            if method == "GET" and path.startswith("/enter/"):
+                return self.enter(path[len("/enter/"):])
+            if method == "GET" and path == "/b/":
+                return self.page(None)
+            if (method, path) in (("GET", "/b/board.json"), ("POST", "/b/go"), ("POST", "/b/open")):
+                return self.under_token(path[len("/b/"):], body)
             self.reply(404, '{"error": "not found"}')
 
         def run_route(self, fn, req):
@@ -647,7 +791,7 @@ def make_handler(core):
         def api(self, name, body):
             core.touch()
             fn = core.app.apis.get(name)
-            if name != "url" and fn is None:
+            if name not in ("url", "bearer") and fn is None:
                 return self.reply(404, '{"error": "no such verb"}')
             if self.headers.get("X-Workboard") != "1":
                 return self.reply(403, '{"error": "missing header"}')
@@ -659,7 +803,9 @@ def make_handler(core):
             if not isinstance(data, dict):
                 code, text = 2, "workboard: the body must be a JSON object"
             elif name == "url":
-                code, text = core.api_url(profile, data)
+                code, text = core.api_url(profile, self.headers.get("X-Workboard-Ask"), data)
+            elif name == "bearer":
+                code, text = core.api_bearer(profile)
             else:
                 try:
                     inspect.signature(fn).bind(core.ctx, profile=profile, **data)
@@ -674,22 +820,36 @@ def make_handler(core):
                         code, text = 1, "workboard: the verb failed"
             self.reply(200, json.dumps({"code": code, "text": text}))
 
-        def under_token(self, method, tok, rest, body):
-            ok, scope = core.auth(tok)
+        def enter(self, nonce):
+            got = core.redeem(nonce)
+            if got is None:
+                core.count("enter_rejects")
+                return self.say(403, gone)
+            core.touch(page=True)
+            tok = core.full_token() if got[0] is None else core.profile_token(got[0])
+            self.page(tok)
+
+        def page(self, tok):
+            """The page file: the marker becomes the key's meta tag (tok) or goes (None)."""
+            html = os.environ.get("WORKBOARD_HTML") or os.path.expanduser("~/.local/share/workboard/board.html")
+            try:
+                with open(html, "rb") as f:
+                    out = f.read()
+            except OSError:
+                return self.reply(500, "workboard: board page missing: %s\n" % html, plain)
+            if tok is not None and MARKER not in out:
+                return self.reply(500, "workboard: board page lacks %s\n" % MARKER.decode(), plain)
+            out = out.replace(MARKER, b"" if tok is None else
+                              ('<meta name="workboard-token" content="%s">' % tok).encode("ascii"))
+            self.reply(200, out, "text/html; charset=utf-8",
+                       [("Content-Security-Policy", CSP), ("Referrer-Policy", "no-referrer")])
+
+        def under_token(self, what, body):
+            ok, scope = core.auth(self.bearer())
             if not ok:
-                core.count("token_rejects")
-                return self.reply(403, '{"error": "bad token"}')
-            page = method == "GET" and rest in ([""], ["board.json"])
-            core.touch(page=page)
-            if method == "GET" and rest == [""]:
-                html = os.environ.get("WORKBOARD_HTML") or os.path.expanduser("~/.local/share/workboard/board.html")
-                try:
-                    with open(html, "rb") as f:
-                        page_bytes = f.read()
-                except OSError:
-                    return self.reply(500, "workboard: board page missing: %s\n" % html, plain)
-                return self.reply(200, page_bytes, "text/html; charset=utf-8", [("Content-Security-Policy", CSP)])
-            if method == "GET" and rest == ["board.json"]:
+                return self.reject()
+            core.touch(page=what == "board.json")
+            if what == "board.json":
                 try:
                     doc = dict(core.board_for(scope))
                 except Exception as err:
@@ -701,9 +861,7 @@ def make_handler(core):
                 if self.headers.get("If-None-Match") == etag:
                     return self.reply(304, b"", extra=[("ETag", etag)])
                 return self.reply(200, json.dumps(doc), extra=[("ETag", etag)])
-            if method == "POST" and rest in (["go"], ["open"]):
-                return self.go(scope, body) if rest == ["go"] else self.open_card(scope, body)
-            self.reply(404, '{"error": "not found"}')
+            return self.go(scope, body) if what == "go" else self.open_card(scope, body)
 
         def post_ok(self, body, field):
             """-> the field's value, or None after answering the refusal."""
@@ -761,32 +919,81 @@ def serve(argv):
     except (TypeError, ValueError):
         sys.stderr.write("workboard: serve: --port wants a number\n")
         return 2
+    path, err = prepare_socket_dir(port)
+    if err:
+        sys.stderr.write(err + "\n")
+        return 1
     tick = float(os.environ.get("WORKBOARD_TICK") or 2)
     core = Core(port, opts["panel-url"], opts["fixture"], tick)
     try:
-        httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(core))
+        httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(core, False))
     except OSError:
         sys.stderr.write("workboard: port %d is in use\n" % port)
         return 1
     httpd.daemon_threads = True
+    probe = socket.socket(socket.AF_UNIX)
+    probe.settimeout(2)
+    try:
+        probe.connect(path)
+    except (ConnectionRefusedError, FileNotFoundError):
+        try:
+            os.unlink(path)  # a stale file: nobody is behind it
+        except OSError:
+            pass
+    except OSError:  # a timeout is a listener that is busy, not one that is gone
+        sys.stderr.write("workboard: already running (%s)\n" % path)
+        return 1
+    else:
+        sys.stderr.write("workboard: already running (%s answers)\n" % path)
+        return 1
+    finally:
+        probe.close()
+    old = os.umask(0o077)
+    try:
+        unix = LocalServer(path, make_handler(core, True))
+    except OSError:
+        sys.stderr.write("workboard: cannot bind %s\n" % path)
+        return 1
+    finally:
+        os.umask(old)
+    os.chmod(path, 0o600)
+    core.listeners, core.sock_file = [httpd, unix], path
 
     def bye(*_):
         core.save_tally()
+        core.drop_listeners()
         os._exit(0)
     signal.signal(signal.SIGTERM, bye)
     signal.signal(signal.SIGINT, bye)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    threading.Thread(target=unix.serve_forever, daemon=True).start()
     sys.stdout.write("workboard: on http://127.0.0.1:%d/\n" % port)
     sys.stdout.flush()
-    core.run(httpd)
+    core.run()
+
+
+class LocalServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
 
 
 # --- the client ----------------------------------------------------------------------------
 
-def request(method, path, body=None, headers=None):
-    port = int(os.environ.get("WORKBOARD_PORT") or DEFAULT_PORT)
+class SocketConnection(http.client.HTTPConnection):
+    def __init__(self, path, timeout):
+        super().__init__("localhost", timeout=timeout)
+        self._path = path
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self._path)
+
+
+def request(method, path, body=None, headers=None, port=None):
+    """One request on the server's socket -> (status, body bytes), or None when nothing answers."""
+    port = port or int(os.environ.get("WORKBOARD_PORT") or DEFAULT_PORT)
     try:
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn = SocketConnection(sock_path(port), 10)
         conn.request(method, path, body=body, headers=headers or {})
         resp = conn.getresponse()
         return resp.status, resp.read()
@@ -794,18 +1001,28 @@ def request(method, path, body=None, headers=None):
         return None
 
 
-def api_call(name, body):
-    headers = {"X-Workboard": "1", "Content-Type": "application/json"}
+def post_api(name, body, headers=None, port=None):
+    """POST /api/<name> on the socket -> (status, document), or None when nothing answers."""
+    h = {"X-Workboard": "1", "Content-Type": "application/json"}
+    h.update(headers or {})
+    got = request("POST", "/api/" + name, json.dumps(body).encode("utf-8"), h, port)
+    if got is None:
+        return None
+    return got[0], (json.loads(got[1].decode("utf-8")) if got[0] == 200 else None)
+
+
+def api_call(name, body, extra=None):
+    headers = dict(extra or {})
     if os.environ.get("CLAUDECODE"):
         headers["X-Workboard-Profile"] = profile_header()
-    got = request("POST", "/api/" + name, json.dumps(body).encode("utf-8"), headers)
+    got = post_api(name, body, headers)
     if got is None:
         sys.stderr.write("workboard: not running\n")
         return 3
     if got[0] != 200:
         sys.stderr.write("workboard: the server answered %d\n" % got[0])
         return 1
-    doc = json.loads(got[1].decode("utf-8"))
+    doc = got[1]
     sys.stdout.write(doc["text"] if doc["text"].endswith("\n") else doc["text"] + "\n")
     return int(doc["code"])
 
@@ -822,11 +1039,14 @@ def cli_url(argv):
         else:
             sys.stderr.write("usage: workboard url [--group <g>|--repo <r>]\n")
             return 2
-    if os.environ.get("CLAUDECODE"):
-        return api_call("url", dict((k, v) for k, v in (("group", group), ("repo", repo)) if v))
-    port = int(os.environ.get("WORKBOARD_PORT") or DEFAULT_PORT)
-    print(url_text(port, token(load_secret(), "all"), group, repo))
-    return 0
+    proof = {}
+    if not os.environ.get("CLAUDECODE"):
+        try:
+            proof["X-Workboard-Ask"] = token(load_secret(), "ask:all")
+        except OSError:
+            sys.stderr.write("workboard: cannot read the secret\n")
+            return 1
+    return api_call("url", dict((k, v) for k, v in (("group", group), ("repo", repo)) if v), proof)
 
 
 def cli_status():

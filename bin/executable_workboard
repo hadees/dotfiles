@@ -4,7 +4,7 @@
 #   workboard serve [--port <n>] [--fixture <dir>]   the server, in the foreground
 #   workboard start | stop | restart                 the server, detached (or the launchd agent)
 #   workboard open [--group <g>|--repo <r>] [--fixture <dir>]   the board in iTerm2's browser (macOS)
-#   workboard url [--group <g>|--repo <r>]           the board's address
+#   workboard url [--group <g>|--repo <r>]           a single-use link to the board; the page's key is never in an address
 #   workboard status                                 counts, ages and fixed words
 #   workboard <verb> ...                             a verb a plug-in registered
 #
