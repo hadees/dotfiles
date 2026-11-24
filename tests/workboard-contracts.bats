@@ -15,6 +15,10 @@ setup() {
   wb_setup
 }
 
+teardown() {
+  wb_teardown
+}
+
 P1=octo-work-org/proj-one
 P2=octo-personal/proj-two
 
@@ -342,7 +346,7 @@ a = app.App()
 f = lambda *x, **k: (0, "")
 a.api("x", f), a.cli("x", f), a.command("x", f), a.route("GET", "/x", f), a.after_github(f), a.status("x", f)
 assert [len(l) for l in (a.apis, a.clis, a.commands, a.routes, a.after_githubs, a.statuses)] == [1] * 6
-assert a.routes[0] == ("GET", "/x", f) and a.apis[0] == ("x", f) and a.statuses[0] == ("x", f)
+assert a.routes[0] == ("GET", "/x", f, False) and a.apis[0] == ("x", f) and a.statuses[0] == ("x", f)
 c = a.ctx
 c.count("n"), c.poll_now("work-acct")
 assert c.counts == ["n"] and c.polls == ["work-acct"]
@@ -365,6 +369,38 @@ else:
     raise AssertionError("importing the stub App must not expose the stub verbs")
 PY
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+}
+
+@test "stub app: a route records open, False by default; ask records its call; Req finds a header in any case" {
+  local dir
+  wb_demo >/dev/null
+  dir="$(wb_modules)"
+  run wb_driver "$dir" <<'PY'
+import os, app
+a = app.App()
+f = lambda *x, **k: (0, "")
+a.route("GET", "/gated", f), a.route("POST", "/free", f, open=True)
+assert a.routes == [("GET", "/gated", f, False), ("POST", "/free", f, True)]
+c = a.ctx
+personal = os.path.expanduser("~/.claude-personal")
+assert c.ask("bearer", {}, profile=personal) == (0, "fixture-key-personal")
+assert c.ask("list", {"x": 1}) == (0, "fixture-key-none")
+assert c.asks == [("bearer", {}, personal), ("list", {"x": 1}, None)]
+r = app.Req("POST", "/mcp", b"{}", {"X-Workboard-Profile": "/p"}, profile="/q")
+assert (r.method, r.path, r.body, r.profile) == ("POST", "/mcp", b"{}", "/q")
+assert r.header("x-workboard-profile") == "/p" and r.header("Missing") is None
+assert app.Req("GET", "/x").body == b"" and app.Req("GET", "/x").profile is None
+PY
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+}
+
+@test "wb_setup, wb_teardown: WORKBOARD_RUNTIME is a short directory under /tmp, and wb_teardown removes it" {
+  local d="$WORKBOARD_RUNTIME"
+  [[ "$d" == /tmp/wb.* ]]
+  [ -d "$d" ]
+  [ "${#d}" -lt 40 ]
+  wb_teardown
+  [ ! -e "$d" ]
 }
 
 @test "stub verbs: register records four api, four cli and one status, and each verb answers <name> ok" {

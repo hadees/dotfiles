@@ -1,10 +1,11 @@
 # TEST STAND-IN for the plug-in interface `board.py` (step 7) hands each optional
 # module's register(app). App records every registration in a list a test can
 # read: apis [(name, fn)], clis [(name, parse)], commands [(name, fn)], routes
-# [(method, path, fn)], after_githubs [fn], statuses [(name, fn)]. Its ctx
-# serves the demo documents from $WORKBOARD_DEMO; ctx.counts holds the names
-# given to count(), ctx.polls the accounts given to poll_now(). Not product
-# code; never deployed. A step that finds it wrong hands back; it does not
+# [(method, path, fn, open)], after_githubs [fn], statuses [(name, fn)]. Its
+# ctx serves the demo documents from $WORKBOARD_DEMO; ctx.counts holds the
+# names given to count(), ctx.polls the accounts given to poll_now(), ctx.asks
+# the (name, body, profile) of each ask(). Req is the request a plug-in handler
+# is called with. Not product code; never deployed. A step that finds it wrong hands back; it does not
 # patch it.
 #
 # Tests reach it through wb_driver, which puts its directory on sys.path
@@ -33,7 +34,7 @@ class _Ctx:
         self.state_dir = os.path.join(os.environ["BATS_TEST_TMPDIR"], "workboard-state")
         os.makedirs(self.state_dir, mode=0o700, exist_ok=True)
         self.port = 47601
-        self.counts, self.polls = [], []
+        self.counts, self.polls, self.asks = [], [], []
 
     def board(self):
         board = _demo("board")
@@ -62,6 +63,23 @@ class _Ctx:
     def profile_dirs(self):
         return _stub("who").profile_dirs()
 
+    def ask(self, name, body, profile=None):
+        self.asks.append((name, body, profile))
+        label = next((k for k, d in self.profile_dirs().items() if d == profile), None)
+        return 0, "fixture-key-" + (label or "none")
+
+
+class Req:
+    def __init__(self, method, path, body=b"", headers=None, profile=None):
+        self.method, self.path, self.body, self.profile = method, path, body, profile
+        self.headers = headers or {}
+
+    def header(self, name):
+        for k, v in self.headers.items():
+            if k.lower() == name.lower():
+                return v
+        return None
+
 
 class App:
     def __init__(self):
@@ -77,8 +95,8 @@ class App:
     def command(self, name, fn):
         self.commands.append((name, fn))
 
-    def route(self, method, path, fn):
-        self.routes.append((method, path, fn))
+    def route(self, method, path, fn, open=False):
+        self.routes.append((method, path, fn, open))
 
     def after_github(self, fn):
         self.after_githubs.append(fn)
