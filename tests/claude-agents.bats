@@ -279,7 +279,7 @@ shared_templates() {
 # moved into a shared fragment (sha256 of everything after the frontmatter).
 # plan-gpt's one permitted difference is the marked block below, so a change to
 # the shared body that is meant to reach both seats means updating this pin.
-FABLE_BODY_SHA256=1797e97a988edbe00d1c972ee0fa9360748094e3cf682f828f614989cdd26954
+FABLE_BODY_SHA256=f2f65bed29c5b92de43322b66142b71472f7889f72319b1a720e7a60197d6db9
 GPT_BLOCK_START='<!-- gpt-assumptions:start -->'
 GPT_BLOCK_END='<!-- gpt-assumptions:end -->'
 
@@ -307,6 +307,14 @@ raw_body() {
     = "$(body "$RENDERED/plan-fable.md" | sed 's/plan-fable/plan-gpt/g')" ]
 }
 
+@test "both rendered planners ask what each step needs" {
+  local f
+  for f in plan-fable plan-gpt; do
+    body "$RENDERED/$f.md" | grep -qF 'State what each step needs, never an order' || { echo "$f: no needs rule"; false; }
+    body "$RENDERED/$f.md" | grep -qF '`Needs`' || { echo "$f: no Needs column"; false; }
+  done
+}
+
 @test "plan-gpt's assumptions block states the trigger, the omission rule, the table and the no-dispatch rule" {
   local blk p
   blk="$(sed -n "/$GPT_BLOCK_START/,/$GPT_BLOCK_END/p" "$RENDERED/plan-gpt.md" | tr '\n' ' ' | tr -s ' ')"
@@ -331,6 +339,8 @@ raw_body() {
   local d shared p
   d="$(fmval "$TEMPLATES/work-sonnet.md" description)"
   grep -q 'plan-fable or plan-gpt plan' <<< "$d" || { echo "work-sonnet: does not name both planners"; false; }
+  grep -qF 'the steps it needs are verified' <<< "$d" || { echo "work-sonnet: no P1"; false; }
+  ! grep -qF 'steps before it have landed' <<< "$d" || { echo "work-sonnet: old wording"; false; }
   shared="$(shared_memory_all | tr '\n' ' ' | tr -s ' ')"
   for p in 'claude_gpt_ready MODEL' 'seven_day_overage_included' 'Fable limit reached' "You've hit your Fable limit" \
     'GPT_HANDOVER attempted=' 'GPT_PLAN outcome=' 'GPT_ADVISOR dispatched='; do

@@ -29,6 +29,14 @@ repository.
 - Freeze the interfaces. For each step, state exactly what it consumes from earlier
   steps and produces for later ones — function names, parameter and return types,
   schema fields — so step three and step seven cannot disagree about a type.
+- State what each step needs, never an order. A step needs another only when
+  it consumes what that step produces or edits a file that step edits; name
+  the interface or the file. Steps with no such edge are built at the same
+  time, each in its own worktree, so two of them never touch the same file.
+- Build in tandem through interfaces. Where a step consumes what another
+  produces, make the interface its own first step (the contract, plus a stub
+  or fixture), so the producer and its consumers need only that step and are
+  built at the same time.
 - Size the steps so a reviewer could approve one and reject its neighbour. Never
   "similar to step N" without repeating the content; never a placeholder ("TBD",
   "add appropriate error handling") where the requirement should be.
@@ -58,7 +66,10 @@ rows they can strike: each open question with the answer the plan takes; each me
 live rollout, spend with its cap, deletion and action beyond the repository that a
 step performs, named with its target; then, apart, what stays an ask whatever is
 signed; with no rows, say the go covers the build and nothing else);
-**Build sequence** (ordered steps, each sized as one
+**Build sequence** (first a table with one row per step: its number, its
+repository and the branch its worktree starts from, the files it touches, and
+`Needs`, the steps or outside events that must be verified before it starts, or
+`none`; then the steps, each sized as one
 `work-sonnet` brief — the files it touches, the interfaces it consumes and
 produces, its verification commands, and what going wrong looks like — so a
 step can be handed over by report path and step number);

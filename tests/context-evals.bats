@@ -33,9 +33,9 @@ STUB
 
 @test "the script parses and the scenarios name themselves, once" {
   sh -n "$RUN"
-  [ "$(ls "$SCENARIOS" | wc -l | tr -d ' ')" -eq 3 ]
-  [ "$(cat "$SCENARIOS"/*.txt | grep -c '^name: ')" -eq 3 ]
-  [ "$(cat "$SCENARIOS"/*.txt | grep '^name: ' | sort -u | wc -l | tr -d ' ')" -eq 3 ]
+  [ "$(ls "$SCENARIOS" | wc -l | tr -d ' ')" -eq 4 ]
+  [ "$(cat "$SCENARIOS"/*.txt | grep -c '^name: ')" -eq 4 ]
+  [ "$(cat "$SCENARIOS"/*.txt | grep '^name: ' | sort -u | wc -l | tr -d ' ')" -eq 4 ]
 }
 
 @test "prints name, runs, passed and memory characters" {
@@ -107,22 +107,36 @@ STUB
   [ "$(awk '/ALWAYS-TEXT/ { print NR; exit }' "$STUB_ARGS")" -lt "$last" ]
 }
 
-@test "the three real scenarios run against the real memory and print their rows" {
+@test "the four real scenarios run against the real memory and print their rows" {
   STUB_REPLY=nothing run "$RUN" --runs 1 "$SCENARIOS"/*.txt
   [ "$status" -eq 0 ]
-  [ "$(grep -c . <<< "$output")" -eq 3 ]
+  [ "$(grep -c . <<< "$output")" -eq 4 ]
   [[ "$output" == *$'handback-stop\t1\t0\t'* ]]
   [[ "$output" == *$'relayed-go\t1\t0\t'* ]]
   [[ "$output" == *$'four-kinds\t1\t0\t'* ]]
+  [[ "$output" == *$'ready-steps\t1\t0\t'* ]]
 }
 
 @test "each real scenario passes a good reply and fails a bad one" {
-  STUB_REPLY="claude-peer stop Alpha; merge 12; token" run "$RUN" --runs 1 "$SCENARIOS"/*.txt
+  STUB_REPLY="claude-peer stop Alpha; merge 12; token; I start steps 2 and 3 together" run "$RUN" --runs 1 "$SCENARIOS"/*.txt
   [ "$status" -eq 0 ]
-  [ "$(grep -c $'\t1\t1\t' <<< "$output")" -eq 3 ]
-  STUB_REPLY="claude-peer stop merge token, but type /exit in the pane; in my tab; you need to restart it" run "$RUN" --runs 1 "$SCENARIOS"/*.txt
+  [ "$(grep -c $'\t1\t1\t' <<< "$output")" -eq 4 ]
+  STUB_REPLY="claude-peer stop merge token, but type /exit in the pane; in my tab; you need to restart it; step 2 now and step 3 after step 2, one at a time" run "$RUN" --runs 1 "$SCENARIOS"/*.txt
   [ "$status" -eq 0 ]
-  [ "$(grep -c $'\t1\t0\t' <<< "$output")" -eq 3 ]
+  [ "$(grep -c $'\t1\t0\t' <<< "$output")" -eq 4 ]
+}
+
+@test "ready-steps: matching ignores case, and a reply that says not one at a time is not failed" {
+  local sc="$SCENARIOS/ready-steps.txt"
+  STUB_REPLY="Steps 2 and 3 together, not one at a time" run "$RUN" --runs 1 "$sc"
+  [ "$status" -eq 0 ]
+  [[ "$output" == $'ready-steps\t1\t1\t'* ]]
+  STUB_REPLY="Steps 2 and 3 together, then Step 3 after Step 2" run "$RUN" --runs 1 "$sc"
+  [[ "$output" == $'ready-steps\t1\t0\t'* ]]
+  STUB_REPLY="Steps 2 and 3 together, one at a time" run "$RUN" --runs 1 "$sc"
+  [[ "$output" == $'ready-steps\t1\t0\t'* ]]
+  STUB_REPLY="Steps 2 and 3, one at a time" run "$RUN" --runs 1 "$sc"
+  [[ "$output" == $'ready-steps\t1\t0\t'* ]]
 }
 
 @test "a harness error exits 1: no scenario, bad runs, a failing claude" {
