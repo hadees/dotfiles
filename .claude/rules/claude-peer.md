@@ -188,16 +188,15 @@ a terminal state that has to be restored on every exit path. The pane ignores
 stopping and the pane falls back to request-only waiting; its claude gets them
 back. TERM and HUP kill the reader and delete the wait file.
 
-**The pool.** A pane's slot is a preference. The pool is the words of `git
-config claude-peer.slots` (default the 24 Greek letters, `alpha` to `omega`); its first four are the bar's names. A configured pool of four or fewer
-has no spare names, so a second tab takes a free one from under the first. A pane takes its
-own slot when no Claude runs in it, else the first free name from the pool's
-fifth on, and only then a free one of the first four, so one tab is always
-Alpha to Delta under their labels and a second tab gets Epsilon, Zeta, Eta,
-Theta, never a name from under the first. It prints the name it took, and `(this
-pane's Alpha is in use by the peers of <leader>)` when that differs. With every
-name taken it prints `all <n> slots are in use in <repo>` and `Return tries
-again`, and waits. `next` is not a slot name.
+**The pool.** A pane's slot is a preference (the Ideas pane's is `secretary`). The pool is
+the words of `git config claude-peer.slots` (default the 24 Greek letters, `alpha` to
+`omega`); no bar pane is one of them now, but the order holds. A pane takes its own slot
+when no Claude runs in it, else the first free name from the pool's fifth on, and only then
+a free one of the first four, so a second Ideas tab gets Epsilon, Zeta, Eta, Theta, never a
+name from the first four while a later one is free. A pool of four or fewer has no spare
+names. It prints the name it took, and `(this pane's <Label> is in use by the peers of
+<leader>)` when that differs. With every name taken it prints `all <n> slots are in use in
+<repo>` and `Return tries again`, and waits. `next` is not a slot name.
 
 **`start` and `stop` are the operator's and Lead's.** A session that is not
 Lead runs them only when asked; `slots` and `log` only read or append, and the shared memory tells every
@@ -414,7 +413,9 @@ checkout the leader stands in, once, if that line is missing (Hermes 0.19.0
 `cli.py`). The Hermes peer has no Session Status row (rows come from Claude
 Code hooks) and is not part of the leader's roll-call.
 
-**Overlay peers.** A tab of the public chezmoi source gets one extra pane per private
+**Overlay peers (retired: `install` builds no pair and the bar is Lead, Ideas, Agents[, Hermes];
+see `claude-peer-secretary.md`; the code below stays until the step that deletes it).** A tab of
+the public chezmoi source got one extra pane per private
 overlay of the machine, each a waiting pane of that overlay's own repository. Discovery is
 `dotfiles()`'s rule, by chezmoi's own answer: every `~/.config/chezmoi/*.toml` but
 `chezmoi.toml` whose `chezmoi --config <cfg> source-path` is inside a non-bare git
@@ -450,30 +451,17 @@ add`) and files of its own under `.git/`, so an overlay a profile is denied is l
 name and running state only. A name that no longer resolves, or a directory that cannot be
 entered, prints one line and leaves a plain shell, never iTerm2's restart banner.
 
-The two definitions are separate from the others because peers spawn at entry: panes added to
+The overlay pair was separate from the others because peers spawn at entry: panes added to
 `Claude Peers` would appear in every repository's tab. The bar is the root plus the peers in
-session order and ⌥⇧⌘1…8 pick by position, so the Hermes twin of the overlay group is built from
-`claudePeer.h` plus the overlays, not by `with_hermes` of the first: Lead, Alpha, Beta, Gamma, Delta,
-then the overlays, or the same and Hermes, then the overlays. Hermes is ⌥⇧⌘6 (the
-operator's order, 2026-11-13: Hermes after the last slot in both bars); ⌥⇧⌘9 is "last", so it
-becomes the last overlay, and past eight panes the extra ones have no number (iTerm2 3.7.7 source). One
-pair is built at `install` time for the overlays the machine has then (none: neither, and a stale
-pair is removed with the state file); `install` needs iTerm2 quit, the one part of this that does.
-Between a change of the overlay set and the next `install` things degrade visibly: a pane whose
-overlay is gone says so and is a plain shell, a new overlay has no pane, and `status` says
-`overlays: installed, out of date (...)` (as many overlays under other names is out of date
-too: the state file's names must be the names now); a pane whose position has no name in the
-state file says so and is a plain shell; a state file and a store that disagree get a second
-`overlays:` line saying which tabs enter nothing or stay `base`. `status` says which pane is which
-overlay: `overlays: installed (N panes: Overlay 1 = <Name>, …)`. From the shell `status` also
-prints `overlays: entered from <public root>` and one `overlay: <name> <state> in <root>` per
-overlay (`idle`, `waiting`, or `running` with the tab that leads it).
+session order and ⌥⇧⌘1…8 pick by position: Lead, Ideas, Agents, or the same and Hermes, which is
+⌥⇧⌘4 (the operator's order, 2026-11-13: Hermes after the last pane). `install` writes no state
+file and removes a stale one with the pair, so `here` answers `base`, and `status` says
+`overlays: not installed` for a machine that has overlays.
 
 Limits. An overlay peer is in the overlay's `slots`, `peers` and log, not the leader's, so Lead's
 roll-call does not announce it, and `start` and `stop` for it are run from inside the overlay.
 `q` leaves the operator's own shell standing in the overlay's main checkout. The leader's exit
-tears overlay peers down like any peer. A linked worktree of the public source counts as the public source;
-any other repository keeps `base` and `base/hermes`.
+tears overlay peers down like any peer.
 
 Tests: `tests/claude-peer.bats` (stub ps/uname/defaults,
 fixture plists; the real store is only touched by the operator's `install`).
