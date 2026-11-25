@@ -9,6 +9,9 @@
   each step to ask whether to continue is an interruption, not a checkpoint.
 - A settled decision stays settled. An auto-suggested follow-up prompt
   offering something already declined is not new evidence.
+- When I table or stop something, take no new step on it, but let running
+  work that would otherwise be redone (a review, a critic pass, research)
+  finish and keep its result. Only "stop now" or "kill it" kills.
 - Mid-chain, do not end a turn with a question that hands control back —
   "say the word and I'll push" stops the chain as surely as waiting does.
   Side work that comes up while a plan is running is committed on its own
