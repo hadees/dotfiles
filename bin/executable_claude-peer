@@ -14,9 +14,9 @@
 #
 # Two more Workgroups, not extra peers on the builtin Claude Code one: peers
 # spawn eagerly when a workgroup is entered, and the builtin is entered on
-# every claude job. `Claude Peers` is Lead and the panes Alpha, Beta, Gamma, Delta; a
-# pane waits (below), so entering it on every claude job costs four blocked
-# shells, not four Claudes. `Claude Peers + Hermes` is the same plus a Hermes
+# every claude job. `Claude Peers` is Lead, the Ideas pane (slot secretary) and the Agents viewer;
+# the Ideas pane waits (below), so entering it on every claude job costs a
+# blocked shell and an agent list, not a Claude. `Claude Peers + Hermes` is the same plus a Hermes
 # pane, a twin because a pane cannot remove itself from a workgroup: where no
 # Hermes profile routes the directory the other definition must be the one
 # entered. There is no Diff peer. Which one a tab enters is the claude()
@@ -120,6 +120,12 @@
 #                            shell that runs hermes_peer (hermes where a profile
 #                            routes here, else a one-line notice); no
 #                            repository or worktree needed
+#   agents                   the Agents pane: in the repository's main checkout,
+#                            `claude agents --cwd <it>` through an interactive
+#                            shell (so the claude() wrapper picks the profile);
+#                            when it ends, or claude is missing, one line and
+#                            Return runs it again, q leaves a shell. A viewer:
+#                            no slot, claim or worktree
 #   overlays                 name<TAB>root<TAB>state<TAB>leader<TAB>pid per
 #                            private overlay of this machine (a chezmoi config
 #                            whose source is a git repository); state is idle,
@@ -188,16 +194,13 @@
 #   plan <branch>...         branch<TAB>worktree<TAB>create|reuse|conflict:<why>
 #                            per branch, exit 1 on any conflict
 #   workgroup                print the "Claude Peers" Workgroup definition JSON
-#                            (Lead, Alpha … Delta) that install would write
+#                            (Lead, Ideas, Agents) that install would write
 #   install                  write that and "Claude Peers + Hermes" (the same
 #                            plus a Hermes pane) into iTerm2's preferences;
-#                            iTerm2 must be quit. With private overlays on this
-#                            machine, also "Claude Peers + Overlays" and
-#                            "Claude Peers + Hermes + Overlays" (one pane per
-#                            overlay, after the others, stored by position,
-#                            `Overlay <N>` running `overlay <N>`, never a name)
-#                            and the overlays state file, which holds the names;
-#                            with none, it removes both
+#                            iTerm2 must be quit. It builds no overlay pair
+#                            ("Claude Peers + Overlays" and the Hermes twin) and
+#                            removes one an earlier install wrote, with the
+#                            overlays state file
 #   here                     the key claude() sends to choose the workgroup for
 #                            this directory (base; overlays in the public
 #                            chezmoi source once install wrote the overlay
@@ -601,6 +604,7 @@ pane_block() {
 # shell's own job list (jobs -p, through a file: a substitution may not see it)
 # is the cleanup, and pn_rpid only the second line.
 pane_cleanup() {
+  pane_unwatch
   [ -n "${pn_me-}" ] || return 0
   jobs -p >"$pn_me.jobs" 2>/dev/null
   # shellcheck disable=SC2046
@@ -667,6 +671,116 @@ peer_mode() {
   esac
 }
 
+# --- the secretary seat: what a session started at a pane is -------------------------
+# Every session a pane starts that is not a hand-off. The text is the operator's
+# (signed 2026-11-25), as signed in the third person; only <rname> is replaced.
+
+# git config claude-peer.pane-deny: the tools removed at launch, one comma-joined
+# argument; unset or empty is the default, `none` nothing; a value that could read
+# as a flag is said once and the default used.
+pane_deny() {
+  pd_v=$(git config --get claude-peer.pane-deny 2>/dev/null) || pd_v=
+  case $pd_v in
+    none) return 0;;
+    -*) warn "claude-peer.pane-deny '$pd_v' could read as a flag; ignored"; pd_v=;;
+  esac
+  printf '%s\n' "${pd_v:-Edit,NotebookEdit,SendMessage,ListAgents,Agent(work-sonnet),Agent(unstick-fable)}"
+}
+
+# label, epoch seconds -> 0 when the queue has an add, park or drop by that label at or after that time
+verdict_since() {
+  vs_f=$(queue_file) && [ -f "$vs_f" ] || return 1
+  vs_t=$(date -u -d "@$2" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$2" +%Y-%m-%dT%H:%M:%SZ) || return 1
+  awk -F'\t' -v w="$1" -v m="$vs_t" '$3 ~ /^(add|park|drop)$/ && $4 == w && $1 >= m { f = 1 } END { exit !f }' "$vs_f"
+}
+
+# The secretary's clock, one background subshell per running session. Arguments: label,
+# start time (epoch seconds), minutes to end a session with no verdict, minutes after
+# one, stop file, the pane's terminal. Each tick it finds the session under the pane's own
+# pid and ends it with TERM when the registry says idle, that status is as old as the limit,
+# nothing of the session's or its subagents' was written in that time and nobody typed at
+# the terminal in it (its atime, which is how `w` reads idle time: a draft nobody sent shows
+# in no registry field). The stop mark says the pane did it; the session id is kept beside
+# it for the end line.
+pane_watch() {
+  pw_tab=$(printf '\t')
+  while sleep "${CLAUDE_PEER_TICK:-60}"; do
+    pw_sr=$(session_record "$$")
+    [ -n "$pw_sr" ] || continue
+    pw_p=${pw_sr%%"$pw_tab"*} pw_rec=${pw_sr#*"$pw_tab"}
+    pw_sid=$(rec_get "$pw_rec" sessionId)
+    case $pw_sid in ''|*[!A-Za-z0-9-]*) continue;; esac
+    printf '%s\n' "$pw_sid" >"$5.sid"
+    [ "$(rec_get "$pw_rec" status)" = idle ] || continue
+    pw_lim=$3 pw_why="idle ${3}m"
+    if [ "$4" -gt 0 ] && verdict_since "$1" "$2"; then pw_lim=$4 pw_why=finished; fi
+    pw_upd=$(rec_get "$pw_rec" statusUpdatedAt)   # milliseconds
+    case $pw_upd in ''|*[!0-9]*) continue;; esac
+    [ $(( ($(date +%s) - pw_upd / 1000) / 60 )) -ge "$pw_lim" ] || continue
+    # input at the terminal within the limit: GNU stat -c, BSD stat -f; unknown is no input
+    pw_ta=$(stat -c %X "$6" 2>/dev/null || stat -f %a "$6" 2>/dev/null) || pw_ta=
+    case $pw_ta in ''|*[!0-9]*) ;; *) [ $(( $(date +%s) - pw_ta )) -ge $(( pw_lim * 60 )) ] || continue;; esac
+    pw_pd=${pw_rec%/sessions/*}
+    # the session's transcript and its subagents' (the layout is observed, not an interface)
+    [ -z "$(find "$pw_pd"/projects/*/"$pw_sid".jsonl "$pw_pd"/projects/*/"$pw_sid"/subagents -mmin "-$pw_lim" 2>/dev/null)" ] || continue
+    printf 'the pane, %s\n' "$pw_why" >"$5"
+    session_same "$pw_p" "$pw_rec" && kill -TERM "$pw_p" 2>/dev/null || rm -f "$5"
+    return 0
+  done
+}
+
+# the pane's own terminal device, from ps (tty </dev/tty would only say /dev/tty);
+# none, ? or ?? prints nothing and leaves the draft guard off. A function because
+# bash 3.2 misparses a case's ")" inside ${VAR:-$(...)}.
+pane_dev() {
+  pd_t=$(ps -o tty= -p $$ 2>/dev/null | tr -d ' ')
+  case $pd_t in
+    ''|'?'|'??') ;;
+    /dev/*) printf '%s\n' "$pd_t" ;;
+    *) printf '/dev/%s\n' "$pd_t" ;;
+  esac
+}
+
+# the watcher, and the sleep it is in
+pane_unwatch() {
+  [ -n "${pn_watch-}" ] || return 0
+  pu_k="$pn_watch $(descendants "$pn_watch")"
+  # shellcheck disable=SC2086
+  kill $pu_k 2>/dev/null
+  wait "$pn_watch" 2>/dev/null
+  pn_watch=
+  return 0
+}
+
+# git config claude-peer.<key> as a whole number, else the default
+pane_num() {
+  pu_v=$(git config --get "claude-peer.$1" 2>/dev/null) || pu_v=
+  case $pu_v in ''|*[!0-9]*) pu_v=$2;; esac
+  printf '%s\n' "$pu_v"
+}
+
+# the names of the live sessions called *-secretary, in every profile's registry
+pane_secretaries() {
+  for ps_d in $(profile_dirs); do
+    for ps_r in "$ps_d"/sessions/*.json; do
+      [ -f "$ps_r" ] || continue
+      ps_n=$(rec_get "$ps_r" name)
+      case $ps_n in *-secretary) ;; *) continue;; esac
+      ps_p=${ps_r##*/}; ps_p=${ps_p%.json}
+      case $ps_p in ''|*[!0-9]*) continue;; esac
+      session_same "$ps_p" "$ps_r" && printf '%s\n' "$ps_n"
+    done
+  done
+  return 0
+}
+
+# shellcheck disable=SC2016
+secretary_note() {
+  sed "s|<rname>|$rname|" <<'NOTE'
+Secretary seat. The operator opened this pane to think one idea through with you. The repository's Lead is building and is not to be interrupted, so nothing you do reaches it except through the queue. Shape the idea with the operator in chat, research it (the web, scout-haiku), and keep one file for it, ${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<rname>/idea-<slug>.md, with the headings Goal, Matters, Constraints, Decided, Open and Next, rewritten in the turn anything is decided. You do not edit the repository, commit, merge, dispatch work-sonnet, message another session, or write claude-peer log lines. Your one aim is to finish this idea and end. Finished is exactly one of: a big idea handed to plan-fable from here, with the file as its brief, and then claude-peer queue add --kind plan -- "<one line>" <the plan's path> (Lead builds the plan, not you, and only on the operator's go); something Lead should do, claude-peer queue add -- "<one line>" <the idea file>; parked or dropped, claude-peer queue add ... followed by claude-peer queue park|drop <id> <why>. Add --waiting when the operator says they are waiting on it, --unblocks N when N other cards or steps in flight wait for it, --prio 1 to 3 when the operator ranks it, --size S, M or L when you can tell (a plan: 1 to 2 steps S, 3 to 6 M, more L). A go the operator types here for work Lead must do is a `once` row in ~/.claude-shared/approvals-ledger.md, written by you, their words quoted. After the verdict say so in one line and stop: this pane ends the session by itself, c brings it back, and Return starts a fresh one for the next idea. For a question about what Lead is doing right now, tell the operator /btw in Lead's pane answers it without interrupting.
+NOTE
+}
+
 # mode(fresh|continue|resume) slot(or -) prompt claude-args...: take a slot, run one
 # session in it, return. Never exits: a refusal is printed and the pane waits on.
 # The caller sets PG_CTX (a context path), PG_CTXNAME, PG_BY (who started it) and
@@ -677,6 +791,24 @@ pane_go() {
   pg_ctx=${PG_CTX-} pg_ctxname=${PG_CTXNAME-} pg_by=${PG_BY-} pg_task=${PG_TASK-} pg_wake=${PG_WAKE-}
   pg_ho=${PG_HANDOFF-} pg_lpid=${PG_LEADPID-} pg_lsid=${PG_LEADSID-}
   PG_CTX= PG_CTXNAME= PG_BY= PG_TASK= PG_WAKE= PG_HANDOFF= PG_LEADPID= PG_LEADSID=
+  # a session a pane starts is a secretary's unless it is a hand-off (pg_sec is 1)
+  pg_sec=1 pg_over=
+  [ "$pg_ho" != 1 ] || pg_sec=
+  if [ -n "$pg_sec" ]; then
+    # the cap comes before the slot: a refusal after it would leave a claim behind
+    pg_max=$(pane_num pane-max 2)
+    pg_open=$(pane_secretaries)
+    pg_n=$(printf '%s' "$pg_open" | grep -c .)
+    if [ "$pg_max" -gt 0 ] && [ "$pg_n" -ge "$pg_max" ]; then
+      pg_now=$(date +%s)
+      if [ $((pg_now - ${pn_cap_t:-0})) -gt 60 ]; then
+        pn_cap_t=$pg_now
+        echo "claude-peer: $pg_n conversations are open ($(printf '%s\n' "$pg_open" | sort | paste -sd, - | sed 's/,/, /g')); Return again opens another"
+        return 0
+      fi
+      pn_cap_t=0 pg_over=$((pg_n + 1))
+    fi
+  fi
   if [ "$pg_req" != - ]; then
     out=$(slot_checkout "$repo" "$pg_req" "$(label_of "$pg_req")"); pg_rc=$?
   else
@@ -700,6 +832,21 @@ pane_go() {
   pg_t0=$(date +%s)
   printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "${pg_by:--}" "${pg_ctxname:--}" "${pg_task:--}" "$pg_t0" \
     "$([ "$pg_ho" = 1 ] && echo handoff || echo -)" "${pg_lpid:--}" "${pg_lsid:--}" >>"$(claim_file "$pg_wt")"
+  pg_l=$(label_of "$pg_taken") pg_sf=$(stop_file "$pg_wt")
+  pg_h0= pg_b0=
+  if [ -n "$pg_sec" ]; then
+    # a clean detached slot starts from where the remote's head is now, not from where it
+    # was when the slot was made; no fetch, and anything else is left as it is
+    # (not when its commits are on no branch of the remote's: the move would hide them)
+    if [ "$pg_mode" = fresh ] && ! git -C "$pg_wt" symbolic-ref -q HEAD >/dev/null 2>&1 \
+       && [ -z "$(git -C "$pg_wt" status --porcelain 2>/dev/null)" ] \
+       && git -C "$pg_wt" merge-base --is-ancestor HEAD origin/HEAD >/dev/null 2>&1; then
+      git -C "$pg_wt" checkout -q --detach origin/HEAD >/dev/null 2>&1 || true
+    fi
+    pg_h0=$(git -C "$pg_wt" rev-parse HEAD 2>/dev/null)
+    pg_b0=$(git -C "$pg_wt" symbolic-ref -q --short HEAD 2>/dev/null)
+    [ -z "$pg_over" ] || ( cd -- "$repo" && log_add "$(label_of "$pg_taken")" note "pane over cap: $pg_over" ) 2>/dev/null
+  fi
   if [ "$pg_ho" = 1 ] && [ -n "$pg_prompt" ]; then pg_prompt="$pg_prompt
 
 $(handoff_note)"; fi
@@ -717,27 +864,64 @@ $(handoff_note)"; fi
   for pg_a in "$@"; do [ "$pg_a" != --permission-mode ] || pg_has=1; done
   [ -n "$pg_has" ] || pg_pm=$(peer_mode)
   [ -z "$pg_pm" ] || set -- "$@" --permission-mode "$pg_pm"
+  if [ -n "$pg_sec" ]; then
+    # --disallowedTools takes every word after it: one argument, and --settings after it
+    pg_dn=$(pane_deny)
+    [ -z "$pg_dn" ] || set -- "$@" --disallowedTools "$pg_dn"
+    set -- "$@" --settings '{"crossSessionInbound":"refuse"}'
+    pg_cs=${pg_cs:+$pg_cs
+
+}$(secretary_note)
+  fi
   [ -z "$pg_ca" ] || set -- "$@" --agent "$pg_ca"
   [ -z "$pg_cm" ] || set -- "$@" --model "$pg_cm"
   [ -z "$pg_ce" ] || set -- "$@" --effort "$pg_ce"
   [ -z "$pg_cs" ] || set -- "$@" --append-system-prompt "$pg_cs"
   [ -z "$pg_prompt" ] || set -- "$@" "$pg_prompt"
   [ "$pg_mode" != resume ] || set -- "$@" --resume   # no value: Claude's own list chooses
+  # the clock: a session nobody ended is ended here (pane-end-minutes 0: never)
+  pg_we=$(pane_num pane-end-minutes 60)
+  pn_watch=
+  if [ -n "$pg_sec" ] && [ "$pg_we" -gt 0 ]; then
+    rm -f "$pg_sf.sid"
+    pg_tty=${CLAUDE_PEER_TTY:-$(pane_dev)}
+    ( trap - EXIT; cd -- "$repo" && pane_watch "$pg_l" "$pg_t0" "$pg_we" "$(pane_num pane-done-minutes 5)" "$pg_sf" "$pg_tty" ) </dev/null >/dev/null 2>&1 &
+    pn_watch=$!
+  fi
   run_session "$pg_wt" "$(session_name "$pg_taken")" "$@"
+  pane_unwatch
   # only after a session ran: a refused start returned above, and its `end`
   # would close a live peer's claims
   # A requested stop says who asked and wakes nobody; a hand-off that ended by
   # itself is `gone` and tells Lead; anything else is a plain end.
-  pg_l=$(label_of "$pg_taken")
+  if [ -n "$pg_sec" ] && [ -d "$pg_wt" ]; then
+    # a secretary leaves the repository as it found it; said in the log, nobody is told
+    pg_br=$(git -C "$pg_wt" symbolic-ref -q --short HEAD 2>/dev/null)
+    pg_dr=
+    if [ -n "$pg_br" ] && [ "$pg_br" != "$pg_b0" ]; then pg_dr="branch $pg_br"
+    elif [ "$(git -C "$pg_wt" rev-parse HEAD 2>/dev/null)" != "$pg_h0" ]; then pg_dr=commits
+    elif [ -n "$(git -C "$pg_wt" status --porcelain 2>/dev/null)" ]; then pg_dr=dirty; fi
+    [ -z "$pg_dr" ] || ( cd -- "$repo" && log_add "$pg_l" note "pane drift: $pg_dr in $pg_taken" ) 2>/dev/null
+  fi
   pg_txt="$pg_l ended after $(dur_of $(( $(date +%s) - pg_t0 )))${pg_task:+ ($pg_task)}"
-  pg_sf=$(stop_file "$pg_wt")
+  # a secretary's end line names its session, as a stop line does; the clock saw the id
+  pg_sid= pg_ex=
+  if [ -n "$pg_sec" ]; then
+    [ ! -f "$pg_sf.sid" ] || pg_sid=$(sed -n 1p "$pg_sf.sid")
+    pg_ex=$(printf '\tsession=%s' "${pg_sid:--}")
+  fi
+  rm -f "$pg_sf.sid"
   if [ -f "$pg_sf" ]; then
     pg_sw=$(sed -n 1p "$pg_sf"); rm -f "$pg_sf"
-    ( cd -- "$repo" && log_add "$pg_l" end "$pg_txt (stopped by ${pg_sw:--})" ) 2>/dev/null
+    ( cd -- "$repo" && log_add "$pg_l" end "$pg_txt (stopped by ${pg_sw:--})" "$pg_ex" ) 2>/dev/null
+    # forgotten, not finished: a reminder beside the cards, which Lead is never offered
+    case $pg_sw in "the pane, idle "*)
+      ( cd -- "$repo" && queue_add --kind unfinished ${pg_sid:+--session "$pg_sid"} --as "$pg_l" -- "${pg_task:-a conversation} (left unfinished)" ) >/dev/null 2>&1;;
+    esac
   elif [ "$pg_ho" = 1 ]; then
     ( cd -- "$repo" && log_add "$pg_l" gone "$pg_txt" ) 2>/dev/null && tell_lead "$LEADER" "$pg_lpid" "$pg_lsid"
   else
-    ( cd -- "$repo" && log_add "$pg_l" end "$pg_txt" ) 2>/dev/null
+    ( cd -- "$repo" && log_add "$pg_l" end "$pg_txt" "$pg_ex" ) 2>/dev/null
   fi
   [ ! -t 1 ] || printf '\033]21337;status=;indicator=;status-color=;detail=\a'
   return 0
@@ -1776,6 +1960,25 @@ cmd_run() {
   exit $?
 }
 
+# The Agents pane. Standing in the main checkout, claude() resolves the repository's
+# profile itself; `claude agents --cwd` lists the background and forked sessions
+# started under it. Nothing is claimed or checked out.
+cmd_agents() {
+  [ $# -eq 0 ] || usage
+  if ag_root=$(repo_root_q) && cd "$ag_root"; then
+    AGENTS_SH='while :; do
+  if command -v claude >/dev/null 2>&1; then claude agents --cwd "$PWD"; else echo "claude-peer: claude is not on PATH, so there is no agent list to show"; fi
+  printf "Agents: Return runs it again, q for a shell: "
+  read -r ag_a || break
+  [ "$ag_a" = q ] && break
+done
+exec "${SHELL:-/bin/sh}" -i'
+    exec "${SHELL:-/bin/sh}" -i -c "$AGENTS_SH" claude-peer
+  fi
+  echo "claude-peer: agents: not inside a git repository; plain shell"
+  exec "${SHELL:-/bin/sh}" -i
+}
+
 # [--wait] [-- hermes args...]. The shell function does the routing
 # (hermes_profile is zsh and lives in .functions), so this only settles, then
 # starts a shell that calls it and stays a shell whatever it did. --wait hands
@@ -2722,8 +2925,9 @@ queue_add() {
   queue_append "$qa_id" add "$qa_who" "$qa_kind:w=$qa_w:u=$qa_u:p=$qa_p:s=$qa_s${qa_sid:+:session=$qa_sid}" "$qa_text" "${qa_file:--}"
   printf '%s\n' "$qa_id"
   queue_escalate
-  # nothing in flight: no card taken, no running agent of Lead's; else nobody is woken
-  if [ -z "$(queue_py taken)" ] && ! jobs_running Lead; then
+  # nothing in flight: no card taken, no running agent of Lead's; else nobody is woken.
+  # An unfinished card is a reminder Lead is never offered: nothing to wake it for.
+  if [ "$qa_kind" != unfinished ] && [ -z "$(queue_py taken)" ] && ! jobs_running Lead; then
     log_add "$qa_who" note "queue: $qa_id is waiting and nothing is in flight"
     tell_lead "$(repo_root_q)" - -
   fi
@@ -3119,13 +3323,14 @@ def session(ident, name, kind, command="", items=None, parent=None):
     return s
 
 def build_base(prefix):
-    """Lead and the four slot panes, ids under prefix. A pane waits (--wait):
-    nothing starts in it until Return or `claude-peer start`."""
+    """Lead, the Ideas pane (slot secretary) and the Agents viewer, ids under prefix.
+    The slot pane waits (--wait): nothing starts in it until Return or
+    `claude-peer start`. The Agents pane is a viewer: no slot, claim or worktree."""
     root = prefix + ".main"
-    return [session(root, "Lead", "root", items=[{"kind": "modeSwitcher"}, {"kind": "gitStatus"}])] + [
-        session("%s.%s" % (prefix, slot), slot.capitalize(), "peer",
-                "claude-peer run --as %s --wait" % slot, parent=root)
-        for slot in ("alpha", "beta", "gamma", "delta")]
+    return [session(root, "Lead", "root", items=[{"kind": "modeSwitcher"}, {"kind": "gitStatus"}]),
+            session(prefix + ".secretary", "Ideas", "peer",
+                    "claude-peer run --as secretary --wait", parent=root),
+            session(prefix + ".agents", "Agents", "peer", "claude-peer agents", parent=root)]
 
 def with_hermes(group):
     """The twin of a definition with a Hermes pane: id <id>.h (claudePeer.h for
@@ -3526,7 +3731,7 @@ cmd_install() {
   need_macos install
   proc_running iTerm2 && die "quit iTerm2 first — it rewrites its preferences at quit and would overwrite this"
   prefs_store
-  ovs=$(overlay_names)
+  ovs=  # no overlay pair is built any more: the none-configured path removes a stale pair and the state file
   r=$(peer_py install "$skind" "$spath" "$(enter_state)" "$(overlay_labels "$ovs")") || exit 1
   # after peer_py succeeded: `here` answers overlays only for a definition that is there
   ovf=$(overlays_file)
@@ -3549,7 +3754,7 @@ cmd_default() {
   f=$(enter_file)
   if [ "$1" = peers ]; then
     mkdir -p "${f%/*}" && printf 'peers\n' >"$f" || die "cannot write $f"
-    printf 'claude-peer: claude() now picks the workgroup of each tab (Claude Peers: Alpha to Delta wait until started); the claude job trigger is disabled; %s\n' "$r"
+    printf 'claude-peer: claude() now picks the workgroup of each tab (Claude Peers: the Ideas pane waits until started); the claude job trigger is disabled; %s\n' "$r"
   else
     rm -f "$f"
     printf 'claude-peer: a claude job now enters Claude Code; the variable triggers are gone; %s\n' "$r"
@@ -3936,6 +4141,7 @@ cmd=$1; shift
 case $cmd in
   run) cmd_run "$@";;
   hermes) cmd_hermes "$@";;
+  agents) cmd_agents "$@";;
   overlays) cmd_overlays "$@";;
   overlay) cmd_overlay "$@";;
   peers) cmd_peers "$@";;

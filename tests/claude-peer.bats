@@ -40,6 +40,31 @@ setup() {
   git config --global claude-peer.restore-check false
   cat >"$BATS_TEST_TMPDIR/bin/fakeshell" <<'STUB'
 #!/bin/sh
+# FAKE_SHELL_RAW=<file>: one line per argument, as it arrived, newlines as |
+[ -z "${FAKE_SHELL_RAW-}" ] || for a in "$@"; do printf 'A:%s\n' "$(printf '%s' "$a" | tr '\n' '|')"; done >>"$FAKE_SHELL_RAW"
+# What a pane adds to every session that is not a hand-off (the secretary seat) is
+# left out of what the tests below read, unless FAKE_SHELL_SEAT is set: they are
+# about the other arguments.
+if [ -z "${FAKE_SHELL_SEAT-}" ]; then
+  nn='
+
+'
+  c=$#
+  while [ "$c" -gt 0 ]; do
+    a=$1; shift; c=$((c - 1))
+    case $a in
+      --disallowedTools|--settings) shift; c=$((c - 1)); continue;;
+      --append-system-prompt)
+        v=$1; shift; c=$((c - 1))
+        case $v in
+          'Secretary seat.'*) continue;;
+          *"${nn}Secretary seat."*) v=${v%%"${nn}Secretary seat."*};;
+        esac
+        set -- "$@" "$a" "$v"; continue;;
+    esac
+    set -- "$@" "$a"
+  done
+fi
 echo "pwd=$PWD"
 echo "peer=${CLAUDE_PEER_WORKTREE-unset}"
 echo "hermeswait=${CLAUDE_PEER_HERMES_WAIT-unset}"
@@ -48,6 +73,7 @@ echo "args=$*"
 [ -z "${FAKE_SHELL_PID-}" ] || echo $$ >"$FAKE_SHELL_PID"
 [ -z "${FAKE_SHELL_LAST-}" ] || { for last; do :; done; printf '%s' "$last" >"$FAKE_SHELL_LAST"; echo $# >"$FAKE_SHELL_LAST.n"; }
 [ -z "${FAKE_SHELL_NOTERM-}" ] || trap '' TERM
+[ -z "${FAKE_SHELL_DO-}" ] || sh -c "$FAKE_SHELL_DO"
 [ -z "${FAKE_SHELL_SLEEP-}" ] || sleep "$FAKE_SHELL_SLEEP"
 STUB
   chmod +x "$BATS_TEST_TMPDIR/bin/fakeshell"
@@ -1685,41 +1711,41 @@ groups() {
 # pyget <json> <python expression over g>
 pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(eval(sys.argv[2]))' "$1" "$2"; }
 
-@test "workgroup: Claude Peers is five sessions in order, Lead the root, no Diff, no Hermes" {
+@test "workgroup: Claude Peers is three sessions, Lead the root, Ideas and Agents, no Diff, no Hermes" {
   mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist" run sh "$BIN" workgroup
   [ "$status" -eq 0 ]
   [ "$(pyget "$output" '[g["uniqueIdentifier"], g["name"]]')" = "['claudePeer.workgroup', 'Claude Peers']" ]
-  [ "$(pyget "$output" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.main', 'claudePeer.alpha', 'claudePeer.beta', 'claudePeer.gamma', 'claudePeer.delta']" ]
-  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta']" ]
+  [ "$(pyget "$output" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.main', 'claudePeer.secretary', 'claudePeer.agents']" ]
+  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Ideas', 'Agents']" ]
   [ "$(pyget "$output" 'g["sessions"][0]["kind"]')" = "{'kind': 'root'}" ]
-  [ "$(pyget "$output" '[s["command"] for s in g["sessions"]]')" = "['', 'claude-peer run --as alpha --wait', 'claude-peer run --as beta --wait', 'claude-peer run --as gamma --wait', 'claude-peer run --as delta --wait']" ]
+  [ "$(pyget "$output" '[s["command"] for s in g["sessions"]]')" = "['', 'claude-peer run --as secretary --wait', 'claude-peer agents']" ]
   # the fixture builtin's root has a third item; nothing is copied from it
   [ "$(pyget "$output" '[i["kind"] for i in g["sessions"][0]["toolbarItems"]]')" = "['modeSwitcher', 'gitStatus']" ]
-  [ "$(pyget "$output" '[s["toolbarItems"] for s in g["sessions"][1:]]')" = "[[{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}]]" ]
-  [ "$(pyget "$output" '[s["kind"]["kind"] for s in g["sessions"][1:]]')" = "['peer', 'peer', 'peer', 'peer']" ]
-  [ "$(pyget "$output" '[s["parentID"] for s in g["sessions"][1:]]')" = "['claudePeer.main', 'claudePeer.main', 'claudePeer.main', 'claudePeer.main']" ]
+  [ "$(pyget "$output" '[s["toolbarItems"] for s in g["sessions"][1:]]')" = "[[{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}]]" ]
+  [ "$(pyget "$output" '[s["kind"]["kind"] for s in g["sessions"][1:]]')" = "['peer', 'peer']" ]
+  [ "$(pyget "$output" '[s["parentID"] for s in g["sessions"][1:]]')" = "['claudePeer.main', 'claudePeer.main']" ]
   [ "$(pyget "$output" 'any(s["mode"] != "regular" or "profileGUID" in s or s["urlString"] or s["perFileCommand"] or "hermes" in s["command"] for s in g["sessions"])')" = False ]
 }
 
 @test "workgroup: reads no store, so none needs to exist" {
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/absent.plist" run sh "$BIN" workgroup
   [ "$status" -eq 0 ]
-  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta']" ]
+  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Ideas', 'Agents']" ]
 }
 
-@test "install: Claude Peers + Hermes is the same five under claudePeer.h plus Hermes last" {
+@test "install: Claude Peers + Hermes is the same three under claudePeer.h plus Hermes last" {
   stubs
   mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist" sh "$BIN" install >/dev/null
   g=$(groups "$BATS_TEST_TMPDIR/prefs.plist")
   h=$(python3 -I -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1])[2]))' "$g")
   [ "$(pyget "$h" '[g["uniqueIdentifier"], g["name"]]')" = "['claudePeer.h', 'Claude Peers + Hermes']" ]
-  [ "$(pyget "$h" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.h.main', 'claudePeer.h.alpha', 'claudePeer.h.beta', 'claudePeer.h.gamma', 'claudePeer.h.delta', 'claudePeer.h.hermes']" ]
-  [ "$(pyget "$h" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Hermes']" ]
+  [ "$(pyget "$h" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.h.main', 'claudePeer.h.secretary', 'claudePeer.h.agents', 'claudePeer.h.hermes']" ]
+  [ "$(pyget "$h" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Ideas', 'Agents', 'Hermes']" ]
   [ "$(pyget "$h" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.h.main'}" ]
   [ "$(pyget "$h" 'g["sessions"][-1]["command"]')" = "claude-peer hermes --wait" ]
-  [ "$(pyget "$h" '[s["command"] for s in g["sessions"][1:5]]')" = "['claude-peer run --as alpha --wait', 'claude-peer run --as beta --wait', 'claude-peer run --as gamma --wait', 'claude-peer run --as delta --wait']" ]
+  [ "$(pyget "$h" '[s["command"] for s in g["sessions"][1:3]]')" = "['claude-peer run --as secretary --wait', 'claude-peer agents']" ]
   [ "$(pyget "$h" 'g["sessions"][0]["kind"]')" = "{'kind': 'root'}" ]
 }
 
@@ -1794,12 +1820,37 @@ pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(ev
   [[ "$output" == *"iterm2: running"* ]]
   sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (5 sessions: Lead, Alpha, Beta, Gamma, Delta)"* ]]
-  [[ "$output" == *"hermes: installed (6 sessions: Lead, Alpha, Beta, Gamma, Delta, Hermes)"* ]]
+  [[ "$output" == *"workgroup: installed (3 sessions: Lead, Ideas, Agents)"* ]]
+  [[ "$output" == *"hermes: installed (4 sessions: Lead, Ideas, Agents, Hermes)"* ]]
   FAKE_OS=Linux run sh "$BIN" status
   [[ "$output" == *"status needs macOS"* ]]
   FAKE_OS=Linux run sh "$BIN" install
   [ "$status" -eq 2 ]
+}
+
+@test "status: the five-pane definition of the Alpha to Delta bar says out of date; install clears it" {
+  stubs
+  mkprefs "$BATS_TEST_TMPDIR/domain.plist"
+  export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist"
+  python3 -I - "$FAKE_DOMAIN" <<'PY'
+import json, plistlib, sys
+pl = plistlib.load(open(sys.argv[1], "rb"))
+groups = json.loads(pl["Workgroups"])
+slots = ["alpha", "beta", "gamma", "delta"]
+def sess(i, n, kind, cmd):
+    return {"uniqueIdentifier": i, "kind": {"kind": kind}, "displayName": n, "command": cmd}
+groups.append({"uniqueIdentifier": "claudePeer.workgroup", "name": "Claude Peers",
+               "sessions": [sess("claudePeer.main", "Lead", "root", "")] +
+               [sess("claudePeer." + x, x.capitalize(), "peer", "claude-peer run --as %s --wait" % x) for x in slots]})
+pl["Workgroups"] = json.dumps(groups).encode()
+plistlib.dump(pl, open(sys.argv[1], "wb"))
+PY
+  run sh "$BIN" status
+  [[ "$output" == *"workgroup: installed, out of date (5 sessions: Lead, Alpha, Beta, Gamma, Delta); this version defines 3 (Lead, Ideas, Agents)"* ]]
+  CLAUDE_PEER_PREFS="$FAKE_DOMAIN" sh "$BIN" install >/dev/null
+  run sh "$BIN" status
+  [[ "$output" == *"workgroup: installed (3 sessions: Lead, Ideas, Agents)"* ]]
+  [[ "$output" != *"out of date"* ]]
 }
 
 @test "status: the six-session definition of v3 says out of date and hermes not installed; install clears both" {
@@ -1818,12 +1869,12 @@ pl["Workgroups"] = json.dumps(groups).encode()
 plistlib.dump(pl, open(sys.argv[1], "wb"))
 PY
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed, out of date (6 sessions: Chat, Diff, Chat 2, Chat 3, Chat 4, Hermes); this version defines 5 (Lead, Alpha, Beta, Gamma, Delta)"* ]]
+  [[ "$output" == *"workgroup: installed, out of date (6 sessions: Chat, Diff, Chat 2, Chat 3, Chat 4, Hermes); this version defines 3 (Lead, Ideas, Agents)"* ]]
   [[ "$output" == *"hermes: not installed"* ]]
   CLAUDE_PEER_PREFS="$FAKE_DOMAIN" sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (5 sessions: "* ]]
-  [[ "$output" == *"hermes: installed (6 sessions: "* ]]
+  [[ "$output" == *"workgroup: installed (3 sessions: "* ]]
+  [[ "$output" == *"hermes: installed (4 sessions: "* ]]
   [[ "$output" != *"out of date"* ]]
 }
 
@@ -1836,7 +1887,7 @@ PY
   # install into the folder with iTerm2 quit; the domain stays as it was
   sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (5 sessions: Lead, Alpha, Beta, Gamma, Delta)"* ]]
+  [[ "$output" == *"workgroup: installed (3 sessions: Lead, Ideas, Agents)"* ]]
   FAKE_PROCS=iTerm2 run sh "$BIN" status
   [[ "$output" == *"workgroup: not installed"* ]]
   [[ "$output" == *"hermes: not installed"* ]]
@@ -1885,6 +1936,68 @@ STUB
   run sh "$BIN" hermes
   [[ "$output" == *"hermes_peer is not defined in this shell; plain shell (chezmoi apply)"* ]]
   [[ "$output" == *"interactive"* ]]
+}
+
+@test "agents: an interactive shell in the main checkout, even from a linked worktree; no claim, slot or worktree" {
+  git -C "$REPO" worktree add -q --detach "$BATS_TEST_TMPDIR/linked"
+  cd "$BATS_TEST_TMPDIR/linked"
+  run sh "$BIN" agents
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pwd=$REPO"$'\n'* ]]
+  [[ "$output" == *'args=-i -c '*'claude agents --cwd "$PWD"'*'exec "${SHELL:-/bin/sh}" -i'*' claude-peer' ]]
+  [ -z "$(find "$REPO/.git" -name 'claude-peer.*' -not -name claude-peer.base)" ]
+  [ "$(git -C "$REPO" worktree list | wc -l)" -eq 2 ]
+  run sh "$BIN" agents --foo
+  [ "$status" -eq 2 ]
+}
+
+@test "agents: outside a repository it is one line and a plain shell" {
+  mkdir "$BATS_TEST_TMPDIR/norepo"
+  cd "$BATS_TEST_TMPDIR/norepo"
+  run sh "$BIN" agents
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"claude-peer: agents: not inside a git repository; plain shell"* ]]
+  [[ "$output" == *"args=-i"* ]]
+  [[ "$output" != *"claude agents"* ]]
+}
+
+# agents_snippet: the shell snippet `agents` hands to the login shell, run under sh
+agents_snippet() {
+  real_sh=$(command -v sh)
+  cat >"$BATS_TEST_TMPDIR/bin/fakeshell" <<STUB
+#!/bin/sh
+[ "\${2-}" = -c ] || { echo "plain shell"; exit 0; }
+snippet=\$3; shift 3
+exec $real_sh -c "\$snippet" "\$@"
+STUB
+}
+
+@test "agents: claude agents runs with --cwd the main checkout; Return runs it again, q leaves a shell" {
+  agents_snippet
+  cat >"$BATS_TEST_TMPDIR/bin/claude" <<'STUB'
+#!/bin/sh
+echo "claude $* in $PWD" >>"$CLAUDE_LOG"
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/claude"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+  export CLAUDE_LOG="$BATS_TEST_TMPDIR/claude.log"
+  printf '\nq\n' | sh "$BIN" agents >"$BATS_TEST_TMPDIR/out.txt"
+  [ "$(cat "$CLAUDE_LOG")" = "claude agents --cwd $REPO in $REPO"$'\n'"claude agents --cwd $REPO in $REPO" ]
+  grep -q "plain shell" "$BATS_TEST_TMPDIR/out.txt"
+}
+
+@test "agents: without claude on PATH it says so and waits for Return, never spinning" {
+  agents_snippet
+  # the caller's PATH less every directory that holds a claude
+  local d np= IFS=:
+  for d in $PATH; do [ -x "$d/claude" ] || np="$np${np:+:}$d"; done
+  unset IFS
+  printf 'q\n' | PATH="$np" sh "$BIN" agents >"$BATS_TEST_TMPDIR/out.txt" 2>&1
+  [ "$(grep -c 'claude is not on PATH' "$BATS_TEST_TMPDIR/out.txt")" = 1 ]
+  grep -q "plain shell" "$BATS_TEST_TMPDIR/out.txt"
+  # end of input leaves too
+  : | PATH="$np" sh "$BIN" agents >"$BATS_TEST_TMPDIR/out2.txt" 2>&1
+  grep -q "plain shell" "$BATS_TEST_TMPDIR/out2.txt"
 }
 
 # --- default --------------------------------------------------------------------
@@ -4389,204 +4502,75 @@ ov_prefs() {
   [ ! -e "$BATS_TEST_TMPDIR/chezmoi.log" ]
 }
 
-@test "install overlays: two overlays add the pair, one pane each after the others, and a state file" {
-  ov_prefs
-  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
-  overlay_cfg fake2.toml "$OV2"
-  overlay_cfg fake1.toml "$OV1"
-  run sh "$BIN" install
-  [ "$status" -eq 0 ]
-  [[ "$output" == *'"Claude Peers + Overlays" written and "Claude Peers + Hermes + Overlays" written in '* ]]
-  g=$(groups "$CLAUDE_PEER_PREFS")
-  [ "$(pyget "$g" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup', 'claudePeer.h', 'claudePeer.v.overlays', 'claudePeer.v.overlays.h']" ]
-  o=$(pyget "$g" 'json.dumps(g[3])'); oh=$(pyget "$g" 'json.dumps(g[4])'); h=$(pyget "$g" 'json.dumps(g[2])')
-  [ "$(pyget "$o" 'g["name"]')" = "Claude Peers + Overlays" ]
-  [ "$(pyget "$oh" 'g["name"]')" = "Claude Peers + Hermes + Overlays" ]
-  [ "$(pyget "$o" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Overlay 1', 'Overlay 2']" ]
-  [ "$(pyget "$oh" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Hermes', 'Overlay 1', 'Overlay 2']" ]
-  [ "$(pyget "$o" 'all(s["uniqueIdentifier"].startswith(g["uniqueIdentifier"] + ".") for s in g["sessions"])')" = True ]
-  [ "$(pyget "$oh" 'all(s["uniqueIdentifier"].startswith(g["uniqueIdentifier"] + ".") for s in g["sessions"])')" = True ]
-  [ "$(pyget "$o" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.v.overlays.main'}" ]
-  [ "$(pyget "$oh" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.v.overlays.h.main'}" ]
-  [ "$(pyget "$oh" '[s["uniqueIdentifier"] for s in g["sessions"]][5:]')" = "['claudePeer.v.overlays.h.hermes', 'claudePeer.v.overlays.h.o.1', 'claudePeer.v.overlays.h.o.2']" ]
-  [ "$(pyget "$oh" '[s["command"] for s in g["sessions"]][:6]')" = "$(pyget "$h" '[s["command"] for s in g["sessions"]]')" ]
-  [ "$(pyget "$o" '[s["command"] for s in g["sessions"]][5:]')" = "['claude-peer overlay 1', 'claude-peer overlay 2']" ]
-  [ "$(pyget "$oh" '[s["command"] for s in g["sessions"]][6:]')" = "['claude-peer overlay 1', 'claude-peer overlay 2']" ]
-  [ "$(pyget "$o" 'set(s["kind"]["kind"] for s in g["sessions"][1:])')" = "{'peer'}" ]
-  [ "$(pyget "$o" 'g["sessions"][-1]["toolbarItems"]')" = "[{'kind': 'modeSwitcher'}]" ]
-  [ "$(cat "$OV_STATE")" = "fake1 fake2" ]
-  # a second install replaces the pair
-  run sh "$BIN" install
-  [ "$status" -eq 0 ]
-  [[ "$output" == *'"Claude Peers + Overlays" replaced and "Claude Peers + Hermes + Overlays" replaced'* ]]
-  [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" 'len(g)')" = 5 ]
-  # the plain definitions are what they were
-  run sh "$BIN" workgroup
-  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta']" ]
+# ov_seed <names...>: the pair an install of the Alpha to Delta bar wrote, built the way
+# `with_overlays` does from the installed definitions (run `install` first), and a state file
+ov_seed() {
+  python3 -I - "$CLAUDE_PEER_PREFS" "$#" <<'PY'
+import copy, json, plistlib, sys
+path, n = sys.argv[1], int(sys.argv[2])
+pl = plistlib.load(open(path, "rb"))
+gs = json.loads(pl["Workgroups"])
+def pair(src, gid, name):
+    g = copy.deepcopy(next(x for x in gs if x["uniqueIdentifier"] == src))
+    old = "claudePeer" if src == "claudePeer.workgroup" else src  # the id prefix of the sessions
+    for s in g["sessions"]:
+        s["uniqueIdentifier"] = gid + s["uniqueIdentifier"][len(old):]
+        if "parentID" in s:
+            s["parentID"] = gid + s["parentID"][len(old):]
+    g.update(uniqueIdentifier=gid, name=name)
+    g["sessions"] += [{"uniqueIdentifier": "%s.o.%d" % (gid, i), "kind": {"kind": "peer"},
+                       "displayName": "Overlay %d" % i, "command": "claude-peer overlay %d" % i,
+                       "parentID": gid + ".main", "perFileCommand": "", "urlString": "", "mode": "regular",
+                       "toolbarItems": [{"kind": "modeSwitcher"}]} for i in range(1, n + 1)]
+    return g
+gs += [pair("claudePeer.workgroup", "claudePeer.v.overlays", "Claude Peers + Overlays"),
+       pair("claudePeer.h", "claudePeer.v.overlays.h", "Claude Peers + Hermes + Overlays")]
+pl["Workgroups"] = json.dumps(gs).encode()
+plistlib.dump(pl, open(path, "wb"))
+PY
+  mkdir -p "${OV_STATE%/*}"
+  printf '%s\n' "$*" >"$OV_STATE"
 }
 
-@test "install overlays: a smaller set rebuilds the pair, none removes it and the state file" {
+@test "install overlays: with overlays configured it builds only the two definitions, writes no state file, and never asks chezmoi" {
   ov_prefs
-  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
-  overlay_cfg fake1.toml "$OV1"
-  overlay_cfg fake2.toml "$OV2"
-  sh "$BIN" install >/dev/null
-  rm "$HOME/.config/chezmoi/fake1.toml"
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  overlay_cfg fake2.toml "$(overlay_repo ov2)"
   run sh "$BIN" install
   [ "$status" -eq 0 ]
-  [[ "$output" == *'"Claude Peers + Overlays" replaced'* ]]
-  g=$(groups "$CLAUDE_PEER_PREFS")
-  [ "$(pyget "$g" '[s["displayName"] for s in g[3]["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Overlay 1']" ]
-  [ "$(cat "$OV_STATE")" = fake2 ]
-  rm "$HOME/.config/chezmoi/fake2.toml"
-  run sh "$BIN" install
-  [ "$status" -eq 0 ]
-  [[ "$output" == *'"Claude Peers + Overlays" removed and "Claude Peers + Hermes + Overlays" removed'* ]]
+  [ "$output" = "claude-peer: \"Claude Peers\" written and \"Claude Peers + Hermes\" written in $CLAUDE_PEER_PREFS; start iTerm2, then Shell > Workgroups > Claude Peers in a plain tab" ]
   [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup', 'claudePeer.h']" ]
   [ ! -e "$OV_STATE" ]
+  [ ! -e "$BATS_TEST_TMPDIR/chezmoi.log" ]
 }
 
-@test "install overlays: with the enter file the pair gets its triggers, and loses them with the overlays" {
+@test "install overlays: a store holding the overlay pair loses it and the state file, and the other groups stay" {
+  ov_prefs
+  sh "$BIN" install >/dev/null
+  ov_seed fake1 fake2
+  [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" 'len(g)')" = 5 ]
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"Claude Peers" replaced and "Claude Peers + Hermes" replaced and "Claude Peers + Overlays" removed and "Claude Peers + Hermes + Overlays" removed'* ]]
+  [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup', 'claudePeer.h']" ]
+  [ ! -e "$OV_STATE" ]
+  # here answers base again, even in the public source with an overlay on the machine
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  cd "$REPO"
+  FAKE_CHEZMOI_SOURCE="$REPO" run sh "$BIN" here
+  [ "$output" = base ]
+}
+
+@test "install overlays: the pair's variable triggers go with it" {
   ov_prefs
   addprofiles "$CLAUDE_PEER_PREFS"
-  OV1=$(overlay_repo ov1)
   sh "$BIN" install >/dev/null
   sh "$BIN" default peers >/dev/null
   before=$(params "$CLAUDE_PEER_PREFS")
-  overlay_cfg fake1.toml "$OV1"
-  run sh "$BIN" install
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"variable triggers changed in 2 profiles"* ]]
-  [ "$(params "$CLAUDE_PEER_PREFS")" = "One:builtin.claudeCode:j* One:claudePeer.workgroup:v One:claudePeer.h:v One:claudePeer.v.overlays:v One:claudePeer.v.overlays.h:v Two:builtin.claudeCode:j* Two:claudePeer.workgroup:v Two:claudePeer.h:v Two:claudePeer.v.overlays:v Two:claudePeer.v.overlays.h:v Other:someone.else:j" ]
-  python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
-import plistlib, sys
-pl = plistlib.load(open(sys.argv[1], "rb"))
-rx = {t["parameter"]: t["eventParams"]["variableValueRegex"] for t in pl["New Bookmarks"][0]["Triggers"] if "eventParams" in t}
-assert rx["claudePeer.v.overlays"] == "^overlays:", rx
-assert rx["claudePeer.v.overlays.h"] == "^overlays/hermes:", rx
-PY
-  rm "$HOME/.config/chezmoi/fake1.toml"
-  run sh "$BIN" install
-  [[ "$output" == *"variable triggers changed in 2 profiles"* ]]
-  [ "$(params "$CLAUDE_PEER_PREFS")" = "$before" ]
-}
-
-@test "install overlays: a store that cannot be written leaves no state file" {
-  ov_prefs
-  mkprefs "$CLAUDE_PEER_PREFS" junk
-  OV1=$(overlay_repo ov1)
-  overlay_cfg fake1.toml "$OV1"
-  run sh "$BIN" install
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"not a JSON list"* ]]
-  [ ! -e "$OV_STATE" ]
-}
-
-@test "install overlays: a skipped config reaches the operator's stderr and gets no pane" {
-  ov_prefs
-  OV1=$(overlay_repo ov1)
-  overlay_cfg fake1.toml "$OV1"
-  overlay_cfg fake2.toml "$BATS_TEST_TMPDIR/nowhere"
-  run --separate-stderr sh "$BIN" install
-  [ "$status" -eq 0 ]
-  [[ "$stderr" == *"overlay config fake2.toml: chezmoi names no source directory; skipped"* ]]
-  [ "$(cat "$OV_STATE")" = fake1 ]
-}
-
-# ov_store_strings <plist>: every string the store holds, one per line; data values are
-# decoded and, where they are JSON, walked
-ov_store_strings() {
-  python3 -I - "$1" <<'PY'
-import json, plistlib, sys
-def walk(v):
-    if isinstance(v, dict):
-        for k, x in v.items():
-            yield str(k)
-            yield from walk(x)
-    elif isinstance(v, (list, tuple)):
-        for x in v:
-            yield from walk(x)
-    elif isinstance(v, bytes):
-        t = v.decode("utf-8", "replace")
-        yield t
-        try:
-            yield from walk(json.loads(t))
-        except ValueError:
-            pass
-    elif isinstance(v, str):
-        yield v
-for s in walk(plistlib.load(open(sys.argv[1], "rb"))):
-    print(s)
-PY
-}
-
-@test "install overlays: the store holds positions and no overlay name, config name or path" {
-  ov_prefs
-  addprofiles "$CLAUDE_PEER_PREFS"
-  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
-  overlay_cfg fake1.toml "$OV1"
-  overlay_cfg Fake.Two.toml "$OV2"
+  ov_seed fake1
   sh "$BIN" install >/dev/null
   sh "$BIN" default peers >/dev/null
-  sh "$BIN" install >/dev/null
-  local s; s=$(ov_store_strings "$CLAUDE_PEER_PREFS")
-  [[ "$s" == *"claudePeer.v.overlays.h.o.2"* ]]
-  [[ "$s" == *"claude-peer overlay 2"* ]]
-  [[ "$s" == *"Overlay 2"* ]]
-  [[ "${s,,}" != *fake* ]]
-  [[ "$s" != *ov1* ]]
-  [[ "$s" != *ov2* ]]
-  [[ "$s" != *"$BATS_TEST_TMPDIR"* ]]
-  [ "$(cat "$OV_STATE")" = "fake-two fake1" ]
-}
-
-@test "install overlays: the command install wrote reaches its overlay, and a new overlay does not re-point it" {
-  ov_prefs
-  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
-  overlay_cfg fake1.toml "$OV1"
-  overlay_cfg fake2.toml "$OV2"
-  sh "$BIN" install >/dev/null
-  local g; g=$(groups "$CLAUDE_PEER_PREFS")
-  [ "$(pyget "$g" 'g[3]["sessions"][-1]["command"]')" = "claude-peer overlay 2" ]
-  overlay_cfg fake0.toml "$(overlay_repo ov0)"
-  opane 2 "$OV2"
-  until_ok 'grep -q "^Fake2: Return" "$BATS_TEST_TMPDIR/pane-2.out"'
-  ov_status
-  [[ "$output" == *"overlays: installed, out of date (Overlay 1 = Fake1, Overlay 2 = Fake2); this machine has 3 (Overlay 1 = Fake0, Overlay 2 = Fake1, Overlay 3 = Fake2) — claude-peer install (with iTerm2 quit)"* ]]
-}
-
-@test "install overlays: a store outside git gets display labels, from the origin's git config label or the name" {
-  ov_prefs outside
-  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
-  git -C "$OV1" remote add origin git@github.com:Fk/One.git
-  git -C "$OV2" remote add origin https://github.com/fk/two
-  overlay_cfg fake1.toml "$OV1"
-  overlay_cfg fake2.toml "$OV2"
-  git config --global claude-peer.fk/one.label "FK 1"
-  run sh "$BIN" install
-  [ "$status" -eq 0 ]
-  g=$(groups "$CLAUDE_PEER_PREFS")
-  [ "$(pyget "$g" '[s["displayName"] for s in g[3]["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'FK 1', 'Fake2']" ]
-  [ "$(pyget "$g" 'g[3]["sessions"][-2]["command"]')" = "claude-peer overlay 1" ]
-  ov_status
-  [[ "$output" == *"overlays: installed (2 panes: FK 1, Fake2)"* ]]
-  [[ "$output" != *"out of date"* ]]
-  git config --global claude-peer.fk/two.label Other
-  ov_status
-  [[ "$output" == *"overlays: installed, out of date (FK 1, Fake2); this machine has 2 (FK 1, Other)"* ]]
-}
-
-@test "install overlays: a store in a subdirectory of a clone keeps positions despite a label" {
-  ov_prefs
-  local d="$BATS_TEST_TMPDIR/prefsclone/sub"
-  mkdir -p "$d" && mkprefs "$d/prefs.plist"
-  export CLAUDE_PEER_PREFS="$d/prefs.plist"
-  OV1=$(overlay_repo ov1)
-  git -C "$OV1" remote add origin git@github.com:fk/one.git
-  overlay_cfg fake1.toml "$OV1"
-  git config --global claude-peer.fk/one.label "FK 1"
-  sh "$BIN" install >/dev/null
-  [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" 'g[3]["sessions"][-1]["displayName"]')" = "Overlay 1" ]
+  [ "$(params "$CLAUDE_PEER_PREFS")" = "$before" ]
 }
 
 @test "tracked plists: every overlay pane in a tracked Workgroups value is labelled by position" {
@@ -4619,7 +4603,7 @@ if bad: print("\n".join(bad)); sys.exit(1)
   OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
   overlay_cfg fake1.toml "$OV1"
   overlay_cfg fake2.toml "$OV2"
-  sh "$BIN" install >/dev/null
+  mkdir -p "${OV_STATE%/*}" && printf 'fake1 fake2\n' >"$OV_STATE"
   COLORTERM=truecolor CLAUDE_PEER_SIZE='40 120' opane 2 "$OV2"
   until_ok 'grep -qF "$LISTHINT" "$BATS_TEST_TMPDIR/pane-2.out"'
   grep -qF $'\033[38;2;90;120;200mFake2 ▸\033[0m ' "$BATS_TEST_TMPDIR/pane-2.out"
@@ -4634,7 +4618,7 @@ if bad: print("\n".join(bad)); sys.exit(1)
   git -C "$OV1" remote add origin git@github.com:fk/one.git
   overlay_cfg fake1.toml "$OV1"
   git config --global claude-peer.fk/one.label "FK 1"
-  sh "$BIN" install >/dev/null
+  mkdir -p "${OV_STATE%/*}" && printf 'fake1\n' >"$OV_STATE"
   opane 1 "$OV1"
   until_ok 'grep -q "^FK 1: Return" "$BATS_TEST_TMPDIR/pane-1.out"'
 }
@@ -4671,6 +4655,7 @@ ov_status() { FAKE_CHEZMOI_SOURCE="$REPO" run --separate-stderr sh "$BIN" status
   overlay_cfg fake1.toml "$(overlay_repo ov1)"
   overlay_cfg fake2.toml "$(overlay_repo ov2)"
   sh "$BIN" install >/dev/null
+  ov_seed fake1 fake2
   ov_status
   [[ "$output" == *"overlays: installed (2 panes: Overlay 1 = Fake1, Overlay 2 = Fake2)"* ]]
   [[ "$output" != *"out of date"* ]]
@@ -4687,6 +4672,7 @@ ov_status() { FAKE_CHEZMOI_SOURCE="$REPO" run --separate-stderr sh "$BIN" status
   ov_prefs
   overlay_cfg fake1.toml "$(overlay_repo ov1)"
   sh "$BIN" install >/dev/null
+  ov_seed fake1
   python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
 import json, plistlib, sys
 pl = plistlib.load(open(sys.argv[1], "rb"))
@@ -4702,6 +4688,7 @@ PY
   ov_prefs
   overlay_cfg fake1.toml "$(overlay_repo ov1)"
   sh "$BIN" install >/dev/null
+  ov_seed fake1
   rm "$HOME/.config/chezmoi/fake1.toml" "$HOME/.config/chezmoi/fake1.toml.src"
   overlay_cfg fake9.toml "$(overlay_repo ov9)"
   ov_status
@@ -4712,6 +4699,7 @@ PY
   ov_prefs
   overlay_cfg fake1.toml "$(overlay_repo ov1)"
   sh "$BIN" install >/dev/null
+  ov_seed fake1
   rm "$OV_STATE"
   ov_status
   [[ "$output" == *"overlays: installed (1 panes: Overlay 1 = Fake1)"* ]]
@@ -4732,6 +4720,7 @@ PY
   ov_prefs
   overlay_cfg fake1.toml "$(overlay_repo ov1)"
   sh "$BIN" install >/dev/null
+  ov_seed fake1
   mkprefs "$BATS_TEST_TMPDIR/domain.plist"
   export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist"
   ov_status
@@ -5338,4 +5327,325 @@ qhook_text() {
   [ "$status" -eq 2 ]
   run sh "$BIN" queue nope
   [ "$status" -eq 2 ]
+}
+
+# --- the secretary seat: every session a pane starts that is not a hand-off ---------------
+# FAKE_SHELL_SEAT=1 keeps the seat's arguments in the stub's log; FAKE_SHELL_RAW=<file>
+# has every argument on a line of its own (A:<argument>, newlines as |).
+
+# seat_args <file>: the arguments after the session name, one per line
+seat_args() { sed -n '/^A:proj-alpha$/,$p' "$1" | sed 1d; }
+
+# seat_n <file> <n>: until at least n arguments after the session name have arrived
+seat_n() { until_ok "[ \"\$(seat_args '$1' | wc -l | tr -d ' ')\" -ge $2 ]"; }
+
+# fake_secretaries <name>...: a live session of each name in the registry of $CLAUDE_CONFIG_DIR
+fake_secretaries() {
+  local n
+  mkdir -p "$BATS_TEST_TMPDIR/cfg/sessions"
+  for n in "$@"; do
+    sleep 300 3>&- &
+    PANES="$PANES $!"
+    printf '{"pid":%s,"name":"%s-secretary","status":"idle"}\n' "$!" "$n" >"$BATS_TEST_TMPDIR/cfg/sessions/$!.json"
+  done
+  export CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/cfg
+}
+
+@test "secretary seat: a Return start gets the deny list as one argument, then --settings, then the note" {
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane alpha
+  press alpha ''
+  seat_n "$raw" 6
+  [ "$(seat_args "$raw" | sed -n 1p)" = "A:--disallowedTools" ]
+  [ "$(seat_args "$raw" | sed -n 2p)" = "A:Edit,NotebookEdit,SendMessage,ListAgents,Agent(work-sonnet),Agent(unstick-fable)" ]
+  [ "$(seat_args "$raw" | sed -n 3p)" = "A:--settings" ]
+  [ "$(seat_args "$raw" | sed -n 4p)" = 'A:{"crossSessionInbound":"refuse"}' ]
+  [ "$(seat_args "$raw" | sed -n 5p)" = "A:--append-system-prompt" ]
+  note=$(seat_args "$raw" | sed -n 6p)
+  [[ "$note" == "A:Secretary seat. "* ]]
+  [[ "$note" == *'/claude-reports/proj/idea-<slug>.md'* ]]
+  [[ "$note" == *"claude-peer queue add --kind plan"* ]]
+  [[ "$note" != *"<rname>"* ]]
+  [ "$(seat_args "$raw" | wc -l | tr -d ' ')" -eq 6 ]
+}
+
+@test "secretary seat: a typed task is still the last argument, after the seat's flags" {
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane alpha
+  run sh "$BIN" start alpha fix the thing
+  [ "$status" -eq 0 ]
+  seat_n "$raw" 7
+  [ "$(seat_args "$raw" | tail -1)" = "A:fix the thing" ]
+  [ "$(seat_args "$raw" | grep -c '^A:--disallowedTools$')" -eq 1 ]
+  [ "$(seat_args "$raw" | grep -c '^A:--append-system-prompt$')" -eq 1 ]
+}
+
+@test "secretary seat: --continue and the permission mode come first, the seat follows them" {
+  git -C "$REPO" config claude-peer.permission-mode auto
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane alpha
+  run sh "$BIN" start alpha --continue go on
+  [ "$status" -eq 0 ]
+  seat_n "$raw" 10
+  [ "$(seat_args "$raw" | sed -n 1,4p | tr '\n' ' ')" = "A:--continue A:--permission-mode A:auto A:--disallowedTools " ]
+}
+
+@test "secretary seat: a hand-off start gets none of the three" {
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane alpha
+  CLAUDE_PID=4242 run sh "$BIN" start alpha --handoff fix thing
+  [ "$status" -eq 0 ]
+  seat_n "$raw" 1
+  [ "$(seat_args "$raw" | wc -l | tr -d ' ')" -eq 1 ]
+  no grep -q -e 'disallowedTools' -e 'settings' -e 'Secretary seat' "$raw"
+}
+
+@test "secretary seat: pane-deny none drops the deny pair and keeps the rest; a value that could be a flag is said once" {
+  raw=$BATS_TEST_TMPDIR/raw
+  git -C "$REPO" config claude-peer.pane-deny none
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane alpha
+  hold_tty alpha
+  press alpha ''
+  seat_n "$raw" 4
+  [ "$(seat_args "$raw" | sed -n 1p)" = "A:--settings" ]
+  no grep -q disallowedTools "$raw"
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  git -C "$REPO" config claude-peer.pane-deny -x
+  press alpha ''
+  until_ok '[ "$(grep -c "^A:--disallowedTools\$" "$raw")" -eq 1 ]'
+  [ "$(grep -c "claude-peer.pane-deny '-x' could read as a flag; ignored" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 1 ]
+  grep -q '^A:Edit,NotebookEdit,SendMessage' "$raw"
+}
+
+@test "secretary seat: a context with system: gets one --append-system-prompt holding both, its text first" {
+  hellofix
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane alpha
+  run sh "$BIN" start alpha --context hello World
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "^A:Hello World" "$raw"'
+  [ "$(grep -c '^A:--append-system-prompt$' "$raw")" -eq 1 ]
+  [[ "$(grep -A1 '^A:--append-system-prompt$' "$raw" | tail -1)" == "A:be brief||Secretary seat. "* ]]
+}
+
+@test "secretary seat: a clean detached slot behind origin/HEAD is moved to it, a dirty one is left" {
+  remote_head
+  sh "$BIN" run --as alpha </dev/null >/dev/null
+  wt=$REPO/.claude/worktrees/alpha
+  old=$(git -C "$wt" rev-parse HEAD)
+  git update-ref refs/remotes/origin/main "$(git rev-parse HEAD)"
+  [ "$(git rev-parse origin/HEAD)" != "$old" ]
+  FAKE_SHELL_SLEEP=1 pane alpha
+  hold_tty alpha
+  press alpha ''
+  until_ok '[ "$(git -C "$wt" rev-parse HEAD)" = "$(git rev-parse origin/HEAD)" ]'
+  no git -C "$wt" symbolic-ref -q HEAD
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  git -C "$wt" checkout -q --detach "$old"
+  echo stray >"$wt/stray.txt"
+  press alpha ''
+  until_ok '[ "$(shell_runs)" -eq 2 ]'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$old" ]
+}
+
+@test "secretary seat: a clean detached slot whose commits are on no branch of the remote is left where it is" {
+  remote_head
+  sh "$BIN" run --as alpha </dev/null >/dev/null
+  wt=$REPO/.claude/worktrees/alpha
+  git -C "$wt" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m detached
+  mine=$(git -C "$wt" rev-parse HEAD)
+  FAKE_SHELL_SLEEP=1 pane alpha
+  hold_tty alpha
+  press alpha ''
+  until_ok '[ "$(shell_runs)" -eq 1 ]'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$mine" ]
+}
+
+@test "secretary seat: two open conversations make the first Return say so, the second starts and notes it" {
+  fake_secretaries aa bb
+  FAKE_SHELL_SLEEP=1 pane alpha
+  hold_tty alpha
+  press alpha ''
+  until_ok 'grep -q "^claude-peer: 2 conversations are open (aa-secretary, bb-secretary); Return again opens another\$" "$BATS_TEST_TMPDIR/pane-alpha.out"'
+  [ "$(shell_runs)" -eq 0 ]
+  [ -z "$(sh "$BIN" peers)" ]
+  press alpha ''
+  until_ok '[ "$(shell_runs)" -eq 1 ]'
+  grep -q "$(printf '\tAlpha\tnote\tpane over cap: 3')" "$REPO/.git/claude-peer.log"
+  [ "$(grep -c 'conversations are open' "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 1 ]
+}
+
+@test "secretary seat: pane-max 0 never warns" {
+  fake_secretaries aa bb
+  git -C "$REPO" config claude-peer.pane-max 0
+  FAKE_SHELL_SLEEP=1 pane alpha
+  press alpha ''
+  until_ok '[ "$(shell_runs)" -eq 1 ]'
+  no grep -q 'conversations are open' "$BATS_TEST_TMPDIR/pane-alpha.out"
+  [ ! -e "$REPO/.git/claude-peer.log" ] || no grep -q 'pane over cap' "$REPO/.git/claude-peer.log"
+}
+
+@test "secretary seat: a session that commits, dirties the tree or takes a branch leaves a pane drift note, and nobody is told" {
+  FAKE_SHELL_DO='git commit -q --allow-empty -m x' pane alpha
+  press alpha ''
+  until_ok 'grep -q "pane drift: commits in alpha" "$REPO/.git/claude-peer.log"'
+  FAKE_SHELL_DO='echo stray >stray.txt' pane beta
+  press beta ''
+  until_ok 'grep -q "pane drift: dirty in beta" "$REPO/.git/claude-peer.log"'
+  FAKE_SHELL_DO='git checkout -q -b side' pane gamma
+  press gamma ''
+  until_ok 'grep -q "pane drift: branch side in gamma" "$REPO/.git/claude-peer.log"'
+  [ "$(grep -c 'pane drift' "$REPO/.git/claude-peer.log")" -eq 3 ]
+}
+
+@test "secretary seat: a session that touches nothing leaves no drift note, even in a worktree that was on a branch" {
+  git -C "$REPO" worktree add -q -b onbranch "$REPO/.claude/worktrees/alpha"
+  FAKE_SHELL_SLEEP=1 pane alpha
+  press alpha c
+  until_ok 'grep -q "Alpha ended after" "$REPO/.git/claude-peer.log"'
+  no grep -q "pane drift" "$REPO/.git/claude-peer.log"
+}
+
+# --- the pane's clock: it ends what is finished or forgotten ---------------------------
+
+# clock_env: a registry the stub sessions write their record into (reg.sh, as Claude Code
+# does: the record is named for the process, status times are milliseconds) and a tick
+# short enough to wait for; the tick is unique to the test, so `ps` can find its sleeps
+clock_env() {
+  T=$(printf '\t')
+  export CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/cfg CLAUDE_PEER_TICK=0.3$$
+  mkdir -p "$CLAUDE_CONFIG_DIR/sessions"
+  git -C "$REPO" config claude-peer.pane-end-minutes 1
+  cat >"$BATS_TEST_TMPDIR/reg.sh" <<'REG'
+printf '{"sessionId":"%s","status":"%s","statusUpdatedAt":%s}\n' "${REG_SID:-sess-1}" "$REG_STATUS" \
+  $(( ($(date +%s) - REG_AGE * 60) * 1000 )) >"$CLAUDE_CONFIG_DIR/sessions/$PPID.json"
+touch -a -t 200001010000 "$CLAUDE_PEER_TTY"   # the Return that started it is old input here
+REG
+  CLOCK_DO=". '$BATS_TEST_TMPDIR/reg.sh'"
+}
+
+# clock_sleeps: the watchers' sleeps now running
+clock_sleeps() { ps -Ao args= | grep -c "[s]leep $CLAUDE_PEER_TICK"; }
+
+@test "pane clock: an idle session past the limit is ended by TERM, the end line says so and names the session, and a card is left that wakes nobody" {
+  clock_env
+  qpb
+  REG_STATUS=idle REG_AGE=120 FAKE_SHELL_DO=$CLOCK_DO FAKE_SHELL_SLEEP=20 pane alpha
+  press alpha ''
+  until_ok 'grep -q "Alpha ended after" "$REPO/.git/claude-peer.log"'
+  grep -Eq "Alpha${T}end${T}Alpha ended after [0-9]+s \(stopped by the pane, idle 1m\)${T}session=sess-1\$" "$REPO/.git/claude-peer.log"
+  until_ok 'grep -q "${T}unfinished:w=0:u=0:p=0:s=?:session=sess-1${T}a conversation (left unfinished)" "$REPO/.git/claude-peer.queue"'
+  [ "$(grep -c unfinished "$REPO/.git/claude-peer.queue")" -eq 1 ]
+  sh "$BIN" queue list --all | grep -q "unfinished"
+  run sh "$BIN" queue next
+  [ "$status" -eq 3 ]
+  [ ! -e "$BATS_TEST_TMPDIR/pb.log" ]
+  [ -z "$(ls "$REPO"/.git/worktrees/alpha/claude-peer.stop* 2>/dev/null)" ]
+}
+
+@test "pane clock: a session with a fresh status, a busy one and one whose subagent just wrote are left alone" {
+  clock_env
+  mkdir -p "$CLAUDE_CONFIG_DIR/projects/x/sess-3/subagents"
+  REG_STATUS=idle REG_AGE=0 REG_SID=sess-1 FAKE_SHELL_DO=$CLOCK_DO FAKE_SHELL_SLEEP=3 pane alpha
+  REG_STATUS=busy REG_AGE=120 REG_SID=sess-2 FAKE_SHELL_DO=$CLOCK_DO FAKE_SHELL_SLEEP=3 pane beta
+  REG_STATUS=idle REG_AGE=120 REG_SID=sess-3 FAKE_SHELL_DO="$CLOCK_DO; : >'$CLAUDE_CONFIG_DIR/projects/x/sess-3/subagents/agent-1.jsonl'" FAKE_SHELL_SLEEP=3 pane gamma
+  press alpha ''
+  press beta ''
+  press gamma ''
+  until_ok '[ "$(grep -c " ended after " "$REPO/.git/claude-peer.log")" -eq 3 ]'
+  no grep -q "stopped by" "$REPO/.git/claude-peer.log"
+  # each still names its session, which the clock saw at a tick
+  grep -Eq "Alpha${T}end${T}.*${T}session=sess-1\$" "$REPO/.git/claude-peer.log"
+  grep -Eq "Gamma${T}end${T}.*${T}session=sess-3\$" "$REPO/.git/claude-peer.log"
+  [ ! -s "$REPO/.git/claude-peer.queue" ]
+}
+
+@test "pane clock: a terminal typed at within the limit keeps an idle session, one not typed at for the limit does not" {
+  clock_env
+  REG_STATUS=idle REG_AGE=120 FAKE_SHELL_DO="$CLOCK_DO; touch -a \"\$CLAUDE_PEER_TTY\"" FAKE_SHELL_SLEEP=3 pane alpha
+  press alpha ''
+  until_ok 'grep -q "Alpha ended after" "$REPO/.git/claude-peer.log"'
+  no grep -q "stopped by" "$REPO/.git/claude-peer.log"
+  # the same session with input two minutes ago (the limit is one) is ended
+  REG_STATUS=idle REG_AGE=120 FAKE_SHELL_DO="$CLOCK_DO; touch -a -d '-2 minutes' \"\$CLAUDE_PEER_TTY\" 2>/dev/null || touch -a -t \$(date -v-2M +%Y%m%d%H%M) \"\$CLAUDE_PEER_TTY\"" FAKE_SHELL_SLEEP=20 pane beta
+  press beta ''
+  until_ok 'grep -q "Beta ended after" "$REPO/.git/claude-peer.log"'
+  grep -Eq "Beta${T}end${T}.*\(stopped by the pane, idle 1m\)" "$REPO/.git/claude-peer.log"
+}
+
+@test "pane clock: after a verdict the shorter limit applies and no unfinished card is added" {
+  clock_env
+  git -C "$REPO" config claude-peer.pane-end-minutes 500
+  git -C "$REPO" config claude-peer.pane-done-minutes 1
+  REG_STATUS=idle REG_AGE=120 FAKE_SHELL_DO="$CLOCK_DO; sh '$BIN' queue add --kind ask --as Alpha -- 'a thing for Lead'" FAKE_SHELL_SLEEP=20 pane alpha
+  press alpha ''
+  until_ok 'grep -q "Alpha ended after" "$REPO/.git/claude-peer.log"'
+  grep -Eq "Alpha${T}end${T}.*\(stopped by the pane, finished\)${T}session=sess-1\$" "$REPO/.git/claude-peer.log"
+  sleep 0.5   # the card, when there is one, is added just after the end line
+  [ "$(grep -c "${T}add${T}" "$REPO/.git/claude-peer.queue")" -eq 1 ]
+  no grep -q unfinished "$REPO/.git/claude-peer.queue"
+}
+
+@test "pane clock: a pane-done-minutes of 0 keeps the long limit after a verdict" {
+  clock_env
+  git -C "$REPO" config claude-peer.pane-end-minutes 500
+  git -C "$REPO" config claude-peer.pane-done-minutes 0
+  REG_STATUS=idle REG_AGE=120 FAKE_SHELL_DO="$CLOCK_DO; sh '$BIN' queue add --kind ask --as Alpha -- 'a thing for Lead'" FAKE_SHELL_SLEEP=3 pane alpha
+  press alpha ''
+  until_ok 'grep -q "Alpha ended after" "$REPO/.git/claude-peer.log"'
+  no grep -q "stopped by" "$REPO/.git/claude-peer.log"
+}
+
+@test "pane clock: one watcher while a session runs, none after it, none for a hand-off or with pane-end-minutes 0" {
+  clock_env
+  local count="$BATS_TEST_TMPDIR/count.sh"
+  cat >"$count" <<'CNT'
+n=0
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  c=$(ps -Ao args= | grep -c "[s]leep $CLAUDE_PEER_TICK")
+  [ "$c" -le "$n" ] || n=$c
+  sleep 0.05
+done
+echo "$n" >"$1"
+CNT
+  REG_STATUS=busy REG_AGE=0 FAKE_SHELL_DO="$CLOCK_DO; sh '$count' '$BATS_TEST_TMPDIR/n.alpha'" FAKE_SHELL_SLEEP=1 pane alpha
+  press alpha ''
+  until_ok '[ -f "$BATS_TEST_TMPDIR/n.alpha" ] && grep -q "Alpha ended after" "$REPO/.git/claude-peer.log"'
+  [ "$(cat "$BATS_TEST_TMPDIR/n.alpha")" -eq 1 ]
+  until_ok '[ "$(clock_sleeps)" -eq 0 ]'
+  # a hand-off is the control arm: no clock
+  REG_STATUS=busy REG_AGE=0 FAKE_SHELL_DO="$CLOCK_DO; sh '$count' '$BATS_TEST_TMPDIR/n.beta'" FAKE_SHELL_SLEEP=1 pane beta
+  CLAUDE_PID=4242 sh "$BIN" start beta --handoff do it >/dev/null
+  until_ok '[ -f "$BATS_TEST_TMPDIR/n.beta" ] && grep -q "Beta${T}gone" "$REPO/.git/claude-peer.log"'
+  [ "$(cat "$BATS_TEST_TMPDIR/n.beta")" -eq 0 ]
+  # pane-end-minutes 0 never ends a session
+  git -C "$REPO" config claude-peer.pane-end-minutes 0
+  REG_STATUS=busy REG_AGE=0 FAKE_SHELL_DO="$CLOCK_DO; sh '$count' '$BATS_TEST_TMPDIR/n.gamma'" FAKE_SHELL_SLEEP=1 pane gamma
+  press gamma ''
+  until_ok '[ -f "$BATS_TEST_TMPDIR/n.gamma" ] && grep -q "Gamma ended after" "$REPO/.git/claude-peer.log"'
+  [ "$(cat "$BATS_TEST_TMPDIR/n.gamma")" -eq 0 ]
+}
+
+@test "pane clock: a pane that is killed takes its watcher and the sleep with it" {
+  clock_env
+  REG_STATUS=busy REG_AGE=0 FAKE_SHELL_DO=$CLOCK_DO FAKE_SHELL_SLEEP=20 pane alpha
+  press alpha ''
+  until_ok '[ "$(clock_sleeps)" -ge 1 ]'
+  kill "$LAST_PANE"
+  until_ok '[ "$(clock_sleeps)" -eq 0 ]'
+}
+
+@test "queue add: an unfinished card is listed and never offered, and wakes nobody even with nothing in flight" {
+  qpb
+  run sh "$BIN" queue add --kind unfinished --session abc-1 -- "a conversation (left unfinished)"
+  [ "$status" -eq 0 ]
+  [ "$output" = Q1 ]
+  sleep 0.3
+  [ ! -e "$BATS_TEST_TMPDIR/pb.log" ]
+  no grep -q "nothing is in flight" .git/claude-peer.log
+  sh "$BIN" queue list | grep -q "unfinished"
+  run sh "$BIN" queue next
+  [ "$status" -eq 3 ]
 }

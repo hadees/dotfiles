@@ -95,6 +95,26 @@ setup() {
   git config --global claude-peer.art-seconds 0
   cat >"$BATS_TEST_TMPDIR/bin/fakeshell" <<'STUB'
 #!/bin/sh
+# a session a pane starts carries the secretary seat's arguments; the screen would
+# show their long note, so they are left out here (tests/claude-peer.bats keeps them)
+nn='
+
+'
+c=$#
+while [ "$c" -gt 0 ]; do
+  a=$1; shift; c=$((c - 1))
+  case $a in
+    --disallowedTools|--settings) shift; c=$((c - 1)); continue;;
+    --append-system-prompt)
+      v=$1; shift; c=$((c - 1))
+      case $v in
+        'Secretary seat.'*) continue;;
+        *"${nn}Secretary seat."*) v=${v%%"${nn}Secretary seat."*};;
+      esac
+      set -- "$@" "$a" "$v"; continue;;
+  esac
+  set -- "$@" "$a"
+done
 echo "pwd=$PWD"
 echo "peer=${CLAUDE_PEER_WORKTREE-unset}"
 echo "hermeswait=${CLAUDE_PEER_HERMES_WAIT-unset}"
