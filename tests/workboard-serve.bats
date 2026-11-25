@@ -187,8 +187,32 @@ PY
   [ "$STATUS" = 403 ] && [ "$(jget "$BATS_TEST_TMPDIR/resp.body" 'd["error"]')" = "bad origin" ]
   hreq POST /api/url -H "Content-Length: 70000" -d '{}'
   [ "$STATUS" = 413 ] && [ "$(jget "$BATS_TEST_TMPDIR/resp.body" 'd["error"]')" = "bad body" ]
-  hreq --local POST /api/url -H "Content-Length: 70000" -d '{}'
-  [ "$STATUS" = 413 ] && [ "$(jget "$BATS_TEST_TMPDIR/resp.body" 'd["error"]')" = "bad body" ]
+  # the socket answers 413 and closes before the body is sent; where the client can
+  # still read the answer it is the same well-formed 413, where the platform resets
+  # the connection first it is nothing, and either way the board answers the next request
+  $WB_PY - "$WORKBOARD_RUNTIME/workboard/$PORT.sock" > "$BATS_TEST_TMPDIR/oversize" <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(10)
+s.connect(sys.argv[1])
+got = b""
+try:
+    s.sendall(b"POST /api/url HTTP/1.1\r\nHost: localhost\r\nContent-Length: 70000\r\n\r\n" + b"{}" * 35000)
+except OSError:
+    pass
+try:
+    while chunk := s.recv(65536):
+        got += chunk
+except OSError:
+    pass
+sys.stdout.buffer.write(got)
+PY
+  if [ -s "$BATS_TEST_TMPDIR/oversize" ]; then
+    head -n1 "$BATS_TEST_TMPDIR/oversize" | grep -q ' 413 '
+    grep -q '"bad body"' "$BATS_TEST_TMPDIR/oversize"
+  fi
+  hreq GET /health
+  [ "$STATUS" = 200 ]
   hreq GET /pane/broken
   [ "$STATUS" = 500 ] && [ "$(jget "$BATS_TEST_TMPDIR/resp.body" 'd["error"]')" = "route failed" ]
   hreq GET /b/nope
@@ -637,6 +661,9 @@ for r in d["repos"]:
 @test "in a session the link is the profile's, even when the secret cannot be read; outside one an unreadable secret is one line" {
   start_board
   chmod 000 "$STATE/secret"
+  local unreadable=1
+  # root (the CI containers) and WSL's drvfs read through a mode 000
+  if head -c1 "$STATE/secret" >/dev/null 2>&1; then unreadable=0; fi
   run env CLAUDECODE=1 CLAUDE_CONFIG_DIR="$HOME/.claude-personal" "$WB" url
   [ "$status" -eq 0 ]
   local per
@@ -646,6 +673,10 @@ for r in d["repos"]:
   [ "$STATUS" = 200 ]
   [ "$(jget "$BATS_TEST_TMPDIR/resp.body" 'd["scope"]')" = "$HOME/.claude-personal" ]
   [ "$(jget "$BATS_TEST_TMPDIR/resp.body" 'sorted(set(c["slug"] for c in d["cards"]))')" = "['octo-personal/proj-two']" ]
+  if [ "$unreadable" = 0 ]; then
+    chmod 600 "$STATE/secret"
+    skip "chmod 000 does not make the secret unreadable here (root or a filesystem that ignores modes)"
+  fi
   run -1 "$WB" url
   chmod 600 "$STATE/secret"
   [ "$status" -eq 1 ]

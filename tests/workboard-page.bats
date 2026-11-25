@@ -135,6 +135,7 @@ PY
 }
 
 @test "the page is not an executable, and nothing in this file wrote a __pycache__" {
-  [ ! -x "$PAGE" ]
+  # the mode git records, not the filesystem's: WSL's drvfs marks every file executable
+  [[ "$(git -C "$WB_ROOT" ls-files -s -- "${PAGE#$WB_ROOT/}")" == 100644* ]]
   wb_no_pycache
 }
