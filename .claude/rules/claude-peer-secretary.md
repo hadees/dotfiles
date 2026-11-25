@@ -173,8 +173,9 @@ control arm) behaves as it did. `pane_go` sets `pg_sec` to 1 for a secretary sta
   `none` passes no deny pair; a value that starts with `-` is said once and the default
   used). A context's `system:` text and the note are one `--append-system-prompt`, the
   text first, an empty line, then the note.
-- **The seat note** (`secretary_note`) is text the operator signed on 2026-11-25 and is
-  kept word for word; only `<rname>`, the session-name prefix, is replaced. It tells the
+- **The seat note** (`secretary_note`) is the signed text with "he", "him" and "his"
+  written as "the operator", "they" and "their"; nothing else of it changed. Only
+  `<rname>`, the session-name prefix, is replaced. It tells the
   session to keep one idea file under `${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<rname>/`,
   to finish with one `claude-peer queue add` (or `park` or `drop`), to write a `once`
   row to the approvals ledger for a go, and not to edit, commit, merge, dispatch
