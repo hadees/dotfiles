@@ -274,6 +274,7 @@ rule first.
 | `claude-tab` | `claude-tab` list, attention, next, focus, save, restore; `tabname` |
 | `claude-tab-panel` | the needs-you list: its kinds, the tick, the server, the page |
 | `workboard` | the work board: cards, the who and inbox contracts, readers, server, page; read it before `workboard open` or any live look at the board |
+| `workboard-verbs` | what a session may write through the board, the MCP endpoint and `connect`, the LaunchAgent |
 | `pane-sight` | reading and picturing another pane, its scope gate and audit log, screen-heads-up |
 | `branchname` | the branch label a prompt or status line shows, the detached-slot base record |
 | `postbox` | cross-profile session mail, its hooks, the courier, the roll-call |
