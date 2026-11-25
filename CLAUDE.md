@@ -271,7 +271,7 @@ rule first.
 | `claude-peer-restore` | the entry record, the restored-pane check |
 | `claude-peer-look` | the sleeper's motion: its timer, waking, and `look` with its trigger and lock |
 | `claude-peer-caduceus` | the Hermes pane's figure and glint, read from the installed Hermes |
-| `claude-peer-secretary` | the secretary pane's launch, clock and guardrails; the jobs record; the queue |
+| `claude-peer-secretary` | the bar (Lead, Ideas, Agents); the jobs record; the queue |
 | `claude-tab` | `claude-tab` list, attention, next, focus, save, restore; `tabname` |
 | `claude-tab-panel` | the needs-you list: its kinds, the tick, the server, the page |
 | `workboard` | the work board: cards, the who and inbox contracts, readers, server, page; read it before `workboard open` or any live look at the board |
@@ -290,6 +290,7 @@ rule first.
 | `iterm2-relaunch` | quit iTerm2, apply preferences or cask upgrades while it is down, reopen, resume the Claude tabs and peers; the Alfred workflow |
 | `cc-status-shim` | Session Status rows, seat colours, row names, terminal titles |
 | `dot-functions` | what else lives in `dot_functions`, and `emulate -L zsh` |
+| `step-cost` | the transcript measuring script: its columns, the window, what counts as a human prompt |
 
 `docs/private-overlays.md` is the overlay manual. `docs/espanso.md` covers
 the text expander, whose config is a separate private repo.

@@ -35,7 +35,7 @@ iTerm2 verbs refuse off macOS.
 
 The definitions are **two more** Workgroups, never extra peers on the builtin:
 peers spawn at entry and the builtin is entered on every `claude` job.
-`Claude Peers` (`claudePeer.workgroup`) is Lead and Secretary, and `Claude Peers + Hermes`
+`Claude Peers` (`claudePeer.workgroup`) is Lead, Ideas and Agents, and `Claude Peers + Hermes`
 (`claudePeer.h`) adds a Hermes pane (`claude-peer hermes --wait`): the pane cannot remove
 itself, so a repo where no Hermes profile routes gets the definition without it, chosen
 before entry. The bar and the retired overlay pair are in `claude-peer-secretary.md`. There is no Diff peer, and

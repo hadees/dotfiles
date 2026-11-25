@@ -4789,3 +4789,516 @@ ov_ready() {
   run sh "$BIN" here extra
   [ "$status" -eq 2 ]
 }
+
+# --- the jobs record -------------------------------------------------------------
+# job hook turns Claude Code's subagent events into lines of claude-peer.jobs; jobs
+# reads them back. Payloads are fixtures: the layout of a real transcript's
+# .meta.json is observed, not an interface.
+
+JOBS=.git/claude-peer.jobs
+
+# job_hook <json>: run the hook with that payload, from the main checkout
+job_hook() { cd "$REPO" && printf '%s' "$1" | sh "$BIN" job hook; }
+
+# job_payload <event> <id> <type> <cwd> [<extra json members>]
+job_payload() {
+  printf '{"hook_event_name":"%s","agent_id":"%s","agent_type":"%s","cwd":"%s"%s}' "$1" "$2" "$3" "$4" "${5:+,$5}"
+}
+
+@test "job hook: start, stop and report each write one line; nothing reaches stdout, the exit is 0" {
+  git -C "$REPO" worktree add -q "$BATS_TEST_TMPDIR/wt" -b job-x
+  mkdir -p "$BATS_TEST_TMPDIR/sub"
+  : >"$BATS_TEST_TMPDIR/sub/agent-a1.jsonl"
+  printf '{"agentType":"work-sonnet","description":"Build step 1"}' >"$BATS_TEST_TMPDIR/sub/agent-a1.meta.json"
+  run --separate-stderr job_hook "$(job_payload SubagentStart a1 work-sonnet "$BATS_TEST_TMPDIR/wt")"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  run --separate-stderr job_hook "$(job_payload PostToolUse a1 work-sonnet "$BATS_TEST_TMPDIR/wt" \
+    '"tool_name":"SubagentHandback","tool_input":{"message":"DONE\nthe account is in ~/.local/state/claude-reports/proj/step1.md. ok"}')"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  run --separate-stderr job_hook "$(job_payload SubagentStop a1 work-sonnet "$REPO" \
+    "\"agent_transcript_path\":\"$BATS_TEST_TMPDIR/sub/agent-a1.jsonl\"")"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  [ "$(wc -l <"$REPO/$JOBS" | tr -d ' ')" -eq 3 ]
+  # who is Lead outside a peer; the worktree is the cwd when it is not the main checkout, else -
+  [ "$(sed -n 1p "$REPO/$JOBS" | cut -f2-)" = "$(printf 'Lead\tstart\ta1\twork-sonnet\t\t%s' "$BATS_TEST_TMPDIR/wt")" ]
+  [ "$(sed -n 2p "$REPO/$JOBS" | cut -f2-6)" = "$(printf 'Lead\treport\ta1\twork-sonnet\tDONE ~/.local/state/claude-reports/proj/step1.md')" ]
+  [ "$(sed -n 3p "$REPO/$JOBS" | cut -f2-)" = "$(printf 'Lead\tstop\ta1\twork-sonnet\tBuild step 1\t-')" ]
+}
+
+@test "job hook: a peer's session is its label; internal agents (no type), no agent id, other events, bad JSON and no repository write nothing" {
+  CLAUDE_PEER_WORKTREE="$REPO/.claude/worktrees/alpha" job_hook "$(job_payload SubagentStart a2 scout-haiku "$REPO")"
+  [ "$(sed -n 1p "$REPO/$JOBS" | cut -f2-5 | tr '\t' ' ')" = "Alpha start a2 scout-haiku" ]
+  job_hook "$(job_payload SubagentStop a3 '' "$REPO")"
+  job_hook "$(job_payload SubagentStart a3 '' "$REPO")"
+  job_hook "$(job_payload SubagentStart '' scout-haiku "$REPO")"
+  job_hook "$(job_payload PreToolUse a4 scout-haiku "$REPO" '"tool_name":"SubagentHandback"')"
+  job_hook "$(job_payload PostToolUse a4 scout-haiku "$REPO" '"tool_name":"Bash"')"
+  run --separate-stderr job_hook 'this is not json'
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  run --separate-stderr job_hook ''
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  mkdir "$BATS_TEST_TMPDIR/plain"
+  run --separate-stderr job_hook "$(job_payload SubagentStart a5 scout-haiku "$BATS_TEST_TMPDIR/plain")"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  [ "$(wc -l <"$REPO/$JOBS" | tr -d ' ')" -eq 1 ]
+}
+
+@test "job hook: an unwritable jobs file is still silent and exit 0" {
+  mkdir "$REPO/$JOBS"
+  run --separate-stderr job_hook "$(job_payload SubagentStart a6 scout-haiku "$REPO")"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+}
+
+@test "jobs: a start, a report and a stop are one reported row with the description; a running and an ended row beside it" {
+  mkdir -p "$BATS_TEST_TMPDIR/sub"
+  : >"$BATS_TEST_TMPDIR/sub/agent-b1.jsonl"
+  printf '{"description":"Plan the thing"}' >"$BATS_TEST_TMPDIR/sub/agent-b1.meta.json"
+  job_hook "$(job_payload SubagentStart b1 plan-fable "$REPO")"
+  job_hook "$(job_payload PostToolUse b1 plan-fable "$REPO" '"tool_name":"SubagentHandback","tool_input":{"message":"DONE_WITH_CONCERNS: one thing"}')"
+  job_hook "$(job_payload SubagentStop b1 plan-fable "$REPO" "\"agent_transcript_path\":\"$BATS_TEST_TMPDIR/sub/agent-b1.jsonl\"")"
+  job_hook "$(job_payload SubagentStart b2 scout-haiku "$REPO")"
+  job_hook "$(job_payload SubagentStart b3 scout-haiku "$REPO")"
+  job_hook "$(job_payload SubagentStop b3 scout-haiku "$REPO")"
+  run sh "$BIN" jobs
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 3 ]
+  # state, id, who, type, started, ended, worktree, description, report
+  printf '%s\n' "$output" | awk -F'\t' '$1 == "reported" && $2 == "b1" && $3 == "Lead" && $4 == "plan-fable" && $5 != "-" && $6 != "-" && $7 == "-" && $8 == "Plan the thing" && $9 == "DONE_WITH_CONCERNS: one thing" { f = 1 } END { exit !f }'
+  printf '%s\n' "$output" | awk -F'\t' '$2 == "b2" && $1 == "running" && $6 == "-" && $8 == "-" && $9 == "-" { f = 1 } END { exit !f }'
+  printf '%s\n' "$output" | awk -F'\t' '$2 == "b3" && $1 == "ended" { f = 1 } END { exit !f }'
+}
+
+@test "jobs: the window is 24 hours, --since HOURS widens it, --all is the file, newest first; a <dir>, no repository, a bad number" {
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  printf '2020-01-01T00:00:00Z\tLead\tstart\told1\twork-sonnet\t\t-\n%s\tLead\tstart\tnew1\twork-sonnet\t\t-\n' "$now" >"$REPO/$JOBS"
+  run sh "$BIN" jobs
+  [ "$(printf '%s\n' "$output" | cut -f2)" = new1 ]
+  run sh "$BIN" jobs --all
+  [ "$(printf '%s\n' "$output" | cut -f2 | tr '\n' ' ')" = "new1 old1 " ]
+  run sh "$BIN" jobs --since 1000000
+  [ "$(printf '%s\n' "$output" | cut -f2 | tr '\n' ' ')" = "new1 old1 " ]
+  cd "$BATS_TEST_TMPDIR"
+  run sh "$BIN" jobs "$REPO"
+  [ "$(printf '%s\n' "$output" | cut -f2)" = new1 ]
+  run sh "$BIN" jobs
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  run sh "$BIN" jobs --since x
+  [ "$status" -eq 2 ]
+}
+
+@test "jobs_running: true for a started and not stopped agent of that who in the last day, false for a stopped, another's or an old one" {
+  eval "$(sed -n '/^jobs_file() /p;/^jobs_rows() {/,/^}/p;/^jobs_running() {/,/^}/p' "$BIN")"
+  cd "$REPO"
+  no jobs_running Lead
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  printf '2020-01-01T00:00:00Z\tLead\tstart\told\tx\t\t-\n%s\tAlpha\tstart\tp1\tx\t\t-\n%s\tLead\tstart\tl1\tx\t\t-\n%s\tLead\tstop\tl1\tx\t\t-\n' "$now" "$now" "$now" >"$JOBS"
+  no jobs_running Lead
+  jobs_running Alpha
+  printf '%s\tLead\tstart\tl2\tx\t\t-\n' "$now" >>"$JOBS"
+  jobs_running Lead
+}
+
+@test "job settings: prints the three hook entries and edits nothing; a bad verb is usage" {
+  run sh "$BIN" job settings
+  [ "$status" -eq 0 ]
+  for e in SubagentStart SubagentStop PostToolUse; do [[ "$output" == *"\"$e\": ["* ]]; done
+  [[ "$output" == *'"matcher": "SubagentHandback"'* ]]
+  [ "$(printf '%s\n' "$output" | grep -c 'claude-peer job hook || true", "timeout": 5')" -eq 3 ]
+  run sh "$BIN" job
+  [ "$status" -eq 2 ]
+}
+
+# --- the queue ---------------------------------------------------------------------
+# Cards in claude-peer.queue, ordered by a formula in python's integers. Fixture cards
+# are written with a time `ago` seconds back (whole hours plus ten minutes, so the hours
+# a card has waited do not tip over while the test runs); the ids, texts and files are
+# invented.
+
+Q=.git/claude-peer.queue
+
+ago() { python3 -c 'import sys, time; print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - int(sys.argv[1]))))' "$1"; }
+
+# qline <hours ago> <id> <value> <text> [<file>]
+qline() { printf '%s\t%s\tadd\tLead\t%s\t%s\t%s\n' "$(ago $(( $1 * 3600 + 600 )))" "$2" "$3" "$4" "${5:--}" >>"$REPO/$Q"; }
+
+# a postbox that only records its calls; qwait_pb <n> waits for n of them
+qpb() {
+  printf '#!/bin/sh\necho "$*" >>"%s/pb.log"\n' "$BATS_TEST_TMPDIR" >"$BATS_TEST_TMPDIR/pb"
+  chmod +x "$BATS_TEST_TMPDIR/pb"
+  export CLAUDE_PEER_POSTBOX="$BATS_TEST_TMPDIR/pb"
+}
+qwait_pb() {
+  local i
+  for i in $(seq 1 100); do
+    [ "$(cat "$BATS_TEST_TMPDIR/pb.log" 2>/dev/null | wc -l | tr -d ' ')" -ge "$1" ] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+# qidea <name> [<missing heading>]: an idea file under the test directory, on stdout its path
+qidea() {
+  local f="$BATS_TEST_TMPDIR/$1.md" h
+  : >"$f"
+  for h in Goal Matters Constraints Decided Open Next; do
+    [ "$h" = "${2-}" ] || printf '## %s\nsomething under %s\n\n' "$h" "$h" >>"$f"
+  done
+  printf '%s\n' "$f"
+}
+
+# ids of the list's rows, space separated
+qids() { printf '%s\n' "$output" | cut -f2 | tr '\n' ' '; }
+
+@test "queue add: a complete idea file prints Q1 and writes one line; a file with no ## Next is refused with a refused line" {
+  qpb
+  f=$(qidea idea1)
+  run sh "$BIN" queue add -- "Try the thing" "$f"
+  [ "$status" -eq 0 ]; [ "$output" = Q1 ]
+  [ "$(wc -l <"$REPO/$Q" | tr -d ' ')" -eq 1 ]
+  [ "$(cut -f2-3,5-7 "$REPO/$Q" | tr '\t' ' ')" = "Q1 add idea:w=0:u=0:p=0:s=? Try the thing $f" ]
+  bad=$(qidea idea2 Next)
+  run --separate-stderr sh "$BIN" queue add -- "Half an idea" "$bad"
+  [ "$status" -eq 1 ]; [ -z "$output" ]
+  [[ "$stderr" == *"## Next"* ]]
+  [ "$(wc -l <"$REPO/$Q" | tr -d ' ')" -eq 2 ]
+  [ "$(sed -n 2p "$REPO/$Q" | cut -f2-3)" = "$(printf -- '-\trefused')" ]
+  [[ "$(sed -n 2p "$REPO/$Q" | cut -f6)" == *"## Next"* ]]
+  run sh "$BIN" queue add -- "No file at all"
+  [ "$status" -eq 1 ]
+  run sh "$BIN" queue add --kind plan -- "A plan, no file"
+  [ "$status" -eq 1 ]
+  # an ask and an unfinished card need no file
+  run sh "$BIN" queue add --kind ask --waiting --size S --prio 2 --unblocks 1 --session s-1 --as Alpha -- "Which one"
+  [ "$output" = Q2 ]
+  [ "$(tail -n 1 "$REPO/$Q" | cut -f2-5 | tr '\t' ' ')" = "Q2 add Alpha ask:w=1:u=1:p=2:s=S:session=s-1" ]
+  run sh "$BIN" queue add --kind unfinished -- "Left half done"
+  [ "$output" = Q3 ]
+}
+
+@test "queue add: the idea file's definition of done is all six headings in order and text under Goal and under Next" {
+  qpb
+  f=$(qidea idea3 Matters)
+  run --separate-stderr sh "$BIN" queue add -- x "$f"
+  [ "$status" -eq 1 ]; [[ "$stderr" == *"## Matters"* ]]
+  printf '## Goal\n\n## Matters\nx\n## Constraints\nx\n## Decided\nx\n## Open\nx\n## Next\nx\n' >"$BATS_TEST_TMPDIR/empty-goal.md"
+  run --separate-stderr sh "$BIN" queue add -- x "$BATS_TEST_TMPDIR/empty-goal.md"
+  [ "$status" -eq 1 ]; [[ "$stderr" == *"under ## Goal"* ]]
+  printf '## Goal\nx\n## Constraints\nx\n## Matters\nx\n## Decided\nx\n## Open\nx\n## Next\nx\n' >"$BATS_TEST_TMPDIR/order.md"
+  run --separate-stderr sh "$BIN" queue add -- x "$BATS_TEST_TMPDIR/order.md"
+  [ "$status" -eq 1 ]; [[ "$stderr" == *"not in order"* ]]
+  run --separate-stderr sh "$BIN" queue add -- x "$BATS_TEST_TMPDIR/no-such-file.md"
+  [ "$status" -eq 1 ]; [[ "$stderr" == *"no such file"* ]]
+  # a relative file is stored absolute
+  cp "$(qidea idea4)" rel.md
+  run sh "$BIN" queue add -- x rel.md
+  [ "$output" = Q1 ]
+  [ "$(tail -n 1 "$Q" | cut -f7)" = "$REPO/rel.md" ]
+}
+
+@test "queue add: an id comes from the highest id in the file; a bad option is exit 2" {
+  qpb
+  qline 0 Q7 'ask:w=0:u=0:p=0:s=?' "old"
+  run sh "$BIN" queue add --kind ask -- "next"
+  [ "$output" = Q8 ]
+  for bad in "--kind nope -- x" "--prio 4 -- x" "--size XL -- x" "--unblocks 10 -- x" "--session a/b -- x" "--kind ask" "--kind ask -- x y z"; do
+    # shellcheck disable=SC2086
+    run sh "$BIN" queue add $bad
+    [ "$status" -eq 2 ]
+  done
+}
+
+# Hand-worked, with ages of whole hours (u = 20 x min(unblocks, 3), p = 10 x prio,
+# h = 1 x min(hours, 24), the sum divided by 1, 2 or 4 for S, M or L):
+#   Q1  u=1 p=0 S, 3h:   (20 + 0 + 3) / 1 = 23.0
+#   Q2  p=3 M, 1h:       (0 + 30 + 1) / 2 = 15.5
+#   Q3  L, 48h:          (0 + 0 + 24) / 4 = 6.0    (the hours are capped at 24)
+#   Q4  waiting L, 0h:   0 / 4 = 0.0               (tier 1, so first whatever the score)
+#   Q5  u=5 p=1 M, 10h:  (60 + 10 + 10) / 2 = 40.0 (the unblocks are capped at 3)
+@test "queue list: five cards in pull order with hand-worked scores; the waiting one first at score 0; the age and terms columns" {
+  qpb
+  qline 3 Q1 'ask:w=0:u=1:p=0:s=S' "one" /x/one.md
+  qline 1 Q2 'ask:w=0:u=0:p=3:s=M' "two"
+  qline 48 Q3 'ask:w=0:u=0:p=0:s=L' "three"
+  qline 0 Q4 'ask:w=1:u=0:p=0:s=L' "four"
+  qline 10 Q5 'ask:w=0:u=5:p=1:s=M' "five"
+  run sh "$BIN" queue list
+  [ "$status" -eq 0 ]
+  [ "$(qids)" = "Q4 Q5 Q1 Q2 Q3 " ]
+  # order, id, tier, score, lo, hi, terms, age, kind, who, cand, text, file
+  [ "$(printf '%s\n' "$output" | sed -n 1p | cut -f1-7,9-12 | tr '\t' '|')" = "1|Q4|1|0.0|0.0|0.0|u=0 p=0 h=0 /4|ask|Lead|yes|four" ]
+  [ "$(printf '%s\n' "$output" | sed -n 2p | cut -f1-7 | tr '\t' '|')" = "2|Q5|2|40.0|40.0|40.0|u=60 p=10 h=10 /2" ]
+  [ "$(printf '%s\n' "$output" | sed -n 3p | cut -f4,7,8,13 | tr '\t' '|')" = "23.0|u=20 p=0 h=3 /1|3h|/x/one.md" ]
+  [ "$(printf '%s\n' "$output" | sed -n 4p | cut -f4,7 | tr '\t' '|')" = "15.5|u=0 p=30 h=1 /2" ]
+  [ "$(printf '%s\n' "$output" | sed -n 5p | cut -f4,7,8 | tr '\t' '|')" = "6.0|u=0 p=0 h=24 /4|2d" ]
+  # only the waiting card is a candidate
+  [ "$(printf '%s\n' "$output" | cut -f11 | tr '\n' ' ')" = "yes - - - - " ]
+  # not marked waiting it is tier 2 at 0.0, and the best of tier 2 stands alone
+  run sh "$BIN" queue set Q4 waiting=0
+  [ "$status" -eq 0 ]
+  run sh "$BIN" queue next
+  [ "$status" -eq 0 ]; [ "$(qids)" = "Q5 " ]
+  # a bigger size lowers a score: Q5 is now 80 / 4 = 20.0 and Q1 leads
+  run sh "$BIN" queue set Q5 size=L
+  run sh "$BIN" queue list
+  [ "$(printf '%s\n' "$output" | sed -n 1p | cut -f2,4,7 | tr '\t' '|')" = "Q1|23.0|u=20 p=0 h=3 /1" ]
+  [ "$(printf '%s\n' "$output" | sed -n 2p | cut -f2,4 | tr '\t' '|')" = "Q5|20.0" ]
+}
+
+# ? scores as M and has a range, lo as L and hi as S.
+#   Q1  p=3 ?, 0h:      mid 15.0, lo 7.5, hi 30.0
+#   Q2  p=2 S, 0h:      20.0
+#   The largest lo is 20.0 (Q2's); Q1.hi 30.0 and Q2.hi 20.0 both reach 0.85 x 20.0, so both
+#   are candidates. Then Q1 at u=3 p=3: mid 45.0, lo 22.5, hi 90.0, and Q2 (p=1 S) is 10.0,
+#   below 0.85 x 22.5: Q1 is alone.
+@test "queue next: a card of unknown size has a range, is a candidate beside a close known card and is alone once its low end clears the margin" {
+  qpb
+  qline 0 Q1 'ask:w=0:u=0:p=3:s=?' "unknown"
+  qline 0 Q2 'ask:w=0:u=0:p=2:s=S' "known"
+  run sh "$BIN" queue next
+  [ "$status" -eq 0 ]
+  [ "$(qids)" = "Q2 Q1 " ]
+  [ "$(printf '%s\n' "$output" | sed -n 2p | cut -f4-7 | tr '\t' '|')" = "15.0|7.5|30.0|u=0 p=30 h=0 /2 size?" ]
+  sh "$BIN" queue set Q1 unblocks=3
+  sh "$BIN" queue set Q1 prio=3
+  sh "$BIN" queue set Q2 prio=1
+  run sh "$BIN" queue next
+  [ "$(qids)" = "Q1 " ]
+  [ "$(printf '%s\n' "$output" | cut -f4-6 | tr '\t' '|')" = "45.0|22.5|90.0" ]
+}
+
+@test "queue list: claude-peer.queue-weights changes the order; an unknown name or a bad value is one stderr line each and is ignored" {
+  qpb
+  qline 0 Q1 'ask:w=0:u=0:p=3:s=S' "prio"
+  qline 0 Q2 'ask:w=0:u=1:p=0:s=S' "unblocks"
+  run sh "$BIN" queue list
+  [ "$(qids)" = "Q1 Q2 " ]
+  git config claude-peer.queue-weights "prio=0"
+  run sh "$BIN" queue list
+  [ "$(qids)" = "Q2 Q1 " ]
+  git config claude-peer.queue-weights "prio=0 bogus=3 unblocks=x"
+  run --separate-stderr sh "$BIN" queue list
+  [ "$(qids)" = "Q2 Q1 " ]
+  [ "$(printf '%s\n' "$stderr" | wc -l | tr -d ' ')" -eq 2 ]
+  [[ "$stderr" == *'ignored "bogus=3"'* ]]
+  git config claude-peer.queue-weights "hour=5 hourcap=2"
+  qline 10 Q3 'ask:w=0:u=0:p=0:s=S' "old"
+  run sh "$BIN" queue list
+  [ "$(printf '%s\n' "$output" | grep -c 'h=10')" -eq 1 ]
+}
+
+@test "queue take: records the card's position; take then done leaves list; with a card taken only waiting and unblocking cards are offered" {
+  qpb
+  qline 0 Q1 'ask:w=0:u=0:p=0:s=S' "plain"
+  qline 0 Q2 'ask:w=0:u=0:p=3:s=S' "first"
+  run sh "$BIN" queue take Q1
+  [ "$status" -eq 0 ]
+  [ "$(tail -n 1 "$REPO/$Q" | cut -f2-3,5 | tr '\t' ' ')" = "Q1 take order=2" ]
+  run sh "$BIN" queue list
+  [ "$(qids)" = "Q2 " ]
+  # Q1 is taken: Q2 has no unblocks and it is not marked waiting, so it is not offered
+  run sh "$BIN" queue next
+  [ "$status" -eq 3 ]; [ -z "$output" ]
+  qline 0 Q3 'ask:w=0:u=1:p=0:s=S' "unblocks"
+  run sh "$BIN" queue next
+  [ "$(qids)" = "Q3 " ]
+  qline 0 Q4 'ask:w=1:u=0:p=0:s=S' "waiting"
+  run sh "$BIN" queue next
+  [ "$(qids)" = "Q4 " ]
+  run sh "$BIN" queue done Q1
+  [ "$status" -eq 0 ]
+  # the waiting cards in pull order, then the others newest first with their state in the first column
+  run sh "$BIN" queue list --all
+  [ "$(printf '%s\n' "$output" | cut -f1,2 | tr '\t' ' ' | tr '\n' ',')" = "1 Q4,2 Q2,3 Q3,done Q1," ]
+}
+
+@test "queue verbs: an unknown id or a state the verb does not apply to is exit 3 with one line; drop and park need a reason; set, link and show" {
+  qpb
+  qline 0 Q1 'ask:w=0:u=0:p=0:s=S' "one"
+  run --separate-stderr sh "$BIN" queue take Q9
+  [ "$status" -eq 3 ]; [ "$(printf '%s\n' "$stderr" | wc -l | tr -d ' ')" -eq 1 ]
+  run sh "$BIN" queue done Q1
+  [ "$status" -eq 3 ]
+  run sh "$BIN" queue reopen Q1
+  [ "$status" -eq 3 ]
+  run sh "$BIN" queue drop Q1
+  [ "$status" -eq 2 ]
+  run sh "$BIN" queue park Q1
+  [ "$status" -eq 2 ]
+  run sh "$BIN" queue park Q1 later when the bar is done
+  [ "$status" -eq 0 ]
+  [ "$(tail -n 1 "$REPO/$Q" | cut -f2-3,6 | tr '\t' ' ')" = "Q1 park later when the bar is done" ]
+  run sh "$BIN" queue take Q1
+  [ "$status" -eq 3 ]
+  run sh "$BIN" queue reopen Q1
+  [ "$status" -eq 0 ]
+  run sh "$BIN" queue list
+  [ "$(qids)" = "Q1 " ]
+  run sh "$BIN" queue set Q1 prio=7
+  [ "$status" -eq 2 ]
+  run sh "$BIN" queue set Q9 prio=1
+  [ "$status" -eq 3 ]
+  run sh "$BIN" queue set Q1 unblocks=2
+  [ "$status" -eq 0 ]
+  run sh "$BIN" queue link Q1 41
+  [ "$status" -eq 0 ]
+  run sh "$BIN" queue link Q1 https://example.com/issues/41
+  [ "$status" -eq 0 ]
+  run sh "$BIN" queue link Q1 soon
+  [ "$status" -eq 2 ]
+  run sh "$BIN" queue list
+  [ "$(printf '%s\n' "$output" | cut -f4 | head -n 1)" = 40.0 ]
+  run sh "$BIN" queue show Q1
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | grep -c 'Q1')" -eq 6 ]
+  run sh "$BIN" queue show Q9
+  [ "$status" -eq 3 ]
+}
+
+@test "queue show: a card with a session says how to reopen it, by the slot's --continue when it is the slot's latest" {
+  qpb
+  export CLAUDE_CONFIG_DIR="$BATS_TEST_TMPDIR/cfg"
+  mkdir -p "$REPO/.claude/worktrees/alpha"
+  pd="$CLAUDE_CONFIG_DIR/projects/$(cd "$REPO/.claude/worktrees/alpha" && pwd -P | tr -c 'A-Za-z0-9\n' -)"
+  mkdir -p "$pd"
+  : >"$pd/s-old.jsonl"
+  touch -t 202001010000 "$pd/s-old.jsonl"
+  : >"$pd/s-new.jsonl"
+  sh "$BIN" queue add --kind ask --as Alpha --session s-old -- "from the old one"
+  sh "$BIN" queue add --kind ask --as Alpha --session s-new -- "from the new one"
+  sh "$BIN" queue add --kind ask --as Gamma --session s-3 -- "no such slot"
+  run sh "$BIN" queue show Q2
+  [ "$(printf '%s\n' "$output" | tail -n 1)" = "reopen: claude-peer start alpha --continue" ]
+  run sh "$BIN" queue show Q1
+  [ "$(printf '%s\n' "$output" | tail -n 1)" = "reopen: claude --resume s-old   (in $REPO/.claude/worktrees/alpha)" ]
+  run sh "$BIN" queue show Q3
+  [ "$(printf '%s\n' "$output" | tail -n 1)" = "reopen: claude --resume s-3   (in $REPO)" ]
+}
+
+@test "queue add: nothing in flight wakes Lead once; a card taken, or a running agent of Lead's, wakes nobody" {
+  qpb
+  run sh "$BIN" queue add --kind ask -- "first"
+  [ "$status" -eq 0 ]
+  qwait_pb 1
+  [ "$(wc -l <"$BATS_TEST_TMPDIR/pb.log" | tr -d ' ')" -eq 1 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/pb.log")" = "lead-news $REPO - -" ]
+  [ "$(cut -f3-4 .git/claude-peer.log | tr '\t' ' ')" = "note queue: Q1 is waiting and nothing is in flight" ]
+  # a card taken: no log line, no postbox call
+  sh "$BIN" queue take Q1
+  : >"$BATS_TEST_TMPDIR/pb.log"
+  run sh "$BIN" queue add --kind ask -- "second"
+  [ "$(grep -c 'Q2 is waiting' .git/claude-peer.log)" -eq 0 ]
+  # a running job of Lead's: the same
+  sh "$BIN" queue done Q1
+  job_hook "$(job_payload SubagentStart w1 work-sonnet "$REPO")"
+  run sh "$BIN" queue add --kind ask -- "third"
+  [ "$(grep -c 'Q3 is waiting' .git/claude-peer.log)" -eq 0 ]
+  job_hook "$(job_payload SubagentStop w1 work-sonnet "$REPO")"
+  run sh "$BIN" queue add --kind ask -- "fourth"
+  [ "$(grep -c 'Q4 is waiting' .git/claude-peer.log)" -eq 1 ]
+  qwait_pb 1
+  [ "$(wc -l <"$BATS_TEST_TMPDIR/pb.log" | tr -d ' ')" -eq 1 ]
+}
+
+@test "queue escalation: an old waiting card is escalated once across two adds, and by a stop event of the job hook; 0 minutes never" {
+  qpb
+  qline 3 Q1 'ask:w=1:u=0:p=0:s=S' "marked waiting"
+  qline 3 Q2 'ask:w=0:u=0:p=3:s=S' "not waiting"
+  sh "$BIN" queue take Q2
+  run sh "$BIN" queue add --kind ask -- "a"
+  run sh "$BIN" queue add --kind ask -- "b"
+  [ "$(grep -c "$(printf '\tQ1\tescalated\t')" "$Q")" -eq 1 ]
+  [ "$(grep -c "$(printf '\tQ2\tescalated\t')" "$Q")" -eq 0 ]
+  [ "$(grep -c 'queue: Q1 has waited 1[0-9][0-9]m and it is marked waiting' .git/claude-peer.log)" -eq 1 ]
+  [ "$(cut -f2 .git/claude-peer.log | grep -c Queue)" -eq 1 ]
+  qwait_pb 1
+  # a stop event looks too; a start event does not
+  qline 4 Q9 'ask:w=1:u=0:p=0:s=S' "another"
+  job_hook "$(job_payload SubagentStart e1 scout-haiku "$REPO")"
+  [ "$(grep -c "$(printf '\tQ9\tescalated\t')" "$Q")" -eq 0 ]
+  run --separate-stderr job_hook "$(job_payload SubagentStop e1 scout-haiku "$REPO")"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  [ "$(grep -c "$(printf '\tQ9\tescalated\t')" "$Q")" -eq 1 ]
+  # 0 turns it off
+  git config claude-peer.queue-wait-minutes 0
+  qline 5 Q10 'ask:w=1:u=0:p=0:s=S' "yet another"
+  job_hook "$(job_payload SubagentStop e2 scout-haiku "$REPO")"
+  [ "$(grep -c "$(printf '\tQ10\tescalated\t')" "$Q")" -eq 0 ]
+}
+
+# qhook_payload <command> [<cwd> [<extra json members>]]: the PostToolUse payload of a Bash call
+qhook_payload() {
+  printf '{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"%s"},"cwd":"%s"%s}' "$1" "${2:-$REPO}" "${3:+,$3}"
+}
+qhook() { printf '%s' "$1" | sh "$BIN" queue hook; }
+# qhook_text: the additionalContext of the hook's JSON in $output, after checking the event name
+qhook_text() {
+  printf '%s' "$output" | python3 -c 'import json, sys; d = json.load(sys.stdin)["hookSpecificOutput"]; assert d["hookEventName"] == "PostToolUse"; print(d["additionalContext"])'
+}
+
+@test "queue hook: silent for another command, an agent, a peer's session, a linked worktree and an empty queue; always exit 0" {
+  qpb
+  qline 0 Q1 'ask:w=0:u=0:p=0:s=S' "one"
+  run --separate-stderr qhook "$(qhook_payload 'git status')"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  run qhook "$(qhook_payload 'gh pr merge 3' "$REPO" '"agent_id":"a1"')"
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  CLAUDE_PEER_WORKTREE="$REPO/.claude/worktrees/alpha" run qhook "$(qhook_payload 'gh pr merge 3')"
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  git worktree add -q "$BATS_TEST_TMPDIR/linked" -b linked
+  run qhook "$(qhook_payload 'gh pr merge 3' "$BATS_TEST_TMPDIR/linked")"
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  run qhook 'not json'
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  run qhook ''
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  # a subdirectory of the main checkout counts as inside it
+  mkdir sub
+  run qhook "$(qhook_payload 'gh pr merge 3' "$REPO/sub")"
+  [ "$status" -eq 0 ]; [ -n "$output" ]
+  sh "$BIN" queue drop Q1 not worth it
+  run qhook "$(qhook_payload 'gh pr merge 3')"
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+}
+
+@test "queue hook: one candidate is named with its score and terms and how many more wait; the output is JSON" {
+  qpb
+  qline 0 Q1 'idea:w=0:u=0:p=3:s=S' "Big thing" /x/idea.md
+  qline 0 Q2 'ask:w=0:u=0:p=0:s=S' "small one"
+  qline 0 Q3 'unfinished:w=0:u=0:p=0:s=S' "left over"
+  run qhook "$(qhook_payload 'gh pr merge 3 --squash')"
+  [ "$status" -eq 0 ]
+  run qhook_text
+  [ "$status" -eq 0 ]
+  [[ "$output" == "queue: next card is Q1 (idea, score 30.0: u=0 p=30 h=0 /1): Big thing. File: /x/idea.md. Take it with claude-peer queue take Q1, or park or drop it with a reason."* ]]
+  [[ "$output" == *"Nothing worth doing is an answer: say so and stop; never invent work. 1 more waiting." ]]
+}
+
+@test "queue hook: two close cards are a brief for one scout-haiku; a card taken is named first, and alone when nothing else is offered" {
+  qpb
+  qline 2 Q1 'plan:w=0:u=0:p=3:s=S' "B" /x/b.md
+  qline 0 Q2 'idea:w=0:u=0:p=3:s=S' "A" /x/a.md
+  qline 0 Q3 'ask:w=0:u=0:p=1:s=S' "weak"
+  run qhook "$(qhook_payload 'gh pr merge 3')"
+  run qhook_text
+  [ "$output" = "queue: 2 cards are too close to call. Spawn one scout-haiku with exactly this brief, then take the id it returns: \"Read these files: Q1 /x/b.md, Q2 /x/a.md. For any marked size?, say S, M or L. Reply with one id and two lines saying why it goes first, or NONE and one line. Read nothing else.\" 1 more waiting." ]
+  sh "$BIN" queue take Q1
+  run qhook "$(qhook_payload 'gh pr merge 3')"
+  run qhook_text
+  [ "$output" = "queue: Q1 is still taken; if this merge finished it, claude-peer queue done Q1." ]
+  qline 0 Q4 'ask:w=1:u=0:p=0:s=S' "a waiting ask"
+  run qhook "$(qhook_payload 'gh pr merge 3')"
+  run qhook_text
+  [[ "$output" == "queue: Q1 is still taken; if this merge finished it, claude-peer queue done Q1. queue: next card is Q4 (ask, score 0.0: u=0 p=0 h=0 /1): a waiting ask. File: -."* ]]
+}
+
+@test "queue settings: one PostToolUse entry for Bash that carries the if filter on gh pr merge; edits nothing; a bad verb is usage" {
+  run sh "$BIN" queue settings
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"matcher": "Bash"'* ]]
+  [[ "$output" == *'"if": "Bash(gh pr merge *)"'* ]]
+  [[ "$output" == *'claude-peer queue hook || true", "timeout": 5'* ]]
+  run sh "$BIN" queue
+  [ "$status" -eq 2 ]
+  run sh "$BIN" queue nope
+  [ "$status" -eq 2 ]
+}
