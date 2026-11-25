@@ -50,12 +50,16 @@
   step number plus what earlier steps produced, never the plan pasted in —
   dispatched as soon as the steps it needs are verified here, independent
   steps together, each in its own worktree. A step waits only for what it
-  needs. The main conversation orchestrates and verifies; it builds no step
-  itself and redesigns nothing. A step that cannot land as written (a worker
-  hands it back, a gate stays red, an Unverified item proves false) goes back
-  to `plan-fable` for a revised plan, never quietly into the code; a failure
-  nobody can explain is still `unstick-fable`'s, below. Only live hands-on
-  steps with the operator — a login, an approval, their terminal — stay here.
+  needs. Before dispatching and after each verification, run `plan-ready
+  <plan> <verified ids> --running <running ids>` for the candidates, check
+  each one's needs in the plan, and dispatch every one that holds; on exit 2
+  or any stderr line, read the plan's needs yourself. The main conversation
+  orchestrates and verifies; it builds no step itself and redesigns nothing.
+  A step that cannot land as written (a worker hands it back, a gate stays
+  red, an Unverified item proves false) goes back to `plan-fable` for a
+  revised plan, never quietly into the code; a failure nobody can explain is
+  still `unstick-fable`'s, below. Only live hands-on steps with the
+  operator — a login, an approval, their terminal — stay here.
 - **Escalation is a rule, not a mood.** Any one of these means stop and spawn
   `unstick-fable` with the failure verbatim and every attempt so far: the same
   failure has survived two attempts with different hypotheses; a worker has

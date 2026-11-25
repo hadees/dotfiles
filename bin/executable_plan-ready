@@ -1,0 +1,350 @@
+#!/bin/sh
+# plan-ready - the candidate steps of a plan. `plan-ready --help` has
+# the format it reads and its exit codes. The program is python3, standard
+# library only, clean on 3.9.
+command -v python3 >/dev/null 2>&1 || {
+  printf 'plan-ready: python3 not found\n' >&2
+  exit 64
+}
+exec python3 -I - "$@" <<'PY'
+"""plan-ready - the candidate steps of a plan.
+
+    plan-ready <plan.md> [verified ids...] [--running ids...]
+
+Prints "<id><TAB><title>" for every candidate, in step order: a step whose every
+stated need is a step of this plan in the verified list, and which is neither
+verified nor running. A candidate is a lead, not a verdict: check it against
+the plan (and stderr) before starting it. Ids are strings ("1", "1b",
+"C9"); a list may also be comma-separated. Everything after --running is a step
+already dispatched: never printed, not counted as verified.
+
+Steps are the rows of every markdown table with a Needs column (the id sits in
+a Step, # or number column, else the first) and the "## Step <id>" headings of
+any level (the title is what follows the first colon, else the rest). A step's
+needs are all of these, and none overrides another:
+
+  - the Needs cell of every row it has (and of any other column headed like a
+    label below);
+  - every line of its section labelled Needs:, Precondition:, Prerequisite:,
+    Requires:, Depends on:, Waits on:, Waits for:, Blocked by: or Blocked on:
+    (any case; bullets, indentation and bold ignored), read to the next blank
+    or labelled line;
+  - the step references of its "Consumes:" lines and of "Consumes from
+    <steps>:" (read to its first colon). These only add steps to wait for: a
+    step with no Needs cell and no labelled line is never shown ready, because
+    what it consumes is not all it can need (a step that edits the same file,
+    an outside event).
+
+Cells and labelled lines are read strictly. The words understood are step ids,
+"step", "steps", "and", ",", ";", "to" inside a list ("1 to 4"), "none",
+"nothing", a lone dash, finished, verified, done and completed. Anything else
+is a need the arguments cannot establish, so the step is withheld and stderr
+says "step N: also needs: <words>": an outside event, merged, deployed,
+"Sign-off N", "row N", another plan's "signed step N", a parenthesis, a second
+sentence. A Consumes line names what earlier steps produce, so only its step
+references are read. "Step 1" in a plan that has only 1a and 1b means both.
+
+A step is also withheld, with a line on stderr, when it has rows in two tables,
+an empty Needs, no Needs at all, a need for a step the plan lacks, a need for
+itself ("needs itself") or a cycle among steps not yet verified ("steps A, B:
+cycle"). A table step with no section of its own, in a plan that has Step
+headings, gets a stderr line ("no section of its own") and is still listed if
+its cells say so: a fence or a sub-heading may have swallowed its heading. Nothing
+at all is printed when a row of a table with a Needs column, or a Step
+heading, does not name exactly one step, or a labelled needs line sits outside
+every step section: it may belong to a step this did not recognise.
+
+Not read: a need written as plain prose in a step's body, under none of those
+labels. The Needs cell is where the planner's format puts every need.
+
+Exit 0: something was printed. 1: steps found, no candidates. 2: no steps found,
+or nothing printed and stderr says why (read the plan's needs yourself).
+64: bad usage or plan file.
+"""
+import re
+import sys
+
+ID = r"[A-Z]?\d+[a-z]?"
+LIST = r"(?:\s*(?:,|and|to)\s*%s)*" % ID
+IDS = r"%s%s(?![\w-])" % (ID, LIST)
+HEADING = re.compile(r"^(#{1,6})\s+Step\s+(%s)(?!\w)(.*)$" % ID)
+REF = re.compile(r"\b([Ss]igned\s+(?:plan's\s+)?)?[Ss]teps?\s+(%s%s)" % (ID, LIST))
+ITEM = re.compile(r"%s|,|and|to" % ID)
+# Not this plan's verified steps, so never met: named whole in "also needs".
+OTHER = r"[Ss]igned\s+(?:plan's\s+)?[Ss]teps?\s+%s|Sign-off\s+(?:rows?\s+)?%s|[Rr]ows?\s+%s" % (IDS, IDS, IDS)
+TOKEN = re.compile(
+    r"(?P<other>%s)"
+    r"|(?P<ids>(?:[Ss]teps?\s+)?%s)"
+    r"|(?P<none>(?i:none|nothing)(?!\w))"
+    r"|(?P<word>(?i:and|finished|verified|done|completed?)(?!\w))"
+    r"|(?P<sep>[,;]+)" % (OTHER, IDS))
+# ponytail: a fixed list of labels. A need under any other label, or under no
+# label, is not read; --help says so. Add a label here when a planner uses one.
+STRICT = r"needs|preconditions?|prerequisites?|requires|depends\s+on|waits\s+(?:on|for)|blocked\s+(?:by|on)"
+FIELD = re.compile(
+    r"[\s>]*(?:(?:[-*+]|\d+[.)])\s+)*[*_]*"
+    r"(?:(?P<strict>%s)[*_]*(?:\s*\([^)]*\))?[*_]*\s*:"
+    r"|(?P<consumes>consumes)[*_]*\s*:"
+    r"|(?P<frm>consumes\s+from\b))[*_]*" % STRICT, re.I)
+ROW_ID = re.compile(r"(?:Steps?\s+)?(%s)(?!\w)\s*(.*)$" % ID)
+# A line that opens what looks like another step: a bold "Step N", "#### N." or a Step heading.
+NESTED = re.compile(
+    r"\s*(?:[*_]{1,2}Step\s+(?P<a>%s)(?!\w)|#{1,6}\s+(?P<b>%s)\.(?!\w)|#{1,6}\s+Step\s+(?P<c>%s)(?!\w))"
+    % (ID, ID, ID))
+MORE_IDS = re.compile(r"(?:,|/|&|\+|and\b|to\b|[-–—])\s*(?:[Ss]teps?\s+)?%s(?!\w)" % ID)
+ID_HEADERS = ("step", "#", "no", "no.", "number", "n", "step number", "step no", "step no.")
+
+
+def order(i):
+    m = re.fullmatch(r"([A-Z]?)(\d+)([a-z]?)", i)
+    return (bool(m.group(1)), m.group(1), int(m.group(2)), m.group(3))
+
+
+def expand(run, known):
+    """Ids in "1, 2 and 3" or "1 to 4" (a range covers every known id in it)."""
+    out, prev, rng = set(), None, False
+    for tok in ITEM.findall(run):
+        if tok == "to":
+            rng = True
+        elif tok in (",", "and"):
+            continue
+        else:
+            if rng and prev.isdigit() and tok.isdigit():
+                lo, hi = int(prev), int(tok)
+                out.update(k for k in known if re.fullmatch(r"\d+[a-z]?", k)
+                           and lo <= int(k.rstrip("abcdefghijklmnopqrstuvwxyz")) <= hi)
+            out.add(tok)
+            prev, rng = tok, False
+    return out
+
+
+def resolve(deps, known):
+    """"Step 1" in a plan split into 1a and 1b means both."""
+    for d in [d for d in deps if d not in known]:
+        kids = {k for k in known if re.fullmatch(d + "[a-z]", k)}
+        if kids:
+            deps = (deps - {d}) | kids
+    return deps
+
+
+def lenient_needs(text, known):
+    """(this plan's step ids a Consumes line names, up to an inline
+    "Produces:"; "")."""
+    text = re.split(r"\bProduces\s*:", " ".join(text.split()), maxsplit=1)[0]
+    deps = set()
+    for m in REF.finditer(text):
+        if not m.group(1):
+            deps |= expand(m.group(2), known)
+    return resolve(deps, known), ""
+
+
+def strict_needs(text, known):
+    """(step ids, or None when none is understood; the words nothing understood
+    could take: a need the arguments cannot establish)."""
+    text = " ".join(text.split())
+    if re.fullmatch(r"[-\u2013\u2014]", text):
+        return set(), ""
+    text = re.sub(r"\.$", "", text)
+    deps, found, left, pos = set(), False, [], 0
+    while pos < len(text):
+        if text[pos].isspace():
+            pos += 1
+            continue
+        m = TOKEN.match(text, pos)
+        if m is None:
+            m = re.compile(r"\S+").match(text, pos)
+            left.append(m.group(0))
+        elif m.lastgroup == "other":
+            left.append(m.group(0))
+        elif m.lastgroup == "ids":
+            found = True
+            deps |= expand(re.sub(r"^[Ss]teps?\s+", "", m.group(0)), known)
+        elif m.lastgroup == "none":
+            found = True
+        pos = m.end()
+    rest = " ".join(left).strip(" .,;")
+    return (resolve(deps, known) if found else None), rest
+
+
+def fields(lines):
+    """[(kind, text)] for every labelled line of a step's section, each read
+    to the next blank or labelled line."""
+    out, cur = [], None
+    for line in lines:
+        m = FIELD.match(line)
+        if m:
+            cur = [m.lastgroup, line[m.end():]]
+            out.append(cur)
+        elif not line.strip():
+            cur = None
+        elif cur:
+            cur[1] += " " + line
+    return [(k, t.split(":", 1)[0] if k == "frm" else t) for k, t in out]
+
+
+def cells_of(line):
+    s = line.strip()[1:]
+    if s.endswith("|") and not s.endswith("\\|"):
+        s = s[:-1]
+    return [c.strip() for c in re.split(r"(?<!\\)\|", s)]
+
+
+def parse(path):
+    """({id: [title, section lines]}, {id: [(table, needs cell)]}, [why nothing
+    can be shown], {ids with a heading}, [(step, what looks like another)]) from a plan."""
+    steps, tables, stop, cur, level, fenced, cols = {}, [], [], None, 0, False, None
+    headed, notes, fence_at = set(), [], 0
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    for no, line in enumerate(text.splitlines(), 1):
+        if line.startswith("```"):
+            fenced = not fenced
+            fence_at = no
+        if cur is not None and not HEADING.match(line if not fenced else "x"):
+            m = NESTED.match(line)
+            other = m and (m.group("a") or m.group("b") or m.group("c"))
+            if other and other != cur and (cur, other) not in notes:
+                notes.append((cur, other))
+        if fenced:
+            if cur is not None:
+                steps[cur][1].append(line)
+            continue
+        if line.lstrip().startswith("|"):
+            cells = cells_of(line)
+            if cols is None:
+                low = [re.sub(r"[*_`]", "", c).strip().lower() for c in cells]
+                need = [i for i, c in enumerate(low) if re.match(r"(?:%s)(?!\w)" % STRICT, c)]
+                ids = next((i for i, c in enumerate(low) if c in ID_HEADERS), 0)
+                cols = (ids, need, len(cells)) if any(low[i].startswith("needs") for i in need) else False
+                tables.append([])
+            elif cols and not re.fullmatch(r"[\s|:-]*", line):
+                m = ROW_ID.match(re.sub(r"[*_`]", "", cells[cols[0]]).strip()) if len(cells) > cols[0] else None
+                if m and len(cells) <= cols[2] and not MORE_IDS.match(m.group(2)):
+                    cells += [""] * (cols[2] - len(cells))
+                    tables[-1].append((m.group(1), [cells[i] for i in cols[1]], m.group(2).strip()))
+                else:
+                    stop.append("line %d: a table row that does not name one step" % no)
+            continue
+        cols = None
+        m = HEADING.match(line)
+        if m:
+            cur, level = m.group(2), len(m.group(1))
+            headed.add(cur)
+            rest = m.group(3).strip()
+            if MORE_IDS.match(rest):
+                stop.append("line %d: a heading that names more than one step" % no)
+            title = (rest.split(":", 1)[1].strip() if ":" in rest
+                     else re.sub(r"^[\s.,–—-]+", "", rest))
+            if cur not in steps or not steps[cur][0]:
+                steps.setdefault(cur, [title, []])[0] = title
+        elif cur is not None and re.match(r"#{1,%d} " % level, line):
+            cur = None
+        elif cur is not None:
+            steps[cur][1].append(line)
+        else:
+            m = FIELD.match(line)
+            if m and m.group("strict"):
+                stop.append("line %d: a %s: line outside every step section" % (no, m.group("strict")))
+    if fenced:
+        stop.append("line %d: code fence never closed" % fence_at)
+    needs = {}
+    for t, rows in enumerate(tables):
+        for sid, cells, title in rows:
+            needs.setdefault(sid, []).extend((t, c) for c in cells)
+            if sid not in steps or not steps[sid][0]:
+                steps.setdefault(sid, [title, []])[0] = title
+    return steps, needs, stop, headed, notes
+
+
+def main(argv):
+    if "-h" in argv or "--help" in argv:
+        print(__doc__)
+        return 0
+    running = []
+    if "--running" in argv:
+        i = argv.index("--running")
+        argv, running = argv[:i], argv[i + 1:]
+    ids = [t for a in argv[1:] for t in a.split(",") if t]
+    running = [t for a in running for t in a.split(",") if t]
+    try:
+        if not argv or not all(re.fullmatch(ID, t) for t in ids + running):
+            raise ValueError("bad step id or no plan")
+        steps, cells, stop, headed, notes = parse(argv[0])
+    except (ValueError, OSError) as e:
+        sys.stderr.write("usage: plan-ready <plan.md> [verified ids...] [--running ids...] (%s)\n" % e)
+        return 64
+    verified, running, known = set(ids), set(running), set(steps)
+    if not steps:
+        sys.stderr.write("no steps found: no table with a Needs column and step rows, and no '## Step <id>' heading\n")
+        return 2
+    if stop:
+        sys.stderr.write("".join("%s\n" % s for s in stop))
+        return 2
+    info = {}
+    for n in sorted(steps, key=order):
+        if n in verified or n in running:
+            continue
+        lines = steps[n][1]
+        deps, rest, stated, empty = set(), [], False, False
+        for kind, text in [("strict", c) for _, c in cells.get(n, [])] + fields(lines):
+            d, r = strict_needs(text, known) if kind == "strict" else lenient_needs(text, known)
+            if d is not None:
+                deps |= d
+                stated = stated or kind == "strict"  # a Consumes line states no Needs
+            if r:
+                rest.append(r)
+            elif d is None and kind == "strict":
+                empty = True
+        if len({t for t, _ in cells.get(n, [])}) > 1:
+            info[n] = (["rows in more than one table with a Needs column"], None)
+        elif rest:
+            info[n] = (["also needs: %s" % "; ".join(rest)], None)
+        elif empty or not stated:
+            info[n] = (["needs unreadable"], None)
+        elif deps - known:
+            info[n] = (["needs unknown step %s" % m for m in sorted(deps - known, key=order)], None)
+        else:
+            info[n] = ([], deps)
+    graph = {n: d & set(info) for n, (why, d) in info.items() if not why}
+    reach = {}
+    for n in graph:
+        seen, todo = set(), list(graph[n])
+        while todo:
+            d = todo.pop()
+            if d not in seen:
+                seen.add(d)
+                todo.extend(graph.get(d, ()))
+        reach[n] = seen
+    stuck, said = set(), {}
+    for n in sorted(graph, key=order):
+        if n in graph[n]:
+            said.setdefault(n, []).append("step %s: needs itself" % n)
+        comp = {m for m in graph if m in reach[n] and n in reach[m]} | {n}
+        if len(comp) > 1 and n in reach[n] and not comp & stuck:
+            first = min(comp, key=order)
+            said.setdefault(first, []).append("steps %s: cycle" % ", ".join(sorted(comp, key=order)))
+        if n in reach[n]:
+            stuck |= comp
+    ready = bad = 0
+    for n, other in notes:
+        sys.stderr.write("step %s: section holds what looks like step %s\n" % (n, other))
+        bad += 1
+    for n in sorted(info, key=order):
+        if headed and n not in headed:
+            sys.stderr.write("step %s: no section of its own\n" % n)
+            bad += 1
+        for line in said.get(n, []):
+            sys.stderr.write(line + "\n")
+            bad += 1
+        why, deps = info[n]
+        for line in why:
+            sys.stderr.write("step %s: %s\n" % (n, line))
+            bad += 1
+        if not why and n not in stuck and deps <= verified:
+            print("%s\t%s" % (n, steps[n][0]))
+            ready += 1
+    return 0 if ready else (2 if bad else 1)
+
+
+sys.exit(main(sys.argv[1:]))
+PY
