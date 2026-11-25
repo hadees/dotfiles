@@ -23,6 +23,8 @@ wb_setup() {
   export GIT_CONFIG_NOSYSTEM=1
   unset XDG_STATE_HOME CLAUDE_CONFIG_DIR CLAUDE_PROFILE CLAUDECODE WORKBOARD_DEMO WORKBOARD_LIBEXEC WORKBOARD_STUB_RAISE
   git config --file "$GIT_CONFIG_GLOBAL" init.defaultBranch main
+  # A clone another user owns (CI runs as root) is trusted on every git version.
+  git config --file "$GIT_CONFIG_GLOBAL" safe.directory '*'
   git config --file "$GIT_CONFIG_GLOBAL" credential.https://github.com/octo-work-org.username work-acct
   git config --file "$GIT_CONFIG_GLOBAL" credential.https://github.com/octo-personal.username personal-acct
   git config --file "$GIT_CONFIG_GLOBAL" claude.profile.work-acct '~/.claude'
