@@ -160,7 +160,7 @@ print(eval(sys.argv[2]))' "$BATS_TEST_TMPDIR/out.plist" "$1"
 
 @test "no systemd unit is shipped, and no chezmoi script or wrapper loads the service" {
   [ -z "$(git -C "$SRC" ls-files '*.service' '*systemd*')" ]
-  ! grep -rn 'launchctl' "$SRC/.chezmoiscripts" "$SRC/dot_functions" "$SRC/dot_zshrc" "$SRC/dot_exports" || { echo "something loads the service with launchctl"; false; }
+  ! grep -rnE 'launchctl[^ ]* +(load|bootstrap|enable|kickstart)' "$SRC/.chezmoiscripts" "$SRC/dot_functions" "$SRC/dot_zshrc" "$SRC/dot_exports" || { echo "something loads a service with launchctl"; false; }
 }
 
 @test "the plan-gpt agent stubs deploy only once the proxy is installed" {

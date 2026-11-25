@@ -305,8 +305,8 @@ PY
   grep -qxF "UNSET|mcp add-json --scope user board -" "$BATS_TEST_TMPDIR/claude.log"
   grep -qxF "$HOME/.claude-personal|mcp add-json --scope user board -" "$BATS_TEST_TMPDIR/claude.log"
   # the key is on standard input, never in an argument
-  ! grep -q 'fixture-key' "$BATS_TEST_TMPDIR/claude.log"
-  ! grep -q 'Bearer' "$BATS_TEST_TMPDIR/claude.log"
+  ! grep -q 'fixture-key' "$BATS_TEST_TMPDIR/claude.log" || { echo "matched: grep -q 'fixture-key' '$BATS_TEST_TMPDIR/claude.log'"; false; }
+  ! grep -q 'Bearer' "$BATS_TEST_TMPDIR/claude.log" || { echo "matched: grep -q 'Bearer' '$BATS_TEST_TMPDIR/claude.log'"; false; }
   [ "$(wc -l < "$BATS_TEST_TMPDIR/claude.stdin" | tr -d ' ')" = 2 ]
   grep -qxF '{"type": "http", "url": "http://127.0.0.1:47601/mcp", "headers": {"Authorization": "Bearer fixture-key-default"}}' "$BATS_TEST_TMPDIR/claude.stdin"
   grep -qxF '{"type": "http", "url": "http://127.0.0.1:47601/mcp", "headers": {"Authorization": "Bearer fixture-key-personal"}}' "$BATS_TEST_TMPDIR/claude.stdin"
@@ -324,7 +324,7 @@ PY
   [ "${lines[0]}" = "default: not connected" ]
   [ "${lines[1]}" = "personal: not connected" ]
   [ "${lines[2]}" = 1 ]
-  ! grep -q 'fixture-key' <<<"$output"
+  ! grep -q 'fixture-key' <<<"$output" || { echo "matched: grep -q 'fixture-key' <<<'$output'"; false; }
 }
 
 @test "connect: an entry with the old header form or another key is stale and is removed and added again" {
@@ -342,7 +342,7 @@ PY
   [[ "${lines[3]}" == *"'default': 'connected'"*"'personal': 'connected'"* ]]
   [ "$(grep -c 'mcp remove --scope user board' "$BATS_TEST_TMPDIR/claude.log")" = 2 ]
   [ "$(grep -c 'mcp add-json --scope user board -' "$BATS_TEST_TMPDIR/claude.log")" = 2 ]
-  ! grep -q 'fixture-key' "$BATS_TEST_TMPDIR/claude.log"
+  ! grep -q 'fixture-key' "$BATS_TEST_TMPDIR/claude.log" || { echo "matched: grep -q 'fixture-key' '$BATS_TEST_TMPDIR/claude.log'"; false; }
 }
 
 @test "connect and disconnect: another server named board is left alone and reported; the board's own stale entry is replaced" {
@@ -364,7 +364,7 @@ PY
   [ "$(cat "$HOME/.claude.json")" = "$foreign" ]
   # claude ran only for the personal profile: remove, add, remove
   [ "$(wc -l < "$BATS_TEST_TMPDIR/claude.log" | tr -d ' ')" = 3 ]
-  ! grep -q '^UNSET|' "$BATS_TEST_TMPDIR/claude.log"
+  ! grep -q '^UNSET|' "$BATS_TEST_TMPDIR/claude.log" || { echo "matched: grep -q '^UNSET|' '$BATS_TEST_TMPDIR/claude.log'"; false; }
 }
 
 @test "connect: with the board not running each line says so and claude is not run" {
@@ -394,7 +394,7 @@ PY
   [ "$status" -eq 0 ]
   [ "${lines[0]}" = "default: connected (its configuration is readable by other users)" ]
   [ "${lines[1]}" = "personal: connected (its configuration is readable by other users)" ]
-  ! grep -q 'fixture-key' <<<"$output"
+  ! grep -q 'fixture-key' <<<"$output" || { echo "matched: grep -q 'fixture-key' <<<'$output'"; false; }
 }
 
 @test "connect --print runs nothing, asks nothing, holds <key> and no key; a stray argument is usage" {
@@ -442,7 +442,7 @@ PY
   [ "${lines[7]}" = "personal: not connected" ]
   grep -qxF "UNSET|mcp remove --scope user board" "$BATS_TEST_TMPDIR/claude.log"
   [ "$(grep -c 'mcp remove' "$BATS_TEST_TMPDIR/claude.log")" = 2 ]
-  ! grep -q 'fixture-key' "$BATS_TEST_TMPDIR/claude.log"
+  ! grep -q 'fixture-key' "$BATS_TEST_TMPDIR/claude.log" || { echo "matched: grep -q 'fixture-key' '$BATS_TEST_TMPDIR/claude.log'"; false; }
   [[ "$output" != *fixture-key* ]]
 }
 
