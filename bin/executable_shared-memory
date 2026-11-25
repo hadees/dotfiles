@@ -58,7 +58,7 @@ hook)
   payload=$(cat) || exit 0
   # `hook tool` runs on every Bash call, so a payload that holds none of the
   # strings python could match (the SIGNING and CONNECT lists below, the
-  # Claude in Chrome name, and the peer, mail and gh commands) never starts python.
+  # Claude in Chrome name, the WebFetch tool, and the peer, mail and gh commands) never starts python.
   # Keep these in step with them.
   if [ "$2" = tool ]; then
     case "$payload" in
@@ -66,7 +66,7 @@ hook)
     *"Could not resolve host"* | *"Connection refused"* | *"Connection timed out"* | *"Operation timed out"* | *"No route to host"*) ;;
     *"Connection closed by"* | *"kex_exchange_identification"* | *"Failed to connect to"* | *"Couldn't connect to server"*) ;;
     *"Network is unreachable"* | *"SOCKS"* | *"claude-in-chrome"*) ;;
-    *'"gh '* | *'"command gh '* | *"claude-peer start"* | *"claude-peer stop"* | *"claude-peer log"* | *"am mail"* | *SendMessage* | *mcp__postbox__*) ;;
+    *'"gh '* | *'"command gh '* | *"claude-peer start"* | *"claude-peer stop"* | *"claude-peer log"* | *"am mail"* | *SendMessage* | *mcp__postbox__* | *WebFetch*) ;;
     *) exit 0 ;;
     esac
   fi
@@ -116,6 +116,7 @@ TRIGGERS = {
     "commit-signing": "tool",
     "tailnet-routed-ssh": "tool",
     "claude-in-chrome": "tool",
+    "web-fetching": "tool",
 }
 # Claude Code caps one hook output at 10,000 characters and, over it, hands
 # Claude a file path and a short preview instead. Stay under it.
@@ -240,19 +241,19 @@ its overlay. Add these to that file's "hooks" (merging with what is there):
     ] }
   ],
   "PostToolUse": [
-    { "matcher": "Bash|Skill|SendMessage|mcp__claude-in-chrome__.*|mcp__postbox__.*",
+    { "matcher": "Bash|Skill|SendMessage|WebFetch|mcp__claude-in-chrome__.*|mcp__postbox__.*",
       "hooks": [{ "type": "command", "timeout": 5, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook tool || true" }] }
   ],
   "PostToolUseFailure": [
-    { "matcher": "Bash|Skill|SendMessage|mcp__claude-in-chrome__.*|mcp__postbox__.*",
+    { "matcher": "Bash|Skill|SendMessage|WebFetch|mcp__claude-in-chrome__.*|mcp__postbox__.*",
       "hooks": [{ "type": "command", "timeout": 5, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook tool || true" }] }
   ]
 
 SessionStart adds the messaging, Claude Peers, peer and Lead topics to a
 session they apply to and, through `hook main`, the delegation rules to every
 session (a subagent runs neither); the two tool events add the commit-signing,
-tailnet, Claude in Chrome, peer lifetime, session mail and GitHub accounts
-topics once per session when their trigger appears. Every entry fails open, and
+tailnet, Claude in Chrome, peer lifetime, session mail, GitHub accounts and web
+fetching topics once per session when their trigger appears. Every entry fails open, and
 a topic the shared index still imports is never added."""
 
 
@@ -462,6 +463,8 @@ def tool_slugs(payload):
             slugs.append("github-accounts")
     if isinstance(name, str) and (name == "SendMessage" or name.startswith(POSTBOX_PREFIX)):
         slugs.append("session-mail")
+    if name == "WebFetch":
+        slugs.append("web-fetching")
     skill = args.get("skill")
     if (isinstance(name, str) and name.startswith(CHROME_PREFIX)) or (
             name == "Skill" and isinstance(skill, str) and (skill == "claude-in-chrome" or skill.endswith(":claude-in-chrome"))):

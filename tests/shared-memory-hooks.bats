@@ -48,12 +48,13 @@ Topics this file does not import:
 - `github-accounts.md`: a first gh command.
 - `commit-signing.md`: a commit that fails to sign.
 - `claude-in-chrome.md`: the browser.
+- `web-fetching.md`: a fetched page.
 - `delegation-and-model-routing.md`: how to delegate.
 
 @topics/always-here.md
 EOF
   local t
-  for t in always-here talking-to-sessions claude-peers peer-seat lead approvals peer-lifetime session-mail github-accounts commit-signing tailnet-routed-ssh claude-in-chrome delegation-and-model-routing; do
+  for t in always-here talking-to-sessions claude-peers peer-seat lead approvals peer-lifetime session-mail github-accounts commit-signing tailnet-routed-ssh claude-in-chrome web-fetching delegation-and-model-routing; do
     printf '## Fixture %s\n\nBODY-%s\n' "$t" "$t" > "$SHARED_MEMORY_DIR/topics/$t.md"
   done
 
@@ -139,19 +140,19 @@ its overlay. Add these to that file's "hooks" (merging with what is there):
     ] }
   ],
   "PostToolUse": [
-    { "matcher": "Bash|Skill|SendMessage|mcp__claude-in-chrome__.*|mcp__postbox__.*",
+    { "matcher": "Bash|Skill|SendMessage|WebFetch|mcp__claude-in-chrome__.*|mcp__postbox__.*",
       "hooks": [{ "type": "command", "timeout": 5, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook tool || true" }] }
   ],
   "PostToolUseFailure": [
-    { "matcher": "Bash|Skill|SendMessage|mcp__claude-in-chrome__.*|mcp__postbox__.*",
+    { "matcher": "Bash|Skill|SendMessage|WebFetch|mcp__claude-in-chrome__.*|mcp__postbox__.*",
       "hooks": [{ "type": "command", "timeout": 5, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook tool || true" }] }
   ]
 
 SessionStart adds the messaging, Claude Peers, peer and Lead topics to a
 session they apply to and, through `hook main`, the delegation rules to every
 session (a subagent runs neither); the two tool events add the commit-signing,
-tailnet, Claude in Chrome, peer lifetime, session mail and GitHub accounts
-topics once per session when their trigger appears. Every entry fails open, and
+tailnet, Claude in Chrome, peer lifetime, session mail, GitHub accounts and web
+fetching topics once per session when their trigger appears. Every entry fails open, and
 a topic the shared index still imports is never added.
 EOF
 )"
@@ -676,6 +677,39 @@ time.sleep(2)' "$told/s1~lock" > "$BATS_TEST_TMPDIR/held" &
   start '{"session_id":"s1","source":"compact"}' > /dev/null
   run tool "$SIGN_FAIL"
   [[ "$(context)" == *BODY-commit-signing ]]
+}
+
+@test "hook tool: WebFetch adds web-fetching on both events, once per session and agent" {
+  local ok='{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"WebFetch","tool_input":{"url":"https://example.com","prompt":"x"},"tool_response":"ok"}'
+  local bad='{"hook_event_name":"PostToolUseFailure","session_id":"s2","tool_name":"WebFetch","tool_input":{"url":"https://example.com","prompt":"x"},"error":"Request failed with status code 403"}'
+  run tool "$ok"
+  [ "$status" -eq 0 ]
+  [[ "$(context)" == *BODY-web-fetching ]]
+  [[ "$output" == *'"hookEventName": "PostToolUse"'* ]]
+  run tool "$ok"
+  [ -z "$output" ]
+  run tool "${ok/\"session_id\":\"s1\"/\"session_id\":\"s1\",\"agent_id\":\"a1\"}"
+  [[ "$(context)" == *BODY-web-fetching ]]
+  run tool "$bad"
+  [[ "$(context)" == *BODY-web-fetching ]]
+  [[ "$output" == *'"hookEventName": "PostToolUseFailure"'* ]]
+  run tool "$bad"
+  [ -z "$output" ]
+  [ "$(cut -f3- "$LOG" | sort | uniq -c | tr -s ' ')" = "$(printf ' 3 tool\tweb-fetching\tinjected\n 2 tool\tweb-fetching\ttold')" ]
+}
+
+@test "hook tool: a Bash command that mentions WebFetch adds nothing" {
+  run tool "$(bash_payload 'grep -rn WebFetch .' s1)"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "hook tool: web-fetching imported by the index is not added, and is logged imported" {
+  printf '@topics/web-fetching.md\n' >> "$SHARED_MEMORY_DIR/CLAUDE.md"
+  run tool '{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"WebFetch","tool_input":{},"tool_response":"ok"}'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$(cut -f3- "$LOG")" = "$(printf 'tool\tweb-fetching\timported')" ]
 }
 
 @test "hook tool: a topic the index imports is never added, and is logged imported" {
