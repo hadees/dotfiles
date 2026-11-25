@@ -87,6 +87,10 @@ FIELD = re.compile(
     r"|(?P<consumes>consumes)[*_]*\s*:"
     r"|(?P<frm>consumes\s+from\b))[*_]*" % STRICT, re.I)
 ROW_ID = re.compile(r"(?:Steps?\s+)?(%s)(?!\w)\s*(.*)$" % ID)
+# A line that opens what looks like another step: a bold "Step N", "#### N." or a Step heading.
+NESTED = re.compile(
+    r"\s*(?:[*_]{1,2}Step\s+(?P<a>%s)(?!\w)|#{1,6}\s+(?P<b>%s)\.(?!\w)|#{1,6}\s+Step\s+(?P<c>%s)(?!\w))"
+    % (ID, ID, ID))
 MORE_IDS = re.compile(r"(?:,|/|&|\+|and\b|to\b|[-–—])\s*(?:[Ss]teps?\s+)?%s(?!\w)" % ID)
 ID_HEADERS = ("step", "#", "no", "no.", "number", "n", "step number", "step no", "step no.")
 
@@ -187,14 +191,20 @@ def cells_of(line):
 
 def parse(path):
     """({id: [title, section lines]}, {id: [(table, needs cell)]}, [why nothing
-    can be shown], {ids with a heading}) from a plan."""
+    can be shown], {ids with a heading}, [(step, what looks like another)]) from a plan."""
     steps, tables, stop, cur, level, fenced, cols = {}, [], [], None, 0, False, None
-    headed = set()
+    headed, notes, fence_at = set(), [], 0
     with open(path, encoding="utf-8") as f:
         text = f.read()
     for no, line in enumerate(text.splitlines(), 1):
         if line.startswith("```"):
             fenced = not fenced
+            fence_at = no
+        if cur is not None and not HEADING.match(line if not fenced else "x"):
+            m = NESTED.match(line)
+            other = m and (m.group("a") or m.group("b") or m.group("c"))
+            if other and other != cur and (cur, other) not in notes:
+                notes.append((cur, other))
         if fenced:
             if cur is not None:
                 steps[cur][1].append(line)
@@ -235,13 +245,15 @@ def parse(path):
             m = FIELD.match(line)
             if m and m.group("strict"):
                 stop.append("line %d: a %s: line outside every step section" % (no, m.group("strict")))
+    if fenced:
+        stop.append("line %d: code fence never closed" % fence_at)
     needs = {}
     for t, rows in enumerate(tables):
         for sid, cells, title in rows:
             needs.setdefault(sid, []).extend((t, c) for c in cells)
             if sid not in steps or not steps[sid][0]:
                 steps.setdefault(sid, [title, []])[0] = title
-    return steps, needs, stop, headed
+    return steps, needs, stop, headed, notes
 
 
 def main(argv):
@@ -257,7 +269,7 @@ def main(argv):
     try:
         if not argv or not all(re.fullmatch(ID, t) for t in ids + running):
             raise ValueError("bad step id or no plan")
-        steps, cells, stop, headed = parse(argv[0])
+        steps, cells, stop, headed, notes = parse(argv[0])
     except (ValueError, OSError) as e:
         sys.stderr.write("usage: plan-ready <plan.md> [verified ids...] [--running ids...] (%s)\n" % e)
         return 64
@@ -314,6 +326,9 @@ def main(argv):
         if n in reach[n]:
             stuck |= comp
     ready = bad = 0
+    for n, other in notes:
+        sys.stderr.write("step %s: section holds what looks like step %s\n" % (n, other))
+        bad += 1
     for n in sorted(info, key=order):
         if headed and n not in headed:
             sys.stderr.write("step %s: no section of its own\n" % n)

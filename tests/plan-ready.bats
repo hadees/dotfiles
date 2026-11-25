@@ -668,7 +668,7 @@ Needs: step 1.'
   [ "$stderr" = "steps 1, 2: cycle" ]
 }
 
-@test "a section a fence swallowed: its step needs itself, and a table step with no section of its own is named" {
+@test "a table step with no section of its own is named, and still listed when its cells allow it" {
   plan_of '| Step | Needs |
 |---|---|
 | 1 | none |
@@ -676,29 +676,58 @@ Needs: step 1.'
 | 3 | 1 |
 
 ### Step 1: a
-Needs: nothing.
-
-```
-### Step 2: b
-Needs: step 1.
-
-### Step 3: c
-Needs: step 3.'
+Needs: nothing.'
   run --separate-stderr "$PR" "$PLAN" 1
   [ "$status" -eq 0 ]
   [ "$(ids)" = "2 3 " ]
   [ "$stderr" = "step 2: no section of its own
 step 3: no section of its own" ]
+}
+
+@test "a fence still open at the end of the file: its line is named and the run exits 2" {
   plan_of '### Step 1: a
 Needs: nothing.
 
-```
 ### Step 2: b
+Needs: step 1.
+
+```
+### Step 3: c
+Needs: step 1.'
+  run --separate-stderr "$PR" "$PLAN" 1 2
+  [ "$status" -eq 2 ]
+  [ -z "$output" ]
+  [ "$stderr" = "line 7: code fence never closed" ]
+}
+
+@test "a section that holds what looks like another step is named: a bold Step, a numbered heading, a heading inside a fence" {
+  local nested
+  for nested in '**Step 3**' '#### 3. c' '```
+### Step 3: c
+```'; do
+    plan_of "### Step 1: a
+Needs: nothing.
+
+### Step 2: b
+Needs: step 1.
+
+$nested
+Needs: step 1."
+    run --separate-stderr "$PR" "$PLAN" 1 2
+    [ "$status" -eq 2 ] || { echo "[$nested]: status $status, output [$output]"; false; }
+    [ -z "$output" ]
+    [ "$stderr" = "step 2: section holds what looks like step 3" ] || { echo "[$nested]: stderr [$stderr]"; false; }
+  done
+  # misfiled lines can also make the host step need itself
+  plan_of '### Step 1: a
+Needs: nothing.
+
+**Step 2**
 Needs: step 1.'
   run --separate-stderr "$PR" "$PLAN"
   [ "$status" -eq 2 ]
-  [ -z "$output" ]
-  [ "$stderr" = "step 1: needs itself" ]
+  [ "$stderr" = "step 1: section holds what looks like step 2
+step 1: needs itself" ]
 }
 
 @test "everything verified: exit 1" {
@@ -738,8 +767,9 @@ Needs: nothing.
 |---|---|
 | 3 | none |
 ```'
-  run "$PR" "$PLAN"
+  run --separate-stderr "$PR" "$PLAN"
   [ "$output" = "1${T}a" ]
+  [ "$stderr" = "step 1: section holds what looks like step 2" ]
 }
 
 @test "a heading of the same or a higher level ends a step's section, a deeper one does not" {
