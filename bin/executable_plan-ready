@@ -21,21 +21,23 @@ column, and a Needs column holding step ids or "none") and the "## Step <id>" /
 "### Step <id>" headings (the title is what follows the first colon, else the
 rest). A table row's Needs cell wins; a step with no row takes its needs from
 its section's first line starting "Needs:", else "Consumes:" or "Consumes from"
-(read to its first colon), else "Precondition:", read to the first full stop or
-blank line. Understood: "none"/"nothing" in any case, "step N", "steps N and M",
-"steps N, M and K", "steps N to M", and in a table cell bare ids ("1a (why); 2,
-3"). A reference after "signed" (or "signed plan's"), and "row N" or "Sign-off
-N", point outside the plan and count as met. With several such tables the one
-with the most step rows is the Build sequence. "Step 1" in a plan that has only
-1a and 1b means both. In a table cell or a "Needs:" line, words left over
-(finished, merged, verified, deployed and done aside) are an outside event: the
-step is not ready and stderr says "step N: also needs: <words>".
+(read to its first colon), else "Precondition:", read to the first blank line.
+With several tables the one with the most step rows is the Build sequence.
+
+A table cell, a "Needs:" line and a "Precondition:" line are read strictly: the
+only words understood are step ids ("1", "1b", "C9"), "step", "steps", "and",
+",", ";", "to" inside a list ("1 to 4"), "none", "nothing" (alone), finished,
+merged, verified, deployed, done, "signed step N" (another plan's step, met) and
+"Sign-off N" (a row the go already covers, met). Anything else is an outside
+need: the step is withheld and stderr says "step N: also needs: <words>". That
+includes parentheses, text after a full stop, "'s ..." tails and "row N". A
+"Consumes:" line is read leniently: it names what earlier steps produce, so only
+its step references count. "Step 1" in a plan that has only 1a and 1b means both.
 
 Exit 0: something was printed. 1: steps found, none ready. 2: no steps found,
-or nothing ready and some step's needs are missing, unreadable, name a step
-the plan lacks or hold an outside event (stderr says which: read the plan's
-needs yourself). 64: bad
-usage or plan file.
+or nothing ready and some step's needs are missing, unreadable, name a step the
+plan lacks or hold an outside need (stderr says which: read the plan's needs
+yourself). 64: bad usage or plan file.
 """
 import re
 import sys
@@ -43,13 +45,20 @@ import sys
 ID = r"[A-Z]?\d+[a-z]?"
 LIST = r"(?:\s*(?:,|and|to)\s*%s)*" % ID
 HEADING = re.compile(r"^(#{2,4})\s+Step\s+(%s)(?!\w)(.*)$" % ID)
-REF = re.compile(r"\b([Ss]igned\s+(?:plan's\s+)?)?[Ss]teps?\s+(%s%s)(?:'s\b[^,;]*)?" % (ID, LIST))
-BARE = re.compile(r"(?<![\w-])%s%s(?![\w-])" % (ID, LIST))
+REF = re.compile(r"\b([Ss]igned\s+(?:plan's\s+)?)?[Ss]teps?\s+(%s%s)" % (ID, LIST))
 ITEM = re.compile(r"%s|,|and|to" % ID)
-SKIP = re.compile(r"\b(?:[Rr]ows?|Sign-off(?: rows?)?)\s+\d+(?:\s*(?:,|and|to)\s*\d+)*")
+IDS = r"%s%s(?![\w-])" % (ID, LIST)
+TOKEN = re.compile(
+    r"(?:(?P<signed>[Ss]igned\s+(?:plan's\s+)?[Ss]teps?\s+%s)"
+    r"|(?P<signoff>Sign-off\s+(?:rows?\s+)?%s)"
+    r"|(?P<row>[Rr]ows?\s+%s)"
+    r"|(?P<step>[Ss]teps?\s+%s)"
+    r"|(?P<ids>%s)"
+    r"|(?P<none>(?i:none|nothing)(?!\w))"
+    r"|(?P<word>(?i:and|%s)(?!\w))"
+    r"|(?P<sep>[,;]+))" % (IDS, IDS, IDS, IDS, IDS, "finished|merged|verified|deployed|done|completed?"))
 ROW_ID = re.compile(r"(?:Steps?\s+)?(%s)(?!\w)\s*(.*)$" % ID)
 NONE = re.compile(r"^\W*(?:none|nothing)\b|^[-–—]$", re.I)
-DONE = "finished|merged|verified|deployed|done|completed?"
 ID_HEADERS = ("step", "#", "no", "no.", "number", "n", "step number", "step no", "step no.")
 
 
@@ -76,47 +85,55 @@ def expand(run, known):
     return out
 
 
-def needs(text, known, strict):
-    """(step ids a needs text names or None when unreadable, words it also holds).
+def resolve(deps, known):
+    """"Step 1" in a plan split into 1a and 1b means both."""
+    for d in [d for d in deps if d not in known]:
+        kids = {k for k in known if re.fullmatch(d + "[a-z]", k)}
+        if kids:
+            deps = (deps - {d}) | kids
+    return deps
 
-    Strict (a table cell or a "Needs:" line) reads bare ids too, and hands back
-    whatever words are left once everything understood is taken out: an outside
-    event the plan makes a step wait for. The prose lines are lenient.
-    """
+
+def lenient_needs(text, known):
+    """(step ids the text names, or None when it names none, "")."""
     text = re.split(r"\.(?:\s|$)", " ".join(text.split()), maxsplit=1)[0]
     text = re.sub(r"\([^)]*\)", "", text).strip()
-    if NONE.match(text):
+    if re.match(r"\W*(?:none|nothing)\b", text, re.I):
         return set(), ""
     deps, found = set(), False
     for m in REF.finditer(text):
         found = True
         if not m.group(1):
             deps |= expand(m.group(2), known)
-    text = REF.sub(" ", text)
-    if re.search(r"[Ss]igned", text):
-        found = True
-        text = re.sub(r"[Ss]igned[^,;]*", " ", text)
-    if strict:
-        found = found or bool(SKIP.search(text))
-        text = SKIP.sub(" ", text)
+    return (resolve(deps, known) if found else None), ""
 
-        def take(m):
-            nonlocal found
-            ids = expand(m.group(0), known)
-            found = found or bool(ids)
-            deps.update(ids)
-            return " "
 
-        text = BARE.sub(take, text)
-    for d in [d for d in deps if d not in known]:  # "Step 1" for a plan split into 1a, 1b
-        kids = {k for k in known if re.fullmatch(d + "[a-z]", k)}
-        if kids:
-            deps = (deps - {d}) | kids
-    rest = ""
-    if strict and found:
-        rest = " ".join(re.sub(r"\b(?:and|to|steps?|%s)\b|[,;:&]" % DONE, " ", text, flags=re.I).split())
-        rest = rest.strip(" .")
-    return (deps if found else None), rest
+def strict_needs(text, known):
+    """(step ids, or None when none is understood; the words nothing understood
+    could take: an outside need the step waits on)."""
+    text = " ".join(text.split())
+    if re.fullmatch(r"[-\u2013\u2014]", text):
+        return set(), ""
+    text = re.sub(r"\.$", "", text)
+    deps, found, left, pos = set(), False, [], 0
+    while pos < len(text):
+        if text[pos].isspace():
+            pos += 1
+            continue
+        m = TOKEN.match(text, pos)
+        if m is None:
+            m = re.compile(r"\S+").match(text, pos)
+            left.append(m.group(0))
+        elif m.lastgroup == "row":  # a row number is not understood
+            left.append(m.group(0))
+        elif m.lastgroup in ("ids", "step"):
+            found = True
+            deps |= expand(re.sub(r"^[Ss]teps?\s+", "", m.group(0)), known)
+        elif m.lastgroup in ("signed", "signoff", "none"):
+            found = True
+        pos = m.end()
+    rest = " ".join(left).strip(" .,;")
+    return (resolve(deps, known) if found else None), rest
 
 
 def section_needs(lines, known):
@@ -134,7 +151,7 @@ def section_needs(lines, known):
             text += " " + nxt
         if key == "Consumes from":
             text = text.split(":", 1)[0]
-        return needs(text, known, key == "Needs:")
+        return strict_needs(text, known) if key in ("Needs:", "Precondition:") else lenient_needs(text, known)
     return None, ""
 
 
@@ -211,7 +228,7 @@ def main(argv):
         if n in verified or n in running:
             continue
         title, lines = steps[n]
-        deps, rest = needs(table[n], known, True) if n in table else section_needs(lines, known)
+        deps, rest = strict_needs(table[n], known) if n in table else section_needs(lines, known)
         if rest:
             sys.stderr.write("step %s: also needs: %s\n" % (n, rest))
             bad += 1

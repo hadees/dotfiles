@@ -69,21 +69,59 @@ Needs: step 1.'
   [ "$(ids)" = "2 3 " ]
 }
 
-@test "table cells: bare ids, a parenthesis is ignored, row and Sign-off numbers and signed items are met, a step with letter variants means all of them" {
+@test "table cells: bare ids, signed steps and Sign-off rows are met, a step with letter variants means all of them" {
   plan_of '| # | Needs |
 |---|---|
 | 1a | none |
 | 1b | none |
-| 2 | 1a (the fixture); signed PR Z |
-| 3 | Step 1 finished; row 14 |
+| 2 | 1a; signed step 9 |
+| 3 | Step 1 finished; Sign-off 14 |
 | 4 | Sign-off 2 |
-| 5 | 1a to 1b |
-| 6 | PR Q merged |'
+| 5 | 1a to 1b |'
   run --separate-stderr "$PR" "$PLAN" 1a
   [ "$(ids)" = "1b 2 4 " ]
-  [ "$stderr" = "step 6: needs unreadable" ]
+  [ -z "$stderr" ]
   run --separate-stderr "$PR" "$PLAN" 1a 1b
   [ "$(ids)" = "2 3 4 5 " ]
+}
+
+@test "strict reading: each shape that hides an outside need withholds the step and names it, in a cell and in Needs:/Precondition: lines" {
+  local cell want
+  while IFS='|' read -r cell want; do
+    plan_of "| Step | Needs |
+|---|---|
+| 1 | none |
+| 2 | $cell |"
+    run --separate-stderr "$PR" "$PLAN" 1
+    [ "$status" -eq 2 ] || { echo "cell [$cell]: status $status, output [$output]"; false; }
+    [ -z "$output" ]
+    [ "$stderr" = "step 2: also needs: $want" ] || { echo "cell [$cell]: stderr [$stderr]"; false; }
+  done <<'CELLS'
+1 (after the vendor key is issued)|(after the vendor key is issued)
+1. Then the vendor key issued|Then the vendor key issued
+Step 1 merged. The operator logs in first|The operator logs in first
+step 1's fixture and the vendor key issued|'s fixture the vendor key issued
+1; signed contract from the client|signed contract from the client
+1; row 3 and 4|row 3 and 4
+1; Sign-off 3 struck|struck
+CELLS
+  plan_of '### Step 1: a
+Needs: nothing.
+
+### Step 2: b
+Needs: step 1. The operator must log in first.
+
+### Step 3: c
+Needs: step 1 (and the vendor key).
+
+### Step 4: d
+Precondition: step 1 merged and the vendor key issued.'
+  run --separate-stderr "$PR" "$PLAN" 1
+  [ "$status" -eq 2 ]
+  [ -z "$output" ]
+  [ "$stderr" = "step 2: also needs: The operator must log in first
+step 3: also needs: (and the vendor key)
+step 4: also needs: the vendor key issued" ]
 }
 
 @test "a cell with ids and an outside event is not ready: stderr says what else it needs, exit 2 when nothing else is" {
@@ -102,7 +140,7 @@ step 3: also needs: the operator has rotated the token" ]
   [ "$(ids)" = "1 " ]
 }
 
-@test "a cell that is only an outside event is unreadable; completion words and an unknown bare id are handled" {
+@test "a cell that is only an outside event is named too; completion words and an unknown bare id are handled" {
   plan_of '| Step | Needs |
 |---|---|
 | 1 | none |
@@ -111,7 +149,7 @@ step 3: also needs: the operator has rotated the token" ]
 | 4 | 1, 9 |'
   run --separate-stderr "$PR" "$PLAN" 1
   [ "$(ids)" = "3 " ]
-  [ "$stderr" = "step 2: needs unreadable
+  [ "$stderr" = "step 2: also needs: the vendor key issued
 step 4: needs unknown step 9" ]
 }
 
@@ -205,7 +243,7 @@ Needs: steps 2 and 3.'
 
 @test "nothing: a step with no dependencies is ready, titles after (PR X): and :" {
   plan_of '### Step 1 (PR A): first
-Needs: nothing. Produces: a file.
+Needs: nothing.
 
 ### Step 2: second
 Needs: none.'
@@ -266,29 +304,38 @@ Needs: step 1.'
   [ "$output" = "2${T}b" ]
 }
 
-@test "a signed reference points at another plan and counts as met" {
+@test "a signed step points at another plan and counts as met; a Consumes: line is lenient about the rest" {
   plan_of '### Step 1: a
 Needs: nothing.
 
 ### Step 2: b
-Needs: signed step 1'"'"'s `helper`; signed steps 2 and 3; step 1.'
+Needs: signed step 1; signed steps 2 and 3; step 1.
+
+### Step 3: c
+Consumes: signed step 1'"'"'s `helper`; step 1.'
   run "$PR" "$PLAN" 1
-  [ "$output" = "2${T}b" ]
+  [ "$output" = "2${T}b
+3${T}c" ]
   run "$PR" "$PLAN"
   [ "$output" = "1${T}a" ]
 }
 
-@test "the line runs on to its full stop across wrapped lines, and stops there" {
+@test "a needs line runs on across wrapped lines to a blank line; text after a full stop is an outside need" {
   plan_of '### Step 1: a
 Needs: nothing.
 
 ### Step 2: b
 Needs: step 1 and
-steps 1 to 1. Produces: step 9.'
-  run "$PR" "$PLAN"
-  [ "$output" = "1${T}a" ]
-  run "$PR" "$PLAN" 1
-  [ "$output" = "2${T}b" ]
+steps 1 to 1.
+
+### Step 3: c
+Needs: step 1. Then the key issued
+
+### Step 4: d
+Consumes: step 1. Produces: step 9.'
+  run --separate-stderr "$PR" "$PLAN" 1
+  [ "$(ids)" = "2 4 " ]
+  [ "$stderr" = "step 3: also needs: Then the key issued" ]
 }
 
 @test "the first Needs: line wins over Consumes:, and Consumes: is the fallback" {
@@ -301,6 +348,7 @@ Needs: step 1.
 
 ### Step 3: c
 Needs: nothing.
+
 Needs: step 1.'
   run "$PR" "$PLAN"
   [ "$output" = "1${T}a
@@ -322,13 +370,12 @@ Needs: nothing.'
   [ "$output" = "2${T}b" ]
 }
 
-@test "Precondition: is the fallback after Needs: and Consumes:, signed plan's steps count as met" {
+@test "Precondition: is the fallback after Needs: and Consumes:, and is read strictly" {
   plan_of '### Step 1: a
 Needs: nothing.
 
 ### Step 2: b
-Precondition: step 1 deployed; the signed plan'"'"'s step 12 merged; the
-operator'"'"'s go.
+Precondition: step 1 deployed; signed step 12 merged.
 
 ### Step 3: c
 Precondition: nothing.
@@ -341,7 +388,7 @@ Precondition: step 1.'
 3${T}c
 4${T}d" ]
   [ -z "$stderr" ]
-  run "$PR" "$PLAN" 1
+  run --separate-stderr "$PR" "$PLAN" 1
   [ "$output" = "2${T}b
 3${T}c
 4${T}d" ]
@@ -365,6 +412,7 @@ step 2: needs unknown step 8" ]
 @test "text other than the step titles is never printed" {
   plan_of '### Step 1: a
 Needs: nothing.
+
 SECRET-BODY-TEXT'
   run "$PR" "$PLAN"
   [[ "$output" != *SECRET-BODY-TEXT* ]]
@@ -375,7 +423,7 @@ SECRET-BODY-TEXT'
 Files: x.
 
 ### Step 2: garbled
-Needs: the usual suspects.'
+Needs:'
   run --separate-stderr "$PR" "$PLAN"
   [ "$status" -eq 2 ]
   [ -z "$output" ]
