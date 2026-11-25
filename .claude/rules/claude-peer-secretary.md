@@ -6,10 +6,11 @@ paths:
   - "**/tests/claude-peer-screen.bats"
 ---
 
-# Claude peers: the jobs record and the queue
+# Claude peers: the jobs record, the queue and the secretary pane
 
-The part of `bin/claude-peer` that keeps what Lead dispatched and queues what the
-operator thought up. The rest of the script is in `claude-peer.md`.
+The part of `bin/claude-peer` that keeps what Lead dispatched, queues what the
+operator thought up, and runs the pane to think in. The rest of the script is in
+`claude-peer.md`.
 
 ## The jobs record
 
@@ -140,3 +141,51 @@ Tests: `tests/claude-peer.bats` ("queue add: ...", "queue list: ...", "queue nex
 ...", "queue take: ...", "queue verbs: ...", "queue show: ...", "queue escalation:
 ...", "queue hook: ...", "queue settings: ..."). Fixture cards are written `ago`
 seconds back, whole hours plus ten minutes; a postbox stub records its calls.
+
+## The secretary pane
+
+Every session a pane starts that is not a hand-off (`pg_ho` is not 1: Return, a picker
+row, a typed task, `c`, a plain `claude-peer start`) is the operator's secretary: one
+idea per session, researched and shaped in chat, ended with one card in the queue. A
+`start --handoff` is untouched, so the hand-off path (Lead's hand-offs, and the trial's
+control arm) behaves as it did. `pane_go` sets `pg_sec` to 1 for a secretary start.
+
+- **Fresh tree.** For a `fresh` start, a slot that is detached and has an empty `git
+  status --porcelain` is moved to `origin/HEAD` (`checkout --detach`, no fetch; a slot
+  with no `origin/HEAD` stays). Anything else is left as it is. `HEAD` and the branch at
+  start are `pg_h0` and `pg_b0`.
+- **The cap.** Before a slot is taken, the live sessions named `*-secretary` are counted
+  across the registry of every `profile_dirs` directory (`pane_secretaries`: name and
+  pid only, the pid passing `session_same`). With `claude-peer.pane-max` (default 2; 0
+  never warns; not a number is 2) or more open, the pane prints `claude-peer: <n>
+  conversations are open (<names>); Return again opens another` and waits; a second
+  start within 60 seconds goes ahead and logs a `note`, `pane over cap: <n+1>`. The
+  stamp is the pane's own `pn_cap_t`, so another pane's Return does not count as the
+  second one. The cap sits before the slot because a refusal after it would leave a
+  claim. The registry layout (`sessions/<pid>.json`, its `name`) is observed, not an
+  interface.
+- **The arguments** follow `--permission-mode` and come before `--agent`: `--disallowedTools
+  <deny list>`, then `--settings '{"crossSessionInbound":"refuse"}'`, then the seat note
+  joins the system prompt. The deny list is **one** argument, because `--disallowedTools`
+  is variadic and would take the prompt for a tool name; `--settings` after it is what
+  ends it. `git config claude-peer.pane-deny` replaces it (default
+  `Edit,NotebookEdit,SendMessage,ListAgents,Agent(work-sonnet),Agent(unstick-fable)`;
+  `none` passes no deny pair; a value that starts with `-` is said once and the default
+  used). A context's `system:` text and the note are one `--append-system-prompt`, the
+  text first, an empty line, then the note.
+- **The seat note** (`secretary_note`) is text the operator signed on 2026-11-25 and is
+  kept word for word; only `<rname>`, the session-name prefix, is replaced. It tells the
+  session to keep one idea file under `${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<rname>/`,
+  to finish with one `claude-peer queue add` (or `park` or `drop`), to write a `once`
+  row to the approvals ledger for a go, and not to edit, commit, merge, dispatch
+  `work-sonnet`, message another session or write `claude-peer log` lines. The tools
+  that would do those are removed at launch; the note is the part no tool enforces.
+- **Drift.** When the session returns and before the `end` line, a worktree with a
+  branch it did not have at start, a `HEAD` other than `pg_h0`, or a non-empty `git
+  status --porcelain` writes a `note` `pane drift: <branch <name>|commits|dirty> in
+  <slot>`, in that order of preference. Nobody is told: the count is the signal.
+
+Tests: `tests/claude-peer.bats` ("secretary seat: ..."). The stub shell leaves the
+seat's three arguments out of what the older tests read, so they keep checking the
+other arguments; `FAKE_SHELL_SEAT=1` keeps them and `FAKE_SHELL_RAW=<file>` logs one
+argument per line. `FAKE_SHELL_DO` runs a command in the worktree, to commit or dirty it.
