@@ -674,12 +674,16 @@ session when they apply (see `.claude/rules/shared-memory.md`). The script
 and its hook block are identity-free; only the *file* they get pasted into is
 private, because each profile's `settings.json` is overlay-owned. Paste
 `shared-memory settings`'s output into each profile's settings source: a
-`SessionStart` entry and a `PostToolUse` and a `PostToolUseFailure` entry
-with the matcher it prints, merged with the hooks already there. Every
+`SessionStart` entry holding two commands (`hook start` and `hook main`) and a
+`PostToolUse` and a `PostToolUseFailure` entry with the matcher it prints,
+merged with the hooks already there. Every
 entry ends in `|| true` and runs only if `~/bin/shared-memory` is executable,
 so it is safe to wire before the public change lands: until the script is
 deployed it does nothing, and a topic the shared index still imports is never
-added. `claude-doctor`'s `topics:` line says per profile whether the hook is
+added. A profile still on the old block (one `SessionStart` command, the
+older matcher) is safe too: it keeps working, lacks the `main` topics and the
+`web-fetching` trigger, and `claude-doctor`'s `topics:` line shows it as
+`partly wired (missing main)`. That line says per profile whether the hook is
 wired, partly wired or not.
 
 ### Session Status wiring — every profile's `settings.json`

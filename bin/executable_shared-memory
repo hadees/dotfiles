@@ -5,7 +5,9 @@
 # ~/.claude-shared/CLAUDE.md imports the topics every session needs and lists
 # the rest. An import is loaded whether or not it is used, so the rest are
 # added by hooks instead: `hook start` (SessionStart) for the topics about
-# the kind of session this is, and `hook tool` (PostToolUse and
+# the kind of session this is, `hook main` (SessionStart too) for the topics
+# only a main conversation needs (a subagent runs no SessionStart, so it never
+# holds them), and `hook tool` (PostToolUse and
 # PostToolUseFailure) for the topics about something that just went wrong or
 # was just started: a commit that failed to sign, an ssh that could not
 # connect, Claude in Chrome. Each profile's settings.json is owned by its
@@ -21,11 +23,12 @@
 #
 # Usage:
 #   shared-memory topics [DIR]      one line per topic: slug, load class
-#                                   (always|start|tool|pointer|unreachable),
+#                                   (always|start|main|tool|pointer|unreachable),
 #                                   listed in the index (yes|no|-); exits 1
 #                                   unless every topic is imported or listed
 #   shared-memory settings          the hooks block each overlay pastes
 #   shared-memory hook start        SessionStart JSON on stdin; always exits 0
+#   shared-memory hook main         SessionStart JSON on stdin; always exits 0
 #   shared-memory hook tool         PostToolUse/PostToolUseFailure JSON on stdin; always exits 0
 #   shared-memory log [--since DAYS]
 # env:
@@ -51,11 +54,11 @@ nopython() {
 case "${1:-}" in
 hook)
   [ -z "${MEMORYGUARD_DEPTH:-}" ] || exit 0
-  case "${2:-}" in start | tool) ;; *) exit 0 ;; esac
+  case "${2:-}" in start | main | tool) ;; *) exit 0 ;; esac
   payload=$(cat) || exit 0
   # `hook tool` runs on every Bash call, so a payload that holds none of the
   # strings python could match (the SIGNING and CONNECT lists below, the
-  # Claude in Chrome name, and the peer, mail and gh commands) never starts python.
+  # Claude in Chrome name, the WebFetch tool, and the peer, mail and gh commands) never starts python.
   # Keep these in step with them.
   if [ "$2" = tool ]; then
     case "$payload" in
@@ -63,7 +66,7 @@ hook)
     *"Could not resolve host"* | *"Connection refused"* | *"Connection timed out"* | *"Operation timed out"* | *"No route to host"*) ;;
     *"Connection closed by"* | *"kex_exchange_identification"* | *"Failed to connect to"* | *"Couldn't connect to server"*) ;;
     *"Network is unreachable"* | *"SOCKS"* | *"claude-in-chrome"*) ;;
-    *'"gh '* | *'"command gh '* | *"claude-peer start"* | *"claude-peer stop"* | *"claude-peer log"* | *"am mail"* | *SendMessage* | *mcp__postbox__*) ;;
+    *'"gh '* | *'"command gh '* | *"claude-peer start"* | *"claude-peer stop"* | *"claude-peer log"* | *"am mail"* | *SendMessage* | *mcp__postbox__* | *WebFetch*) ;;
     *) exit 0 ;;
     esac
   fi
@@ -106,12 +109,14 @@ TRIGGERS = {
     "peer-seat": "start",
     "lead": "start",
     "approvals": "start",
+    "delegation-and-model-routing": "main",
     "peer-lifetime": "tool",
     "github-accounts": "tool",
     "session-mail": "tool",
     "commit-signing": "tool",
     "tailnet-routed-ssh": "tool",
     "claude-in-chrome": "tool",
+    "web-fetching": "tool",
 }
 # Claude Code caps one hook output at 10,000 characters and, over it, hands
 # Claude a file path and a short preview instead. Stay under it.
@@ -119,6 +124,8 @@ INJECT_MAX = 9000
 PEER_TIMEOUT = 3
 TOLD_MAX_DAYS = 14
 START_ORDER = ("talking-to-sessions", "claude-peers", "peer-seat", "lead", "approvals")
+# Topics `hook main` adds to every main conversation, whatever its role.
+MAIN_ORDER = ("delegation-and-model-routing",)
 # What a failed commit signature and a failed connection print. "Could not
 # resolve host" also covers "... hostname". The sh prefilter above repeats them.
 SIGNING = ("failed to fill whole buffer", "failed to write commit object", "No SSH private key found")
@@ -228,22 +235,26 @@ SETTINGS = """shared-memory does not edit settings.json — each profile's file 
 its overlay. Add these to that file's "hooks" (merging with what is there):
 
   "SessionStart": [
-    { "hooks": [{ "type": "command", "timeout": 10, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook start || true" }] }
+    { "hooks": [
+      { "type": "command", "timeout": 10, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook start || true" },
+      { "type": "command", "timeout": 5, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook main || true" }
+    ] }
   ],
   "PostToolUse": [
-    { "matcher": "Bash|Skill|SendMessage|mcp__claude-in-chrome__.*|mcp__postbox__.*",
+    { "matcher": "Bash|Skill|SendMessage|WebFetch|mcp__claude-in-chrome__.*|mcp__postbox__.*",
       "hooks": [{ "type": "command", "timeout": 5, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook tool || true" }] }
   ],
   "PostToolUseFailure": [
-    { "matcher": "Bash|Skill|SendMessage|mcp__claude-in-chrome__.*|mcp__postbox__.*",
+    { "matcher": "Bash|Skill|SendMessage|WebFetch|mcp__claude-in-chrome__.*|mcp__postbox__.*",
       "hooks": [{ "type": "command", "timeout": 5, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook tool || true" }] }
   ]
 
 SessionStart adds the messaging, Claude Peers, peer and Lead topics to a
-session they apply to; the two tool events add the commit-signing, tailnet,
-Claude in Chrome, peer lifetime, session mail and GitHub accounts topics once per session when
-their trigger appears. Every entry fails open, and a topic the shared index
-still imports is never added."""
+session they apply to and, through `hook main`, the delegation rules to every
+session (a subagent runs neither); the two tool events add the commit-signing,
+tailnet, Claude in Chrome, peer lifetime, session mail, GitHub accounts and web
+fetching topics once per session when their trigger appears. Every entry fails open, and
+a topic the shared index still imports is never added."""
 
 
 def cmd_settings(argv):
@@ -393,6 +404,34 @@ def hook_start():
         log_row("start", slug, outcome)
 
 
+def hook_main():
+    payload = read_payload()
+    if payload is None:
+        return
+    index = read_text(os.path.join(DIR, "CLAUDE.md"))
+    slugs, texts = [], []
+    for slug in MAIN_ORDER:
+        path = os.path.join(DIR, "topics", slug + ".md")
+        if not os.path.isfile(path):
+            continue
+        if is_imported(index, slug):
+            log_row("main", slug, "imported")
+            continue
+        slugs.append(slug)
+        texts.append(read_text(path).rstrip())
+    if not slugs:
+        return
+    header = "shared-memory: these shared-memory topics apply to this session (a main conversation), so they are added here:"
+    out, outcome = header + "\n\n" + "\n\n".join(texts), "injected"
+    if len(out) > INJECT_MAX:
+        out = header + "\n" + "\n".join("read ~/.claude-shared/topics/%s.md now: it applies to this session and is too long to add here." % s for s in slugs)
+        outcome = "oversize"
+    sys.stdout.write(out + "\n")
+    sys.stdout.flush()
+    for slug in slugs:
+        log_row("main", slug, outcome)
+
+
 def tool_text(payload):
     if payload.get("hook_event_name") == "PostToolUseFailure":
         err = payload.get("error")
@@ -424,6 +463,8 @@ def tool_slugs(payload):
             slugs.append("github-accounts")
     if isinstance(name, str) and (name == "SendMessage" or name.startswith(POSTBOX_PREFIX)):
         slugs.append("session-mail")
+    if name == "WebFetch":
+        slugs.append("web-fetching")
     skill = args.get("skill")
     if (isinstance(name, str) and name.startswith(CHROME_PREFIX)) or (
             name == "Skill" and isinstance(skill, str) and (skill == "claude-in-chrome" or skill.endswith(":claude-in-chrome"))):
@@ -486,6 +527,8 @@ def hook(argv):
     try:
         if argv[:1] == ["start"]:
             hook_start()
+        elif argv[:1] == ["main"]:
+            hook_main()
         elif argv[:1] == ["tool"]:
             hook_tool()
     except BaseException:
@@ -497,7 +540,7 @@ def usage():
     sys.stderr.write(
         "usage: shared-memory topics [DIR]\n"
         "       shared-memory settings\n"
-        "       shared-memory hook start|tool\n"
+        "       shared-memory hook start|main|tool\n"
         "       shared-memory log [--since DAYS]\n")
     return 64
 
