@@ -166,8 +166,20 @@ PY
     '**A big idea is chit-chat first' 'builds it:** read the plan here' '**Escalation is a rule, not a mood.**' \
     '**Every seat reports the same way**' '**Do not change what is being researched.**' \
     '**I am never a step.**' 'Never hand me steps to run or type' 'Ask for that go once' \
-    'no step asks again for what a row names'; do
+    'no step asks again for what a row names' 'the steps it needs are verified here' \
+    'independent steps together' 'each in its own worktree' 'A step waits only for what it needs' \
+    'spawn every step that is ready'; do
     grep -qF -- "$p" <<< "$exp" || { echo "always loaded: no '$p'"; false; }
+  done
+  # The serial wording is gone, not just outvoted: the old sentences left in
+  # beside the new ones would still satisfy the pins above.
+  for p in 'dispatched in plan order' 'each verified here before the next spawns' 'spawn, wait for the report'; do
+    ! grep -qF -- "$p" <<< "$exp" || { echo "always loaded still holds '$p'"; false; }
+  done
+  # gpt-seats is added when a plan-gpt plan is accepted, beside the rule above.
+  gpt=$(tr '\n' ' ' < "$TOPICS/gpt-seats.md" | tr -s ' ')
+  for p in 'dispatched in order' 'one-step-per-worker sequencing'; do
+    ! grep -qF -- "$p" <<< "$gpt" || { echo "gpt-seats still holds '$p'"; false; }
   done
   for p in '**Effort is fixed in the agent file' "**Each profile's \`settings.json\` is owned" '**The wrapper exports four defaults**' \
     '**Cache discipline.**' '**Metering on Max**' '**Lever order, Anthropic' 'Measurements behind these rules'; do

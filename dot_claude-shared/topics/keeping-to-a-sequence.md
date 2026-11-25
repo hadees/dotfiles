@@ -4,9 +4,9 @@
   blocked or impatient is not new evidence about the sequence. If you do
   change the order, say so in the same message that changes it: a silent
   reversal reads as a bug in the plan.
-- Drive a multi-step chain to the end without being prompted: spawn, wait for
-  the report, verify it, spawn the next. Stopping after each step to ask
-  whether to continue is an interruption, not a checkpoint.
+- Drive multi-step work to the end without being prompted: spawn every step
+  that is ready, verify each report, spawn what it unblocks. Stopping after
+  each step to ask whether to continue is an interruption, not a checkpoint.
 - A settled decision stays settled. An auto-suggested follow-up prompt
   offering something already declined is not new evidence.
 - Mid-chain, do not end a turn with a question that hands control back —

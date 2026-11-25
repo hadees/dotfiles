@@ -9,8 +9,9 @@ paths:
 Counts how often a session made the operator a step: a question put to them,
 a line telling them to type or run something, a permission prompt, a
 permission the classifier refused. It exists so "is the operator needed less"
-has a number that weeks can be compared on. Nothing here changes what a
-session does.
+has a number that weeks can be compared on. It also reports how work was
+dispatched and the permission mode sessions start in. Nothing here changes
+what a session does.
 
 - `count [--since DAYS] [--dir PROFILE_DIR]` prints `metric<TAB>count`,
   sorted. `list` prints the step lines themselves (time, session name, kind,
@@ -24,10 +25,32 @@ session does.
   calendar day and line with digits folded to `N`) and `elsewhere` (the subset
   matching pattern 1, "type it in that pane"); `read:<file>` (Read calls on
   the approvals ledger and each shared topic); `peer-mode:<mode>` (the first
-  `permission-mode` record of each worktree-project session); `denied:<reason>`
+  `permission-mode` record of each worktree-project session) and its
+  complement `start-mode:<mode>` (the same record for every other session);
+  the `dispatch:` kinds in the next bullet; `denied:<reason>`
   and `prompts` from the two logs, counted only for sessions of a project the
   scan allowed (see the hooks below). The patterns are frozen so weeks compare:
   changing one starts a new baseline.
+- **Writer dispatches** (how often Lead sent workers out side by side), read
+  from one main transcript at a time. A writer dispatch is an `Agent` tool
+  call whose `subagent_type` begins `work-` or `unstick-`; it starts at its
+  assistant record's `timestamp`. A foreground one ends at its `tool_result`.
+  A background one (the result says `Async agent launched` and gives an
+  `agentId`) ends at the first later record carrying that id in a `<task-id>`
+  tag (a `queue-operation` enqueue or a user message); with none it ends at
+  its start plus 7,200 seconds or the transcript's last `timestamp`,
+  whichever is earlier, so a lost notification cannot make every later
+  dispatch `beside`. The others of a dispatch are the writers running at its
+  start (started before, not yet ended) and those sent in the same assistant
+  message (`message.id`). `count` prints, once per dispatch started in the
+  window (the running set is worked out over the whole file): `dispatch:alone`
+  or `dispatch:beside`; and, as subsets, `dispatch:same-plan` (a `beside`
+  dispatch whose prompt names the same `claude-reports/<repo>/plan-*.md` as
+  one of its others), `dispatch:unisolated` (no `isolation: worktree` and no
+  `.claude/worktrees/` in the prompt) and `dispatch:over-three` (three or more
+  earlier dispatches, in file order, still running). All five print even at
+  0. `list` gains one `dispatch` row per dispatch, `alone` or `beside N`, the
+  plan key or `-`, and the description.
 - **A denied project is never read.** There is no deny parser here: every
   test is `denyguard check --profile <running profile>` (see the `denyguard`
   rule), found on `PATH`. It is asked about the target's `projects` directory
@@ -59,5 +82,7 @@ session does.
   to retry. `settings` prints the two entries to paste; each profile's
   `settings.json` belongs to its overlay, so nothing here wires them.
 - The record shapes (`toolUseResult.answers`, `permission-mode`, `customTitle`)
-  are those of Claude Code 2.1.325. A shape that changes shows as a metric
-  falling to zero, not as an error.
+  are those of Claude Code 2.1.325; the dispatch shapes (the launch result
+  text, `agentId:`, `<task-id>` notifications, `message.id`, the `isolation`
+  input) are those of 2.1.330. A shape that changes shows as a metric falling
+  to zero, not as an error.

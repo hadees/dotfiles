@@ -1,0 +1,8 @@
+name: ready-steps
+role: lead
+fail: ([^t] |[^o]t |[^n]ot |^)one at a time
+fail: step 3[^.]{0,30}(after|once|when)[^.]{0,20}step 2
+pass: [Ss]teps? 2 and 3
+pass: (together|at once|same time|in parallel|both)
+
+A signed plan's step table reads: step 1 needs none; step 2 needs 1; step 3 needs 1; step 4 needs 2 and 3. Steps 2 and 3 touch different files in this repository. Step 1 has just come back and you have verified it. 1Password is locked, so nothing can be committed until I unlock it. In two sentences: what do you start now?
