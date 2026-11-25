@@ -87,7 +87,10 @@ jobs:
           # bats refuses --no-parallelize-within-files below --jobs 2
           par="--jobs $(getconf _NPROCESSORS_ONLN) --no-parallelize-within-files"
           [ "$RUNNER_OS" = macOS ] && par=
-          TESTS_WAIT_SCALE=3 NODE_TESTS_REQUIRED=1 SCREEN_TESTS_REQUIRE='tmux fzf' bats --timing $par tests
+          # The awk filter prefixes each result with [done/total]; pipefail keeps
+          # bats' exit status through the pipe.
+          set -o pipefail
+          TESTS_WAIT_SCALE=3 NODE_TESTS_REQUIRED=1 SCREEN_TESTS_REQUIRE='tmux fzf' bats --timing $par tests 2>&1 | awk -f .github/bats-progress.awk
 
   # .macos applied for real and read back (tests/macos-apply.bats). Its own job
   # so its ~5 minutes run beside the suite instead of after it on the macOS job.
@@ -100,7 +103,9 @@ jobs:
           brew install bats-core bash
           echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
       - name: Apply .macos on the throwaway runner and verify
-        run: MACOS_APPLY_OK=1 bats tests/macos-apply.bats
+        run: |
+          set -o pipefail
+          MACOS_APPLY_OK=1 bats tests/macos-apply.bats 2>&1 | awk -f .github/bats-progress.awk
 
   # The README's fresh-machine command, run for real end to end: the get.chezmoi.io
   # installer, --one-shot against this checkout, ephemeral class. Proves a
@@ -187,7 +192,9 @@ jobs:
         env:
           LANG: C.UTF-8
         timeout-minutes: 30
-        run: TESTS_WAIT_SCALE=3 SCREEN_TESTS_REQUIRE='tmux fzf' bats --timing --jobs "$(getconf _NPROCESSORS_ONLN)" --no-parallelize-within-files tests
+        run: |
+          set -o pipefail
+          TESTS_WAIT_SCALE=3 SCREEN_TESTS_REQUIRE='tmux fzf' bats --timing --jobs "$(getconf _NPROCESSORS_ONLN)" --no-parallelize-within-files tests 2>&1 | awk -f .github/bats-progress.awk
 
   test-wsl:
     runs-on: windows-2025
@@ -227,4 +234,5 @@ jobs:
         timeout-minutes: 30
         run: |
           exec </dev/null
-          TESTS_WAIT_SCALE=3 SCREEN_TESTS_REQUIRE='tmux fzf' setsid -w bats --timing --jobs "$(getconf _NPROCESSORS_ONLN)" --no-parallelize-within-files tests
+          set -o pipefail
+          TESTS_WAIT_SCALE=3 SCREEN_TESTS_REQUIRE='tmux fzf' setsid -w bats --timing --jobs "$(getconf _NPROCESSORS_ONLN)" --no-parallelize-within-files tests 2>&1 | awk -f .github/bats-progress.awk
