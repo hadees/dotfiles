@@ -40,6 +40,31 @@ setup() {
   git config --global claude-peer.restore-check false
   cat >"$BATS_TEST_TMPDIR/bin/fakeshell" <<'STUB'
 #!/bin/sh
+# FAKE_SHELL_RAW=<file>: one line per argument, as it arrived, newlines as |
+[ -z "${FAKE_SHELL_RAW-}" ] || for a in "$@"; do printf 'A:%s\n' "$(printf '%s' "$a" | tr '\n' '|')"; done >>"$FAKE_SHELL_RAW"
+# What a pane adds to every session that is not a hand-off (the secretary seat) is
+# left out of what the tests below read, unless FAKE_SHELL_SEAT is set: they are
+# about the other arguments.
+if [ -z "${FAKE_SHELL_SEAT-}" ]; then
+  nn='
+
+'
+  c=$#
+  while [ "$c" -gt 0 ]; do
+    a=$1; shift; c=$((c - 1))
+    case $a in
+      --disallowedTools|--settings) shift; c=$((c - 1)); continue;;
+      --append-system-prompt)
+        v=$1; shift; c=$((c - 1))
+        case $v in
+          'Secretary seat.'*) continue;;
+          *"${nn}Secretary seat."*) v=${v%%"${nn}Secretary seat."*};;
+        esac
+        set -- "$@" "$a" "$v"; continue;;
+    esac
+    set -- "$@" "$a"
+  done
+fi
 echo "pwd=$PWD"
 echo "peer=${CLAUDE_PEER_WORKTREE-unset}"
 echo "hermeswait=${CLAUDE_PEER_HERMES_WAIT-unset}"
@@ -48,6 +73,7 @@ echo "args=$*"
 [ -z "${FAKE_SHELL_PID-}" ] || echo $$ >"$FAKE_SHELL_PID"
 [ -z "${FAKE_SHELL_LAST-}" ] || { for last; do :; done; printf '%s' "$last" >"$FAKE_SHELL_LAST"; echo $# >"$FAKE_SHELL_LAST.n"; }
 [ -z "${FAKE_SHELL_NOTERM-}" ] || trap '' TERM
+[ -z "${FAKE_SHELL_DO-}" ] || sh -c "$FAKE_SHELL_DO"
 [ -z "${FAKE_SHELL_SLEEP-}" ] || sleep "$FAKE_SHELL_SLEEP"
 STUB
   chmod +x "$BATS_TEST_TMPDIR/bin/fakeshell"
@@ -5301,4 +5327,325 @@ qhook_text() {
   [ "$status" -eq 2 ]
   run sh "$BIN" queue nope
   [ "$status" -eq 2 ]
+}
+
+# --- the secretary seat: every session a pane starts that is not a hand-off ---------------
+# FAKE_SHELL_SEAT=1 keeps the seat's arguments in the stub's log; FAKE_SHELL_RAW=<file>
+# has every argument on a line of its own (A:<argument>, newlines as |).
+
+# seat_args <file>: the arguments after the session name, one per line
+seat_args() { sed -n '/^A:proj-alpha$/,$p' "$1" | sed 1d; }
+
+# seat_n <file> <n>: until at least n arguments after the session name have arrived
+seat_n() { until_ok "[ \"\$(seat_args '$1' | wc -l | tr -d ' ')\" -ge $2 ]"; }
+
+# fake_secretaries <name>...: a live session of each name in the registry of $CLAUDE_CONFIG_DIR
+fake_secretaries() {
+  local n
+  mkdir -p "$BATS_TEST_TMPDIR/cfg/sessions"
+  for n in "$@"; do
+    sleep 300 3>&- &
+    PANES="$PANES $!"
+    printf '{"pid":%s,"name":"%s-secretary","status":"idle"}\n' "$!" "$n" >"$BATS_TEST_TMPDIR/cfg/sessions/$!.json"
+  done
+  export CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/cfg
+}
+
+@test "secretary seat: a Return start gets the deny list as one argument, then --settings, then the note" {
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane alpha
+  press alpha ''
+  seat_n "$raw" 6
+  [ "$(seat_args "$raw" | sed -n 1p)" = "A:--disallowedTools" ]
+  [ "$(seat_args "$raw" | sed -n 2p)" = "A:Edit,NotebookEdit,SendMessage,ListAgents,Agent(work-sonnet),Agent(unstick-fable)" ]
+  [ "$(seat_args "$raw" | sed -n 3p)" = "A:--settings" ]
+  [ "$(seat_args "$raw" | sed -n 4p)" = 'A:{"crossSessionInbound":"refuse"}' ]
+  [ "$(seat_args "$raw" | sed -n 5p)" = "A:--append-system-prompt" ]
+  note=$(seat_args "$raw" | sed -n 6p)
+  [[ "$note" == "A:Secretary seat. "* ]]
+  [[ "$note" == *'/claude-reports/proj/idea-<slug>.md'* ]]
+  [[ "$note" == *"claude-peer queue add --kind plan"* ]]
+  [[ "$note" != *"<rname>"* ]]
+  [ "$(seat_args "$raw" | wc -l | tr -d ' ')" -eq 6 ]
+}
+
+@test "secretary seat: a typed task is still the last argument, after the seat's flags" {
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane alpha
+  run sh "$BIN" start alpha fix the thing
+  [ "$status" -eq 0 ]
+  seat_n "$raw" 7
+  [ "$(seat_args "$raw" | tail -1)" = "A:fix the thing" ]
+  [ "$(seat_args "$raw" | grep -c '^A:--disallowedTools$')" -eq 1 ]
+  [ "$(seat_args "$raw" | grep -c '^A:--append-system-prompt$')" -eq 1 ]
+}
+
+@test "secretary seat: --continue and the permission mode come first, the seat follows them" {
+  git -C "$REPO" config claude-peer.permission-mode auto
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane alpha
+  run sh "$BIN" start alpha --continue go on
+  [ "$status" -eq 0 ]
+  seat_n "$raw" 10
+  [ "$(seat_args "$raw" | sed -n 1,4p | tr '\n' ' ')" = "A:--continue A:--permission-mode A:auto A:--disallowedTools " ]
+}
+
+@test "secretary seat: a hand-off start gets none of the three" {
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane alpha
+  CLAUDE_PID=4242 run sh "$BIN" start alpha --handoff fix thing
+  [ "$status" -eq 0 ]
+  seat_n "$raw" 1
+  [ "$(seat_args "$raw" | wc -l | tr -d ' ')" -eq 1 ]
+  no grep -q -e 'disallowedTools' -e 'settings' -e 'Secretary seat' "$raw"
+}
+
+@test "secretary seat: pane-deny none drops the deny pair and keeps the rest; a value that could be a flag is said once" {
+  raw=$BATS_TEST_TMPDIR/raw
+  git -C "$REPO" config claude-peer.pane-deny none
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane alpha
+  hold_tty alpha
+  press alpha ''
+  seat_n "$raw" 4
+  [ "$(seat_args "$raw" | sed -n 1p)" = "A:--settings" ]
+  no grep -q disallowedTools "$raw"
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  git -C "$REPO" config claude-peer.pane-deny -x
+  press alpha ''
+  until_ok '[ "$(grep -c "^A:--disallowedTools\$" "$raw")" -eq 1 ]'
+  [ "$(grep -c "claude-peer.pane-deny '-x' could read as a flag; ignored" "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 1 ]
+  grep -q '^A:Edit,NotebookEdit,SendMessage' "$raw"
+}
+
+@test "secretary seat: a context with system: gets one --append-system-prompt holding both, its text first" {
+  hellofix
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane alpha
+  run sh "$BIN" start alpha --context hello World
+  [ "$status" -eq 0 ]
+  until_ok 'grep -q "^A:Hello World" "$raw"'
+  [ "$(grep -c '^A:--append-system-prompt$' "$raw")" -eq 1 ]
+  [[ "$(grep -A1 '^A:--append-system-prompt$' "$raw" | tail -1)" == "A:be brief||Secretary seat. "* ]]
+}
+
+@test "secretary seat: a clean detached slot behind origin/HEAD is moved to it, a dirty one is left" {
+  remote_head
+  sh "$BIN" run --as alpha </dev/null >/dev/null
+  wt=$REPO/.claude/worktrees/alpha
+  old=$(git -C "$wt" rev-parse HEAD)
+  git update-ref refs/remotes/origin/main "$(git rev-parse HEAD)"
+  [ "$(git rev-parse origin/HEAD)" != "$old" ]
+  FAKE_SHELL_SLEEP=1 pane alpha
+  hold_tty alpha
+  press alpha ''
+  until_ok '[ "$(git -C "$wt" rev-parse HEAD)" = "$(git rev-parse origin/HEAD)" ]'
+  no git -C "$wt" symbolic-ref -q HEAD
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  git -C "$wt" checkout -q --detach "$old"
+  echo stray >"$wt/stray.txt"
+  press alpha ''
+  until_ok '[ "$(shell_runs)" -eq 2 ]'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$old" ]
+}
+
+@test "secretary seat: a clean detached slot whose commits are on no branch of the remote is left where it is" {
+  remote_head
+  sh "$BIN" run --as alpha </dev/null >/dev/null
+  wt=$REPO/.claude/worktrees/alpha
+  git -C "$wt" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m detached
+  mine=$(git -C "$wt" rev-parse HEAD)
+  FAKE_SHELL_SLEEP=1 pane alpha
+  hold_tty alpha
+  press alpha ''
+  until_ok '[ "$(shell_runs)" -eq 1 ]'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$mine" ]
+}
+
+@test "secretary seat: two open conversations make the first Return say so, the second starts and notes it" {
+  fake_secretaries aa bb
+  FAKE_SHELL_SLEEP=1 pane alpha
+  hold_tty alpha
+  press alpha ''
+  until_ok 'grep -q "^claude-peer: 2 conversations are open (aa-secretary, bb-secretary); Return again opens another\$" "$BATS_TEST_TMPDIR/pane-alpha.out"'
+  [ "$(shell_runs)" -eq 0 ]
+  [ -z "$(sh "$BIN" peers)" ]
+  press alpha ''
+  until_ok '[ "$(shell_runs)" -eq 1 ]'
+  grep -q "$(printf '\tAlpha\tnote\tpane over cap: 3')" "$REPO/.git/claude-peer.log"
+  [ "$(grep -c 'conversations are open' "$BATS_TEST_TMPDIR/pane-alpha.out")" -eq 1 ]
+}
+
+@test "secretary seat: pane-max 0 never warns" {
+  fake_secretaries aa bb
+  git -C "$REPO" config claude-peer.pane-max 0
+  FAKE_SHELL_SLEEP=1 pane alpha
+  press alpha ''
+  until_ok '[ "$(shell_runs)" -eq 1 ]'
+  no grep -q 'conversations are open' "$BATS_TEST_TMPDIR/pane-alpha.out"
+  [ ! -e "$REPO/.git/claude-peer.log" ] || no grep -q 'pane over cap' "$REPO/.git/claude-peer.log"
+}
+
+@test "secretary seat: a session that commits, dirties the tree or takes a branch leaves a pane drift note, and nobody is told" {
+  FAKE_SHELL_DO='git commit -q --allow-empty -m x' pane alpha
+  press alpha ''
+  until_ok 'grep -q "pane drift: commits in alpha" "$REPO/.git/claude-peer.log"'
+  FAKE_SHELL_DO='echo stray >stray.txt' pane beta
+  press beta ''
+  until_ok 'grep -q "pane drift: dirty in beta" "$REPO/.git/claude-peer.log"'
+  FAKE_SHELL_DO='git checkout -q -b side' pane gamma
+  press gamma ''
+  until_ok 'grep -q "pane drift: branch side in gamma" "$REPO/.git/claude-peer.log"'
+  [ "$(grep -c 'pane drift' "$REPO/.git/claude-peer.log")" -eq 3 ]
+}
+
+@test "secretary seat: a session that touches nothing leaves no drift note, even in a worktree that was on a branch" {
+  git -C "$REPO" worktree add -q -b onbranch "$REPO/.claude/worktrees/alpha"
+  FAKE_SHELL_SLEEP=1 pane alpha
+  press alpha c
+  until_ok 'grep -q "Alpha ended after" "$REPO/.git/claude-peer.log"'
+  no grep -q "pane drift" "$REPO/.git/claude-peer.log"
+}
+
+# --- the pane's clock: it ends what is finished or forgotten ---------------------------
+
+# clock_env: a registry the stub sessions write their record into (reg.sh, as Claude Code
+# does: the record is named for the process, status times are milliseconds) and a tick
+# short enough to wait for; the tick is unique to the test, so `ps` can find its sleeps
+clock_env() {
+  T=$(printf '\t')
+  export CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/cfg CLAUDE_PEER_TICK=0.3$$
+  mkdir -p "$CLAUDE_CONFIG_DIR/sessions"
+  git -C "$REPO" config claude-peer.pane-end-minutes 1
+  cat >"$BATS_TEST_TMPDIR/reg.sh" <<'REG'
+printf '{"sessionId":"%s","status":"%s","statusUpdatedAt":%s}\n' "${REG_SID:-sess-1}" "$REG_STATUS" \
+  $(( ($(date +%s) - REG_AGE * 60) * 1000 )) >"$CLAUDE_CONFIG_DIR/sessions/$PPID.json"
+touch -a -t 200001010000 "$CLAUDE_PEER_TTY"   # the Return that started it is old input here
+REG
+  CLOCK_DO=". '$BATS_TEST_TMPDIR/reg.sh'"
+}
+
+# clock_sleeps: the watchers' sleeps now running
+clock_sleeps() { ps -Ao args= | grep -c "[s]leep $CLAUDE_PEER_TICK"; }
+
+@test "pane clock: an idle session past the limit is ended by TERM, the end line says so and names the session, and a card is left that wakes nobody" {
+  clock_env
+  qpb
+  REG_STATUS=idle REG_AGE=120 FAKE_SHELL_DO=$CLOCK_DO FAKE_SHELL_SLEEP=20 pane alpha
+  press alpha ''
+  until_ok 'grep -q "Alpha ended after" "$REPO/.git/claude-peer.log"'
+  grep -Eq "Alpha${T}end${T}Alpha ended after [0-9]+s \(stopped by the pane, idle 1m\)${T}session=sess-1\$" "$REPO/.git/claude-peer.log"
+  until_ok 'grep -q "${T}unfinished:w=0:u=0:p=0:s=?:session=sess-1${T}a conversation (left unfinished)" "$REPO/.git/claude-peer.queue"'
+  [ "$(grep -c unfinished "$REPO/.git/claude-peer.queue")" -eq 1 ]
+  sh "$BIN" queue list --all | grep -q "unfinished"
+  run sh "$BIN" queue next
+  [ "$status" -eq 3 ]
+  [ ! -e "$BATS_TEST_TMPDIR/pb.log" ]
+  [ -z "$(ls "$REPO"/.git/worktrees/alpha/claude-peer.stop* 2>/dev/null)" ]
+}
+
+@test "pane clock: a session with a fresh status, a busy one and one whose subagent just wrote are left alone" {
+  clock_env
+  mkdir -p "$CLAUDE_CONFIG_DIR/projects/x/sess-3/subagents"
+  REG_STATUS=idle REG_AGE=0 REG_SID=sess-1 FAKE_SHELL_DO=$CLOCK_DO FAKE_SHELL_SLEEP=3 pane alpha
+  REG_STATUS=busy REG_AGE=120 REG_SID=sess-2 FAKE_SHELL_DO=$CLOCK_DO FAKE_SHELL_SLEEP=3 pane beta
+  REG_STATUS=idle REG_AGE=120 REG_SID=sess-3 FAKE_SHELL_DO="$CLOCK_DO; : >'$CLAUDE_CONFIG_DIR/projects/x/sess-3/subagents/agent-1.jsonl'" FAKE_SHELL_SLEEP=3 pane gamma
+  press alpha ''
+  press beta ''
+  press gamma ''
+  until_ok '[ "$(grep -c " ended after " "$REPO/.git/claude-peer.log")" -eq 3 ]'
+  no grep -q "stopped by" "$REPO/.git/claude-peer.log"
+  # each still names its session, which the clock saw at a tick
+  grep -Eq "Alpha${T}end${T}.*${T}session=sess-1\$" "$REPO/.git/claude-peer.log"
+  grep -Eq "Gamma${T}end${T}.*${T}session=sess-3\$" "$REPO/.git/claude-peer.log"
+  [ ! -s "$REPO/.git/claude-peer.queue" ]
+}
+
+@test "pane clock: a terminal typed at within the limit keeps an idle session, one not typed at for the limit does not" {
+  clock_env
+  REG_STATUS=idle REG_AGE=120 FAKE_SHELL_DO="$CLOCK_DO; touch -a \"\$CLAUDE_PEER_TTY\"" FAKE_SHELL_SLEEP=3 pane alpha
+  press alpha ''
+  until_ok 'grep -q "Alpha ended after" "$REPO/.git/claude-peer.log"'
+  no grep -q "stopped by" "$REPO/.git/claude-peer.log"
+  # the same session with input two minutes ago (the limit is one) is ended
+  REG_STATUS=idle REG_AGE=120 FAKE_SHELL_DO="$CLOCK_DO; touch -a -d '-2 minutes' \"\$CLAUDE_PEER_TTY\" 2>/dev/null || touch -a -t \$(date -v-2M +%Y%m%d%H%M) \"\$CLAUDE_PEER_TTY\"" FAKE_SHELL_SLEEP=20 pane beta
+  press beta ''
+  until_ok 'grep -q "Beta ended after" "$REPO/.git/claude-peer.log"'
+  grep -Eq "Beta${T}end${T}.*\(stopped by the pane, idle 1m\)" "$REPO/.git/claude-peer.log"
+}
+
+@test "pane clock: after a verdict the shorter limit applies and no unfinished card is added" {
+  clock_env
+  git -C "$REPO" config claude-peer.pane-end-minutes 500
+  git -C "$REPO" config claude-peer.pane-done-minutes 1
+  REG_STATUS=idle REG_AGE=120 FAKE_SHELL_DO="$CLOCK_DO; sh '$BIN' queue add --kind ask --as Alpha -- 'a thing for Lead'" FAKE_SHELL_SLEEP=20 pane alpha
+  press alpha ''
+  until_ok 'grep -q "Alpha ended after" "$REPO/.git/claude-peer.log"'
+  grep -Eq "Alpha${T}end${T}.*\(stopped by the pane, finished\)${T}session=sess-1\$" "$REPO/.git/claude-peer.log"
+  sleep 0.5   # the card, when there is one, is added just after the end line
+  [ "$(grep -c "${T}add${T}" "$REPO/.git/claude-peer.queue")" -eq 1 ]
+  no grep -q unfinished "$REPO/.git/claude-peer.queue"
+}
+
+@test "pane clock: a pane-done-minutes of 0 keeps the long limit after a verdict" {
+  clock_env
+  git -C "$REPO" config claude-peer.pane-end-minutes 500
+  git -C "$REPO" config claude-peer.pane-done-minutes 0
+  REG_STATUS=idle REG_AGE=120 FAKE_SHELL_DO="$CLOCK_DO; sh '$BIN' queue add --kind ask --as Alpha -- 'a thing for Lead'" FAKE_SHELL_SLEEP=3 pane alpha
+  press alpha ''
+  until_ok 'grep -q "Alpha ended after" "$REPO/.git/claude-peer.log"'
+  no grep -q "stopped by" "$REPO/.git/claude-peer.log"
+}
+
+@test "pane clock: one watcher while a session runs, none after it, none for a hand-off or with pane-end-minutes 0" {
+  clock_env
+  local count="$BATS_TEST_TMPDIR/count.sh"
+  cat >"$count" <<'CNT'
+n=0
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  c=$(ps -Ao args= | grep -c "[s]leep $CLAUDE_PEER_TICK")
+  [ "$c" -le "$n" ] || n=$c
+  sleep 0.05
+done
+echo "$n" >"$1"
+CNT
+  REG_STATUS=busy REG_AGE=0 FAKE_SHELL_DO="$CLOCK_DO; sh '$count' '$BATS_TEST_TMPDIR/n.alpha'" FAKE_SHELL_SLEEP=1 pane alpha
+  press alpha ''
+  until_ok '[ -f "$BATS_TEST_TMPDIR/n.alpha" ] && grep -q "Alpha ended after" "$REPO/.git/claude-peer.log"'
+  [ "$(cat "$BATS_TEST_TMPDIR/n.alpha")" -eq 1 ]
+  until_ok '[ "$(clock_sleeps)" -eq 0 ]'
+  # a hand-off is the control arm: no clock
+  REG_STATUS=busy REG_AGE=0 FAKE_SHELL_DO="$CLOCK_DO; sh '$count' '$BATS_TEST_TMPDIR/n.beta'" FAKE_SHELL_SLEEP=1 pane beta
+  CLAUDE_PID=4242 sh "$BIN" start beta --handoff do it >/dev/null
+  until_ok '[ -f "$BATS_TEST_TMPDIR/n.beta" ] && grep -q "Beta${T}gone" "$REPO/.git/claude-peer.log"'
+  [ "$(cat "$BATS_TEST_TMPDIR/n.beta")" -eq 0 ]
+  # pane-end-minutes 0 never ends a session
+  git -C "$REPO" config claude-peer.pane-end-minutes 0
+  REG_STATUS=busy REG_AGE=0 FAKE_SHELL_DO="$CLOCK_DO; sh '$count' '$BATS_TEST_TMPDIR/n.gamma'" FAKE_SHELL_SLEEP=1 pane gamma
+  press gamma ''
+  until_ok '[ -f "$BATS_TEST_TMPDIR/n.gamma" ] && grep -q "Gamma ended after" "$REPO/.git/claude-peer.log"'
+  [ "$(cat "$BATS_TEST_TMPDIR/n.gamma")" -eq 0 ]
+}
+
+@test "pane clock: a pane that is killed takes its watcher and the sleep with it" {
+  clock_env
+  REG_STATUS=busy REG_AGE=0 FAKE_SHELL_DO=$CLOCK_DO FAKE_SHELL_SLEEP=20 pane alpha
+  press alpha ''
+  until_ok '[ "$(clock_sleeps)" -ge 1 ]'
+  kill "$LAST_PANE"
+  until_ok '[ "$(clock_sleeps)" -eq 0 ]'
+}
+
+@test "queue add: an unfinished card is listed and never offered, and wakes nobody even with nothing in flight" {
+  qpb
+  run sh "$BIN" queue add --kind unfinished --session abc-1 -- "a conversation (left unfinished)"
+  [ "$status" -eq 0 ]
+  [ "$output" = Q1 ]
+  sleep 0.3
+  [ ! -e "$BATS_TEST_TMPDIR/pb.log" ]
+  no grep -q "nothing is in flight" .git/claude-peer.log
+  sh "$BIN" queue list | grep -q "unfinished"
+  run sh "$BIN" queue next
+  [ "$status" -eq 3 ]
 }

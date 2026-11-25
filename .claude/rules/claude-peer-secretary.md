@@ -6,17 +6,19 @@ paths:
   - "**/tests/claude-peer-screen.bats"
 ---
 
-# Claude peers: the bar, the jobs record and the queue
+# Claude peers: the bar, the jobs record, the queue and the secretary pane
 
-The part of `bin/claude-peer` that sets the bar, keeps what Lead dispatched and
-queues what the operator thought up. The rest of the script is in `claude-peer.md`.
+The part of `bin/claude-peer` that sets the bar, keeps what Lead dispatched, queues what
+the operator thought up, and runs the pane to think in. The rest of the script is in
+`claude-peer.md`.
 
 ## The bar
 
-The bar is `Lead, Ideas, Agents[, Hermes]`. `build_base` returns the root and two
+The bar is `Lead, Ideas, Agents[, Hermes]`. **Ideas is the slot `secretary`**: the
+label is the operator's, while the slot, the session name `<repo>-secretary` and the code
+keep `secretary`. `build_base` returns the root and two
 peers under an id prefix: `<prefix>.secretary` (label `Ideas`, command `claude-peer run
---as secretary --wait`; the slot, the session name `<repo>-secretary` and the code
-keep `secretary` for now) and `<prefix>.agents` (label `Agents`, command `claude-peer
+--as secretary --wait`) and `<prefix>.agents` (label `Agents`, command `claude-peer
 agents`). `Claude Peers` (`claudePeer.workgroup`) has three sessions and `Claude
 Peers + Hermes` (`claudePeer.h`) four, Hermes last (`with_hermes` is unchanged). The
 root's id, which the Enter triggers are keyed to, is `<prefix>.main` as before.
@@ -170,3 +172,115 @@ Tests: `tests/claude-peer.bats` ("queue add: ...", "queue list: ...", "queue nex
 ...", "queue take: ...", "queue verbs: ...", "queue show: ...", "queue escalation:
 ...", "queue hook: ...", "queue settings: ..."). Fixture cards are written `ago`
 seconds back, whole hours plus ten minutes; a postbox stub records its calls.
+
+## The secretary pane
+
+The pane is Ideas on the bar (above) and `secretary` in the code. The cap below counts
+`*-secretary` session names, which are the Ideas pane's sessions; the note and the deny
+list reach every non-hand-off pane start.
+
+Every session a pane starts that is not a hand-off (`pg_ho` is not 1: Return, a picker
+row, a typed task, `c`, a plain `claude-peer start`) is the operator's secretary: one
+idea per session, researched and shaped in chat, ended with one card in the queue. A
+`start --handoff` is untouched, so the hand-off path (Lead's hand-offs, and the trial's
+control arm) behaves as it did. `pane_go` sets `pg_sec` to 1 for a secretary start.
+
+- **Fresh tree.** For a `fresh` start, a slot that is detached, has an empty `git
+  status --porcelain` and whose `HEAD` is an ancestor of `origin/HEAD` is moved to it
+  (`checkout --detach`, no fetch; a slot with no `origin/HEAD`, or commits no branch of
+  the remote holds, stays). Anything else is left as it is. `HEAD` and the branch at
+  start are `pg_h0` and `pg_b0`.
+- **The cap.** Before a slot is taken, the live sessions named `*-secretary` are counted
+  across the registry of every `profile_dirs` directory (`pane_secretaries`: name and
+  pid only, the pid passing `session_same`). With `claude-peer.pane-max` (default 2; 0
+  never warns; not a number is 2) or more open, the pane prints `claude-peer: <n>
+  conversations are open (<names>); Return again opens another` and waits; a second
+  start within 60 seconds goes ahead and logs a `note`, `pane over cap: <n+1>`. The
+  stamp is the pane's own `pn_cap_t`, so another pane's Return does not count as the
+  second one. The cap sits before the slot because a refusal after it would leave a
+  claim. The registry layout (`sessions/<pid>.json`, its `name`) is observed, not an
+  interface.
+- **The arguments** follow `--permission-mode` and come before `--agent`: `--disallowedTools
+  <deny list>`, then `--settings '{"crossSessionInbound":"refuse"}'`, then the seat note
+  joins the system prompt. The deny list is **one** argument, because `--disallowedTools`
+  is variadic and would take the prompt for a tool name; `--settings` after it is what
+  ends it. `git config claude-peer.pane-deny` replaces it (default
+  `Edit,NotebookEdit,SendMessage,ListAgents,Agent(work-sonnet),Agent(unstick-fable)`;
+  `none` passes no deny pair; a value that starts with `-` is said once and the default
+  used). A context's `system:` text and the note are one `--append-system-prompt`, the
+  text first, an empty line, then the note.
+- **The seat note** (`secretary_note`) is the text the operator signed, worded in the
+  third person as "the operator", "they", "their" and "the operator's"; the operator
+  approved that wording (2026-11-25). "The library" is left out of its research sources,
+  a tool only some machines have. Only `<rname>`, the session-name prefix, is replaced. It tells the
+  session to keep one idea file under `${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<rname>/`,
+  to finish with one `claude-peer queue add` (or `park` or `drop`), to write a `once`
+  row to the approvals ledger for a go, and not to edit, commit, merge, dispatch
+  `work-sonnet`, message another session or write `claude-peer log` lines. The tools
+  that would do those are removed at launch; the note is the part no tool enforces.
+- **Drift.** When the session returns and before the `end` line, a worktree with a
+  branch it did not have at start, a `HEAD` other than `pg_h0`, or a non-empty `git
+  status --porcelain` writes a `note` `pane drift: <branch <name>|commits|dirty> in
+  <slot>`, in that order of preference. Nobody is told: the count is the signal.
+
+Tests: `tests/claude-peer.bats` ("secretary seat: ..."). The stub shell leaves the
+seat's three arguments out of what the older tests read, so they keep checking the
+other arguments; `FAKE_SHELL_SEAT=1` keeps them and `FAKE_SHELL_RAW=<file>` logs one
+argument per line. `FAKE_SHELL_DO` runs a command in the worktree, to commit or dirty it.
+
+## The clock: the pane ends what is finished or forgotten
+
+A secretary start (`pg_sec` is 1) with `claude-peer.pane-end-minutes` over 0 (default 60;
+0 starts no clock; not a number is 60) gets a watcher: `pane_go` starts `pane_watch` as a
+background subshell before `run_session` and `pane_unwatch` ends it, and the sleep it is in,
+as soon as the session returns. `pane_cleanup` calls `pane_unwatch` too, so a killed pane
+leaves neither. One process per running secretary and none for a waiting pane, whose rule
+against polling is in `claude-peer.md`. A hand-off has none. `CLAUDE_PEER_TICK` is the
+seconds between looks (default 60; the tests' handle). This clock **ends** the session; the
+hold in `claude-peer-handoff.md` and the shared `peer-lifetime.md` (`pane-idle-minutes`, also 60) only makes `stop` refuse a
+session that has not been idle that long. Two settings, two effects.
+
+Each tick it takes `session_record` of the pane's own pid, which names the Claude under it
+and its registry record, and ends the session by TERM when all of these hold:
+
+- the record's `status` is exactly `idle`;
+- `statusUpdatedAt`, in **milliseconds**, is at least the limit old;
+- nobody typed at the pane's terminal in that time: its access time (`stat`, the
+  `w` command's idle time), which no registry field shows, so an unsent draft keeps the
+  session. A terminal that cannot be read (`stat` fails) counts as no input;
+- no write to the session's transcript (`<profile dir>/projects/*/<sessionId>.jsonl`) or to
+  anything under `projects/*/<sessionId>/subagents/` in that time (`find -mmin`), so a
+  planner still running keeps it alive. What `status` reads while only background subagents
+  run is not established, so `idle` is never trusted alone. Those paths are observed, not an
+  interface: where they change, the test passes and a session is ended on `idle` alone.
+
+The limit is `claude-peer.pane-done-minutes` (default 5) when `verdict_since` holds, else
+`pane-end-minutes`. `verdict_since <label> <start>`: the queue file has an `add`, `park` or
+`drop` line by that label at or after the session's start (a `refused` line is not one). A
+`pane-done-minutes` of 0 keeps the long limit.
+
+The signal is one list with `session_same` (the pid-reuse check `stop` makes), after the stop
+mark `claude-peer.stop` is written with `the pane, finished` or `the pane, idle <n>m` (n the
+limit). `pane_go` reads the mark as it does `stop`'s, so the end line is `<Label> ended
+after <dur> (stopped by the pane, finished|idle <n>m)`; a mark left by a signal that did not
+land is removed. The watcher stops after one signal. `c` racing the check is safe: a
+continued session is `busy`, and the next tick does nothing.
+
+A session the clock ended **without** a verdict gets a reminder from the pane, no model
+involved: `queue add --kind unfinished --session <id> --as <Label> -- "<task or 'a
+conversation'> (left unfinished)"`. It is tier 3: `queue list` shows it, Lead is never offered
+it, and (unlike any other card) adding it never wakes Lead, nothing being in flight or not:
+a reminder has nothing for Lead to do. `queue show <id>` prints how to reopen it; `c` at the
+pane continues the last conversation.
+
+The end line of every secretary start, however it ended, gains `<TAB>session=<id>`, the field
+a `stop` line has, or `session=-` when the clock never saw the session (it looks once per
+tick, so one shorter than a tick, or a start with no clock, has no id). The watcher keeps the
+id in `claude-peer.stop.sid` beside the stop mark; `pane_go` reads and removes it.
+
+Ceiling: a session that ignores TERM leaves the mark behind and the end line it writes later
+is still `stopped by the pane`; `stop` removes its own mark after 15 seconds, this does not.
+
+Tests: `tests/claude-peer.bats` ("pane clock: ...", "queue add: an unfinished card ..."). The
+stub session registers itself with `reg.sh` through `FAKE_SHELL_DO`: its record is named for
+the stub's pid, with a status, an age in minutes and a session id.

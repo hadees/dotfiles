@@ -271,7 +271,7 @@ rule first.
 | `claude-peer-restore` | the entry record, the restored-pane check |
 | `claude-peer-look` | the sleeper's motion: its timer, waking, and `look` with its trigger and lock |
 | `claude-peer-caduceus` | the Hermes pane's figure and glint, read from the installed Hermes |
-| `claude-peer-secretary` | the bar (Lead, Ideas, Agents); the jobs record; the queue |
+| `claude-peer-secretary` | the bar (Lead, Ideas = slot `secretary`, Agents); the jobs record; the queue; the secretary pane's launch, cap, guardrails and clock |
 | `claude-tab` | `claude-tab` list, attention, next, focus, save, restore; `tabname` |
 | `claude-tab-panel` | the needs-you list: its kinds, the tick, the server, the page |
 | `workboard` | the work board: cards, the who and inbox contracts, readers, server, page; read it before `workboard open` or any live look at the board |
