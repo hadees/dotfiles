@@ -64,6 +64,18 @@ bin/pane-read
 bin/pane-shot
 # The needs-you page is served by claude-tab panel, which is macOS-only
 .local/share/claude-tab
+# The work board opens in iTerm2's browser and runs as a LaunchAgent: macOS-only
+bin/workboard
+.local/libexec/workboard
+.local/share/workboard
+{{ end -}}
+
+# A __pycache__ beside the work board's parts would be deployed from the working tree
+.local/libexec/workboard/__pycache__
+
+{{ if or (ne .chezmoi.os "darwin") (ne .machineClass "mac") -}}
+# The work board's LaunchAgent is for the mac class on macOS only
+Library/LaunchAgents/local.workboard.plist
 {{ end -}}
 
 {{ if or (ne .chezmoi.os "darwin") (ne .machineClass "mac") (not (stat (joinPath .chezmoi.homeDir ".cargo/bin/claude-codex"))) -}}

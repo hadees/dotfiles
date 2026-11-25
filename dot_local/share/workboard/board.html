@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Work board</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--workboard:token-->
+<style>
+  :root {
+    color-scheme: dark light;
+    --bg: #1a1a1a; --fg: #d3d0c8; --dim: #747369; --well: #202020; --card: #2d2d2d;
+    --edge: #393939; --hover: #363636; --amber: #ffd75f; --blue: #5f87ff;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f2f0ec; --fg: #2d2d2d; --dim: #747369; --well: #e6e3dc; --card: #ffffff;
+      --edge: #d6d3cc; --hover: #f7f5f1; --amber: #8a6d00; --blue: #2a4fd0;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg); }
+  body { display: flex; flex-direction: column; font: 13px/1.4 system-ui, -apple-system, sans-serif; }
+  [hidden] { display: none !important; }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+  a { color: inherit; text-decoration: none; }
+  .mono, .marks, .chip, #right, .age { font: 11px ui-monospace, "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+
+  #bar { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; padding: 8px 12px; background: var(--well); border-bottom: 1px solid var(--edge); }
+  #chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  #chips a { padding: 1px 9px; border: 1px solid var(--edge); border-radius: 10px; color: var(--dim); }
+  #chips a.on { color: var(--fg); border-color: var(--dim); background: var(--card); }
+  #chips .sep { width: 1px; background: var(--edge); }
+  #side { margin-left: auto; display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--dim); }
+  #right { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+  #side, #msg, #silent { font: 11px ui-monospace, "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+  .warn { color: var(--amber); }
+
+  #work { flex: 1; display: flex; min-height: 0; }
+  #main { flex: 1; min-width: 0; overflow-x: auto; display: flex; gap: 12px; padding: 12px; align-items: flex-start; }
+  #main.stale { opacity: .4; }
+  .col { width: 272px; flex: none; max-height: 100%; display: flex; flex-direction: column; background: var(--well); border-radius: 8px; }
+  .col > button { display: flex; justify-content: space-between; padding: 8px 10px; font-weight: 600; }
+  .col.needs > button { color: var(--blue); }
+  .count { color: var(--dim); font-weight: 400; }
+  .cards { overflow-y: auto; padding: 0 8px 8px; display: flex; flex-direction: column; gap: 8px; }
+  .none { color: var(--dim); padding: 2px 4px; }
+
+  .card { background: var(--card); border: 1px solid var(--edge); border-radius: 6px; padding: 8px 10px; cursor: pointer; }
+  .card:hover, .card:focus-visible { background: var(--hover); outline: 0; }
+  .card.unattended { border-style: dashed; }
+  .card .top { display: flex; gap: 6px; align-items: baseline; color: var(--dim); }
+  .chip { padding: 0 6px; border: 1px solid; border-radius: 8px; }
+  .tag { margin-left: auto; font-size: 10px; text-transform: uppercase; }
+  .title { margin: 4px 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  .marks { display: flex; flex-wrap: wrap; gap: 2px 10px; color: var(--dim); }
+  .sess { display: inline-flex; align-items: center; gap: 4px; color: var(--fg); }
+  .sess.go { cursor: pointer; }
+  .dot, .ring { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+  .ring { border: 1.5px solid; }
+  .bad { color: #ff5f5f; } .good { color: #00d75f; }
+  .srow { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; }
+  .srow .reason { grid-column: 2 / 4; color: var(--dim); overflow-wrap: anywhere; }
+  @media (prefers-reduced-motion: no-preference) {
+    .card.new { animation: arrive 600ms ease-out; }
+    @keyframes arrive { from { opacity: 0; } to { opacity: 1; } }
+  }
+
+  #drawer { width: 420px; flex: none; overflow-y: auto; padding: 12px 14px; background: var(--well); border-left: 1px solid var(--edge); }
+  #drawer h2 { font-size: 15px; margin: 8px 0; overflow-wrap: anywhere; }
+  #drawer h3 { font-size: 11px; color: var(--dim); text-transform: uppercase; margin: 14px 0 4px; }
+  #drawer pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font: inherit; }
+  #drawer .line { margin: 3px 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; overflow-wrap: anywhere; }
+  #drawer button { border: 1px solid var(--edge); border-radius: 4px; padding: 1px 8px; background: var(--card); }
+  #drawer button:disabled { opacity: .4; cursor: default; }
+
+  #dead { padding: 40px 20px; }
+  #dead div:last-child { font: 13px ui-monospace, "SF Mono", Menlo, monospace; margin-top: 6px; }
+
+  @media (max-width: 719px) {
+    #main { flex-direction: column; overflow-x: hidden; align-items: stretch; }
+    .col { width: auto; max-height: none; }
+    .col.shut .cards { display: none; }
+    #drawer { position: fixed; inset: 0; width: auto; z-index: 2; }
+  }
+</style>
+</head>
+<body>
+<div id="bar">
+  <div id="chips"></div>
+  <div id="side"><span id="right"></span><span id="msg" class="warn" hidden></span><span id="silent" class="warn" hidden></span></div>
+</div>
+<div id="work">
+  <div id="main"></div>
+  <aside id="drawer" hidden></aside>
+</div>
+<div id="dead" hidden><div id="deadwhen"></div><div>workboard start</div></div>
+<script>
+"use strict";
+/* ponytail: the trial length is not in the board document; 7 is the board's default (workboard.trial-days) */
+const TRIAL_DAYS = 7;
+const COLS = [
+  { id: "needs", title: "Needs you" },
+  { id: "inbox", title: "Inbox", stage: "inbox" },
+  { id: "building", title: "Building", stage: "building" },
+  { id: "review", title: "In review / CI", stage: "review" },
+  { id: "landed", title: "Merged · trial", stage: "landed" },
+];
+const STATE_COLOR = {
+  "blocked": "#5f87ff", "asked": "#ffd75f", "failed": "#ff5f5f", "quiet": "#af8700",
+  "finished": "#00d75f", "finished-bg": "#00d75f",
+};
+const OTHER = "#888888";
+const HUES = ["#f2777a", "#f99157", "#ffcc66", "#99cc99", "#66cccc", "#6699cc", "#cc99cc", "#d27b53"];
+const CHECK = { SUCCESS: "✓", FAILURE: "✗", PENDING: "○", NONE: "○" };
+
+let doc = null, docAt = 0, lastAnswer = Date.now(), etag = null, build0 = null;
+let drawerKey = null, firstPaint = true, msgTimer = 0, colEls = null;
+const shut = new Set();
+const els = new Map();
+const store = {
+  get(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { sessionStorage.setItem(k, v); } catch (e) { /* no storage: nothing is remembered */ } },
+};
+/* the key arrives once, in a meta tag of the /enter answer; after that it lives in this tab's storage and an Authorization header, never in an address */
+let TOKEN = null;
+{
+  const m = document.querySelector('meta[name="workboard-token"]');
+  if (m) {
+    TOKEN = m.getAttribute("content");
+    m.remove();
+    store.set("wb-token", TOKEN);
+    history.replaceState(null, "", "/b/" + location.hash);
+  } else TOKEN = store.get("wb-token");
+}
+{
+  let s = null;
+  try { s = JSON.parse(store.get("wb.shut") || "null"); } catch (e) { s = null; }
+  (s || ["inbox", "building", "review", "landed"]).forEach(function (id) { shut.add(id); });
+  drawerKey = store.get("wb.drawer") || null;
+}
+
+function h(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+/* rebuild an element's children only when its signature changed: updates are in place */
+function put(el, sig, fill) {
+  if (el.dataset.sig === sig) return;
+  el.dataset.sig = sig;
+  el.replaceChildren();
+  fill(el);
+}
+function nowEpoch() { return doc.generated_at + (Date.now() - docAt) / 1000; }
+function age(ts) {
+  if (ts == null) return "?";
+  const s = Math.max(0, Math.floor(nowEpoch() - ts));
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m";
+  if (s < 86400) return Math.floor(s / 3600) + "h";
+  return Math.floor(s / 86400) + "d";
+}
+function hue(name) {
+  let n = 0;
+  for (let i = 0; i < name.length; i++) n = (n * 31 + name.charCodeAt(i)) >>> 0;
+  return HUES[n % HUES.length];
+}
+function say(text) {
+  const m = document.getElementById("msg");
+  m.textContent = text;
+  m.hidden = !text;
+  clearTimeout(msgTimer);
+  if (text) msgTimer = setTimeout(function () { say(""); }, 10000);
+}
+
+/* the fragment: #g=<group> or #r=<repo name> */
+function choice() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  return { g: p.get("g"), r: p.get("r") };
+}
+function visible(c, ch) {
+  if (ch.r) return c.repo === ch.r;
+  if (ch.g) return c.group === ch.g;
+  return true;
+}
+
+/* marks */
+function sessionMark(s) {
+  const m = h("span", "sess" + (s.pid != null ? " go" : ""));
+  if (s.pid != null) m.dataset.pid = String(s.pid);
+  if (s.source === "job") {
+    const r = h("span", "ring");
+    r.style.borderColor = s.stale ? OTHER : "#00d75f";
+    m.append(r, h("span", null, s.seat || s.label));
+  } else if (s.source === "session") {
+    const d = h("span", "dot");
+    d.style.background = STATE_COLOR[s.state] || OTHER;
+    m.append(d, h("span", null, s.label));
+  }
+  return m;
+}
+function prMarks(prs) {
+  const out = [];
+  prs.filter(function (p) { return p.state === "OPEN"; }).forEach(function (p) {
+    const m = h("span", null, "PR #" + p.number + " ");
+    m.append(h("span", p.checks === "SUCCESS" ? "good" : p.checks === "FAILURE" ? "bad" : "", CHECK[p.checks] || "○"));
+    out.push(m);
+    if (p.review === "CHANGES_REQUESTED") out.push(h("span", "warn", "changes requested"));
+    if (p.draft) out.push(h("span", null, "draft"));
+  });
+  return out;
+}
+function marks(c, reason) {
+  const row = h("div", "marks");
+  c.sessions.forEach(function (s) { row.append(sessionMark(s)); });
+  prMarks(c.prs).forEach(function (m) { row.append(m); });
+  if (c.trial_day != null) {
+    row.append(h("span", null, c.form === "issue" ? "trial " + c.trial_day + "d" : "trial " + c.trial_day + "/" + TRIAL_DAYS));
+  }
+  if (c.queue) {
+    row.append(h("span", null, c.queue.id + (c.queue.score ? " · " + c.queue.score : "")));
+    if (c.queue.tier === 1) row.append(h("span", null, "waiting on"));
+    if (c.queue.kind === "unfinished") row.append(h("span", null, "unfinished"));
+  }
+  if (c.unattended) row.append(h("span", "warn", "nobody on it"));
+  if (reason) row.append(h("span", null, reason));
+  row.append(h("span", "age", age(c.updated_at)));
+  return row;
+}
+function ref(c) {
+  if (c.form === "queue" && c.queue) return c.queue.id;
+  if (c.number != null) return "#" + c.number;
+  return c.holders.length ? "@" + c.holders[0].name : "";
+}
+function stageName(stage) {
+  const col = COLS.filter(function (x) { return x.stage === stage; })[0];
+  return col ? col.title : stage;
+}
+
+/* a card, keyed; a card in Needs you has its own element, since it is drawn there only */
+function cardEl(c, need) {
+  const key = (need ? "n:" : "c:") + c.key;
+  let el = els.get(key);
+  if (!el) {
+    el = h("div", "card");
+    el.tabIndex = 0;
+    el.dataset.key = c.key;
+    if (!firstPaint) el.classList.add("new");
+    els.set(key, el);
+  }
+  el.classList.toggle("unattended", c.unattended);
+  put(el, JSON.stringify([c, need, age(c.updated_at)]), function (e) {
+    const top = h("div", "top");
+    const chip = h("span", "chip", c.repo);
+    chip.style.color = hue(c.repo);
+    top.append(chip, h("span", "mono", ref(c)));
+    if (need) top.append(h("span", "tag", stageName(c.stage)));
+    e.append(top, h("div", "title", c.title), marks(c, need ? need.reason : null));
+  });
+  return el;
+}
+function needRow(n) {
+  const key = "s:" + n.id;
+  let el = els.get(key);
+  if (!el) {
+    el = h("div", "card srow");
+    el.dataset.pid = String(n.pid);
+    if (!firstPaint) el.classList.add("new");
+    els.set(key, el);
+  }
+  put(el, JSON.stringify([n, age(n.since)]), function (e) {
+    const d = h("span", "dot");
+    d.style.background = STATE_COLOR[n.kind] || OTHER;
+    e.append(d, h("div", null, n.label), h("span", "age", age(n.since)), h("div", "reason", n.reason));
+  });
+  return el;
+}
+
+/* columns */
+function buildCols() {
+  const main = document.getElementById("main");
+  colEls = {};
+  COLS.forEach(function (c) {
+    const sec = h("section", "col " + c.id);
+    const head = h("button", null);
+    head.dataset.col = c.id;
+    const count = h("span", "count", "0");
+    head.append(h("span", null, c.title), count);
+    const body = h("div", "cards");
+    sec.append(head, body);
+    main.append(sec);
+    colEls[c.id] = { sec: sec, count: count, body: body, none: h("div", "none", "nothing here") };
+  });
+}
+function fillCol(id, count, items) {
+  const col = colEls[id];
+  col.count.textContent = String(count);
+  col.sec.classList.toggle("shut", shut.has(id));
+  const want = items.length ? items : [col.none];
+  let at = col.body.firstChild;
+  want.forEach(function (e) {
+    if (e === at) at = at.nextSibling; else col.body.insertBefore(e, at);
+  });
+  while (at) { const nx = at.nextSibling; col.body.removeChild(at); at = nx; }
+}
+function renderBoard() {
+  const ch = choice();
+  const byKey = {};
+  doc.cards.forEach(function (c) { byKey[c.key] = c; });
+  const needs = doc.needs.filter(function (n) {
+    const c = n.card ? byKey[n.card] : null;
+    return c ? visible(c, ch) : !ch.r && (!ch.g || n.group === ch.g);
+  });
+  const seen = new Set(), ne = [];
+  needs.forEach(function (n) {
+    if (!n.card || !byKey[n.card]) { ne.push(needRow(n)); return; }
+    if (seen.has(n.card)) return;
+    seen.add(n.card);
+    ne.push(cardEl(byKey[n.card], n));
+  });
+  fillCol("needs", needs.length, ne);
+  COLS.slice(1).forEach(function (col) {
+    const mine = doc.cards.filter(function (c) { return c.stage === col.stage && !c.in_needs && visible(c, ch); });
+    fillCol(col.id, mine.length, mine.map(function (c) { return cardEl(c, null); }));
+  });
+  const live = new Set();
+  doc.cards.forEach(function (c) { live.add("c:" + c.key); live.add("n:" + c.key); });
+  doc.needs.forEach(function (n) { live.add("s:" + n.id); });
+  els.forEach(function (_, k) { if (!live.has(k)) els.delete(k); });
+}
+
+/* top bar */
+function link(label, frag, on) {
+  const a = h("a", on ? "on" : "", label);
+  a.href = "#" + frag;
+  return a;
+}
+function renderBar() {
+  const ch = choice();
+  const group = ch.r ? (doc.repos.filter(function (r) { return r.name === ch.r; })[0] || {}).group : ch.g;
+  put(document.getElementById("chips"), JSON.stringify([doc.groups, doc.repos, ch]), function (e) {
+    e.append(link("All", "", !ch.g && !ch.r));
+    doc.groups.forEach(function (g) { e.append(link(g, "g=" + encodeURIComponent(g), ch.g === g && !ch.r)); });
+    const rs = doc.repos.filter(function (r) { return group && r.group === group; });
+    if (rs.length) e.append(h("span", "sep"));
+    rs.forEach(function (r) { e.append(link(r.name, "r=" + encodeURIComponent(r.name), ch.r === r.name)); });
+  });
+  const hl = doc.health;
+  const fetched = hl.accounts.map(function (a) { return a.fetched_at; }).filter(function (t) { return t != null; });
+  const gh = fetched.length ? age(Math.min.apply(null, fetched)) : "?";
+  const live = hl.panel_age == null ? "?" : Math.round(hl.panel_age + (Date.now() - docAt) / 1000) + "s";
+  put(document.getElementById("right"), JSON.stringify([hl, gh, live]), function (e) {
+    e.append(h("span", null, "GitHub " + gh + " · live " + live));
+    hl.accounts.forEach(function (a) { if (a.error) e.append(h("span", "warn", a.account + ": " + a.error)); });
+    if (hl.panel === "down") e.append(h("span", null, "panel off"));
+    if (hl.jobs === "error") e.append(h("span", "warn", "jobs error"));
+    if (hl.inbox_errors > 0) e.append(h("span", "warn", "queue error"));
+  });
+}
+
+/* drawer */
+function sentence(c) {
+  const open = c.prs.filter(function (p) { return p.state === "OPEN"; })[0];
+  if (c.stage === "inbox") {
+    return (c.queue ? "Waiting in the queue" + (c.queue.tier ? ", tier " + c.queue.tier : "") : "Open issue, nobody on it")
+      + ". Taking it: " + c.takeable + ".";
+  }
+  if (c.stage === "building") {
+    if (c.unattended) return "Assigned to you, and nobody is on it.";
+    const w = c.holders.map(function (x) { return x.name + (x.branch ? " on " + x.branch : ""); }).join(", ");
+    return (w ? "Being built in " + w : "Being built") + ", " + c.sessions.length + " on it.";
+  }
+  if (c.stage === "review") {
+    return open ? "Pull request #" + open.number + " is open: checks " + open.checks.toLowerCase()
+      + ", review " + open.review.toLowerCase().replace("_", " ") + "." : "In review.";
+  }
+  return "Merged, trial day " + (c.trial_day == null ? "?" : c.trial_day) + " of " + TRIAL_DAYS + ".";
+}
+function renderDrawer() {
+  const d = document.getElementById("drawer");
+  const c = drawerKey ? doc.cards.filter(function (x) { return x.key === drawerKey; })[0] : null;
+  if (!c) {
+    d.hidden = true;
+    if (drawerKey) { drawerKey = null; store.set("wb.drawer", ""); }
+    return;
+  }
+  d.hidden = false;
+  put(d, JSON.stringify([c, age(c.updated_at)]), function (e) {
+    const head = function (t) { e.append(h("h3", null, t)); };
+    const close = h("button", null, "▸ Close");
+    close.dataset.close = "1";
+    e.append(close, h("h2", null, c.title));
+    e.append(h("div", "line mono", c.repo + " " + ref(c) + " · " + stageName(c.stage) + " · " + age(c.updated_at)));
+    e.append(h("p", null, sentence(c)));
+    if (c.sessions.length) {
+      head("Sessions");
+      c.sessions.forEach(function (s) {
+        const l = h("div", "line");
+        l.append(sessionMark(s));
+        if (s.source === "job" && s.text) l.append(h("span", "mono", s.text));
+        const b = h("button", null, "Go to pane");
+        if (s.pid != null) b.dataset.pid = String(s.pid); else b.disabled = true;
+        l.append(b);
+        e.append(l);
+      });
+    }
+    if (c.prs.length) {
+      head("Pull requests");
+      c.prs.forEach(function (p) {
+        const l = h("div", "line mono");
+        l.append(h("span", null, "PR #" + p.number + " " + p.state.toLowerCase() + " " + (CHECK[p.checks] || "")));
+        if (p.review === "CHANGES_REQUESTED") l.append(h("span", "warn", "changes requested"));
+        if (p.draft) l.append(h("span", null, "draft"));
+        l.append(h("span", null, p.branch));
+        e.append(l);
+      });
+    }
+    if (c.holders.length) {
+      head("Worktrees");
+      c.holders.forEach(function (x) {
+        e.append(h("div", "line mono", x.name + (x.branch ? " · " + x.branch : "") + (x.task ? " · " + x.task : "")));
+      });
+    }
+    if (c.labels.length) { head("Labels"); e.append(h("div", "line mono", c.labels.join(" · "))); }
+    if (c.queue) {
+      head("Queue");
+      if (c.queue.terms) e.append(h("div", "line mono", c.queue.terms));
+      if (c.queue.file) e.append(h("div", "line mono", c.queue.file));
+    }
+    if (c.body) { head("Body"); e.append(h("pre", null, c.body)); }
+    if (c.log.length) {
+      head("Log");
+      c.log.forEach(function (x) { e.append(h("div", "line mono", x.at + " · " + x.who + " · " + x.kind + " · " + x.text)); });
+    }
+    if (c.url) {
+      const o = h("button", null, "Open on GitHub");
+      o.dataset.open = c.key;
+      const l = h("div", "line");
+      l.append(o);
+      e.append(l);
+    }
+  });
+}
+
+/* actions: go and open post to the server; a refusal shows in the bar for ten seconds */
+function post(path, body) {
+  fetch(path, { method: "POST", headers: { "Authorization": "Bearer " + TOKEN, "X-Workboard": "1", "Content-Type": "application/x-www-form-urlencoded" }, body: body })
+    .then(function (r) {
+      if (r.ok) return;
+      r.text().then(function (t) { say(t.trim() || "error " + r.status); });
+    })
+    .catch(function () { say("no answer"); });
+}
+document.addEventListener("click", function (ev) {
+  const t = ev.target.closest ? ev.target.closest("[data-pid], [data-close], [data-open], [data-col], [data-key]") : null;
+  if (!t) return;
+  if (t.dataset.pid) { if (/^[0-9]+$/.test(t.dataset.pid)) post("/b/go","pid=" + t.dataset.pid); return; }
+  if (t.dataset.open) { post("/b/open","key=" + encodeURIComponent(t.dataset.open)); return; }
+  if (t.dataset.close) drawerKey = null;
+  else if (t.dataset.col) {
+    if (shut.has(t.dataset.col)) shut.delete(t.dataset.col); else shut.add(t.dataset.col);
+    store.set("wb.shut", JSON.stringify(Array.from(shut)));
+  } else if (t.dataset.key) drawerKey = t.dataset.key;
+  store.set("wb.drawer", drawerKey || "");
+  paint();
+});
+document.addEventListener("keydown", function (ev) {
+  const t = ev.target;
+  if ((ev.key === "Enter" || ev.key === " ") && t.classList && t.classList.contains("card") && t.dataset.key) {
+    ev.preventDefault();
+    drawerKey = t.dataset.key;
+    store.set("wb.drawer", drawerKey);
+    paint();
+  }
+});
+window.addEventListener("hashchange", function () { paint(); });
+
+/* polling */
+function paint() {
+  if (!doc) return;
+  if (!colEls) buildCols();
+  renderBar();
+  renderBoard();
+  renderDrawer();
+  firstPaint = false;
+}
+function silence() {
+  const s = Math.floor((Date.now() - lastAnswer) / 1000);
+  const dead = s > 30;
+  document.getElementById("main").classList.toggle("stale", s > 6);
+  document.getElementById("bar").hidden = dead;
+  document.getElementById("work").hidden = dead;
+  document.getElementById("dead").hidden = !dead;
+  if (dead) {
+    const t = new Date(lastAnswer);
+    const p = function (n) { return (n < 10 ? "0" : "") + n; };
+    document.getElementById("deadwhen").textContent = "Not updating since " + p(t.getHours()) + ":" + p(t.getMinutes()) + ".";
+  }
+  const quiet = document.getElementById("silent");
+  quiet.hidden = s <= 6;
+  quiet.textContent = "no data for " + s + "s";
+}
+function nokey() {
+  clearInterval(tick);
+  clearInterval(pollTimer);
+  document.getElementById("bar").hidden = true;
+  document.getElementById("work").hidden = true;
+  document.getElementById("dead").hidden = false;
+  document.getElementById("deadwhen").textContent = "This page has no key.";
+  document.getElementById("deadwhen").nextElementSibling.textContent = "Run workboard open.";
+}
+function poll() {
+  const headers = { "Authorization": "Bearer " + TOKEN };
+  if (etag) headers["If-None-Match"] = etag;
+  fetch("/b/board.json", { headers: headers })
+    .then(function (r) {
+      if (r.status === 403) { nokey(); return null; }
+      if (r.status === 304) { lastAnswer = Date.now(); return null; }
+      if (!r.ok) throw new Error("status " + r.status);
+      etag = r.headers.get("ETag");
+      return r.json();
+    })
+    .then(function (d) {
+      if (!d) return;
+      lastAnswer = docAt = Date.now();
+      if (build0 === null) build0 = d.build;
+      else if (d.build !== build0) { location.reload(); return; }
+      doc = d;
+      paint();
+    })
+    .catch(function () { /* the silence timer tells the story */ });
+}
+const tick = TOKEN ? setInterval(function () { paint(); silence(); }, 1000) : 0;
+const pollTimer = TOKEN ? setInterval(poll, 2000) : 0;
+if (TOKEN) poll(); else nokey();
+</script>
+</body>
+</html>

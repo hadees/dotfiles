@@ -116,6 +116,7 @@ teardown() {
     [ -x "$TMPHOME/bin/iterm2-prefs" ]
     [ -x "$TMPHOME/bin/iterm2-relaunch" ]
     [ -x "$TMPHOME/bin/screen-heads-up" ]
+    [ -x "$TMPHOME/bin/workboard" ]
     [ -x "$TMPHOME/bin/pane-sight" ]
     [ -x "$TMPHOME/bin/pane-read" ]
     [ -x "$TMPHOME/bin/pane-shot" ]
@@ -128,6 +129,7 @@ teardown() {
     [ ! -e "$TMPHOME/bin/iterm2-prefs" ]
     [ ! -e "$TMPHOME/bin/iterm2-relaunch" ]
     [ ! -e "$TMPHOME/bin/screen-heads-up" ]
+    [ ! -e "$TMPHOME/bin/workboard" ]
     [ ! -e "$TMPHOME/bin/pane-sight" ]
     [ ! -L "$TMPHOME/bin/pane-read" ]
     [ ! -L "$TMPHOME/bin/pane-shot" ]
@@ -264,4 +266,20 @@ teardown() {
   echo "| S1 | kept |" > "$TMPHOME/.claude-shared/approvals-ledger.md"
   chez init --source "$PWD" --promptString machineClass=linux --apply --exclude scripts
   grep -qF "| S1 | kept |" "$TMPHOME/.claude-shared/approvals-ledger.md"
+}
+
+@test "the work board's plist is ignored unless the OS is darwin and the class is mac" {
+  local src="$BATS_TEST_DIRNAME/.." os cls rendered
+  chez init --source "$src" --promptString machineClass=mac > /dev/null
+  for os in darwin linux; do
+    for cls in mac linux wsl ephemeral; do
+      rendered="$(chez execute-template --source "$src" \
+        --override-data "{\"machineClass\":\"$cls\",\"chezmoi\":{\"os\":\"$os\"}}" < "$src/.chezmoiignore")"
+      if [ "$os" = darwin ] && [ "$cls" = mac ]; then
+        ! grep -qxF 'Library/LaunchAgents/local.workboard.plist' <<< "$rendered" || { echo "$os/$cls ignores the plist"; false; }
+      else
+        grep -qxF 'Library/LaunchAgents/local.workboard.plist' <<< "$rendered" || { echo "$os/$cls deploys the plist"; false; }
+      fi
+    done
+  done
 }
