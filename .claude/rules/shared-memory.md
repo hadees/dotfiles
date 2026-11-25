@@ -18,9 +18,11 @@ applies.
 
 **Status.** The repository wires nothing: every profile's `settings.json`
 belongs to its overlay, so the hooks run only in a profile whose overlay has
-pasted in the output of `shared-memory settings`. As of 2026-11-25 every
-profile on the operator's Mac that imports the index is wired and logs
-injections (`shared-memory log`). A subagent there was observed to hold the
+pasted in the output of `shared-memory settings`. On 2026-11-25 every
+profile of one deployment that imports the index was wired with `hook start`
+and `hook tool` and logged injections (`shared-memory log`); `hook main`
+arrives with the overlays, and until then `claude-doctor` reads `partly wired
+(missing main)`. A subagent there was observed to hold the
 imported topics and no start text, and to get `github-accounts` from the tool
 hook on its first `gh` command, which is the design below. A public-only
 clone, or a profile that is not wired, still has the index paragraph alone,
@@ -37,7 +39,9 @@ call has not been measured.
   ceiling on this part's size. Lower it when it shrinks, never raise it.
 - **Main**: topics `hook main` adds to every main conversation at
   SessionStart and to no subagent, because a subagent never runs SessionStart.
-  They are rules for the conversation that orchestrates.
+  They are rules for the conversation that orchestrates. While the index
+  still imports a topic, `hook main` logs it `imported` and adds nothing; the
+  import is removed in a later change (PR B).
 - **Start**: topics `hook start` adds to a session in a role (a Claude Peers
   tab, the Lead session, a repo with peers, postbox wired, a native inbox).
 - **Tool**: topics `hook tool` adds the moment something happens (a failed
@@ -46,9 +50,9 @@ call has not been measured.
   the situation that calls for each. Claude reads the file when the task
   arises, the way Anthropic's own auto memory points at its topic files.
 
-Main, start and tool topics are not imported but are listed in the index
-paragraph too, so a session whose hook is missing or broken still has a route
-to the file. The test of where a rule goes: must every seat hold it before any
+Once the index no longer imports them, main, start and tool topics are listed
+in the index paragraph too, so a session whose hook is missing or broken
+still has a route to the file. The test of where a rule goes: must every seat hold it before any
 tool call (always), only the conversation that orchestrates (main), a role
 (start), or the moment something happens (tool).
 
@@ -169,21 +173,22 @@ one line per topic telling Claude to read the file (logged `oversize`).
 topic under the same limit, so a topic that grows past it fails there before
 it falls back in a session.
 
-The main bundle is a second hook command, so it has a 10,000 of its own: "Claude
-Code measures each string on its own, even when several hooks run for the same
-event" (the hooks page). It has no allowance of its own beyond that: the tests
-hold it under 9,000 and hold the always-loaded text plus the bundle at or
-under 16,200, the total a main conversation carries.
+The main bundle is a second hook command, so the 10,000 cap applies to it on
+its own: "Claude Code measures each string on its own, even when several hooks
+run for the same event" (the hooks page). It has no allowance beyond that, and
+no test yet holds it under 9,000 or holds the always-loaded text plus the
+bundle at or under 16,200, the total a main conversation carries; PR B adds
+that test.
 
 A tool topic is added once per session and agent. The told file,
 `${XDG_STATE_HOME:-$HOME/.local/state}/shared-memory/told/<session id>`, holds
 `<agent id or main><TAB><slug>` lines; a second hit is logged `told` and
 silent. Each start hook run removes told files older than 14 days. The start
-topics have no told file: SessionStart runs once per start, and a resumed
-session may carry them twice (see "What it cannot see").
+and main topics have no told file: SessionStart runs once per start, and a
+resumed session may carry them twice (see "What it cannot see").
 
-A topic the index still imports is never added, in either hook (logged
-`imported`). That is what makes the rollout order-independent: an overlay may
+A topic the index still imports is never added, in any of the three hooks
+(logged `imported`). That is what makes the rollout order-independent: an overlay may
 wire the hooks before the public change that stops the import has merged, and
 nothing loads twice.
 
@@ -219,8 +224,9 @@ commands (`hook start` with a 10-second timeout, `hook main` with 5), and the
 PostToolUse and PostToolUseFailure entries (matcher
 `Bash|Skill|SendMessage|WebFetch|mcp__claude-in-chrome__.*|mcp__postbox__.*`).
 It never edits a file; `docs/private-overlays.md` says where each overlay
-pastes it. A profile on the old block keeps working: without `hook main` it
-has the delegation topic by its pointer line only, and with the old matcher
+pastes it. A profile on the old block keeps working: without `hook main`,
+once the index stops importing the delegation topic (PR B), it has that topic
+by its pointer line only, and with the old matcher
 it gets `session-mail` only from `am mail` and from the index line, and no
 `web-fetching` at all. `claude-doctor`'s `topics:` line reports `hook:
 wired`, `partly wired (missing <names>)` or `not wired` (the names are `start`,
@@ -269,8 +275,8 @@ prints `outcome`, `slug` and a count. A trigger that never fires shows as no
   not added, and the index paragraph is the route.
 - A resumed session: SessionStart runs again and whether the first run's
   text is still in the transcript is not documented, so the start and main
-  topics may appear twice (nine of 107 start bundles in the operator's
-  transcripts followed another with no compaction between them, counted
+  topics may appear twice (in one deployment's transcripts, nine of 107
+  start bundles followed another with no compaction between them, counted
   2026-11-25).
 - A launch with hooks off has neither memory nor bundle: only the index
   paragraph's route to the files.
