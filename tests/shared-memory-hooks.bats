@@ -33,8 +33,8 @@ setup() {
   SM="$BATS_TEST_DIRNAME/../bin/executable_shared-memory"
   LOG="$XDG_STATE_HOME/shared-memory/injections.tsv"
 
-  # Invented topics: one imported, three start topics, one tool topic that
-  # the index lists and one that it does not.
+  # Invented topics: one imported, three start topics, one main topic, one
+  # tool topic that the index lists and one that it does not.
   export SHARED_MEMORY_DIR="$BATS_TEST_TMPDIR/memory"
   mkdir -p "$SHARED_MEMORY_DIR/topics"
   cat > "$SHARED_MEMORY_DIR/CLAUDE.md" <<'EOF'
@@ -48,11 +48,12 @@ Topics this file does not import:
 - `github-accounts.md`: a first gh command.
 - `commit-signing.md`: a commit that fails to sign.
 - `claude-in-chrome.md`: the browser.
+- `delegation-and-model-routing.md`: how to delegate.
 
 @topics/always-here.md
 EOF
   local t
-  for t in always-here talking-to-sessions claude-peers peer-seat lead approvals peer-lifetime session-mail github-accounts commit-signing tailnet-routed-ssh claude-in-chrome; do
+  for t in always-here talking-to-sessions claude-peers peer-seat lead approvals peer-lifetime session-mail github-accounts commit-signing tailnet-routed-ssh claude-in-chrome delegation-and-model-routing; do
     printf '## Fixture %s\n\nBODY-%s\n' "$t" "$t" > "$SHARED_MEMORY_DIR/topics/$t.md"
   done
 
@@ -67,6 +68,12 @@ start() {
   local payload=${1-}
   [ -n "$payload" ] || payload="{\"session_id\":\"s1\",\"cwd\":\"$HOME/work\"}"
   printf '%s' "$payload" | sh "$SM" hook start
+}
+
+main() {
+  local payload=${1-}
+  [ -n "$payload" ] || payload="{\"session_id\":\"s1\",\"cwd\":\"$HOME/work\"}"
+  printf '%s' "$payload" | sh "$SM" hook main
 }
 
 tool() {
@@ -88,11 +95,15 @@ CHROME='{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"mcp__cla
   [[ "$output" == *$'always-here\talways\t-'* ]]
   [[ "$output" == *$'claude-peers\tstart\tyes'* ]]
   [[ "$output" == *$'commit-signing\ttool\tyes'* ]]
+  [[ "$output" == *$'delegation-and-model-routing\tmain\tyes'* ]]
   [[ "$output" == *$'tailnet-routed-ssh\ttool\tno'* ]]
   # the table's topic that the index imports is "always", whatever the table says
   printf '@topics/lead.md\n' >> "$SHARED_MEMORY_DIR/CLAUDE.md"
   run sh "$SM" topics
   [[ "$output" == *$'lead\talways\t-'* ]]
+  printf '@topics/delegation-and-model-routing.md\n' >> "$SHARED_MEMORY_DIR/CLAUDE.md"
+  run sh "$SM" topics
+  [[ "$output" == *$'delegation-and-model-routing\talways\t-'* ]]
   # a topic that nothing lists, imports or hooks is unreachable
   printf '## Orphan\n' > "$SHARED_MEMORY_DIR/topics/orphan.md"
   run sh "$SM" topics
@@ -122,7 +133,10 @@ shared-memory does not edit settings.json — each profile's file is owned by
 its overlay. Add these to that file's "hooks" (merging with what is there):
 
   "SessionStart": [
-    { "hooks": [{ "type": "command", "timeout": 10, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook start || true" }] }
+    { "hooks": [
+      { "type": "command", "timeout": 10, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook start || true" },
+      { "type": "command", "timeout": 5, "command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook main || true" }
+    ] }
   ],
   "PostToolUse": [
     { "matcher": "Bash|Skill|SendMessage|mcp__claude-in-chrome__.*|mcp__postbox__.*",
@@ -134,10 +148,11 @@ its overlay. Add these to that file's "hooks" (merging with what is there):
   ]
 
 SessionStart adds the messaging, Claude Peers, peer and Lead topics to a
-session they apply to; the two tool events add the commit-signing, tailnet,
-Claude in Chrome, peer lifetime, session mail and GitHub accounts topics once per session when
-their trigger appears. Every entry fails open, and a topic the shared index
-still imports is never added.
+session they apply to and, through `hook main`, the delegation rules to every
+session (a subagent runs neither); the two tool events add the commit-signing,
+tailnet, Claude in Chrome, peer lifetime, session mail and GitHub accounts
+topics once per session when their trigger appears. Every entry fails open, and
+a topic the shared index still imports is never added.
 EOF
 )"
   [ "$output" = "$expected" ]
@@ -148,11 +163,102 @@ EOF
     [[ "$line" == *'|| true" }'* ]] || { echo "no || true: $line"; false; }
     [[ "$line" == *'"timeout"'* ]] || { echo "no timeout: $line"; false; }
   done <<< "$output"
-  [ "$n" -eq 3 ]
+  [ "$n" -eq 4 ]
 }
 
 @test "no route of the script can exit 2, which would block a session" {
   ! grep -nE 'exit 2|sys\.exit\(2\)|return 2' "$SM" || { echo "an exit 2 is in the script"; false; }
+}
+
+@test "hook start: never prints the main topic, in any role" {
+  CLAUDE_PEER_WORKTREE="$HOME/work" run start
+  [[ "$output" != *BODY-delegation-and-model-routing* ]]
+  run start '{"session_id":"s1","session_title":"proj-lead"}'
+  [[ "$output" == *BODY-lead* ]]
+  [[ "$output" != *BODY-delegation-and-model-routing* ]]
+  STUB_SLOTS=$'a\trunning' run start
+  [[ "$output" == *BODY-claude-peers ]]
+  [[ "$output" != *BODY-delegation-and-model-routing* ]]
+}
+
+@test "hook main: prints the header and the topic, the same in every role, and no role topic" {
+  local header="shared-memory: these shared-memory topics apply to this session (a main conversation), so they are added here:"
+  run main
+  [ "$status" -eq 0 ]
+  [ "$output" = "$header"$'\n\n## Fixture delegation-and-model-routing\n\nBODY-delegation-and-model-routing' ]
+  local plain="$output"
+  run main '{"session_id":"s1","session_title":"proj-lead"}'
+  [ "$output" = "$plain" ]
+  CLAUDE_PEER_WORKTREE="$HOME/work" run main
+  [ "$output" = "$plain" ]
+  STUB_SLOTS=$'a\trunning' run main
+  [ "$output" = "$plain" ]
+  [ "$(cut -f3,4,5 "$LOG" | sort -u)" = "$(printf 'main\tdelegation-and-model-routing\tinjected')" ]
+}
+
+@test "hook main: runs on every source and never runs claude-peer" {
+  printf '#!/bin/sh\necho called >> "%s/peer-calls"\n' "$BATS_TEST_TMPDIR" > "$PEER"
+  local src
+  for src in startup resume clear compact fork; do
+    run main "{\"session_id\":\"s1\",\"source\":\"$src\",\"cwd\":\"$HOME/work\"}"
+    [[ "$output" == *BODY-delegation-and-model-routing ]] || { echo "no output for $src"; false; }
+  done
+  [ ! -e "$BATS_TEST_TMPDIR/peer-calls" ]
+}
+
+@test "hook main: a topic the index imports is not added, and is logged imported" {
+  printf '@topics/delegation-and-model-routing.md\n' >> "$SHARED_MEMORY_DIR/CLAUDE.md"
+  run main
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$(cut -f3- "$LOG")" = "$(printf 'main\tdelegation-and-model-routing\timported')" ]
+}
+
+@test "hook main: a topic file that is missing is skipped" {
+  rm "$SHARED_MEMORY_DIR/topics/delegation-and-model-routing.md"
+  run main
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "hook main: over 9,000 characters it names the file instead, and logs oversize" {
+  { printf '## Big\n\n'; head -c 9500 /dev/zero | tr '\0' x; printf '\n'; } > "$SHARED_MEMORY_DIR/topics/delegation-and-model-routing.md"
+  run main
+  [ "$status" -eq 0 ]
+  [ "${#output}" -lt 9000 ]
+  [ "${lines[0]}" = "shared-memory: these shared-memory topics apply to this session (a main conversation), so they are added here:" ]
+  [ "${lines[1]}" = "read ~/.claude-shared/topics/delegation-and-model-routing.md now: it applies to this session and is too long to add here." ]
+  [ "${#lines[@]}" -eq 2 ]
+  [ "$(cut -f3,5 "$LOG")" = "$(printf 'main\toversize')" ]
+}
+
+@test "hook main: silent under MEMORYGUARD_DEPTH; malformed JSON, empty stdin and a missing directory exit 0 with no output" {
+  MEMORYGUARD_DEPTH=1 run main
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ ! -e "$LOG" ]
+  run main 'not json {'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run sh "$SM" hook main < /dev/null
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run main '["a list"]'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  SHARED_MEMORY_DIR="$BATS_TEST_TMPDIR/nowhere" run main
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "hook main: a PATH without python3 exits 0 with no output and leaves a nopython row" {
+  local nopy="$BATS_TEST_TMPDIR/nopy" t
+  mkdir -p "$nopy"
+  for t in cat mktemp rm date mkdir; do ln -s "$(command -v "$t")" "$nopy/$t"; done
+  run env PATH="$nopy" /bin/sh "$SM" hook main <<< '{"session_id":"s1"}'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [[ "$(cut -f2- "$LOG")" == $'.claude-test\tmain\t-\tnopython' ]]
 }
 
 @test "hook start: a peer tab gets the messaging, peers and peer-seat topics, and neither lead nor approvals" {
