@@ -136,6 +136,7 @@ PY
 
 @test "the page is not an executable, and nothing in this file wrote a __pycache__" {
   # the mode git records, not the filesystem's: WSL's drvfs marks every file executable
-  [[ "$(git -C "$WB_ROOT" ls-files -s -- "${PAGE#$WB_ROOT/}")" == 100644* ]]
+  # safe.directory: wb_setup's empty global config, and a clone another user owns (CI as root)
+  [[ "$(git -c safe.directory='*' -C "$WB_ROOT" ls-files -s -- dot_local/share/workboard/board.html)" == 100644* ]]
   wb_no_pycache
 }
