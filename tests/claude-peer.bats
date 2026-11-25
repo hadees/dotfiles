@@ -5486,6 +5486,20 @@ fake_secretaries() {
   [ "$(git -C "$wt" rev-parse HEAD)" = "$old" ]
 }
 
+@test "secretary seat: a clean detached slot whose commits are on no branch of the remote is left where it is" {
+  remote_head
+  sh "$BIN" run --as alpha </dev/null >/dev/null
+  wt=$REPO/.claude/worktrees/alpha
+  git -C "$wt" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m detached
+  mine=$(git -C "$wt" rev-parse HEAD)
+  FAKE_SHELL_SLEEP=1 pane alpha
+  hold_tty alpha
+  press alpha ''
+  until_ok '[ "$(shell_runs)" -eq 1 ]'
+  until_ok '[ "$(sh "$BIN" slots | cut -f2)" = waiting ]'
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$mine" ]
+}
+
 @test "secretary seat: two open conversations make the first Return say so, the second starts and notes it" {
   fake_secretaries aa bb
   FAKE_SHELL_SLEEP=1 pane alpha
@@ -5544,6 +5558,7 @@ clock_env() {
   cat >"$BATS_TEST_TMPDIR/reg.sh" <<'REG'
 printf '{"sessionId":"%s","status":"%s","statusUpdatedAt":%s}\n' "${REG_SID:-sess-1}" "$REG_STATUS" \
   $(( ($(date +%s) - REG_AGE * 60) * 1000 )) >"$CLAUDE_CONFIG_DIR/sessions/$PPID.json"
+touch -a -t 200001010000 "$CLAUDE_PEER_TTY"   # the Return that started it is old input here
 REG
   CLOCK_DO=". '$BATS_TEST_TMPDIR/reg.sh'"
 }
@@ -5582,6 +5597,19 @@ clock_sleeps() { ps -Ao args= | grep -c "[s]leep $CLAUDE_PEER_TICK"; }
   grep -Eq "Alpha${T}end${T}.*${T}session=sess-1\$" "$REPO/.git/claude-peer.log"
   grep -Eq "Gamma${T}end${T}.*${T}session=sess-3\$" "$REPO/.git/claude-peer.log"
   [ ! -s "$REPO/.git/claude-peer.queue" ]
+}
+
+@test "pane clock: a terminal typed at within the limit keeps an idle session, one not typed at for the limit does not" {
+  clock_env
+  REG_STATUS=idle REG_AGE=120 FAKE_SHELL_DO="$CLOCK_DO; touch -a \"\$CLAUDE_PEER_TTY\"" FAKE_SHELL_SLEEP=3 pane alpha
+  press alpha ''
+  until_ok 'grep -q "Alpha ended after" "$REPO/.git/claude-peer.log"'
+  no grep -q "stopped by" "$REPO/.git/claude-peer.log"
+  # the same session with input two minutes ago (the limit is one) is ended
+  REG_STATUS=idle REG_AGE=120 FAKE_SHELL_DO="$CLOCK_DO; touch -a -d '-2 minutes' \"\$CLAUDE_PEER_TTY\" 2>/dev/null || touch -a -t \$(date -v-2M +%Y%m%d%H%M) \"\$CLAUDE_PEER_TTY\"" FAKE_SHELL_SLEEP=20 pane beta
+  press beta ''
+  until_ok 'grep -q "Beta ended after" "$REPO/.git/claude-peer.log"'
+  grep -Eq "Beta${T}end${T}.*\(stopped by the pane, idle 1m\)" "$REPO/.git/claude-peer.log"
 }
 
 @test "pane clock: after a verdict the shorter limit applies and no unfinished card is added" {

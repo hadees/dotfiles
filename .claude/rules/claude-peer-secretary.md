@@ -144,15 +144,21 @@ seconds back, whole hours plus ten minutes; a postbox stub records its calls.
 
 ## The secretary pane
 
+The operator's own label for this pane is **Ideas**; the slot, the session name
+`<repo>-secretary` and the code keep `secretary`. The cap below counts `*-secretary`
+names, which nothing creates until the bar has an Ideas pane (PR 222); until then the cap
+counts nothing, while the note and the deny list reach every non-hand-off pane start.
+
 Every session a pane starts that is not a hand-off (`pg_ho` is not 1: Return, a picker
 row, a typed task, `c`, a plain `claude-peer start`) is the operator's secretary: one
 idea per session, researched and shaped in chat, ended with one card in the queue. A
 `start --handoff` is untouched, so the hand-off path (Lead's hand-offs, and the trial's
 control arm) behaves as it did. `pane_go` sets `pg_sec` to 1 for a secretary start.
 
-- **Fresh tree.** For a `fresh` start, a slot that is detached and has an empty `git
-  status --porcelain` is moved to `origin/HEAD` (`checkout --detach`, no fetch; a slot
-  with no `origin/HEAD` stays). Anything else is left as it is. `HEAD` and the branch at
+- **Fresh tree.** For a `fresh` start, a slot that is detached, has an empty `git
+  status --porcelain` and whose `HEAD` is an ancestor of `origin/HEAD` is moved to it
+  (`checkout --detach`, no fetch; a slot with no `origin/HEAD`, or commits no branch of
+  the remote holds, stays). Anything else is left as it is. `HEAD` and the branch at
   start are `pg_h0` and `pg_b0`.
 - **The cap.** Before a slot is taken, the live sessions named `*-secretary` are counted
   across the registry of every `profile_dirs` directory (`pane_secretaries`: name and
@@ -173,9 +179,10 @@ control arm) behaves as it did. `pane_go` sets `pg_sec` to 1 for a secretary sta
   `none` passes no deny pair; a value that starts with `-` is said once and the default
   used). A context's `system:` text and the note are one `--append-system-prompt`, the
   text first, an empty line, then the note.
-- **The seat note** (`secretary_note`) is the signed text with "he", "him" and "his"
-  written as "the operator", "they" and "their"; nothing else of it changed. Only
-  `<rname>`, the session-name prefix, is replaced. It tells the
+- **The seat note** (`secretary_note`) is the text the operator signed, worded in the
+  third person as "the operator", "they", "their" and "the operator's"; the operator
+  approved that wording (2026-11-25). "The library" is left out of its research sources,
+  a tool only some machines have. Only `<rname>`, the session-name prefix, is replaced. It tells the
   session to keep one idea file under `${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<rname>/`,
   to finish with one `claude-peer queue add` (or `park` or `drop`), to write a `once`
   row to the approvals ledger for a go, and not to edit, commit, merge, dispatch
@@ -199,13 +206,18 @@ background subshell before `run_session` and `pane_unwatch` ends it, and the sle
 as soon as the session returns. `pane_cleanup` calls `pane_unwatch` too, so a killed pane
 leaves neither. One process per running secretary and none for a waiting pane, whose rule
 against polling is in `claude-peer.md`. A hand-off has none. `CLAUDE_PEER_TICK` is the
-seconds between looks (default 60; the tests' handle).
+seconds between looks (default 60; the tests' handle). This clock **ends** the session; the
+hold in `claude-peer-handoff.md` and the shared `peer-lifetime.md` (`pane-idle-minutes`, also 60) only makes `stop` refuse a
+session that has not been idle that long. Two settings, two effects.
 
 Each tick it takes `session_record` of the pane's own pid, which names the Claude under it
 and its registry record, and ends the session by TERM when all of these hold:
 
 - the record's `status` is exactly `idle`;
 - `statusUpdatedAt`, in **milliseconds**, is at least the limit old;
+- nobody typed at the pane's terminal in that time: its access time (`stat`, the
+  `w` command's idle time), which no registry field shows, so an unsent draft keeps the
+  session. A terminal that cannot be read (`stat` fails) counts as no input;
 - no write to the session's transcript (`<profile dir>/projects/*/<sessionId>.jsonl`) or to
   anything under `projects/*/<sessionId>/subagents/` in that time (`find -mmin`), so a
   planner still running keeps it alive. What `status` reads while only background subagents

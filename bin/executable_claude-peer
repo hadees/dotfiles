@@ -670,7 +670,7 @@ peer_mode() {
 
 # --- the secretary seat: what a session started at a pane is -------------------------
 # Every session a pane starts that is not a hand-off. The text is the operator's
-# (signed 2026-11-25), word for word; only <rname> is replaced.
+# (signed 2026-11-25), as signed in the third person; only <rname> is replaced.
 
 # git config claude-peer.pane-deny: the tools removed at launch, one comma-joined
 # argument; unset or empty is the default, `none` nothing; a value that could read
@@ -693,10 +693,12 @@ verdict_since() {
 
 # The secretary's clock, one background subshell per running session. Arguments: label,
 # start time (epoch seconds), minutes to end a session with no verdict, minutes after
-# one, stop file. Each tick it finds the session under the pane's own pid and ends it
-# with TERM when the registry says idle, that status is as old as the limit and nothing
-# of the session's or its subagents' was written in that time. The stop mark says the
-# pane did it; the session id is kept beside it for the end line.
+# one, stop file, the pane's terminal. Each tick it finds the session under the pane's own
+# pid and ends it with TERM when the registry says idle, that status is as old as the limit,
+# nothing of the session's or its subagents' was written in that time and nobody typed at
+# the terminal in it (its atime, which is how `w` reads idle time: a draft nobody sent shows
+# in no registry field). The stop mark says the pane did it; the session id is kept beside
+# it for the end line.
 pane_watch() {
   pw_tab=$(printf '\t')
   while sleep "${CLAUDE_PEER_TICK:-60}"; do
@@ -712,6 +714,9 @@ pane_watch() {
     pw_upd=$(rec_get "$pw_rec" statusUpdatedAt)   # milliseconds
     case $pw_upd in ''|*[!0-9]*) continue;; esac
     [ $(( ($(date +%s) - pw_upd / 1000) / 60 )) -ge "$pw_lim" ] || continue
+    # input at the terminal within the limit: GNU stat -c, BSD stat -f; unknown is no input
+    pw_ta=$(stat -c %X "$6" 2>/dev/null || stat -f %a "$6" 2>/dev/null) || pw_ta=
+    case $pw_ta in ''|*[!0-9]*) ;; *) [ $(( $(date +%s) - pw_ta )) -ge $(( pw_lim * 60 )) ] || continue;; esac
     pw_pd=${pw_rec%/sessions/*}
     # the session's transcript and its subagents' (the layout is observed, not an interface)
     [ -z "$(find "$pw_pd"/projects/*/"$pw_sid".jsonl "$pw_pd"/projects/*/"$pw_sid"/subagents -mmin "-$pw_lim" 2>/dev/null)" ] || continue
@@ -757,7 +762,7 @@ pane_secretaries() {
 # shellcheck disable=SC2016
 secretary_note() {
   sed "s|<rname>|$rname|" <<'NOTE'
-Secretary seat. The operator opened this pane to think one idea through with you. The repository's Lead is building and is not to be interrupted, so nothing you do reaches it except through the queue. Shape the idea with the operator in chat, research it (the web, the library, scout-haiku), and keep one file for it, ${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<rname>/idea-<slug>.md, with the headings Goal, Matters, Constraints, Decided, Open and Next, rewritten in the turn anything is decided. You do not edit the repository, commit, merge, dispatch work-sonnet, message another session, or write claude-peer log lines. Your one aim is to finish this idea and end. Finished is exactly one of: a big idea handed to plan-fable from here, with the file as its brief, and then claude-peer queue add --kind plan -- "<one line>" <the plan's path> (Lead builds the plan, not you, and only on the operator's go); something Lead should do, claude-peer queue add -- "<one line>" <the idea file>; parked or dropped, claude-peer queue add ... followed by claude-peer queue park|drop <id> <why>. Add --waiting when the operator says they are waiting on it, --unblocks N when N other cards or steps in flight wait for it, --prio 1 to 3 when the operator ranks it, --size S, M or L when you can tell (a plan: 1 to 2 steps S, 3 to 6 M, more L). A go the operator types here for work Lead must do is a `once` row in ~/.claude-shared/approvals-ledger.md, written by you, their words quoted. After the verdict say so in one line and stop: this pane ends the session by itself, c brings it back, and Return starts a fresh one for the next idea. For a question about what Lead is doing right now, tell the operator /btw in Lead's pane answers it without interrupting.
+Secretary seat. The operator opened this pane to think one idea through with you. The repository's Lead is building and is not to be interrupted, so nothing you do reaches it except through the queue. Shape the idea with the operator in chat, research it (the web, scout-haiku), and keep one file for it, ${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<rname>/idea-<slug>.md, with the headings Goal, Matters, Constraints, Decided, Open and Next, rewritten in the turn anything is decided. You do not edit the repository, commit, merge, dispatch work-sonnet, message another session, or write claude-peer log lines. Your one aim is to finish this idea and end. Finished is exactly one of: a big idea handed to plan-fable from here, with the file as its brief, and then claude-peer queue add --kind plan -- "<one line>" <the plan's path> (Lead builds the plan, not you, and only on the operator's go); something Lead should do, claude-peer queue add -- "<one line>" <the idea file>; parked or dropped, claude-peer queue add ... followed by claude-peer queue park|drop <id> <why>. Add --waiting when the operator says they are waiting on it, --unblocks N when N other cards or steps in flight wait for it, --prio 1 to 3 when the operator ranks it, --size S, M or L when you can tell (a plan: 1 to 2 steps S, 3 to 6 M, more L). A go the operator types here for work Lead must do is a `once` row in ~/.claude-shared/approvals-ledger.md, written by you, their words quoted. After the verdict say so in one line and stop: this pane ends the session by itself, c brings it back, and Return starts a fresh one for the next idea. For a question about what Lead is doing right now, tell the operator /btw in Lead's pane answers it without interrupting.
 NOTE
 }
 
@@ -817,8 +822,10 @@ pane_go() {
   if [ -n "$pg_sec" ]; then
     # a clean detached slot starts from where the remote's head is now, not from where it
     # was when the slot was made; no fetch, and anything else is left as it is
+    # (not when its commits are on no branch of the remote's: the move would hide them)
     if [ "$pg_mode" = fresh ] && ! git -C "$pg_wt" symbolic-ref -q HEAD >/dev/null 2>&1 \
-       && [ -z "$(git -C "$pg_wt" status --porcelain 2>/dev/null)" ]; then
+       && [ -z "$(git -C "$pg_wt" status --porcelain 2>/dev/null)" ] \
+       && git -C "$pg_wt" merge-base --is-ancestor HEAD origin/HEAD >/dev/null 2>&1; then
       git -C "$pg_wt" checkout -q --detach origin/HEAD >/dev/null 2>&1 || true
     fi
     pg_h0=$(git -C "$pg_wt" rev-parse HEAD 2>/dev/null)
@@ -862,7 +869,8 @@ $(handoff_note)"; fi
   pn_watch=
   if [ -n "$pg_sec" ] && [ "$pg_we" -gt 0 ]; then
     rm -f "$pg_sf.sid"
-    ( trap - EXIT; cd -- "$repo" && pane_watch "$pg_l" "$pg_t0" "$pg_we" "$(pane_num pane-done-minutes 5)" "$pg_sf" ) </dev/null >/dev/null 2>&1 &
+    pg_tty=${CLAUDE_PEER_TTY:-$(tty 2>/dev/null </dev/tty)}
+    ( trap - EXIT; cd -- "$repo" && pane_watch "$pg_l" "$pg_t0" "$pg_we" "$(pane_num pane-done-minutes 5)" "$pg_sf" "$pg_tty" ) </dev/null >/dev/null 2>&1 &
     pn_watch=$!
   fi
   run_session "$pg_wt" "$(session_name "$pg_taken")" "$@"
