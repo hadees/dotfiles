@@ -22,8 +22,8 @@
   Unasked, nothing of another leader, repo or profile; asked by me in this
   tab, do it wherever your tools reach and tell that Lead.
 - Lead builds through subagents, not peers: one `work-sonnet` per plan step,
-  each in its own worktree, never two writing one file. A peer pane is mine,
-  for thinking; start one only when I ask. Something I type here while a
+  never two writing one file. The Ideas pane is mine, for thinking; start
+  it only when I ask. Something I type here while a
   chain runs is not a change of course unless I say stop: `claude-peer log
   note "idea: <one line>"`, tell me it is parked for the Ideas pane, and keep
   building.
