@@ -1,32 +1,107 @@
-#!/usr/bin/env python3
+#!/bin/sh
+# plan-ready - which steps of a plan can start now. `plan-ready --help` has
+# the format it reads and its exit codes. The program is python3, standard
+# library only, clean on 3.9.
+command -v python3 >/dev/null 2>&1 || {
+  printf 'plan-ready: python3 not found\n' >&2
+  exit 64
+}
+exec python3 -I - "$@" <<'PY'
 """plan-ready - which steps of a plan can start now.
 
-    plan-ready <plan.md> [verified step numbers...]
+    plan-ready <plan.md> [verified ids...] [--running ids...]
 
-A step is a "### Step <N>" heading. Its dependencies come from the first line
-of its section that starts with "Needs:", else the first that starts with
-"Consumes:" or "Consumes from" (read to its first colon), else the first that
-starts with "Precondition:", read to the first full stop or blank line.
-Understood: "nothing", "step N", "steps N and M", "steps N, M and K",
-"steps N to M". A reference after "signed" (or "signed plan's") points at
-another plan and counts as met.
+Prints "<id><TAB><title>" for every step whose dependencies are all verified
+and which is neither verified nor running, in step order. Ids are strings
+("1", "1b", "C9"); a list may also be comma-separated. Everything after
+--running is a step already dispatched: never printed, not counted as verified.
 
-Prints "<N><TAB><title>" for every step whose dependencies are all verified and
-which is not verified itself, in number order. Exit 0 when something is ready,
-1 when nothing is, 2 when nothing is ready and some step's dependency line is
-missing, unreadable or names a step the plan lacks (each is named on stderr, and
-that step is never ready). 64: bad usage or plan file.
+Steps are the rows of a markdown Build sequence table (a Step, # or number
+column, and a Needs column holding step ids or "none") and the "## Step <id>" /
+"### Step <id>" headings (the title is what follows the first colon, else the
+rest). A table row's Needs cell wins; a step with no row takes its needs from
+its section's first line starting "Needs:", else "Consumes:" or "Consumes from"
+(read to its first colon), else "Precondition:", read to the first full stop or
+blank line. Understood: "none"/"nothing" in any case, "step N", "steps N and M",
+"steps N, M and K", "steps N to M", and in a table cell bare ids ("1a (why); 2,
+3"). A reference after "signed" (or "signed plan's"), and "row N" or "Sign-off
+N", point outside the plan and count as met. With several such tables the one
+with the most step rows is the Build sequence. "Step 1" in a plan that has only
+1a and 1b means both.
+
+Exit 0: something was printed. 1: steps found, none ready. 2: no steps found,
+or nothing ready and some step's needs are missing, unreadable or name a step
+the plan lacks (stderr says which: read the plan's needs yourself). 64: bad
+usage or plan file.
 """
 import re
 import sys
 
-HEADING = re.compile(r"^### Step (\d+)(?: \([^)]*\))?(?::\s*(.*))?$")
-REF = re.compile(r"\b(signed\s+(?:plan's\s+)?)?steps?\s+(\d+(?:\s*(?:,|and|to)\s*\d+)*)", re.I)
-LIST = re.compile(r"\d+|,|and|to")
+ID = r"[A-Z]?\d+[a-z]?"
+LIST = r"(?:\s*(?:,|and|to)\s*%s)*" % ID
+HEADING = re.compile(r"^(#{2,4})\s+Step\s+(%s)(?!\w)(.*)$" % ID)
+REF = re.compile(r"\b([Ss]igned\s+(?:plan's\s+)?)?[Ss]teps?\s+(%s%s)" % (ID, LIST))
+BARE = re.compile(r"(?<![\w-])%s%s(?![\w-])" % (ID, LIST))
+ITEM = re.compile(r"%s|,|and|to" % ID)
+SKIP = re.compile(r"\b(?:[Rr]ows?|Sign-off(?: rows?)?)\s+\d+(?:\s*(?:,|and|to)\s*\d+)*")
+ROW_ID = re.compile(r"(?:Steps?\s+)?(%s)(?!\w)\s*(.*)$" % ID)
+NONE = re.compile(r"^\W*(?:none|nothing)\b|^[-–—]$", re.I)
+ID_HEADERS = ("step", "#", "no", "no.", "number", "n", "step number", "step no", "step no.")
 
 
-def deps_of(lines):
-    """Step numbers a section needs, or None when its line is missing or unreadable."""
+def order(i):
+    m = re.fullmatch(r"([A-Z]?)(\d+)([a-z]?)", i)
+    return (bool(m.group(1)), m.group(1), int(m.group(2)), m.group(3))
+
+
+def expand(run, known):
+    """Ids in "1, 2 and 3" or "1 to 4" (a range covers every known id in it)."""
+    out, prev, rng = set(), None, False
+    for tok in ITEM.findall(run):
+        if tok == "to":
+            rng = True
+        elif tok in (",", "and"):
+            continue
+        else:
+            if rng and prev.isdigit() and tok.isdigit():
+                lo, hi = int(prev), int(tok)
+                out.update(k for k in known if re.fullmatch(r"\d+[a-z]?", k)
+                           and lo <= int(k.rstrip("abcdefghijklmnopqrstuvwxyz")) <= hi)
+            out.add(tok)
+            prev, rng = tok, False
+    return out
+
+
+def needs(text, known, bare):
+    """Step ids a needs text names, or None when it cannot be read."""
+    text = re.split(r"\.(?:\s|$)", " ".join(text.split()), maxsplit=1)[0]
+    text = re.sub(r"\([^)]*\)", "", text).strip()
+    if NONE.match(text):
+        return set()
+    deps, found = set(), False
+    for m in REF.finditer(text):
+        found = True
+        if not m.group(1):
+            deps |= expand(m.group(2), known)
+    text = REF.sub(" ", text)
+    if re.search(r"[Ss]igned", text):
+        found = True
+        text = re.sub(r"[Ss]igned[^,;]*", " ", text)
+    if bare:
+        found = found or bool(SKIP.search(text))
+        text = SKIP.sub(" ", text)
+        for m in BARE.finditer(text):
+            ids = expand(m.group(0), known) & known
+            found = found or bool(ids)
+            deps |= ids
+    for d in [d for d in deps if d not in known]:  # "Step 1" for a plan split into 1a, 1b
+        kids = {k for k in known if re.fullmatch(d + "[a-z]", k)}
+        if kids:
+            deps = (deps - {d}) | kids
+    return deps if found else None
+
+
+def section_needs(lines, known):
     for keys in (("Needs:",), ("Consumes:", "Consumes from"), ("Precondition:",)):
         for i, line in enumerate(lines):
             key = next((k for k in keys if line.startswith(k)), None)
@@ -39,71 +114,98 @@ def deps_of(lines):
             if not nxt.strip():
                 break
             text += " " + nxt
-        text = " ".join(text.split())
-        text = re.split(r"\.(?:\s|$)", text, maxsplit=1)[0]
         if key == "Consumes from":
             text = text.split(":", 1)[0]
-        if re.match(r"nothing\b", text, re.I):
-            return set()
-        deps, found = set(), False
-        for m in REF.finditer(text):
-            found = True
-            if m.group(1):
-                continue
-            prev = rng = None
-            for tok in LIST.findall(m.group(2)):
-                if tok == "to":
-                    rng = True
-                elif tok.isdigit():
-                    n = int(tok)
-                    deps.update(range(prev, n + 1) if rng else [n])
-                    prev, rng = n, None
-        return deps if found else None
+        return needs(text, known, False)
     return None
 
 
 def parse(path):
-    steps, cur, fenced = {}, None, False
+    """({id: [title, section lines]}, {id: needs cell}) from a plan."""
+    steps, tables, cur, level, fenced, cols = {}, [], None, 0, False, None
     with open(path, encoding="utf-8") as f:
-        for line in f.read().splitlines():
-            if line.startswith("```"):
-                fenced = not fenced
-            m = None if fenced else HEADING.match(line)
-            if m:
-                cur = int(m.group(1))
-                steps[cur] = [m.group(2) or "", []]
-            elif cur is not None and not fenced and re.match(r"#{1,3} ", line):
-                cur = None
-            elif cur is not None:
+        text = f.read()
+    for line in text.splitlines():
+        if line.startswith("```"):
+            fenced = not fenced
+        if fenced:
+            if cur is not None:
                 steps[cur][1].append(line)
-    return steps
+            continue
+        if line.lstrip().startswith("|"):
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            low = [c.lower() for c in cells]
+            if cols is None:
+                need = next((i for i, c in enumerate(low) if c.startswith("needs")), None)
+                ids = next((i for i, c in enumerate(low) if c in ID_HEADERS), 0)
+                cols = (ids, need) if need is not None else False
+                tables.append([])
+            elif cols and not re.fullmatch(r"[\s|:-]*", line) and len(cells) > max(cols):
+                m = ROW_ID.match(cells[cols[0]])
+                if m:
+                    tables[-1].append((m.group(1), cells[cols[1]], m.group(2).strip()))
+            continue
+        cols = None
+        m = HEADING.match(line)
+        if m:
+            cur, level = m.group(2), len(m.group(1))
+            rest = m.group(3).strip()
+            title = (rest.split(":", 1)[1].strip() if ":" in rest
+                     else re.sub(r"^[\s.,–—-]+", "", rest))
+            if cur not in steps or not steps[cur][0]:
+                steps.setdefault(cur, [title, []])[0] = title
+        elif cur is not None and re.match(r"#{1,%d} " % level, line):
+            cur = None
+        elif cur is not None:
+            steps[cur][1].append(line)
+    # The Build sequence table is the one with the most step rows (the last on a tie).
+    table = {}
+    for sid, cell, title in max(reversed(tables), key=len) if tables else []:
+        table[sid] = cell
+        if sid not in steps or not steps[sid][0]:
+            steps.setdefault(sid, [title, []])[0] = title
+    return steps, table
 
 
 def main(argv):
+    if "-h" in argv or "--help" in argv:
+        print(__doc__)
+        return 0
+    running = []
+    if "--running" in argv:
+        i = argv.index("--running")
+        argv, running = argv[:i], argv[i + 1:]
+    ids = [t for a in argv[1:] for t in a.split(",") if t]
+    running = [t for a in running for t in a.split(",") if t]
     try:
-        verified = {int(a) for a in argv[1:]}
-        steps = parse(argv[0])
-    except (IndexError, ValueError, OSError) as e:
-        sys.stderr.write("usage: plan-ready <plan.md> [verified step numbers...] (%s)\n" % e)
+        if not argv or not all(re.fullmatch(ID, t) for t in ids + running):
+            raise ValueError("bad step id or no plan")
+        steps, table = parse(argv[0])
+    except (ValueError, OSError) as e:
+        sys.stderr.write("usage: plan-ready <plan.md> [verified ids...] [--running ids...] (%s)\n" % e)
         return 64
-    ready = unreadable = 0
-    for n in sorted(steps):
-        if n in verified:
+    verified, running, known = set(ids), set(running), set(steps)
+    if not steps:
+        sys.stderr.write("no steps found: no Build sequence table with a Needs column and no '### Step <id>' heading\n")
+        return 2
+    ready = bad = 0
+    for n in sorted(steps, key=order):
+        if n in verified or n in running:
             continue
         title, lines = steps[n]
-        deps = deps_of(lines)
+        deps = needs(table[n], known, True) if n in table else section_needs(lines, known)
         if deps is None:
-            sys.stderr.write("step %d: needs unreadable\n" % n)
-            unreadable += 1
-        elif deps - set(steps):
-            for m in sorted(deps - set(steps)):
-                sys.stderr.write("step %d: needs unknown step %d\n" % (n, m))
-            unreadable += 1
+            sys.stderr.write("step %s: needs unreadable\n" % n)
+            bad += 1
+        elif deps - known:
+            for m in sorted(deps - known, key=order):
+                sys.stderr.write("step %s: needs unknown step %s\n" % (n, m))
+            bad += 1
         elif deps <= verified:
-            print("%d\t%s" % (n, title))
+            print("%s\t%s" % (n, title))
             ready += 1
-    return 0 if ready else (2 if unreadable else 1)
+    return 0 if ready else (2 if bad else 1)
 
 
-if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+sys.exit(main(sys.argv[1:]))
+PY
