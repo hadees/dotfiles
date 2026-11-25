@@ -23,7 +23,7 @@ tool deploys on macOS only** (`.chezmoiignore`).
 **What exists today.** The read side, tested alone and together in
 `tests/workboard-e2e.bats`, and the plug-ins `verbs`, `mcp_endpoint` and
 `service` (what a session may write, the MCP tools, the LaunchAgent:
-`workboard-verbs.md`), tested alone, not yet with the real server. Nothing has
+`workboard-verbs.md`), tested alone and in `tests/workboard-e2e-writes.bats`. Nothing has
 run live. `notice` and `pane` do not exist.
 
 ## What a card is
