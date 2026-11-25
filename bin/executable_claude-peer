@@ -14,9 +14,9 @@
 #
 # Two more Workgroups, not extra peers on the builtin Claude Code one: peers
 # spawn eagerly when a workgroup is entered, and the builtin is entered on
-# every claude job. `Claude Peers` is Lead and the panes Alpha, Beta, Gamma, Delta; a
-# pane waits (below), so entering it on every claude job costs four blocked
-# shells, not four Claudes. `Claude Peers + Hermes` is the same plus a Hermes
+# every claude job. `Claude Peers` is Lead and the pane Secretary; a
+# pane waits (below), so entering it on every claude job costs one blocked
+# shell, not a Claude. `Claude Peers + Hermes` is the same plus a Hermes
 # pane, a twin because a pane cannot remove itself from a workgroup: where no
 # Hermes profile routes the directory the other definition must be the one
 # entered. There is no Diff peer. Which one a tab enters is the claude()
@@ -158,16 +158,13 @@
 #   plan <branch>...         branch<TAB>worktree<TAB>create|reuse|conflict:<why>
 #                            per branch, exit 1 on any conflict
 #   workgroup                print the "Claude Peers" Workgroup definition JSON
-#                            (Lead, Alpha … Delta) that install would write
+#                            (Lead, Secretary) that install would write
 #   install                  write that and "Claude Peers + Hermes" (the same
 #                            plus a Hermes pane) into iTerm2's preferences;
-#                            iTerm2 must be quit. With private overlays on this
-#                            machine, also "Claude Peers + Overlays" and
-#                            "Claude Peers + Hermes + Overlays" (one pane per
-#                            overlay, after the others, stored by position,
-#                            `Overlay <N>` running `overlay <N>`, never a name)
-#                            and the overlays state file, which holds the names;
-#                            with none, it removes both
+#                            iTerm2 must be quit. It builds no overlay pair
+#                            ("Claude Peers + Overlays" and the Hermes twin) and
+#                            removes one an earlier install wrote, with the
+#                            overlays state file
 #   here                     the key claude() sends to choose the workgroup for
 #                            this directory (base; overlays in the public
 #                            chezmoi source once install wrote the overlay
@@ -2586,13 +2583,12 @@ def session(ident, name, kind, command="", items=None, parent=None):
     return s
 
 def build_base(prefix):
-    """Lead and the four slot panes, ids under prefix. A pane waits (--wait):
+    """Lead and the Secretary pane, ids under prefix. A pane waits (--wait):
     nothing starts in it until Return or `claude-peer start`."""
     root = prefix + ".main"
-    return [session(root, "Lead", "root", items=[{"kind": "modeSwitcher"}, {"kind": "gitStatus"}])] + [
-        session("%s.%s" % (prefix, slot), slot.capitalize(), "peer",
-                "claude-peer run --as %s --wait" % slot, parent=root)
-        for slot in ("alpha", "beta", "gamma", "delta")]
+    return [session(root, "Lead", "root", items=[{"kind": "modeSwitcher"}, {"kind": "gitStatus"}]),
+            session(prefix + ".secretary", "Secretary", "peer",
+                    "claude-peer run --as secretary --wait", parent=root)]
 
 def with_hermes(group):
     """The twin of a definition with a Hermes pane: id <id>.h (claudePeer.h for
@@ -2993,7 +2989,7 @@ cmd_install() {
   need_macos install
   proc_running iTerm2 && die "quit iTerm2 first — it rewrites its preferences at quit and would overwrite this"
   prefs_store
-  ovs=$(overlay_names)
+  ovs=  # no overlay pair is built any more: the none-configured path removes a stale pair and the state file
   r=$(peer_py install "$skind" "$spath" "$(enter_state)" "$(overlay_labels "$ovs")") || exit 1
   # after peer_py succeeded: `here` answers overlays only for a definition that is there
   ovf=$(overlays_file)
@@ -3016,7 +3012,7 @@ cmd_default() {
   f=$(enter_file)
   if [ "$1" = peers ]; then
     mkdir -p "${f%/*}" && printf 'peers\n' >"$f" || die "cannot write $f"
-    printf 'claude-peer: claude() now picks the workgroup of each tab (Claude Peers: Alpha to Delta wait until started); the claude job trigger is disabled; %s\n' "$r"
+    printf 'claude-peer: claude() now picks the workgroup of each tab (Claude Peers: Secretary waits until started); the claude job trigger is disabled; %s\n' "$r"
   else
     rm -f "$f"
     printf 'claude-peer: a claude job now enters Claude Code; the variable triggers are gone; %s\n' "$r"

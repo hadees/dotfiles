@@ -1685,41 +1685,41 @@ groups() {
 # pyget <json> <python expression over g>
 pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(eval(sys.argv[2]))' "$1" "$2"; }
 
-@test "workgroup: Claude Peers is five sessions in order, Lead the root, no Diff, no Hermes" {
+@test "workgroup: Claude Peers is two sessions, Lead the root and Secretary, no Diff, no Hermes" {
   mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist" run sh "$BIN" workgroup
   [ "$status" -eq 0 ]
   [ "$(pyget "$output" '[g["uniqueIdentifier"], g["name"]]')" = "['claudePeer.workgroup', 'Claude Peers']" ]
-  [ "$(pyget "$output" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.main', 'claudePeer.alpha', 'claudePeer.beta', 'claudePeer.gamma', 'claudePeer.delta']" ]
-  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta']" ]
+  [ "$(pyget "$output" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.main', 'claudePeer.secretary']" ]
+  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Secretary']" ]
   [ "$(pyget "$output" 'g["sessions"][0]["kind"]')" = "{'kind': 'root'}" ]
-  [ "$(pyget "$output" '[s["command"] for s in g["sessions"]]')" = "['', 'claude-peer run --as alpha --wait', 'claude-peer run --as beta --wait', 'claude-peer run --as gamma --wait', 'claude-peer run --as delta --wait']" ]
+  [ "$(pyget "$output" '[s["command"] for s in g["sessions"]]')" = "['', 'claude-peer run --as secretary --wait']" ]
   # the fixture builtin's root has a third item; nothing is copied from it
   [ "$(pyget "$output" '[i["kind"] for i in g["sessions"][0]["toolbarItems"]]')" = "['modeSwitcher', 'gitStatus']" ]
-  [ "$(pyget "$output" '[s["toolbarItems"] for s in g["sessions"][1:]]')" = "[[{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}]]" ]
-  [ "$(pyget "$output" '[s["kind"]["kind"] for s in g["sessions"][1:]]')" = "['peer', 'peer', 'peer', 'peer']" ]
-  [ "$(pyget "$output" '[s["parentID"] for s in g["sessions"][1:]]')" = "['claudePeer.main', 'claudePeer.main', 'claudePeer.main', 'claudePeer.main']" ]
+  [ "$(pyget "$output" '[s["toolbarItems"] for s in g["sessions"][1:]]')" = "[[{'kind': 'modeSwitcher'}]]" ]
+  [ "$(pyget "$output" '[s["kind"]["kind"] for s in g["sessions"][1:]]')" = "['peer']" ]
+  [ "$(pyget "$output" '[s["parentID"] for s in g["sessions"][1:]]')" = "['claudePeer.main']" ]
   [ "$(pyget "$output" 'any(s["mode"] != "regular" or "profileGUID" in s or s["urlString"] or s["perFileCommand"] or "hermes" in s["command"] for s in g["sessions"])')" = False ]
 }
 
 @test "workgroup: reads no store, so none needs to exist" {
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/absent.plist" run sh "$BIN" workgroup
   [ "$status" -eq 0 ]
-  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta']" ]
+  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Secretary']" ]
 }
 
-@test "install: Claude Peers + Hermes is the same five under claudePeer.h plus Hermes last" {
+@test "install: Claude Peers + Hermes is the same two under claudePeer.h plus Hermes last" {
   stubs
   mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist" sh "$BIN" install >/dev/null
   g=$(groups "$BATS_TEST_TMPDIR/prefs.plist")
   h=$(python3 -I -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1])[2]))' "$g")
   [ "$(pyget "$h" '[g["uniqueIdentifier"], g["name"]]')" = "['claudePeer.h', 'Claude Peers + Hermes']" ]
-  [ "$(pyget "$h" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.h.main', 'claudePeer.h.alpha', 'claudePeer.h.beta', 'claudePeer.h.gamma', 'claudePeer.h.delta', 'claudePeer.h.hermes']" ]
-  [ "$(pyget "$h" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Hermes']" ]
+  [ "$(pyget "$h" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.h.main', 'claudePeer.h.secretary', 'claudePeer.h.hermes']" ]
+  [ "$(pyget "$h" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Secretary', 'Hermes']" ]
   [ "$(pyget "$h" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.h.main'}" ]
   [ "$(pyget "$h" 'g["sessions"][-1]["command"]')" = "claude-peer hermes --wait" ]
-  [ "$(pyget "$h" '[s["command"] for s in g["sessions"][1:5]]')" = "['claude-peer run --as alpha --wait', 'claude-peer run --as beta --wait', 'claude-peer run --as gamma --wait', 'claude-peer run --as delta --wait']" ]
+  [ "$(pyget "$h" '[s["command"] for s in g["sessions"][1:2]]')" = "['claude-peer run --as secretary --wait']" ]
   [ "$(pyget "$h" 'g["sessions"][0]["kind"]')" = "{'kind': 'root'}" ]
 }
 
@@ -1794,12 +1794,37 @@ pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(ev
   [[ "$output" == *"iterm2: running"* ]]
   sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (5 sessions: Lead, Alpha, Beta, Gamma, Delta)"* ]]
-  [[ "$output" == *"hermes: installed (6 sessions: Lead, Alpha, Beta, Gamma, Delta, Hermes)"* ]]
+  [[ "$output" == *"workgroup: installed (2 sessions: Lead, Secretary)"* ]]
+  [[ "$output" == *"hermes: installed (3 sessions: Lead, Secretary, Hermes)"* ]]
   FAKE_OS=Linux run sh "$BIN" status
   [[ "$output" == *"status needs macOS"* ]]
   FAKE_OS=Linux run sh "$BIN" install
   [ "$status" -eq 2 ]
+}
+
+@test "status: the five-pane definition of the Alpha to Delta bar says out of date; install clears it" {
+  stubs
+  mkprefs "$BATS_TEST_TMPDIR/domain.plist"
+  export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist"
+  python3 -I - "$FAKE_DOMAIN" <<'PY'
+import json, plistlib, sys
+pl = plistlib.load(open(sys.argv[1], "rb"))
+groups = json.loads(pl["Workgroups"])
+slots = ["alpha", "beta", "gamma", "delta"]
+def sess(i, n, kind, cmd):
+    return {"uniqueIdentifier": i, "kind": {"kind": kind}, "displayName": n, "command": cmd}
+groups.append({"uniqueIdentifier": "claudePeer.workgroup", "name": "Claude Peers",
+               "sessions": [sess("claudePeer.main", "Lead", "root", "")] +
+               [sess("claudePeer." + x, x.capitalize(), "peer", "claude-peer run --as %s --wait" % x) for x in slots]})
+pl["Workgroups"] = json.dumps(groups).encode()
+plistlib.dump(pl, open(sys.argv[1], "wb"))
+PY
+  run sh "$BIN" status
+  [[ "$output" == *"workgroup: installed, out of date (5 sessions: Lead, Alpha, Beta, Gamma, Delta); this version defines 2 (Lead, Secretary)"* ]]
+  CLAUDE_PEER_PREFS="$FAKE_DOMAIN" sh "$BIN" install >/dev/null
+  run sh "$BIN" status
+  [[ "$output" == *"workgroup: installed (2 sessions: Lead, Secretary)"* ]]
+  [[ "$output" != *"out of date"* ]]
 }
 
 @test "status: the six-session definition of v3 says out of date and hermes not installed; install clears both" {
@@ -1818,12 +1843,12 @@ pl["Workgroups"] = json.dumps(groups).encode()
 plistlib.dump(pl, open(sys.argv[1], "wb"))
 PY
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed, out of date (6 sessions: Chat, Diff, Chat 2, Chat 3, Chat 4, Hermes); this version defines 5 (Lead, Alpha, Beta, Gamma, Delta)"* ]]
+  [[ "$output" == *"workgroup: installed, out of date (6 sessions: Chat, Diff, Chat 2, Chat 3, Chat 4, Hermes); this version defines 2 (Lead, Secretary)"* ]]
   [[ "$output" == *"hermes: not installed"* ]]
   CLAUDE_PEER_PREFS="$FAKE_DOMAIN" sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (5 sessions: "* ]]
-  [[ "$output" == *"hermes: installed (6 sessions: "* ]]
+  [[ "$output" == *"workgroup: installed (2 sessions: "* ]]
+  [[ "$output" == *"hermes: installed (3 sessions: "* ]]
   [[ "$output" != *"out of date"* ]]
 }
 
@@ -1836,7 +1861,7 @@ PY
   # install into the folder with iTerm2 quit; the domain stays as it was
   sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (5 sessions: Lead, Alpha, Beta, Gamma, Delta)"* ]]
+  [[ "$output" == *"workgroup: installed (2 sessions: Lead, Secretary)"* ]]
   FAKE_PROCS=iTerm2 run sh "$BIN" status
   [[ "$output" == *"workgroup: not installed"* ]]
   [[ "$output" == *"hermes: not installed"* ]]
@@ -4389,204 +4414,75 @@ ov_prefs() {
   [ ! -e "$BATS_TEST_TMPDIR/chezmoi.log" ]
 }
 
-@test "install overlays: two overlays add the pair, one pane each after the others, and a state file" {
-  ov_prefs
-  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
-  overlay_cfg fake2.toml "$OV2"
-  overlay_cfg fake1.toml "$OV1"
-  run sh "$BIN" install
-  [ "$status" -eq 0 ]
-  [[ "$output" == *'"Claude Peers + Overlays" written and "Claude Peers + Hermes + Overlays" written in '* ]]
-  g=$(groups "$CLAUDE_PEER_PREFS")
-  [ "$(pyget "$g" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup', 'claudePeer.h', 'claudePeer.v.overlays', 'claudePeer.v.overlays.h']" ]
-  o=$(pyget "$g" 'json.dumps(g[3])'); oh=$(pyget "$g" 'json.dumps(g[4])'); h=$(pyget "$g" 'json.dumps(g[2])')
-  [ "$(pyget "$o" 'g["name"]')" = "Claude Peers + Overlays" ]
-  [ "$(pyget "$oh" 'g["name"]')" = "Claude Peers + Hermes + Overlays" ]
-  [ "$(pyget "$o" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Overlay 1', 'Overlay 2']" ]
-  [ "$(pyget "$oh" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Hermes', 'Overlay 1', 'Overlay 2']" ]
-  [ "$(pyget "$o" 'all(s["uniqueIdentifier"].startswith(g["uniqueIdentifier"] + ".") for s in g["sessions"])')" = True ]
-  [ "$(pyget "$oh" 'all(s["uniqueIdentifier"].startswith(g["uniqueIdentifier"] + ".") for s in g["sessions"])')" = True ]
-  [ "$(pyget "$o" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.v.overlays.main'}" ]
-  [ "$(pyget "$oh" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.v.overlays.h.main'}" ]
-  [ "$(pyget "$oh" '[s["uniqueIdentifier"] for s in g["sessions"]][5:]')" = "['claudePeer.v.overlays.h.hermes', 'claudePeer.v.overlays.h.o.1', 'claudePeer.v.overlays.h.o.2']" ]
-  [ "$(pyget "$oh" '[s["command"] for s in g["sessions"]][:6]')" = "$(pyget "$h" '[s["command"] for s in g["sessions"]]')" ]
-  [ "$(pyget "$o" '[s["command"] for s in g["sessions"]][5:]')" = "['claude-peer overlay 1', 'claude-peer overlay 2']" ]
-  [ "$(pyget "$oh" '[s["command"] for s in g["sessions"]][6:]')" = "['claude-peer overlay 1', 'claude-peer overlay 2']" ]
-  [ "$(pyget "$o" 'set(s["kind"]["kind"] for s in g["sessions"][1:])')" = "{'peer'}" ]
-  [ "$(pyget "$o" 'g["sessions"][-1]["toolbarItems"]')" = "[{'kind': 'modeSwitcher'}]" ]
-  [ "$(cat "$OV_STATE")" = "fake1 fake2" ]
-  # a second install replaces the pair
-  run sh "$BIN" install
-  [ "$status" -eq 0 ]
-  [[ "$output" == *'"Claude Peers + Overlays" replaced and "Claude Peers + Hermes + Overlays" replaced'* ]]
-  [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" 'len(g)')" = 5 ]
-  # the plain definitions are what they were
-  run sh "$BIN" workgroup
-  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta']" ]
+# ov_seed <names...>: the pair an install of the Alpha to Delta bar wrote, built the way
+# `with_overlays` does from the installed definitions (run `install` first), and a state file
+ov_seed() {
+  python3 -I - "$CLAUDE_PEER_PREFS" "$#" <<'PY'
+import copy, json, plistlib, sys
+path, n = sys.argv[1], int(sys.argv[2])
+pl = plistlib.load(open(path, "rb"))
+gs = json.loads(pl["Workgroups"])
+def pair(src, gid, name):
+    g = copy.deepcopy(next(x for x in gs if x["uniqueIdentifier"] == src))
+    old = "claudePeer" if src == "claudePeer.workgroup" else src  # the id prefix of the sessions
+    for s in g["sessions"]:
+        s["uniqueIdentifier"] = gid + s["uniqueIdentifier"][len(old):]
+        if "parentID" in s:
+            s["parentID"] = gid + s["parentID"][len(old):]
+    g.update(uniqueIdentifier=gid, name=name)
+    g["sessions"] += [{"uniqueIdentifier": "%s.o.%d" % (gid, i), "kind": {"kind": "peer"},
+                       "displayName": "Overlay %d" % i, "command": "claude-peer overlay %d" % i,
+                       "parentID": gid + ".main", "perFileCommand": "", "urlString": "", "mode": "regular",
+                       "toolbarItems": [{"kind": "modeSwitcher"}]} for i in range(1, n + 1)]
+    return g
+gs += [pair("claudePeer.workgroup", "claudePeer.v.overlays", "Claude Peers + Overlays"),
+       pair("claudePeer.h", "claudePeer.v.overlays.h", "Claude Peers + Hermes + Overlays")]
+pl["Workgroups"] = json.dumps(gs).encode()
+plistlib.dump(pl, open(path, "wb"))
+PY
+  mkdir -p "${OV_STATE%/*}"
+  printf '%s\n' "$*" >"$OV_STATE"
 }
 
-@test "install overlays: a smaller set rebuilds the pair, none removes it and the state file" {
+@test "install overlays: with overlays configured it builds only the two definitions, writes no state file, and never asks chezmoi" {
   ov_prefs
-  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
-  overlay_cfg fake1.toml "$OV1"
-  overlay_cfg fake2.toml "$OV2"
-  sh "$BIN" install >/dev/null
-  rm "$HOME/.config/chezmoi/fake1.toml"
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  overlay_cfg fake2.toml "$(overlay_repo ov2)"
   run sh "$BIN" install
   [ "$status" -eq 0 ]
-  [[ "$output" == *'"Claude Peers + Overlays" replaced'* ]]
-  g=$(groups "$CLAUDE_PEER_PREFS")
-  [ "$(pyget "$g" '[s["displayName"] for s in g[3]["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Overlay 1']" ]
-  [ "$(cat "$OV_STATE")" = fake2 ]
-  rm "$HOME/.config/chezmoi/fake2.toml"
-  run sh "$BIN" install
-  [ "$status" -eq 0 ]
-  [[ "$output" == *'"Claude Peers + Overlays" removed and "Claude Peers + Hermes + Overlays" removed'* ]]
+  [ "$output" = "claude-peer: \"Claude Peers\" written and \"Claude Peers + Hermes\" written in $CLAUDE_PEER_PREFS; start iTerm2, then Shell > Workgroups > Claude Peers in a plain tab" ]
   [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup', 'claudePeer.h']" ]
   [ ! -e "$OV_STATE" ]
+  [ ! -e "$BATS_TEST_TMPDIR/chezmoi.log" ]
 }
 
-@test "install overlays: with the enter file the pair gets its triggers, and loses them with the overlays" {
+@test "install overlays: a store holding the overlay pair loses it and the state file, and the other groups stay" {
+  ov_prefs
+  sh "$BIN" install >/dev/null
+  ov_seed fake1 fake2
+  [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" 'len(g)')" = 5 ]
+  run sh "$BIN" install
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"Claude Peers" replaced and "Claude Peers + Hermes" replaced and "Claude Peers + Overlays" removed and "Claude Peers + Hermes + Overlays" removed'* ]]
+  [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" '[x["uniqueIdentifier"] for x in g]')" = "['builtin.claudeCode', 'claudePeer.workgroup', 'claudePeer.h']" ]
+  [ ! -e "$OV_STATE" ]
+  # here answers base again, even in the public source with an overlay on the machine
+  overlay_cfg fake1.toml "$(overlay_repo ov1)"
+  cd "$REPO"
+  FAKE_CHEZMOI_SOURCE="$REPO" run sh "$BIN" here
+  [ "$output" = base ]
+}
+
+@test "install overlays: the pair's variable triggers go with it" {
   ov_prefs
   addprofiles "$CLAUDE_PEER_PREFS"
-  OV1=$(overlay_repo ov1)
   sh "$BIN" install >/dev/null
   sh "$BIN" default peers >/dev/null
   before=$(params "$CLAUDE_PEER_PREFS")
-  overlay_cfg fake1.toml "$OV1"
-  run sh "$BIN" install
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"variable triggers changed in 2 profiles"* ]]
-  [ "$(params "$CLAUDE_PEER_PREFS")" = "One:builtin.claudeCode:j* One:claudePeer.workgroup:v One:claudePeer.h:v One:claudePeer.v.overlays:v One:claudePeer.v.overlays.h:v Two:builtin.claudeCode:j* Two:claudePeer.workgroup:v Two:claudePeer.h:v Two:claudePeer.v.overlays:v Two:claudePeer.v.overlays.h:v Other:someone.else:j" ]
-  python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
-import plistlib, sys
-pl = plistlib.load(open(sys.argv[1], "rb"))
-rx = {t["parameter"]: t["eventParams"]["variableValueRegex"] for t in pl["New Bookmarks"][0]["Triggers"] if "eventParams" in t}
-assert rx["claudePeer.v.overlays"] == "^overlays:", rx
-assert rx["claudePeer.v.overlays.h"] == "^overlays/hermes:", rx
-PY
-  rm "$HOME/.config/chezmoi/fake1.toml"
-  run sh "$BIN" install
-  [[ "$output" == *"variable triggers changed in 2 profiles"* ]]
-  [ "$(params "$CLAUDE_PEER_PREFS")" = "$before" ]
-}
-
-@test "install overlays: a store that cannot be written leaves no state file" {
-  ov_prefs
-  mkprefs "$CLAUDE_PEER_PREFS" junk
-  OV1=$(overlay_repo ov1)
-  overlay_cfg fake1.toml "$OV1"
-  run sh "$BIN" install
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"not a JSON list"* ]]
-  [ ! -e "$OV_STATE" ]
-}
-
-@test "install overlays: a skipped config reaches the operator's stderr and gets no pane" {
-  ov_prefs
-  OV1=$(overlay_repo ov1)
-  overlay_cfg fake1.toml "$OV1"
-  overlay_cfg fake2.toml "$BATS_TEST_TMPDIR/nowhere"
-  run --separate-stderr sh "$BIN" install
-  [ "$status" -eq 0 ]
-  [[ "$stderr" == *"overlay config fake2.toml: chezmoi names no source directory; skipped"* ]]
-  [ "$(cat "$OV_STATE")" = fake1 ]
-}
-
-# ov_store_strings <plist>: every string the store holds, one per line; data values are
-# decoded and, where they are JSON, walked
-ov_store_strings() {
-  python3 -I - "$1" <<'PY'
-import json, plistlib, sys
-def walk(v):
-    if isinstance(v, dict):
-        for k, x in v.items():
-            yield str(k)
-            yield from walk(x)
-    elif isinstance(v, (list, tuple)):
-        for x in v:
-            yield from walk(x)
-    elif isinstance(v, bytes):
-        t = v.decode("utf-8", "replace")
-        yield t
-        try:
-            yield from walk(json.loads(t))
-        except ValueError:
-            pass
-    elif isinstance(v, str):
-        yield v
-for s in walk(plistlib.load(open(sys.argv[1], "rb"))):
-    print(s)
-PY
-}
-
-@test "install overlays: the store holds positions and no overlay name, config name or path" {
-  ov_prefs
-  addprofiles "$CLAUDE_PEER_PREFS"
-  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
-  overlay_cfg fake1.toml "$OV1"
-  overlay_cfg Fake.Two.toml "$OV2"
+  ov_seed fake1
   sh "$BIN" install >/dev/null
   sh "$BIN" default peers >/dev/null
-  sh "$BIN" install >/dev/null
-  local s; s=$(ov_store_strings "$CLAUDE_PEER_PREFS")
-  [[ "$s" == *"claudePeer.v.overlays.h.o.2"* ]]
-  [[ "$s" == *"claude-peer overlay 2"* ]]
-  [[ "$s" == *"Overlay 2"* ]]
-  [[ "${s,,}" != *fake* ]]
-  [[ "$s" != *ov1* ]]
-  [[ "$s" != *ov2* ]]
-  [[ "$s" != *"$BATS_TEST_TMPDIR"* ]]
-  [ "$(cat "$OV_STATE")" = "fake-two fake1" ]
-}
-
-@test "install overlays: the command install wrote reaches its overlay, and a new overlay does not re-point it" {
-  ov_prefs
-  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
-  overlay_cfg fake1.toml "$OV1"
-  overlay_cfg fake2.toml "$OV2"
-  sh "$BIN" install >/dev/null
-  local g; g=$(groups "$CLAUDE_PEER_PREFS")
-  [ "$(pyget "$g" 'g[3]["sessions"][-1]["command"]')" = "claude-peer overlay 2" ]
-  overlay_cfg fake0.toml "$(overlay_repo ov0)"
-  opane 2 "$OV2"
-  until_ok 'grep -q "^Fake2: Return" "$BATS_TEST_TMPDIR/pane-2.out"'
-  ov_status
-  [[ "$output" == *"overlays: installed, out of date (Overlay 1 = Fake1, Overlay 2 = Fake2); this machine has 3 (Overlay 1 = Fake0, Overlay 2 = Fake1, Overlay 3 = Fake2) — claude-peer install (with iTerm2 quit)"* ]]
-}
-
-@test "install overlays: a store outside git gets display labels, from the origin's git config label or the name" {
-  ov_prefs outside
-  OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
-  git -C "$OV1" remote add origin git@github.com:Fk/One.git
-  git -C "$OV2" remote add origin https://github.com/fk/two
-  overlay_cfg fake1.toml "$OV1"
-  overlay_cfg fake2.toml "$OV2"
-  git config --global claude-peer.fk/one.label "FK 1"
-  run sh "$BIN" install
-  [ "$status" -eq 0 ]
-  g=$(groups "$CLAUDE_PEER_PREFS")
-  [ "$(pyget "$g" '[s["displayName"] for s in g[3]["sessions"]]')" = "['Lead', 'Alpha', 'Beta', 'Gamma', 'Delta', 'FK 1', 'Fake2']" ]
-  [ "$(pyget "$g" 'g[3]["sessions"][-2]["command"]')" = "claude-peer overlay 1" ]
-  ov_status
-  [[ "$output" == *"overlays: installed (2 panes: FK 1, Fake2)"* ]]
-  [[ "$output" != *"out of date"* ]]
-  git config --global claude-peer.fk/two.label Other
-  ov_status
-  [[ "$output" == *"overlays: installed, out of date (FK 1, Fake2); this machine has 2 (FK 1, Other)"* ]]
-}
-
-@test "install overlays: a store in a subdirectory of a clone keeps positions despite a label" {
-  ov_prefs
-  local d="$BATS_TEST_TMPDIR/prefsclone/sub"
-  mkdir -p "$d" && mkprefs "$d/prefs.plist"
-  export CLAUDE_PEER_PREFS="$d/prefs.plist"
-  OV1=$(overlay_repo ov1)
-  git -C "$OV1" remote add origin git@github.com:fk/one.git
-  overlay_cfg fake1.toml "$OV1"
-  git config --global claude-peer.fk/one.label "FK 1"
-  sh "$BIN" install >/dev/null
-  [ "$(pyget "$(groups "$CLAUDE_PEER_PREFS")" 'g[3]["sessions"][-1]["displayName"]')" = "Overlay 1" ]
+  [ "$(params "$CLAUDE_PEER_PREFS")" = "$before" ]
 }
 
 @test "tracked plists: every overlay pane in a tracked Workgroups value is labelled by position" {
@@ -4619,7 +4515,7 @@ if bad: print("\n".join(bad)); sys.exit(1)
   OV1=$(overlay_repo ov1); OV2=$(overlay_repo ov2)
   overlay_cfg fake1.toml "$OV1"
   overlay_cfg fake2.toml "$OV2"
-  sh "$BIN" install >/dev/null
+  mkdir -p "${OV_STATE%/*}" && printf 'fake1 fake2\n' >"$OV_STATE"
   COLORTERM=truecolor CLAUDE_PEER_SIZE='40 120' opane 2 "$OV2"
   until_ok 'grep -qF "$LISTHINT" "$BATS_TEST_TMPDIR/pane-2.out"'
   grep -qF $'\033[38;2;90;120;200mFake2 ▸\033[0m ' "$BATS_TEST_TMPDIR/pane-2.out"
@@ -4634,7 +4530,7 @@ if bad: print("\n".join(bad)); sys.exit(1)
   git -C "$OV1" remote add origin git@github.com:fk/one.git
   overlay_cfg fake1.toml "$OV1"
   git config --global claude-peer.fk/one.label "FK 1"
-  sh "$BIN" install >/dev/null
+  mkdir -p "${OV_STATE%/*}" && printf 'fake1\n' >"$OV_STATE"
   opane 1 "$OV1"
   until_ok 'grep -q "^FK 1: Return" "$BATS_TEST_TMPDIR/pane-1.out"'
 }
@@ -4671,6 +4567,7 @@ ov_status() { FAKE_CHEZMOI_SOURCE="$REPO" run --separate-stderr sh "$BIN" status
   overlay_cfg fake1.toml "$(overlay_repo ov1)"
   overlay_cfg fake2.toml "$(overlay_repo ov2)"
   sh "$BIN" install >/dev/null
+  ov_seed fake1 fake2
   ov_status
   [[ "$output" == *"overlays: installed (2 panes: Overlay 1 = Fake1, Overlay 2 = Fake2)"* ]]
   [[ "$output" != *"out of date"* ]]
@@ -4687,6 +4584,7 @@ ov_status() { FAKE_CHEZMOI_SOURCE="$REPO" run --separate-stderr sh "$BIN" status
   ov_prefs
   overlay_cfg fake1.toml "$(overlay_repo ov1)"
   sh "$BIN" install >/dev/null
+  ov_seed fake1
   python3 -I - "$CLAUDE_PEER_PREFS" <<'PY'
 import json, plistlib, sys
 pl = plistlib.load(open(sys.argv[1], "rb"))
@@ -4702,6 +4600,7 @@ PY
   ov_prefs
   overlay_cfg fake1.toml "$(overlay_repo ov1)"
   sh "$BIN" install >/dev/null
+  ov_seed fake1
   rm "$HOME/.config/chezmoi/fake1.toml" "$HOME/.config/chezmoi/fake1.toml.src"
   overlay_cfg fake9.toml "$(overlay_repo ov9)"
   ov_status
@@ -4712,6 +4611,7 @@ PY
   ov_prefs
   overlay_cfg fake1.toml "$(overlay_repo ov1)"
   sh "$BIN" install >/dev/null
+  ov_seed fake1
   rm "$OV_STATE"
   ov_status
   [[ "$output" == *"overlays: installed (1 panes: Overlay 1 = Fake1)"* ]]
@@ -4732,6 +4632,7 @@ PY
   ov_prefs
   overlay_cfg fake1.toml "$(overlay_repo ov1)"
   sh "$BIN" install >/dev/null
+  ov_seed fake1
   mkprefs "$BATS_TEST_TMPDIR/domain.plist"
   export FAKE_DOMAIN="$BATS_TEST_TMPDIR/domain.plist"
   ov_status

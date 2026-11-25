@@ -35,21 +35,13 @@ iTerm2 verbs refuse off macOS.
 
 The definitions are **two more** Workgroups, never extra peers on the builtin:
 peers spawn at entry and the builtin is entered on every `claude` job.
-`Claude Peers` (`claudePeer.workgroup`) is Lead, the root, and the peers Alpha,
-Beta, Gamma and Delta (Epsilon left the bar 2026-11-15: too many panes), whose commands are `claude-peer run --as <slot> --wait`.
-`Claude Peers + Hermes` (`claudePeer.h`, session ids under `claudePeer.h.`) is
-the same five plus a Hermes peer running `claude-peer hermes --wait`. There are
-two because a pane cannot remove itself: a member whose program exits stays as
-an ended pane with a restart offer, and closing a member exits the whole group,
-so a repo where no Hermes profile routes must be given the definition without
-the pane, chosen before entry. There is no Diff peer, and nothing is copied
-from `builtin.claudeCode`; the builtin is never edited. In code `build_base`
-returns the six sessions for an id prefix and `with_hermes` the twin of a
-definition. A machine with private overlays gets two more, `Claude Peers +
-Overlays` (`claudePeer.v.overlays`) and `Claude Peers + Hermes + Overlays`
-(`claudePeer.v.overlays.h`), four in all: `build_overlays` returns them from the
-panes' bar labels and `with_overlays` makes each from a base definition, one peer
-per overlay after the others, stored by position (see **Overlay peers**). `claude-peer install` writes both into the `Workgroups` key (JSON
+`Claude Peers` (`claudePeer.workgroup`) is Lead and Secretary, and `Claude Peers + Hermes`
+(`claudePeer.h`) adds a Hermes pane (`claude-peer hermes --wait`): the pane cannot remove
+itself, so a repo where no Hermes profile routes gets the definition without it, chosen
+before entry. The bar and the retired overlay pair are in `claude-peer-secretary.md`. There is no Diff peer, and
+nothing is copied from `builtin.claudeCode`. `build_base` returns the sessions
+for an id prefix and `with_hermes` the twin of a definition. `install` no longer builds the overlay pair
+(**Overlay peers**). `claude-peer install` writes both into the `Workgroups` key (JSON
 in a data value; replace by id, else append), refuses while iTerm2 runs, and
 edits the custom prefs folder's plist when `LoadPrefsFromCustomFolder` is on,
 else the domain. Both are forced:
