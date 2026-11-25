@@ -189,3 +189,55 @@ Tests: `tests/claude-peer.bats` ("secretary seat: ..."). The stub shell leaves t
 seat's three arguments out of what the older tests read, so they keep checking the
 other arguments; `FAKE_SHELL_SEAT=1` keeps them and `FAKE_SHELL_RAW=<file>` logs one
 argument per line. `FAKE_SHELL_DO` runs a command in the worktree, to commit or dirty it.
+
+## The clock: the pane ends what is finished or forgotten
+
+A secretary start (`pg_sec` is 1) with `claude-peer.pane-end-minutes` over 0 (default 60;
+0 starts no clock; not a number is 60) gets a watcher: `pane_go` starts `pane_watch` as a
+background subshell before `run_session` and `pane_unwatch` ends it, and the sleep it is in,
+as soon as the session returns. `pane_cleanup` calls `pane_unwatch` too, so a killed pane
+leaves neither. One process per running secretary and none for a waiting pane, whose rule
+against polling is in `claude-peer.md`. A hand-off has none. `CLAUDE_PEER_TICK` is the
+seconds between looks (default 60; the tests' handle).
+
+Each tick it takes `session_record` of the pane's own pid, which names the Claude under it
+and its registry record, and ends the session by TERM when all of these hold:
+
+- the record's `status` is exactly `idle`;
+- `statusUpdatedAt`, in **milliseconds**, is at least the limit old;
+- no write to the session's transcript (`<profile dir>/projects/*/<sessionId>.jsonl`) or to
+  anything under `projects/*/<sessionId>/subagents/` in that time (`find -mmin`), so a
+  planner still running keeps it alive. What `status` reads while only background subagents
+  run is not established, so `idle` is never trusted alone. Those paths are observed, not an
+  interface: where they change, the test passes and a session is ended on `idle` alone.
+
+The limit is `claude-peer.pane-done-minutes` (default 5) when `verdict_since` holds, else
+`pane-end-minutes`. `verdict_since <label> <start>`: the queue file has an `add`, `park` or
+`drop` line by that label at or after the session's start (a `refused` line is not one). A
+`pane-done-minutes` of 0 keeps the long limit.
+
+The signal is one list with `session_same` (the pid-reuse check `stop` makes), after the stop
+mark `claude-peer.stop` is written with `the pane, finished` or `the pane, idle <n>m` (n the
+limit). `pane_go` reads the mark as it does `stop`'s, so the end line is `<Label> ended
+after <dur> (stopped by the pane, finished|idle <n>m)`; a mark left by a signal that did not
+land is removed. The watcher stops after one signal. `c` racing the check is safe: a
+continued session is `busy`, and the next tick does nothing.
+
+A session the clock ended **without** a verdict gets a reminder from the pane, no model
+involved: `queue add --kind unfinished --session <id> --as <Label> -- "<task or 'a
+conversation'> (left unfinished)"`. It is tier 3: `queue list` shows it, Lead is never offered
+it, and (unlike any other card) adding it never wakes Lead, nothing being in flight or not:
+a reminder has nothing for Lead to do. `queue show <id>` prints how to reopen it; `c` at the
+pane continues the last conversation.
+
+The end line of every secretary start, however it ended, gains `<TAB>session=<id>`, the field
+a `stop` line has, or `session=-` when the clock never saw the session (it looks once per
+tick, so one shorter than a tick, or a start with no clock, has no id). The watcher keeps the
+id in `claude-peer.stop.sid` beside the stop mark; `pane_go` reads and removes it.
+
+Ceiling: a session that ignores TERM leaves the mark behind and the end line it writes later
+is still `stopped by the pane`; `stop` removes its own mark after 15 seconds, this does not.
+
+Tests: `tests/claude-peer.bats` ("pane clock: ...", "queue add: an unfinished card ..."). The
+stub session registers itself with `reg.sh` through `FAKE_SHELL_DO`: its record is named for
+the stub's pid, with a status, an age in minutes and a session id.

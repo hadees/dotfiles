@@ -601,6 +601,7 @@ pane_block() {
 # shell's own job list (jobs -p, through a file: a substitution may not see it)
 # is the cleanup, and pn_rpid only the second line.
 pane_cleanup() {
+  pane_unwatch
   [ -n "${pn_me-}" ] || return 0
   jobs -p >"$pn_me.jobs" 2>/dev/null
   # shellcheck disable=SC2046
@@ -683,6 +684,54 @@ pane_deny() {
   printf '%s\n' "${pd_v:-Edit,NotebookEdit,SendMessage,ListAgents,Agent(work-sonnet),Agent(unstick-fable)}"
 }
 
+# label, epoch seconds -> 0 when the queue has an add, park or drop by that label at or after that time
+verdict_since() {
+  vs_f=$(queue_file) && [ -f "$vs_f" ] || return 1
+  vs_t=$(date -u -d "@$2" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$2" +%Y-%m-%dT%H:%M:%SZ) || return 1
+  awk -F'\t' -v w="$1" -v m="$vs_t" '$3 ~ /^(add|park|drop)$/ && $4 == w && $1 >= m { f = 1 } END { exit !f }' "$vs_f"
+}
+
+# The secretary's clock, one background subshell per running session. Arguments: label,
+# start time (epoch seconds), minutes to end a session with no verdict, minutes after
+# one, stop file. Each tick it finds the session under the pane's own pid and ends it
+# with TERM when the registry says idle, that status is as old as the limit and nothing
+# of the session's or its subagents' was written in that time. The stop mark says the
+# pane did it; the session id is kept beside it for the end line.
+pane_watch() {
+  pw_tab=$(printf '\t')
+  while sleep "${CLAUDE_PEER_TICK:-60}"; do
+    pw_sr=$(session_record "$$")
+    [ -n "$pw_sr" ] || continue
+    pw_p=${pw_sr%%"$pw_tab"*} pw_rec=${pw_sr#*"$pw_tab"}
+    pw_sid=$(rec_get "$pw_rec" sessionId)
+    case $pw_sid in ''|*[!A-Za-z0-9-]*) continue;; esac
+    printf '%s\n' "$pw_sid" >"$5.sid"
+    [ "$(rec_get "$pw_rec" status)" = idle ] || continue
+    pw_lim=$3 pw_why="idle ${3}m"
+    if [ "$4" -gt 0 ] && verdict_since "$1" "$2"; then pw_lim=$4 pw_why=finished; fi
+    pw_upd=$(rec_get "$pw_rec" statusUpdatedAt)   # milliseconds
+    case $pw_upd in ''|*[!0-9]*) continue;; esac
+    [ $(( ($(date +%s) - pw_upd / 1000) / 60 )) -ge "$pw_lim" ] || continue
+    pw_pd=${pw_rec%/sessions/*}
+    # the session's transcript and its subagents' (the layout is observed, not an interface)
+    [ -z "$(find "$pw_pd"/projects/*/"$pw_sid".jsonl "$pw_pd"/projects/*/"$pw_sid"/subagents -mmin "-$pw_lim" 2>/dev/null)" ] || continue
+    printf 'the pane, %s\n' "$pw_why" >"$5"
+    session_same "$pw_p" "$pw_rec" && kill -TERM "$pw_p" 2>/dev/null || rm -f "$5"
+    return 0
+  done
+}
+
+# the watcher, and the sleep it is in
+pane_unwatch() {
+  [ -n "${pn_watch-}" ] || return 0
+  pu_k="$pn_watch $(descendants "$pn_watch")"
+  # shellcheck disable=SC2086
+  kill $pu_k 2>/dev/null
+  wait "$pn_watch" 2>/dev/null
+  pn_watch=
+  return 0
+}
+
 # git config claude-peer.<key> as a whole number, else the default
 pane_num() {
   pu_v=$(git config --get "claude-peer.$1" 2>/dev/null) || pu_v=
@@ -763,6 +812,7 @@ pane_go() {
   pg_t0=$(date +%s)
   printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "${pg_by:--}" "${pg_ctxname:--}" "${pg_task:--}" "$pg_t0" \
     "$([ "$pg_ho" = 1 ] && echo handoff || echo -)" "${pg_lpid:--}" "${pg_lsid:--}" >>"$(claim_file "$pg_wt")"
+  pg_l=$(label_of "$pg_taken") pg_sf=$(stop_file "$pg_wt")
   pg_h0= pg_b0=
   if [ -n "$pg_sec" ]; then
     # a clean detached slot starts from where the remote's head is now, not from where it
@@ -807,12 +857,20 @@ $(handoff_note)"; fi
   [ -z "$pg_cs" ] || set -- "$@" --append-system-prompt "$pg_cs"
   [ -z "$pg_prompt" ] || set -- "$@" "$pg_prompt"
   [ "$pg_mode" != resume ] || set -- "$@" --resume   # no value: Claude's own list chooses
+  # the clock: a session nobody ended is ended here (pane-end-minutes 0: never)
+  pg_we=$(pane_num pane-end-minutes 60)
+  pn_watch=
+  if [ -n "$pg_sec" ] && [ "$pg_we" -gt 0 ]; then
+    rm -f "$pg_sf.sid"
+    ( trap - EXIT; cd -- "$repo" && pane_watch "$pg_l" "$pg_t0" "$pg_we" "$(pane_num pane-done-minutes 5)" "$pg_sf" ) </dev/null >/dev/null 2>&1 &
+    pn_watch=$!
+  fi
   run_session "$pg_wt" "$(session_name "$pg_taken")" "$@"
+  pane_unwatch
   # only after a session ran: a refused start returned above, and its `end`
   # would close a live peer's claims
   # A requested stop says who asked and wakes nobody; a hand-off that ended by
   # itself is `gone` and tells Lead; anything else is a plain end.
-  pg_l=$(label_of "$pg_taken")
   if [ -n "$pg_sec" ] && [ -d "$pg_wt" ]; then
     # a secretary leaves the repository as it found it; said in the log, nobody is told
     pg_br=$(git -C "$pg_wt" symbolic-ref -q --short HEAD 2>/dev/null)
@@ -823,14 +881,24 @@ $(handoff_note)"; fi
     [ -z "$pg_dr" ] || ( cd -- "$repo" && log_add "$pg_l" note "pane drift: $pg_dr in $pg_taken" ) 2>/dev/null
   fi
   pg_txt="$pg_l ended after $(dur_of $(( $(date +%s) - pg_t0 )))${pg_task:+ ($pg_task)}"
-  pg_sf=$(stop_file "$pg_wt")
+  # a secretary's end line names its session, as a stop line does; the clock saw the id
+  pg_sid= pg_ex=
+  if [ -n "$pg_sec" ]; then
+    [ ! -f "$pg_sf.sid" ] || pg_sid=$(sed -n 1p "$pg_sf.sid")
+    pg_ex=$(printf '\tsession=%s' "${pg_sid:--}")
+  fi
+  rm -f "$pg_sf.sid"
   if [ -f "$pg_sf" ]; then
     pg_sw=$(sed -n 1p "$pg_sf"); rm -f "$pg_sf"
-    ( cd -- "$repo" && log_add "$pg_l" end "$pg_txt (stopped by ${pg_sw:--})" ) 2>/dev/null
+    ( cd -- "$repo" && log_add "$pg_l" end "$pg_txt (stopped by ${pg_sw:--})" "$pg_ex" ) 2>/dev/null
+    # forgotten, not finished: a reminder beside the cards, which Lead is never offered
+    case $pg_sw in "the pane, idle "*)
+      ( cd -- "$repo" && queue_add --kind unfinished ${pg_sid:+--session "$pg_sid"} --as "$pg_l" -- "${pg_task:-a conversation} (left unfinished)" ) >/dev/null 2>&1;;
+    esac
   elif [ "$pg_ho" = 1 ]; then
     ( cd -- "$repo" && log_add "$pg_l" gone "$pg_txt" ) 2>/dev/null && tell_lead "$LEADER" "$pg_lpid" "$pg_lsid"
   else
-    ( cd -- "$repo" && log_add "$pg_l" end "$pg_txt" ) 2>/dev/null
+    ( cd -- "$repo" && log_add "$pg_l" end "$pg_txt" "$pg_ex" ) 2>/dev/null
   fi
   [ ! -t 1 ] || printf '\033]21337;status=;indicator=;status-color=;detail=\a'
   return 0
@@ -2815,8 +2883,9 @@ queue_add() {
   queue_append "$qa_id" add "$qa_who" "$qa_kind:w=$qa_w:u=$qa_u:p=$qa_p:s=$qa_s${qa_sid:+:session=$qa_sid}" "$qa_text" "${qa_file:--}"
   printf '%s\n' "$qa_id"
   queue_escalate
-  # nothing in flight: no card taken, no running agent of Lead's; else nobody is woken
-  if [ -z "$(queue_py taken)" ] && ! jobs_running Lead; then
+  # nothing in flight: no card taken, no running agent of Lead's; else nobody is woken.
+  # An unfinished card is a reminder Lead is never offered: nothing to wake it for.
+  if [ "$qa_kind" != unfinished ] && [ -z "$(queue_py taken)" ] && ! jobs_running Lead; then
     log_add "$qa_who" note "queue: $qa_id is waiting and nothing is in flight"
     tell_lead "$(repo_root_q)" - -
   fi

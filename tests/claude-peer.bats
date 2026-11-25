@@ -5530,3 +5530,131 @@ fake_secretaries() {
   until_ok 'grep -q "Alpha ended after" "$REPO/.git/claude-peer.log"'
   no grep -q "pane drift" "$REPO/.git/claude-peer.log"
 }
+
+# --- the pane's clock: it ends what is finished or forgotten ---------------------------
+
+# clock_env: a registry the stub sessions write their record into (reg.sh, as Claude Code
+# does: the record is named for the process, status times are milliseconds) and a tick
+# short enough to wait for; the tick is unique to the test, so `ps` can find its sleeps
+clock_env() {
+  T=$(printf '\t')
+  export CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/cfg CLAUDE_PEER_TICK=0.3$$
+  mkdir -p "$CLAUDE_CONFIG_DIR/sessions"
+  git -C "$REPO" config claude-peer.pane-end-minutes 1
+  cat >"$BATS_TEST_TMPDIR/reg.sh" <<'REG'
+printf '{"sessionId":"%s","status":"%s","statusUpdatedAt":%s}\n' "${REG_SID:-sess-1}" "$REG_STATUS" \
+  $(( ($(date +%s) - REG_AGE * 60) * 1000 )) >"$CLAUDE_CONFIG_DIR/sessions/$PPID.json"
+REG
+  CLOCK_DO=". '$BATS_TEST_TMPDIR/reg.sh'"
+}
+
+# clock_sleeps: the watchers' sleeps now running
+clock_sleeps() { ps -Ao args= | grep -c "[s]leep $CLAUDE_PEER_TICK"; }
+
+@test "pane clock: an idle session past the limit is ended by TERM, the end line says so and names the session, and a card is left that wakes nobody" {
+  clock_env
+  qpb
+  REG_STATUS=idle REG_AGE=120 FAKE_SHELL_DO=$CLOCK_DO FAKE_SHELL_SLEEP=20 pane alpha
+  press alpha ''
+  until_ok 'grep -q "Alpha ended after" "$REPO/.git/claude-peer.log"'
+  grep -Eq "Alpha${T}end${T}Alpha ended after [0-9]+s \(stopped by the pane, idle 1m\)${T}session=sess-1\$" "$REPO/.git/claude-peer.log"
+  until_ok 'grep -q "${T}unfinished:w=0:u=0:p=0:s=?:session=sess-1${T}a conversation (left unfinished)" "$REPO/.git/claude-peer.queue"'
+  [ "$(grep -c unfinished "$REPO/.git/claude-peer.queue")" -eq 1 ]
+  sh "$BIN" queue list --all | grep -q "unfinished"
+  run sh "$BIN" queue next
+  [ "$status" -eq 3 ]
+  [ ! -e "$BATS_TEST_TMPDIR/pb.log" ]
+  [ -z "$(ls "$REPO"/.git/worktrees/alpha/claude-peer.stop* 2>/dev/null)" ]
+}
+
+@test "pane clock: a session with a fresh status, a busy one and one whose subagent just wrote are left alone" {
+  clock_env
+  mkdir -p "$CLAUDE_CONFIG_DIR/projects/x/sess-3/subagents"
+  REG_STATUS=idle REG_AGE=0 REG_SID=sess-1 FAKE_SHELL_DO=$CLOCK_DO FAKE_SHELL_SLEEP=3 pane alpha
+  REG_STATUS=busy REG_AGE=120 REG_SID=sess-2 FAKE_SHELL_DO=$CLOCK_DO FAKE_SHELL_SLEEP=3 pane beta
+  REG_STATUS=idle REG_AGE=120 REG_SID=sess-3 FAKE_SHELL_DO="$CLOCK_DO; : >'$CLAUDE_CONFIG_DIR/projects/x/sess-3/subagents/agent-1.jsonl'" FAKE_SHELL_SLEEP=3 pane gamma
+  press alpha ''
+  press beta ''
+  press gamma ''
+  until_ok '[ "$(grep -c " ended after " "$REPO/.git/claude-peer.log")" -eq 3 ]'
+  no grep -q "stopped by" "$REPO/.git/claude-peer.log"
+  # each still names its session, which the clock saw at a tick
+  grep -Eq "Alpha${T}end${T}.*${T}session=sess-1\$" "$REPO/.git/claude-peer.log"
+  grep -Eq "Gamma${T}end${T}.*${T}session=sess-3\$" "$REPO/.git/claude-peer.log"
+  [ ! -s "$REPO/.git/claude-peer.queue" ]
+}
+
+@test "pane clock: after a verdict the shorter limit applies and no unfinished card is added" {
+  clock_env
+  git -C "$REPO" config claude-peer.pane-end-minutes 500
+  git -C "$REPO" config claude-peer.pane-done-minutes 1
+  REG_STATUS=idle REG_AGE=120 FAKE_SHELL_DO="$CLOCK_DO; sh '$BIN' queue add --kind ask --as Alpha -- 'a thing for Lead'" FAKE_SHELL_SLEEP=20 pane alpha
+  press alpha ''
+  until_ok 'grep -q "Alpha ended after" "$REPO/.git/claude-peer.log"'
+  grep -Eq "Alpha${T}end${T}.*\(stopped by the pane, finished\)${T}session=sess-1\$" "$REPO/.git/claude-peer.log"
+  sleep 0.5   # the card, when there is one, is added just after the end line
+  [ "$(grep -c "${T}add${T}" "$REPO/.git/claude-peer.queue")" -eq 1 ]
+  no grep -q unfinished "$REPO/.git/claude-peer.queue"
+}
+
+@test "pane clock: a pane-done-minutes of 0 keeps the long limit after a verdict" {
+  clock_env
+  git -C "$REPO" config claude-peer.pane-end-minutes 500
+  git -C "$REPO" config claude-peer.pane-done-minutes 0
+  REG_STATUS=idle REG_AGE=120 FAKE_SHELL_DO="$CLOCK_DO; sh '$BIN' queue add --kind ask --as Alpha -- 'a thing for Lead'" FAKE_SHELL_SLEEP=3 pane alpha
+  press alpha ''
+  until_ok 'grep -q "Alpha ended after" "$REPO/.git/claude-peer.log"'
+  no grep -q "stopped by" "$REPO/.git/claude-peer.log"
+}
+
+@test "pane clock: one watcher while a session runs, none after it, none for a hand-off or with pane-end-minutes 0" {
+  clock_env
+  local count="$BATS_TEST_TMPDIR/count.sh"
+  cat >"$count" <<'CNT'
+n=0
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  c=$(ps -Ao args= | grep -c "[s]leep $CLAUDE_PEER_TICK")
+  [ "$c" -le "$n" ] || n=$c
+  sleep 0.05
+done
+echo "$n" >"$1"
+CNT
+  REG_STATUS=busy REG_AGE=0 FAKE_SHELL_DO="$CLOCK_DO; sh '$count' '$BATS_TEST_TMPDIR/n.alpha'" FAKE_SHELL_SLEEP=1 pane alpha
+  press alpha ''
+  until_ok '[ -f "$BATS_TEST_TMPDIR/n.alpha" ] && grep -q "Alpha ended after" "$REPO/.git/claude-peer.log"'
+  [ "$(cat "$BATS_TEST_TMPDIR/n.alpha")" -eq 1 ]
+  until_ok '[ "$(clock_sleeps)" -eq 0 ]'
+  # a hand-off is the control arm: no clock
+  REG_STATUS=busy REG_AGE=0 FAKE_SHELL_DO="$CLOCK_DO; sh '$count' '$BATS_TEST_TMPDIR/n.beta'" FAKE_SHELL_SLEEP=1 pane beta
+  CLAUDE_PID=4242 sh "$BIN" start beta --handoff do it >/dev/null
+  until_ok '[ -f "$BATS_TEST_TMPDIR/n.beta" ] && grep -q "Beta${T}gone" "$REPO/.git/claude-peer.log"'
+  [ "$(cat "$BATS_TEST_TMPDIR/n.beta")" -eq 0 ]
+  # pane-end-minutes 0 never ends a session
+  git -C "$REPO" config claude-peer.pane-end-minutes 0
+  REG_STATUS=busy REG_AGE=0 FAKE_SHELL_DO="$CLOCK_DO; sh '$count' '$BATS_TEST_TMPDIR/n.gamma'" FAKE_SHELL_SLEEP=1 pane gamma
+  press gamma ''
+  until_ok '[ -f "$BATS_TEST_TMPDIR/n.gamma" ] && grep -q "Gamma ended after" "$REPO/.git/claude-peer.log"'
+  [ "$(cat "$BATS_TEST_TMPDIR/n.gamma")" -eq 0 ]
+}
+
+@test "pane clock: a pane that is killed takes its watcher and the sleep with it" {
+  clock_env
+  REG_STATUS=busy REG_AGE=0 FAKE_SHELL_DO=$CLOCK_DO FAKE_SHELL_SLEEP=20 pane alpha
+  press alpha ''
+  until_ok '[ "$(clock_sleeps)" -ge 1 ]'
+  kill "$LAST_PANE"
+  until_ok '[ "$(clock_sleeps)" -eq 0 ]'
+}
+
+@test "queue add: an unfinished card is listed and never offered, and wakes nobody even with nothing in flight" {
+  qpb
+  run sh "$BIN" queue add --kind unfinished --session abc-1 -- "a conversation (left unfinished)"
+  [ "$status" -eq 0 ]
+  [ "$output" = Q1 ]
+  sleep 0.3
+  [ ! -e "$BATS_TEST_TMPDIR/pb.log" ]
+  no grep -q "nothing is in flight" .git/claude-peer.log
+  sh "$BIN" queue list | grep -q "unfinished"
+  run sh "$BIN" queue next
+  [ "$status" -eq 3 ]
+}
