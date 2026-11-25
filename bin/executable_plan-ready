@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""plan-ready - which steps of a plan can start now.
+
+    plan-ready <plan.md> [verified step numbers...]
+
+A step is a "### Step <N>" heading. Its dependencies come from the first line
+of its section that starts with "Needs:", else the first that starts with
+"Consumes:" or "Consumes from" (read to its first colon), else the first that
+starts with "Precondition:", read to the first full stop or blank line.
+Understood: "nothing", "step N", "steps N and M", "steps N, M and K",
+"steps N to M". A reference after "signed" (or "signed plan's") points at
+another plan and counts as met.
+
+Prints "<N><TAB><title>" for every step whose dependencies are all verified and
+which is not verified itself, in number order. Exit 0 when something is ready,
+1 when nothing is, 2 when nothing is ready and some step's dependency line is
+missing, unreadable or names a step the plan lacks (each is named on stderr, and
+that step is never ready). 64: bad usage or plan file.
+"""
+import re
+import sys
+
+HEADING = re.compile(r"^### Step (\d+)(?: \([^)]*\))?(?::\s*(.*))?$")
+REF = re.compile(r"\b(signed\s+(?:plan's\s+)?)?steps?\s+(\d+(?:\s*(?:,|and|to)\s*\d+)*)", re.I)
+LIST = re.compile(r"\d+|,|and|to")
+
+
+def deps_of(lines):
+    """Step numbers a section needs, or None when its line is missing or unreadable."""
+    for keys in (("Needs:",), ("Consumes:", "Consumes from"), ("Precondition:",)):
+        for i, line in enumerate(lines):
+            key = next((k for k in keys if line.startswith(k)), None)
+            if key:
+                break
+        else:
+            continue
+        text = line[len(key):]
+        for nxt in lines[i + 1:]:
+            if not nxt.strip():
+                break
+            text += " " + nxt
+        text = " ".join(text.split())
+        text = re.split(r"\.(?:\s|$)", text, maxsplit=1)[0]
+        if key == "Consumes from":
+            text = text.split(":", 1)[0]
+        if re.match(r"nothing\b", text, re.I):
+            return set()
+        deps, found = set(), False
+        for m in REF.finditer(text):
+            found = True
+            if m.group(1):
+                continue
+            prev = rng = None
+            for tok in LIST.findall(m.group(2)):
+                if tok == "to":
+                    rng = True
+                elif tok.isdigit():
+                    n = int(tok)
+                    deps.update(range(prev, n + 1) if rng else [n])
+                    prev, rng = n, None
+        return deps if found else None
+    return None
+
+
+def parse(path):
+    steps, cur, fenced = {}, None, False
+    with open(path, encoding="utf-8") as f:
+        for line in f.read().splitlines():
+            if line.startswith("```"):
+                fenced = not fenced
+            m = None if fenced else HEADING.match(line)
+            if m:
+                cur = int(m.group(1))
+                steps[cur] = [m.group(2) or "", []]
+            elif cur is not None and not fenced and re.match(r"#{1,3} ", line):
+                cur = None
+            elif cur is not None:
+                steps[cur][1].append(line)
+    return steps
+
+
+def main(argv):
+    try:
+        verified = {int(a) for a in argv[1:]}
+        steps = parse(argv[0])
+    except (IndexError, ValueError, OSError) as e:
+        sys.stderr.write("usage: plan-ready <plan.md> [verified step numbers...] (%s)\n" % e)
+        return 64
+    ready = unreadable = 0
+    for n in sorted(steps):
+        if n in verified:
+            continue
+        title, lines = steps[n]
+        deps = deps_of(lines)
+        if deps is None:
+            sys.stderr.write("step %d: needs unreadable\n" % n)
+            unreadable += 1
+        elif deps - set(steps):
+            for m in sorted(deps - set(steps)):
+                sys.stderr.write("step %d: needs unknown step %d\n" % (n, m))
+            unreadable += 1
+        elif deps <= verified:
+            print("%d\t%s" % (n, title))
+            ready += 1
+    return 0 if ready else (2 if unreadable else 1)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -50,7 +50,8 @@
   step number plus what earlier steps produced, never the plan pasted in —
   dispatched as soon as the steps it needs are verified here, independent
   steps together, each in its own worktree. A step waits only for what it
-  needs. The main conversation orchestrates and verifies; it builds no step
+  needs. Before dispatching, and after each step is verified, run
+  `plan-ready <plan> <verified steps>` and dispatch every step it prints. The main conversation orchestrates and verifies; it builds no step
   itself and redesigns nothing. A step that cannot land as written (a worker
   hands it back, a gate stays red, an Unverified item proves false) goes back
   to `plan-fable` for a revised plan, never quietly into the code; a failure
