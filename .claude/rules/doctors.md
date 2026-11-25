@@ -45,7 +45,7 @@ came from.
 
 `workboard-doctor` prints `wrapper:` and `defined:` as `<none>` (the work board
 is a script that calls no helpers), `script:` (the path, `WARNING` when it is
-not `~/bin/workboard`, `NOT FOUND` when nothing is on `PATH`), `agent:` (`no
+not `~/bin/workboard`, `NOT FOUND (chezmoi apply; macOS only)` when nothing is on `PATH`), `agent:` (`no
 plist`, `deployed, not loaded (workboard install)` or `loaded`: the
 LaunchAgent's own state, read with `launchctl print`), then `workboard status`
 indented, which is counts, ages and fixed words only (`server: not running`

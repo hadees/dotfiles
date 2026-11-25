@@ -1436,7 +1436,7 @@ function workboard-doctor() {
 			print -r -- "         WARNING: that is not ~/bin/workboard — another package owns the name on PATH";
 		fi;
 	else
-		print -r -- "script:  NOT FOUND — ~/bin/workboard is not on PATH (chezmoi apply)";
+		print -r -- "script:  NOT FOUND — ~/bin/workboard is not on PATH (chezmoi apply; macOS only)";
 	fi;
 	if [[ ! -f $HOME/Library/LaunchAgents/local.workboard.plist ]]; then
 		print -r -- "agent:   no plist";

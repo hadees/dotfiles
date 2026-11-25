@@ -6,6 +6,7 @@ comment, no label, no edit of anyone else's text. Codes: 0 done, 1 failed,
 2 usage, 5 refused by a rule, 6 writing is off for the repository, 7 another
 profile's repository.
 """
+import json
 import os
 import shlex
 import subprocess
@@ -83,13 +84,15 @@ def _off(repo, args):
     return 6, "would: " + shlex.join(["gh"] + args)
 
 
-def _gh(ctx, repo, args):
-    """Run one gh write as the repository's account: (True, stdout) or (False, message)."""
+def _gh(ctx, repo, args, stdin=None):
+    """Run one gh write as the repository's account: (True, stdout) or (False, message).
+    `stdin` is text for gh to read, for what must stay off its command line."""
     token = ctx.token_for(repo["account"])
     if not token:
         return False, "no token for the account of this repository"
     try:
-        p = subprocess.run([os.environ.get("WORKBOARD_GH") or "gh"] + args, stdin=subprocess.DEVNULL,
+        # input="" is an empty, closed stdin, as DEVNULL was
+        p = subprocess.run([os.environ.get("WORKBOARD_GH") or "gh"] + args, input=stdin or "",
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
                            env=dict(os.environ, GH_TOKEN=token), universal_newlines=True)
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -202,13 +205,18 @@ def add(ctx, dir, title, body="", take=False, profile=None):
     repo, worktree = found
     if not title or not title.strip() or len(title) > 200 or "\n" in title or "\r" in title:
         return 2, "a title is one line of 1 to 200 characters"
-    args = ["issue", "create", "-R", repo["slug"], "--title", title, "--body", body or ""]
+    # What a person would type; the title and body go to gh on standard input, not argv.
+    shown = ["issue", "create", "-R", repo["slug"], "--title", title, "--body", body or ""]
     if take:
-        args += ["--assignee", "@me"]
-    off = _off(repo, args)
+        shown += ["--assignee", "@me"]
+    off = _off(repo, shown)
     if off:
         return off
-    ok, out = _gh(ctx, repo, args)
+    issue = {"title": title, "body": body or ""}
+    if take:
+        issue["assignees"] = [repo["account"]]
+    args = ["api", "repos/%s/issues" % repo["slug"], "--method", "POST", "--input", "-", "--jq", ".html_url"]
+    ok, out = _gh(ctx, repo, args, json.dumps(issue))
     if not ok:
         return 1, out
     url = out.strip().splitlines()[-1] if out.strip() else ""

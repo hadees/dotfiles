@@ -280,7 +280,7 @@ assert s == {"requests": 2, "tool_calls": 1, "default": "not", "personal": "not"
 commands["connect"]([])
 s = dict(a.statuses)["mcp"]()
 assert s["default"] == s["personal"] == "connected", s
-write = lambda d, h: open(d + "/.claude.json", "w").write(json.dumps({"mcpServers": {"board": {"headers": h}}}))
+write = lambda d, h: open(d + "/.claude.json", "w").write(json.dumps({"mcpServers": {"board": {"url": "http://127.0.0.1:47601/mcp", "headers": h}}}))
 write(os.path.expanduser("~/.claude-personal"), {"Authorization": "Bearer other"})
 os.remove(os.path.expanduser("~/.claude.json"))
 s = dict(a.statuses)["mcp"]()
@@ -328,8 +328,8 @@ PY
 }
 
 @test "connect: an entry with the old header form or another key is stale and is removed and added again" {
-  printf '%s' '{"mcpServers": {"board": {"type": "http", "url": "u", "headers": {"X-Workboard-Profile": "/old"}}}}' > "$HOME/.claude.json"
-  printf '%s' '{"mcpServers": {"board": {"type": "http", "url": "u", "headers": {"Authorization": "Bearer other-key"}}}}' > "$HOME/.claude-personal/.claude.json"
+  printf '%s' '{"mcpServers": {"board": {"type": "http", "url": "http://127.0.0.1:47601/mcp", "headers": {"X-Workboard-Profile": "/old"}}}}' > "$HOME/.claude.json"
+  printf '%s' '{"mcpServers": {"board": {"type": "http", "url": "http://127.0.0.1:47601/mcp", "headers": {"Authorization": "Bearer other-key"}}}}' > "$HOME/.claude-personal/.claude.json"
   run drv "$MODS" <<'PY'
 print(dict(a.statuses)["mcp"]())
 assert commands["connect"]([]) == 0
@@ -343,6 +343,28 @@ PY
   [ "$(grep -c 'mcp remove --scope user board' "$BATS_TEST_TMPDIR/claude.log")" = 2 ]
   [ "$(grep -c 'mcp add-json --scope user board -' "$BATS_TEST_TMPDIR/claude.log")" = 2 ]
   ! grep -q 'fixture-key' "$BATS_TEST_TMPDIR/claude.log"
+}
+
+@test "connect and disconnect: another server named board is left alone and reported; the board's own stale entry is replaced" {
+  foreign='{"mcpServers": {"board": {"type": "http", "url": "http://elsewhere.invalid/mcp"}}}'
+  printf '%s' "$foreign" > "$HOME/.claude.json"
+  printf '%s' '{"mcpServers": {"board": {"type": "http", "url": "http://127.0.0.1:47601/mcp", "headers": {"Authorization": "Bearer other-key"}}}}' > "$HOME/.claude-personal/.claude.json"
+  run --separate-stderr drv "$MODS" <<'PY'
+print(dict(a.statuses)["mcp"]())
+print(commands["connect"]([]))
+print(commands["disconnect"]([]))
+PY
+  [ "$status" -eq 0 ]
+  [[ "${lines[0]}" == *"'default': 'foreign'"*"'personal': 'stale'"* ]]
+  [ "${lines[1]}" = "personal: connected" ]
+  [ "${lines[2]}" = 1 ]
+  [ "$stderr" = "default: the name board is taken by another server; left alone" ]
+  [ "${lines[3]}" = "default: not connected (another server holds the name board; left alone)" ]
+  [ "${lines[4]}" = "personal: disconnected" ]
+  [ "$(cat "$HOME/.claude.json")" = "$foreign" ]
+  # claude ran only for the personal profile: remove, add, remove
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/claude.log" | tr -d ' ')" = 3 ]
+  ! grep -q '^UNSET|' "$BATS_TEST_TMPDIR/claude.log"
 }
 
 @test "connect: with the board not running each line says so and claude is not run" {

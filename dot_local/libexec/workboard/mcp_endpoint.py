@@ -183,16 +183,23 @@ def _entry(d):
     return entry if isinstance(entry, dict) else None
 
 
-def _state(d, key):
-    """connected, stale (another value, or the old header form) or not."""
+def _url(port):
+    return "http://127.0.0.1:%d/mcp" % port
+
+
+def _state(d, key, port):
+    """connected, stale (the board's own entry with another key, or the old header form),
+    foreign (another server under the name `board`: never touched) or not."""
     entry = _entry(d)
     if not entry:
         return "not"
+    if entry.get("url") != _url(port):
+        return "foreign"
     return "connected" if (entry.get("headers") or {}).get(AUTH) == "Bearer " + key else "stale"
 
 
 def _entry_json(port, key):
-    return json.dumps({"type": "http", "url": "http://127.0.0.1:%d/mcp" % port,
+    return json.dumps({"type": "http", "url": _url(port),
                        "headers": {AUTH: "Bearer " + key}})
 
 
@@ -244,7 +251,7 @@ def register(app):
         out = dict(tally)
         for label, d in sorted(app.ctx.profile_dirs().items()):
             code, key = app.ctx.ask("bearer", {}, profile=d)
-            out[label] = _state(d, key) if code == 0 else "not"
+            out[label] = _state(d, key, app.ctx.port) if code == 0 else "not"
         return out
 
     def connect(argv):
@@ -269,12 +276,16 @@ def register(app):
                 bad += 1
                 print("%s: not connected (the board is not running)" % label)
                 continue
-            state = _state(d, key)
+            state = _state(d, key, app.ctx.port)
+            if state == "foreign":
+                bad += 1
+                print("%s: the name %s is taken by another server; left alone" % (label, SERVER), file=sys.stderr)
+                continue
             if state == "stale":
                 _run_as(d, ["mcp", "remove", "--scope", "user", SERVER])
             if state != "connected":
                 _run_as(d, ADD_ARGV, _entry_json(app.ctx.port, key))
-            ok = _state(d, key) == "connected"
+            ok = _state(d, key, app.ctx.port) == "connected"
             bad += not ok
             warn = " (its configuration is readable by other users)" if _world_readable(d) else ""
             print("%s: %s%s" % (label, "connected" if ok else "not connected", warn))
@@ -289,8 +300,12 @@ def register(app):
             return 1
         bad = 0
         for label, d in sorted(app.ctx.profile_dirs().items()):
-            if _entry(d) is None:
+            entry = _entry(d)
+            if entry is None:
                 print("%s: not connected" % label)
+                continue
+            if entry.get("url") != _url(app.ctx.port):
+                print("%s: not connected (another server holds the name %s; left alone)" % (label, SERVER))
                 continue
             _run_as(d, ["mcp", "remove", "--scope", "user", SERVER])
             gone = _entry(d) is None

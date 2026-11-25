@@ -14,13 +14,15 @@ setup() {
   wb_demo >/dev/null
   wb_modules verbs >/dev/null
   D="$WORKBOARD_DEMO"
-  export GH_LOG="$BATS_TEST_TMPDIR/gh.log"
+  export GH_LOG="$BATS_TEST_TMPDIR/gh.log" GH_STDIN="$BATS_TEST_TMPDIR/gh.stdin"
   : > "$GH_LOG"
+  : > "$GH_STDIN"
   cat > "$BATS_TEST_TMPDIR/gh" <<'SH'
 #!/bin/sh
 printf '%s | token=%s\n' "$*" "${GH_TOKEN-unset}" >> "$GH_LOG"
+case " $* " in *" --input - "*) cat >> "$GH_STDIN"; echo >> "$GH_STDIN" ;; esac
 if [ -n "${GH_FAIL-}" ]; then echo "an earlier line" >&2; echo "$GH_FAIL" >&2; exit 1; fi
-if [ "$1 $2" = "issue create" ]; then echo https://github.com/octo-personal/proj-two/issues/99; fi
+if [ "$1" = api ]; then echo https://github.com/octo-personal/proj-two/issues/99; fi
 SH
   chmod +x "$BATS_TEST_TMPDIR/gh"
   export WORKBOARD_GH="$BATS_TEST_TMPDIR/gh"
@@ -100,7 +102,7 @@ PY
   [ "$(cat "$GH_LOG")" = "issue edit 22 -R $P2 --add-assignee @me | token=fixture-token-personal-acct" ]
   [ "$(wc -l < "$LINKS" | tr -d ' ')" = 1 ]
   [[ "$(cat "$LINKS")" =~ ^$P2$'\t'22$'\t'$D/code/proj-two$'\t'[0-9]+$ ]]
-  [ "$(stat -f %Lp "$LINKS" 2>/dev/null || stat -c %a "$LINKS")" = 600 ]
+  [ "$(stat -c %a "$LINKS" 2>/dev/null || stat -f %Lp "$LINKS")" = 600 ]
 }
 
 @test "take: from a subdirectory of a linked worktree the link names that worktree, not the main checkout" {
@@ -274,8 +276,13 @@ show(verbs.add(ctx, BETA, "Another thing", take=True))
 PY
   [ "${lines[0]}" = "0 https://github.com/octo-personal/proj-two/issues/99" ]
   [ "${lines[1]}" = False ]
-  [ "$(sed -n 1p "$GH_LOG")" = "issue create -R $P2 --title A small thing --body Some words | token=fixture-token-personal-acct" ]
-  [ "$(sed -n 2p "$GH_LOG")" = "issue create -R $P2 --title Another thing --body  --assignee @me | token=fixture-token-personal-acct" ]
+  API="api repos/$P2/issues --method POST --input - --jq .html_url | token=fixture-token-personal-acct"
+  [ "$(sed -n 1p "$GH_LOG")" = "$API" ]
+  [ "$(sed -n 2p "$GH_LOG")" = "$API" ]
+  # the text is on standard input, as JSON, and nowhere in argv; --take names the account's login
+  [ "$(sed -n 1p "$GH_STDIN")" = '{"title": "A small thing", "body": "Some words"}' ]
+  [ "$(sed -n 2p "$GH_STDIN")" = '{"title": "Another thing", "body": "", "assignees": ["personal-acct"]}' ]
+  run ! grep -E 'small thing|Some words|Another' "$GH_LOG"
   [ "$(wc -l < "$GH_LOG" | tr -d ' ')" = 2 ]
   # #99 is not a card until the next poll, so the rewrite keeps only what it just appended
   [[ "$(cat "$LINKS")" =~ ^$P2$'\t'99$'\t'$BETA$'\t' ]]
@@ -403,7 +410,7 @@ PY
   run ! grep -q 'wb-gone' "$LINKS"
 }
 
-@test "writes: only issue edit, issue create and issue close ever reach gh, always with a token" {
+@test "writes: only issue edit, the issues API's POST and issue close ever reach gh, always with a token" {
   edit local 'for r in d["repos"]: r["write"] = True'
   run py <<'PY'
 verbs.take(ctx, P1, "#11", force=True)
@@ -414,7 +421,8 @@ verbs.move(ctx, P2, "#22", "done")
 verbs.move(ctx, P1, "#12", "dropped", force=True)
 PY
   [ "$(wc -l < "$GH_LOG" | tr -d ' ')" = 6 ]
-  run ! grep -v -E '^issue (edit|create|close) ' "$GH_LOG"
+  run ! grep -v -E "^(issue (edit|close) |api repos/$P2/issues --method POST --input - --jq \.html_url \| )" "$GH_LOG"
+  [ "$(grep -c '^api ' "$GH_LOG")" = 1 ]
   run ! grep -E 'comment|label|--edit|--add-label|pr close|pr ' "$GH_LOG"
   run ! grep -v -E ' \| token=fixture-token-(work|personal)-acct$' "$GH_LOG"
   # only @me is ever assigned or unassigned
@@ -474,7 +482,7 @@ print(repr(dict(a.clis)[\"add\"]([\"A title\", \"--body\", \"-\"])[\"body\"]))
   run /usr/bin/python3 -I -B -c 'import ast,sys; [ast.parse(open(f).read()) for f in sys.argv[1:]]' "$WB_SRC/verbs.py"
   [ "$status" -eq 0 ]
   run grep -E '^(import|from) ' "$WB_SRC/verbs.py"
-  run ! grep -v -E '^(import|from) (os|shlex|subprocess|sys|tempfile|time)$' <<< "$output"
+  run ! grep -v -E '^(import|from) (json|os|shlex|subprocess|sys|tempfile|time)$' <<< "$output"
 }
 
 @test "no title, body or label of the scenario lands in the state directory" {

@@ -224,7 +224,7 @@ doctor() {
 @test "workboard-doctor with the script absent: wrapper, defined, script NOT FOUND, agent, no status" {
   doctor
   [ "$status" -eq 0 ]
-  [[ "$output" == "wrapper: <none"*"defined: <none"*"script:  NOT FOUND"*"agent:   no plist" ]]
+  [[ "$output" == "wrapper: <none"*"defined: <none"*"script:  NOT FOUND"*"chezmoi apply; macOS only)"*"agent:   no plist" ]]
 }
 
 @test "workboard-doctor with the script present: its path, the agent states, then the status indented" {
