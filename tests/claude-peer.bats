@@ -5095,7 +5095,7 @@ qids() { printf '%s\n' "$output" | cut -f2 | tr '\n' ' '; }
   [ "$(printf '%s\n' "$output" | sed -n 5p | cut -f4,7,8 | tr '\t' '|')" = "6.0|u=0 p=0 h=24 /4|2d" ]
   # only the waiting card is a candidate
   [ "$(printf '%s\n' "$output" | cut -f11 | tr '\n' ' ')" = "yes - - - - " ]
-  # without his waiting it is tier 2 at 0.0, and the best of tier 2 stands alone
+  # not marked waiting it is tier 2 at 0.0, and the best of tier 2 stands alone
   run sh "$BIN" queue set Q4 waiting=0
   [ "$status" -eq 0 ]
   run sh "$BIN" queue next
