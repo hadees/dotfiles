@@ -290,8 +290,8 @@ line() { printf '%s\n' "$SCREEN" | sed -n "$1p"; }
   local suite=' bats ((--[a-z-]+|"[^"]*"|\$[a-z]+) )*tests 2>&1 \| awk -f \.github/bats-progress\.awk$'
   [ "$(grep -cE "$suite" "$wf")" -eq 3 ]
   [ "$(grep -cE "SCREEN_TESTS_REQUIRE='tmux fzf'( setsid -w)?$suite" "$wf")" -eq 3 ]
-  # the filter hides bats' exit status unless the step sets pipefail
-  [ "$(grep -c '^ *set -o pipefail$' "$wf")" -ge 3 ]
+  # the filter hides bats' exit status unless the line before it sets pipefail
+  [ "$(grep -B1 -E "$suite" "$wf" | grep -c '^ *set -o pipefail$')" -eq 3 ]
   # each of the three installs the pinned fzf, then checks that it is the first on PATH
   [ "$(grep -c 'sh \.github/install-fzf\.sh [^-]' "$wf")" -eq 3 ]
   [ "$(grep -c '^ *run: sh \.github/install-fzf\.sh --check$' "$wf")" -eq 3 ]
