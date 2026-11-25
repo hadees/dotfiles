@@ -14,9 +14,9 @@
 #
 # Two more Workgroups, not extra peers on the builtin Claude Code one: peers
 # spawn eagerly when a workgroup is entered, and the builtin is entered on
-# every claude job. `Claude Peers` is Lead and the pane Secretary; a
-# pane waits (below), so entering it on every claude job costs one blocked
-# shell, not a Claude. `Claude Peers + Hermes` is the same plus a Hermes
+# every claude job. `Claude Peers` is Lead, the Ideas pane (slot secretary) and the Agents viewer;
+# the Ideas pane waits (below), so entering it on every claude job costs a
+# blocked shell and an agent list, not a Claude. `Claude Peers + Hermes` is the same plus a Hermes
 # pane, a twin because a pane cannot remove itself from a workgroup: where no
 # Hermes profile routes the directory the other definition must be the one
 # entered. There is no Diff peer. Which one a tab enters is the claude()
@@ -120,6 +120,12 @@
 #                            shell that runs hermes_peer (hermes where a profile
 #                            routes here, else a one-line notice); no
 #                            repository or worktree needed
+#   agents                   the Agents pane: in the repository's main checkout,
+#                            `claude agents --cwd <it>` through an interactive
+#                            shell (so the claude() wrapper picks the profile);
+#                            when it ends, or claude is missing, one line and
+#                            Return runs it again, q leaves a shell. A viewer:
+#                            no slot, claim or worktree
 #   overlays                 name<TAB>root<TAB>state<TAB>leader<TAB>pid per
 #                            private overlay of this machine (a chezmoi config
 #                            whose source is a git repository); state is idle,
@@ -158,7 +164,7 @@
 #   plan <branch>...         branch<TAB>worktree<TAB>create|reuse|conflict:<why>
 #                            per branch, exit 1 on any conflict
 #   workgroup                print the "Claude Peers" Workgroup definition JSON
-#                            (Lead, Secretary) that install would write
+#                            (Lead, Ideas, Agents) that install would write
 #   install                  write that and "Claude Peers + Hermes" (the same
 #                            plus a Hermes pane) into iTerm2's preferences;
 #                            iTerm2 must be quit. It builds no overlay pair
@@ -1743,6 +1749,25 @@ cmd_run() {
   exit $?
 }
 
+# The Agents pane. Standing in the main checkout, claude() resolves the repository's
+# profile itself; `claude agents --cwd` lists the background and forked sessions
+# started under it. Nothing is claimed or checked out.
+cmd_agents() {
+  [ $# -eq 0 ] || usage
+  if ag_root=$(repo_root_q) && cd "$ag_root"; then
+    AGENTS_SH='while :; do
+  if command -v claude >/dev/null 2>&1; then claude agents --cwd "$PWD"; else echo "claude-peer: claude is not on PATH, so there is no agent list to show"; fi
+  printf "Agents: Return runs it again, q for a shell: "
+  read -r ag_a || break
+  [ "$ag_a" = q ] && break
+done
+exec "${SHELL:-/bin/sh}" -i'
+    exec "${SHELL:-/bin/sh}" -i -c "$AGENTS_SH" claude-peer
+  fi
+  echo "claude-peer: agents: not inside a git repository; plain shell"
+  exec "${SHELL:-/bin/sh}" -i
+}
+
 # [--wait] [-- hermes args...]. The shell function does the routing
 # (hermes_profile is zsh and lives in .functions), so this only settles, then
 # starts a shell that calls it and stays a shell whatever it did. --wait hands
@@ -2583,12 +2608,14 @@ def session(ident, name, kind, command="", items=None, parent=None):
     return s
 
 def build_base(prefix):
-    """Lead and the Secretary pane, ids under prefix. A pane waits (--wait):
-    nothing starts in it until Return or `claude-peer start`."""
+    """Lead, the Ideas pane (slot secretary) and the Agents viewer, ids under prefix.
+    The slot pane waits (--wait): nothing starts in it until Return or
+    `claude-peer start`. The Agents pane is a viewer: no slot, claim or worktree."""
     root = prefix + ".main"
     return [session(root, "Lead", "root", items=[{"kind": "modeSwitcher"}, {"kind": "gitStatus"}]),
-            session(prefix + ".secretary", "Secretary", "peer",
-                    "claude-peer run --as secretary --wait", parent=root)]
+            session(prefix + ".secretary", "Ideas", "peer",
+                    "claude-peer run --as secretary --wait", parent=root),
+            session(prefix + ".agents", "Agents", "peer", "claude-peer agents", parent=root)]
 
 def with_hermes(group):
     """The twin of a definition with a Hermes pane: id <id>.h (claudePeer.h for
@@ -3012,7 +3039,7 @@ cmd_default() {
   f=$(enter_file)
   if [ "$1" = peers ]; then
     mkdir -p "${f%/*}" && printf 'peers\n' >"$f" || die "cannot write $f"
-    printf 'claude-peer: claude() now picks the workgroup of each tab (Claude Peers: Secretary waits until started); the claude job trigger is disabled; %s\n' "$r"
+    printf 'claude-peer: claude() now picks the workgroup of each tab (Claude Peers: the Ideas pane waits until started); the claude job trigger is disabled; %s\n' "$r"
   else
     rm -f "$f"
     printf 'claude-peer: a claude job now enters Claude Code; the variable triggers are gone; %s\n' "$r"
@@ -3399,6 +3426,7 @@ cmd=$1; shift
 case $cmd in
   run) cmd_run "$@";;
   hermes) cmd_hermes "$@";;
+  agents) cmd_agents "$@";;
   overlays) cmd_overlays "$@";;
   overlay) cmd_overlay "$@";;
   peers) cmd_peers "$@";;
