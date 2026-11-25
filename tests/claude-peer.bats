@@ -5132,7 +5132,7 @@ qids() { printf '%s\n' "$output" | cut -f2 | tr '\n' ' '; }
   [ "$(tail -n 1 "$REPO/$Q" | cut -f2-3,5 | tr '\t' ' ')" = "Q1 take order=2" ]
   run sh "$BIN" queue list
   [ "$(qids)" = "Q2 " ]
-  # Q1 is taken: Q2 has no unblocks and he is not waiting on it, so it is not offered
+  # Q1 is taken: Q2 has no unblocks and it is not marked waiting, so it is not offered
   run sh "$BIN" queue next
   [ "$status" -eq 3 ]; [ -z "$output" ]
   qline 0 Q3 'ask:w=0:u=1:p=0:s=S' "unblocks"
@@ -5238,14 +5238,14 @@ qids() { printf '%s\n' "$output" | cut -f2 | tr '\n' ' '; }
 
 @test "queue escalation: an old waiting card is escalated once across two adds, and by a stop event of the job hook; 0 minutes never" {
   qpb
-  qline 3 Q1 'ask:w=1:u=0:p=0:s=S' "he is waiting"
-  qline 3 Q2 'ask:w=0:u=0:p=3:s=S' "he is not"
+  qline 3 Q1 'ask:w=1:u=0:p=0:s=S' "marked waiting"
+  qline 3 Q2 'ask:w=0:u=0:p=3:s=S' "not waiting"
   sh "$BIN" queue take Q2
   run sh "$BIN" queue add --kind ask -- "a"
   run sh "$BIN" queue add --kind ask -- "b"
   [ "$(grep -c "$(printf '\tQ1\tescalated\t')" "$Q")" -eq 1 ]
   [ "$(grep -c "$(printf '\tQ2\tescalated\t')" "$Q")" -eq 0 ]
-  [ "$(grep -c 'queue: Q1 has waited 1[0-9][0-9]m and he is waiting on it' .git/claude-peer.log)" -eq 1 ]
+  [ "$(grep -c 'queue: Q1 has waited 1[0-9][0-9]m and it is marked waiting' .git/claude-peer.log)" -eq 1 ]
   [ "$(cut -f2 .git/claude-peer.log | grep -c Queue)" -eq 1 ]
   qwait_pb 1
   # a stop event looks too; a start event does not
@@ -5322,10 +5322,10 @@ qhook_text() {
   run qhook "$(qhook_payload 'gh pr merge 3')"
   run qhook_text
   [ "$output" = "queue: Q1 is still taken; if this merge finished it, claude-peer queue done Q1." ]
-  qline 0 Q4 'ask:w=1:u=0:p=0:s=S' "he waits"
+  qline 0 Q4 'ask:w=1:u=0:p=0:s=S' "a waiting ask"
   run qhook "$(qhook_payload 'gh pr merge 3')"
   run qhook_text
-  [[ "$output" == "queue: Q1 is still taken; if this merge finished it, claude-peer queue done Q1. queue: next card is Q4 (ask, score 0.0: u=0 p=0 h=0 /1): he waits. File: -."* ]]
+  [[ "$output" == "queue: Q1 is still taken; if this merge finished it, claude-peer queue done Q1. queue: next card is Q4 (ask, score 0.0: u=0 p=0 h=0 /1): a waiting ask. File: -."* ]]
 }
 
 @test "queue settings: one PostToolUse entry for Bash that carries the if filter on gh pr merge; edits nothing; a bad verb is usage" {

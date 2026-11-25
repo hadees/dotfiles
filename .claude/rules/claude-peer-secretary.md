@@ -63,7 +63,7 @@ Lead never reads the queue itself. Append-only, tab-separated:
 instant can share one, there is no lock), `event` is `add`, `refused`, `set`,
 `take`, `done`, `drop`, `park`, `reopen`, `escalated` or `link`. A card's state is
 its last `add` or `reopen` (waiting), `take` (taken), `done`, `drop` (dropped) or
-`park` (parked); `set` changes its `waiting` (he is waiting on it), `unblocks` 0 to
+`park` (parked); `set` changes its `waiting` (the operator is waiting on it), `unblocks` 0 to
 9, `prio` 0 to 3 or `size` S, M, L (`?` until set).
 
 - `queue add [--kind idea|plan|ask|unfinished] [--waiting] [--unblocks N] [--prio P]
@@ -83,7 +83,7 @@ its last `add` or `reopen` (waiting), `take` (taken), `done`, `drop` (dropped) o
   event, look for waiting-tier cards (`waiting=1`, not `unfinished`) older than
   `git config claude-peer.queue-wait-minutes` (120; 0 never; not a number is 120)
   with no `escalated` line, and for each write that line, then a `note` by `Queue`
-  (`queue: <id> has waited <n>m and he is waiting on it`) and `tell_lead`. Once per
+  (`queue: <id> has waited <n>m and it is marked waiting`) and `tell_lead`. Once per
   card, ever. It is the one push into a busy Lead; delivery waits as
   `postbox.md` describes.
 - `queue list [--all] [<dir>]` prints the waiting cards in pull order, 13
@@ -110,7 +110,7 @@ its last `add` or `reopen` (waiting), `take` (taken), `done`, `drop` (dropped) o
   older card:
   `score = (20 x min(unblocks, 3) + 10 x prio + 1 x min(hours waiting, 24)) / D`, `D`
   being 1, 2 or 4 for S, M or L. The tier is a sort key, never a term, so no age or
-  size lets a card pass the one he is waiting on. A `?` size scores as M and has a
+  size lets a card pass the one the operator is waiting on. A `?` size scores as M and has a
   range, `lo` as L and `hi` as S. The **candidates** are the cards of the first
   non-empty tier whose `hi` is at least 85 percent of the largest `lo` in that tier.
   While a card is `taken`, only tier 1 cards and cards with `unblocks` above 0 are
@@ -129,7 +129,7 @@ its last `add` or `reopen` (waiting), `take` (taken), `done`, `drop` (dropped) o
   card is <id> (<kind>, score <s>: <terms>): <text>. File: <file>. Take it with ...
   Nothing worth doing is an answer: say so and stop; never invent work.` and ` <m>
   more waiting.` when m is not 0), or with several, the brief for one `scout-haiku` that
-  reads only those files, so a model chooses among candidates and never over his
+  reads only those files, so a model chooses among candidates and never over the operator's
   priority; with one candidate no model runs. Nothing at all when there is no card
   and nothing is taken.
 - `queue settings` prints the one `PostToolUse` entry for the overlays (matcher

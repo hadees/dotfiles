@@ -2449,7 +2449,7 @@ JSON
 cmd_job() {
   [ $# -eq 1 ] || usage
   case $1 in
-    hook) job_hook >/dev/null 2>&1; exit 0;;
+    hook) ( job_hook ) >/dev/null 2>&1; exit 0;;
     settings) job_settings;;
     *) usage;;
   esac
@@ -2673,7 +2673,7 @@ queue_escalate() {
   qe_lead=$(repo_root_q) || return 0
   queue_py due "$qe_m" | while read -r qe_i qe_n; do
     queue_append "$qe_i" escalated Queue - "waited ${qe_n}m"
-    log_add Queue note "queue: $qe_i has waited ${qe_n}m and he is waiting on it"
+    log_add Queue note "queue: $qe_i has waited ${qe_n}m and it is marked waiting"
     tell_lead "$qe_lead" - -
   done
   return 0
@@ -2827,7 +2827,7 @@ cmd_queue() {
   [ $# -ge 1 ] || usage
   cq_v=$1; shift
   case $cq_v in
-    hook) queue_hook 2>/dev/null; exit 0;;
+    hook) ( queue_hook ) 2>/dev/null; exit 0;;
     settings) queue_settings; exit 0;;
     add) queue_add "$@"; exit 0;;
     list|next)
