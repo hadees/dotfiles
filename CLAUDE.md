@@ -293,6 +293,7 @@ rule first.
 | `iterm2-relaunch` | quit iTerm2, apply preferences or cask upgrades while it is down, reopen, resume the Claude tabs and peers; the Alfred workflow |
 | `cc-status-shim` | Session Status rows, seat colours, row names, terminal titles |
 | `dot-functions` | what else lives in `dot_functions`, and `emulate -L zsh` |
+| `step-cost` | the transcript measuring script: its columns, the window, what counts as a human prompt |
 
 `docs/private-overlays.md` is the overlay manual. `docs/espanso.md` covers
 the text expander, whose config is a separate private repo.
