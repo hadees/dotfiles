@@ -6,11 +6,10 @@ paths:
   - "**/tests/claude-peer-screen.bats"
 ---
 
-# Claude peers: the jobs record, the queue and the secretary pane
+# Claude peers: the jobs record and the queue
 
-The part of `bin/claude-peer` that keeps what Lead dispatched, queues what the
-operator thought up, and runs the one pane to think in. The rest of the script is
-in `claude-peer.md`.
+The part of `bin/claude-peer` that keeps what Lead dispatched and queues what the
+operator thought up. The rest of the script is in `claude-peer.md`.
 
 ## The jobs record
 
@@ -74,7 +73,8 @@ its last `add` or `reopen` (waiting), `take` (taken), `done`, `drop` (dropped) o
   `## Matters`, `## Constraints`, `## Decided`, `## Open`, `## Next` in that order,
   and a non-empty line under `Goal` and under `Next`. Otherwise exit 1, one stderr
   line naming what is missing, and a `refused` line (id `-`, the reason as text). A
-  relative file is stored absolute. `who` is `--as`, else `log_who`.
+  relative file is stored absolute. `who` is `--as`, else `log_who`. A bad option value is
+  exit 2.
 - **The wake.** Only when Lead has nothing in flight (no card `taken` and
   `jobs_running Lead` fails) does `add` write `queue: <id> is waiting and nothing is
   in flight` to the log as a `note` and call `tell_lead`. With work in flight it
@@ -84,8 +84,8 @@ its last `add` or `reopen` (waiting), `take` (taken), `done`, `drop` (dropped) o
   `git config claude-peer.queue-wait-minutes` (120; 0 never; not a number is 120)
   with no `escalated` line, and for each write that line, then a `note` by `Queue`
   (`queue: <id> has waited <n>m and he is waiting on it`) and `tell_lead`. Once per
-  card, ever. It is the one push into a busy Lead; postbox holds it to the end of
-  Lead's turn.
+  card, ever. It is the one push into a busy Lead; delivery waits as
+  `postbox.md` describes.
 - `queue list [--all] [<dir>]` prints the waiting cards in pull order, 13
   tab-separated columns: `order id tier score lo hi terms age kind who cand text
   file`. `terms` is the arithmetic (`u=20 p=10 h=7 /2`, ` size?` appended for an
@@ -99,8 +99,8 @@ its last `add` or `reopen` (waiting), `take` (taken), `done`, `drop` (dropped) o
   (`<root>/.claude/worktrees/<who in lower case>`, under
   `${CLAUDE_CONFIG_DIR:-~/.claude}/projects/<path, non-alphanumerics as ->`, a layout
   observed, not an interface), else `claude --resume <SID>` and the directory.
-- `take`, `done`, `reopen`, `drop`, `park`, `link`: an unknown id, or a state the verb
-  does not apply to (`take` waiting; `done` taken; `drop` and `park` waiting or taken;
+- `take`, `done`, `reopen`, `drop`, `park`, `link`: an unknown id, or a state other than
+  the ones the verb applies to (`take` waiting; `done` taken; `drop` and `park` waiting or taken;
   `reopen` anything but waiting), is exit 3 with one stderr line; `drop` and `park`
   without a reason, and a bad `set` or `link`, are exit 2. `take` writes `order=<n>`,
   the card's position in `list` at that moment, so the formula's agreement with what
