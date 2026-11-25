@@ -1,0 +1,234 @@
+#!/bin/sh
+# step-cost — what a Claude Code session or a single transcript cost: wall
+# time, requests, tokens, how often the human typed, how full the context ran.
+#
+# It reads the transcripts a profile already keeps
+# (<profile>/projects/*/<session>.jsonl and each session's subagents/
+# directory), writes nothing, and prints numbers and session names only,
+# never a line of what was said: the output of one profile can be pasted into
+# a report written from another.
+#
+# Usage:
+#   step-cost sessions [--since DAYS] [--dir PROFILE_DIR]
+#       one tab-separated row per main transcript with a record in the window
+#       (default 7 days), counting only the records inside it:
+#       role name first last wall_s human human_busy requests ctx_median
+#       ctx_p90 compactions input cache_write cache_read output agents
+#       agent_tokens sendmessage
+#   step-cost file TRANSCRIPT...
+#       one row per transcript given (a subagent's included):
+#       file first last wall_s requests input cache_write cache_read output human
+# env:
+#   CLAUDE_CONFIG_DIR   the profile directory (else $HOME/.claude).
+set -eu
+
+command -v python3 >/dev/null 2>&1 || {
+  printf 'step-cost: python3 not found\n' >&2
+  exit 1
+}
+
+exec python3 -I - "$@" <<'PY'
+import glob
+import json
+import os
+import sys
+import time
+from datetime import datetime
+
+USAGE = "usage: step-cost sessions [--since DAYS] [--dir PROFILE_DIR] | step-cost file TRANSCRIPT..."
+
+
+def die(msg, code=2):
+    sys.stderr.write("step-cost: %s\n" % msg)
+    sys.exit(code)
+
+
+def records(path):
+    """Every record of a transcript that parses; a torn line is skipped."""
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(rec, dict):
+                yield rec
+
+
+def when(rec):
+    try:
+        return datetime.fromisoformat(rec["timestamp"].replace("Z", "+00:00")).timestamp()
+    except (KeyError, AttributeError, TypeError, ValueError):
+        return None
+
+
+def iso(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t)) if t is not None else "-"
+
+
+def is_human(rec):
+    """A prompt the person typed on the main chain: not a tool result, not
+    meta, not a compaction summary, not text that opens with `<` (task
+    notifications and command echoes)."""
+    if rec.get("type") != "user" or rec.get("isSidechain") or rec.get("isMeta") or rec.get("isCompactSummary"):
+        return False
+    content = (rec.get("message") or {}).get("content")
+    if isinstance(content, list):
+        if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+            return False
+        content = "".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+    if not isinstance(content, str):
+        return False
+    content = content.strip()
+    return bool(content) and not content.startswith("<")
+
+
+def summarize(path, lo=None):
+    """The numbers of one transcript, over the records at or after `lo`."""
+    s = {"first": None, "last": None, "human": 0, "human_times": [], "compactions": 0,
+         "sendmessage": 0, "reqs": {}}
+    for rec in records(path):
+        t = when(rec)
+        if t is None or (lo is not None and t < lo):
+            continue
+        s["first"] = t if s["first"] is None else min(s["first"], t)
+        s["last"] = t if s["last"] is None else max(s["last"], t)
+        kind = rec.get("type")
+        if is_human(rec):
+            s["human"] += 1
+            s["human_times"].append(t)
+        elif kind == "system" and rec.get("subtype") == "compact_boundary" and not rec.get("isSidechain"):
+            s["compactions"] += 1
+        elif kind == "assistant":
+            msg = rec.get("message") or {}
+            usage = msg.get("usage")
+            if not isinstance(usage, dict) or msg.get("model") == "<synthetic>":
+                continue
+            # One request is written once per content block, usage repeated;
+            # keep the last of them, and one record with no id is its own request.
+            key = rec.get("requestId") or msg.get("id") or "n%d" % len(s["reqs"])
+            s["reqs"][key] = usage
+            if not rec.get("isSidechain"):
+                s["sendmessage"] += sum(
+                    1 for b in msg.get("content") or []
+                    if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "SendMessage"
+                )
+    return s
+
+
+def sums(s):
+    tot = {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0}
+    ctx = []
+    for u in s["reqs"].values():
+        i = u.get("input_tokens") or 0
+        w = u.get("cache_creation_input_tokens") or 0
+        r = u.get("cache_read_input_tokens") or 0
+        tot["input"] += i
+        tot["cache_write"] += w
+        tot["cache_read"] += r
+        tot["output"] += u.get("output_tokens") or 0
+        ctx.append(i + w + r)
+    return tot, sorted(ctx)
+
+
+def wall(s):
+    return int(s["last"] - s["first"]) if s["first"] is not None else 0
+
+
+def clean(name):
+    return " ".join(str(name).split())
+
+
+def session_name(path):
+    """The last name the session was given (agent-name, else custom-title)."""
+    agent = custom = ""
+    for rec in records(path):
+        if rec.get("type") == "agent-name" and rec.get("agentName"):
+            agent = rec["agentName"]
+        elif rec.get("type") == "custom-title" and rec.get("customTitle"):
+            custom = rec["customTitle"]
+    return clean(agent or custom) or "-"
+
+
+def cmd_sessions(args):
+    days, profile = 7, os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.environ.get("HOME", ""), ".claude")
+    while args:
+        flag = args.pop(0)
+        if flag in ("--since", "--dir") and args:
+            val = args.pop(0)
+            if flag == "--dir":
+                profile = val
+            else:
+                try:
+                    days = int(val)
+                except ValueError:
+                    die("--since wants a whole number of days")
+                if days < 0:
+                    die("--since wants a whole number of days")
+        else:
+            die(USAGE)
+    lo = time.time() - days * 86400
+    rows = []
+    for path in glob.glob(os.path.join(profile, "projects", "*", "*.jsonl")):
+        if os.path.getmtime(path) < lo:
+            continue
+        s = summarize(path, lo)
+        if s["first"] is None:
+            continue
+        project = os.path.basename(os.path.dirname(path))
+        name = session_name(path)
+        role = ("lead" if name.endswith("-lead") else "secretary" if name.endswith("-secretary")
+                else "slot" if "-claude-worktrees-" in project else "other")
+        spans, agents, atok = [], 0, 0
+        for sub in glob.glob(os.path.join(path[:-len(".jsonl")], "subagents", "*.jsonl")):
+            ts = [t for t in map(when, records(sub)) if t is not None]
+            if ts:
+                spans.append((min(ts), max(ts)))
+            a = summarize(sub, lo)
+            if a["first"] is not None:
+                agents += 1
+                atok += sum(sums(a)[0].values())
+        busy = sum(1 for t in s["human_times"] if any(a <= t <= b for a, b in spans))
+        tot, ctx = sums(s)
+        n = len(ctx)
+        med = ctx[(n - 1) // 2] if n else 0
+        p90 = ctx[-(-n * 9 // 10) - 1] if n else 0
+        rows.append((s["first"], [
+            role, name, iso(s["first"]), iso(s["last"]), wall(s), s["human"], busy, n, med, p90,
+            s["compactions"], tot["input"], tot["cache_write"], tot["cache_read"], tot["output"],
+            agents, atok, s["sendmessage"],
+        ]))
+    for _, row in sorted(rows, key=lambda r: r[0]):
+        print("\t".join(str(c) for c in row))
+
+
+def cmd_file(args):
+    if not args:
+        die(USAGE)
+    out, bad = [], False
+    for path in args:
+        if not os.path.isfile(path):
+            sys.stderr.write("step-cost: %s: no such file\n" % path)
+            bad = True
+            continue
+        s = summarize(path)
+        tot, ctx = sums(s)
+        out.append("\t".join(str(c) for c in [
+            path, iso(s["first"]), iso(s["last"]), wall(s), len(ctx),
+            tot["input"], tot["cache_write"], tot["cache_read"], tot["output"], s["human"],
+        ]))
+    if out:
+        print("\n".join(out))
+    sys.exit(1 if bad else 0)
+
+
+argv = sys.argv[1:]
+if not argv:
+    die(USAGE)
+if argv[0] == "sessions":
+    cmd_sessions(argv[1:])
+elif argv[0] == "file":
+    cmd_file(argv[1:])
+else:
+    die(USAGE)
+PY
