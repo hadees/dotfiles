@@ -296,18 +296,17 @@ JSON
   doctor
   [[ "$output" == *"topics:  hook: not wired in $HOME/.claude-personal/settings.json; ~/bin/shared-memory: missing; on demand: ?; injected: ?"* ]]
 
-  # Deployed, one of the two commands wired: one always-loaded topic, one
-  # topic per hook class and one pointer; a log of 3 injections, 2 already
-  # told, an error and a nopython row (a skipped topic and an oversize one
-  # are neither).
+  # Deployed, two of the three commands wired (start and tool): one
+  # always-loaded topic, one topic per hook class and one pointer; a log of 3
+  # injections, 2 already told, an error and a nopython row (a skipped topic
+  # and an oversize one are neither).
   ln -s "$BATS_TEST_DIRNAME/../bin/executable_shared-memory" "$HOME/bin/shared-memory"
   mkdir -p "$HOME/.claude-shared/topics" "$HOME/.local/state/shared-memory"
-  printf '# Memory\n\n@topics/always-one.md\n\n- `seeing-pane.md`: a pane.\n' > "$HOME/.claude-shared/CLAUDE.md"
-  for t in always-one claude-peers commit-signing tailnet-routed-ssh seeing-pane; do
+  printf '# Memory\n\n@topics/always-one.md\n\n- `seeing-pane.md`: a pane.\n- `delegation-and-model-routing.md`: a main conversation.\n' > "$HOME/.claude-shared/CLAUDE.md"
+  for t in always-one delegation-and-model-routing claude-peers commit-signing tailnet-routed-ssh seeing-pane; do
     printf '## %s\n\ntext\n' "$t" > "$HOME/.claude-shared/topics/$t.md"
   done
-  printf '{"hooks": {"SessionStart": [{"hooks": [{"command": "[ -x ~/bin/shared-memory ] && exec ~/bin/shared-memory hook start || true"}]}]}}\n' \
-    > "$HOME/.claude-personal/settings.json"
+  printf '{"hooks": {"x": "shared-memory hook start", "y": "shared-memory hook tool"}}\n' > "$HOME/.claude-personal/settings.json"
   {
     printf '2026-11-12T10:00:00Z\t.claude-personal\tstart\tclaude-peers\tinjected\n'
     printf '2026-11-12T10:00:00Z\t.claude-personal\ttool\tcommit-signing\tinjected\n'
@@ -320,10 +319,10 @@ JSON
     printf '2026-11-12T10:07:00Z\t.claude-personal\tstart\tlead\toversize\n'
   } > "$HOME/.local/state/shared-memory/injections.tsv"
   doctor
-  [[ "$output" == *"topics:  hook: partly wired in $HOME/.claude-personal/settings.json; ~/bin/shared-memory: present; on demand: 4 (start 1, tool 2, pointer 1); injected: 3 (2 already told, 2 errors)"* ]]
+  [[ "$output" == *"topics:  hook: partly wired (missing main) in $HOME/.claude-personal/settings.json; ~/bin/shared-memory: present; on demand: 5 (main 1, start 1, tool 2, pointer 1); injected: 3 (2 already told, 2 errors)"* ]]
 
-  # Both commands wired.
-  printf '{"hooks": {"x": "shared-memory hook start", "y": "shared-memory hook tool"}}\n' > "$HOME/.claude-personal/settings.json"
+  # All three commands wired.
+  printf '{"hooks": {"x": "shared-memory hook start", "y": "shared-memory hook main", "z": "shared-memory hook tool"}}\n' > "$HOME/.claude-personal/settings.json"
   doctor
   [[ "$output" == *"topics:  hook: wired in $HOME/.claude-personal/settings.json; "* ]]
 
