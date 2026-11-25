@@ -16,37 +16,46 @@ index imports is in the context of every session and every subagent.
 the situational topics out of that and adds each one to a session when it
 applies.
 
-**Status: the code is complete, the hooks are not on.** Nothing in this
-repository wires them: every profile's `settings.json` belongs to its
-overlay, so the hooks run only in a profile whose overlay has pasted in the
-output of `shared-memory settings`. Until then such a profile still has the
-index paragraph (below), which tells Claude where the topics are. The
-`topics:` line of `claude-doctor` says whether a profile is wired. The live
-checks (that the tool events fire for the `Skill` tool, that the Claude in
-Chrome tools carry the name the script matches, that the environment
-variables the start conditions read reach the hook, what the hooks cost per
-Bash call) have not been run; nothing below about them is more than the
-design.
+**Status.** The repository wires nothing: every profile's `settings.json`
+belongs to its overlay, so the hooks run only in a profile whose overlay has
+pasted in the output of `shared-memory settings`. As of 2026-11-25 every
+profile on the operator's Mac that imports the index is wired and logs
+injections (`shared-memory log`). A subagent there was observed to hold the
+imported topics and no start text, and to get `github-accounts` from the tool
+hook on its first `gh` command, which is the design below. A public-only
+clone, or a profile that is not wired, still has the index paragraph alone,
+which tells Claude where the topics are. The `topics:` line of
+`claude-doctor` says whether a profile is wired. What the hooks cost per Bash
+call has not been measured.
 
-## Three load classes
+## Load classes
 
 - **Always loaded**: the topics the index imports with an `@topics/<slug>.md`
-  line on its own. This costs context in every session, so a topic gets one
-  only if it is a rule that must be known before any tool call, such as the
-  denied-paths, accounts and delegation rules. `tests/claude-agents.bats`
-  holds a ceiling on this part's size. Lower it when it shrinks, never raise
-  it.
-- **Hook-added**: topics a hook adds when their situation shows up. Not
-  imported, but listed in the index paragraph too, so a session whose hook is
-  missing or broken still has a route to the file.
+  line on its own. This costs context in every session and every subagent, so
+  a topic gets one only if every seat must know it before any tool call, such
+  as the denied-paths and worktree rules. `tests/claude-agents.bats` holds a
+  ceiling on this part's size. Lower it when it shrinks, never raise it.
+- **Main**: topics `hook main` adds to every main conversation at
+  SessionStart and to no subagent, because a subagent never runs SessionStart.
+  They are rules for the conversation that orchestrates.
+- **Start**: topics `hook start` adds to a session in a role (a Claude Peers
+  tab, the Lead session, a repo with peers, postbox wired, a native inbox).
+- **Tool**: topics `hook tool` adds the moment something happens (a failed
+  signature, a first `gh`, a peer command).
 - **Pointer only**: topics that are only listed in the index paragraph, with
   the situation that calls for each. Claude reads the file when the task
   arises, the way Anthropic's own auto memory points at its topic files.
 
+Main, start and tool topics are not imported but are listed in the index
+paragraph too, so a session whose hook is missing or broken still has a route
+to the file. The test of where a rule goes: must every seat hold it before any
+tool call (always), only the conversation that orchestrates (main), a role
+(start), or the moment something happens (tool).
+
 Which topic is in which class is not copied here, because it drifts: run
 `shared-memory topics` (add a directory to read a source tree, as
 `shared-memory topics dot_claude-shared`). It prints one line per topic file:
-the slug, `always`, `start`, `tool`, `pointer` or `unreachable`, and whether
+the slug, `always`, `main`, `start`, `tool`, `pointer` or `unreachable`, and whether
 the index lists the topic (`-` for an imported one, which needs no listing).
 It exits 1 when a topic is neither imported nor listed, and
 `tests/claude-shared-memory.bats` runs it on the source. A new topic file
@@ -72,14 +81,14 @@ https://code.claude.com/docs/en/hooks, which the design rests on:
 
 - `additionalContext` is honoured on SessionStart, PostToolUse and
   PostToolUseFailure among others; plain stdout becomes context on
-  SessionStart. `hook start` prints plain text, `hook tool` prints JSON.
+  SessionStart. `hook start` and `hook main` print plain text, `hook tool` prints JSON.
 - PostToolUse fires only when the tool succeeded; a failed Bash call goes to
   PostToolUseFailure, whose `error` field starts `Exit code N` and carries the
   output. Both events are wired, and `tool_text` reads the right field for
   each.
 - Settings hooks also fire for tool calls made inside subagents, with an
   `agent_id` in the input. A subagent never sees SessionStart, so it gets
-  none of the start topics and does get the tool ones.
+  none of the main or start topics and does get the tool ones.
 - SessionStart carries `source` (startup, resume, clear, compact, fork) and
   `session_title` when one is set, and is re-run after compaction
   (https://code.claude.com/docs/en/context-window).
@@ -110,6 +119,14 @@ The topics are chosen by role:
 | `peer-seat` | a Claude Peers tab |
 | `lead`, `approvals` | the Lead session and not a Claude Peers tab |
 
+`shared-memory hook main`, also on SessionStart, has no condition: it runs no
+`claude-peer`, keeps no state and adds the same text to every main
+conversation, whatever its title or worktree. Its output is the line
+`shared-memory: these shared-memory topics apply to this session (a main
+conversation), so they are added here:` and then the text of each slug of
+`MAIN_ORDER`. It runs on every `source`, like `hook start`, and `hook start`
+never prints a `MAIN_ORDER` topic.
+
 A slug whose file does not exist is skipped, so a role's topic costs nothing
 until its file lands. The output opens with a `shared-memory:` line naming the
 true conditions, then the topic texts in `START_ORDER`. On `clear` and
@@ -128,6 +145,8 @@ summarised away.
   plugin-prefixed) as the skill;
 - `peer-lifetime` when the Bash command runs `claude-peer start`, `stop`, or
   `log claim|note|done` (`PEER_COMMAND`; `slots` and `log show` add nothing);
+- `web-fetching` when the tool is exactly `WebFetch`, whatever the result, so a
+  session's or subagent's first WebFetch brings the fallback rule.
 - `session-mail` when the tool is `SendMessage` or starts `mcp__postbox__`, or
   the Bash command runs `am mail` (`MAIL_COMMAND`).
 - `github-accounts` when the Bash command starts with `gh ` or `command gh `
@@ -150,12 +169,18 @@ one line per topic telling Claude to read the file (logged `oversize`).
 topic under the same limit, so a topic that grows past it fails there before
 it falls back in a session.
 
+The main bundle is a second hook command, so it has a 10,000 of its own: "Claude
+Code measures each string on its own, even when several hooks run for the same
+event" (the hooks page). It has no allowance of its own beyond that: the tests
+hold it under 9,000 and hold the always-loaded text plus the bundle at or
+under 16,200, the total a main conversation carries.
+
 A tool topic is added once per session and agent. The told file,
 `${XDG_STATE_HOME:-$HOME/.local/state}/shared-memory/told/<session id>`, holds
 `<agent id or main><TAB><slug>` lines; a second hit is logged `told` and
 silent. Each start hook run removes told files older than 14 days. The start
 topics have no told file: SessionStart runs once per start, and a resumed
-session may carry them twice (not checked).
+session may carry them twice (see "What it cannot see").
 
 A topic the index still imports is never added, in either hook (logged
 `imported`). That is what makes the rollout order-independent: an overlay may
@@ -173,7 +198,7 @@ none may be added (the same stance as `memoryguard hook`, and the reverse of
   `error`;
 - no python3: `hook` logs `nopython` from `sh` and exits 0;
 - the settings entries are `[ -x ~/bin/shared-memory ] && exec ... || true`
-  with a timeout (10 s for SessionStart, 5 s for the tool events), so a missing
+  with a timeout (10 s for `hook start`, 5 s for `hook main` and the tool events), so a missing
   script or a failing one is also harmless;
 - under `MEMORYGUARD_DEPTH` (memoryguard's decision child) `hook` returns at
   once;
@@ -183,23 +208,28 @@ none may be added (the same stance as `memoryguard hook`, and the reverse of
 
 `hook tool` runs on every Bash call, so `sh` checks the payload against the
 `SIGNING` and `CONNECT` strings, the Claude in Chrome name, `claude-peer start`,
-`stop` and `log`, `am mail`, a command starting `gh `, `SendMessage` and `mcp__postbox__` before starting
+`stop` and `log`, `am mail`, a command starting `gh `, `SendMessage`, `WebFetch` and `mcp__postbox__` before starting
 python. The strings in the `case` in the script and the constants in the
 python must be edited together.
 
 ## Wiring is each overlay's
 
-`shared-memory settings` prints the SessionStart entry and the PostToolUse and
-PostToolUseFailure entries (matcher
-`Bash|Skill|SendMessage|mcp__claude-in-chrome__.*|mcp__postbox__.*`). A profile
-whose settings still carry the old matcher gets `session-mail` only from
-`am mail` and from the index line. It never edits a file; `docs/private-overlays.md` says where each overlay
-pastes it. `claude-doctor`'s `topics:` line reports `hook: wired|partly
-wired|not wired` (the settings text contains `shared-memory hook start`,
-`shared-memory hook tool`, or both), whether `~/bin/shared-memory` is present,
-how many topics load on demand (split into start, tool and pointer), and how
-many injections the log counts, with how many were already told and how many
-errored. A missing or failing script prints `?`, not a healthy zero.
+`shared-memory settings` prints the SessionStart entry, which holds two
+commands (`hook start` with a 10-second timeout, `hook main` with 5), and the
+PostToolUse and PostToolUseFailure entries (matcher
+`Bash|Skill|SendMessage|WebFetch|mcp__claude-in-chrome__.*|mcp__postbox__.*`).
+It never edits a file; `docs/private-overlays.md` says where each overlay
+pastes it. A profile on the old block keeps working: without `hook main` it
+has the delegation topic by its pointer line only, and with the old matcher
+it gets `session-mail` only from `am mail` and from the index line, and no
+`web-fetching` at all. `claude-doctor`'s `topics:` line reports `hook:
+wired`, `partly wired (missing <names>)` or `not wired` (the names are `start`,
+`main` and `tool`, those the settings text lacks of `shared-memory hook start`,
+`shared-memory hook main` and `shared-memory hook tool`), whether
+`~/bin/shared-memory` is present, how many topics load on demand (split into
+main, start, tool and pointer), and how many injections the log counts, with
+how many were already told and how many errored. A missing or failing script
+prints `?`, not a healthy zero.
 
 ## The approvals topic and its ledger
 
@@ -219,8 +249,8 @@ overlay.
 ## The log
 
 `${XDG_STATE_HOME:-$HOME/.local/state}/shared-memory/injections.tsv`, append
-only, five tab-separated fields: UTC time, profile label, event (`start` or
-`tool`), slug, outcome (`injected`, `told`, `imported`, `oversize`, `error`,
+only, five tab-separated fields: UTC time, profile label, event (`start`,
+`main` or `tool`), slug, outcome (`injected`, `told`, `imported`, `oversize`, `error`,
 `nopython`). It never holds a session id, tool input or output, or topic
 text: the directory is readable by every profile, so a work profile's
 sessions must not be characterised there (memoryguard's log keeps to the
@@ -238,9 +268,13 @@ prints `outcome`, `slug` and a count. A trigger that never fires shows as no
   connection failure whose text is not a `CONNECT` string. The topic is then
   not added, and the index paragraph is the route.
 - A resumed session: SessionStart runs again and whether the first run's
-  text is still in the transcript is not documented, so the start topics
-  may appear twice.
-- Subagents: they never run SessionStart, so they do not get the peer,
+  text is still in the transcript is not documented, so the start and main
+  topics may appear twice (nine of 107 start bundles in the operator's
+  transcripts followed another with no compaction between them, counted
+  2026-11-25).
+- A launch with hooks off has neither memory nor bundle: only the index
+  paragraph's route to the files.
+- Subagents: they never run SessionStart, so they do not get the main, peer,
   Lead or messaging topics. Those are orchestrator rules; the tool topics
   still reach a subagent whose commit fails to sign.
 
