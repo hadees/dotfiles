@@ -38,7 +38,16 @@ ids() { cut -f1 <<< "$output" | tr '\n' ' '; }
 Brief one.
 
 ### Step 2
-Brief two.'
+Brief two.
+
+### Step 3
+Brief three.
+
+### Step 4
+Brief four.
+
+### Step 5
+Brief five.'
   run --separate-stderr "$PR" "$PLAN"
   [ "$status" -eq 0 ]
   [ "$(ids)" = "1 2 " ]
@@ -608,16 +617,88 @@ Files: x.'
   [ "$stderr" = "step 2: needs unreadable" ]
 }
 
-@test "steps found but none ready: exit 1, nothing on stderr" {
+@test "steps found but no candidates: exit 1, nothing on stderr" {
+  plan_of '### Step 1: a
+Needs: nothing.
+
+### Step 2: b
+Needs: step 1.'
+  run --separate-stderr "$PR" "$PLAN" --running 1
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+  [ -z "$stderr" ]
+}
+
+@test "a step that needs itself, or a cycle among unverified steps, goes to stderr and is never listed" {
+  plan_of '### Step 1: a
+Needs: nothing.
+
+### Step 2: b
+Needs: step 2.
+
+### Step 3: c
+Needs: step 4.
+
+### Step 4: d
+Needs: steps 3 and 5.
+
+### Step 5: e
+Needs: step 3.
+
+### Step 6: f
+Needs: step 1.'
+  run --separate-stderr "$PR" "$PLAN" 1
+  [ "$status" -eq 0 ]
+  [ "$(ids)" = "6 " ]
+  [ "$stderr" = "step 2: needs itself
+steps 3, 4, 5: cycle" ]
+  run --separate-stderr "$PR" "$PLAN" 1 6
+  [ "$status" -eq 2 ]
+  [ -z "$output" ]
+  # a cycle is only a cycle among steps not yet verified
+  run --separate-stderr "$PR" "$PLAN" 1 6 4
+  [ "$(ids)" = "3 " ]
   plan_of '### Step 1: a
 Needs: step 2.
 
 ### Step 2: b
 Needs: step 1.'
   run --separate-stderr "$PR" "$PLAN"
-  [ "$status" -eq 1 ]
+  [ "$status" -eq 2 ]
+  [ "$stderr" = "steps 1, 2: cycle" ]
+}
+
+@test "a section a fence swallowed: its step needs itself, and a table step with no section of its own is named" {
+  plan_of '| Step | Needs |
+|---|---|
+| 1 | none |
+| 2 | 1 |
+| 3 | 1 |
+
+### Step 1: a
+Needs: nothing.
+
+```
+### Step 2: b
+Needs: step 1.
+
+### Step 3: c
+Needs: step 3.'
+  run --separate-stderr "$PR" "$PLAN" 1
+  [ "$status" -eq 0 ]
+  [ "$(ids)" = "2 3 " ]
+  [ "$stderr" = "step 2: no section of its own
+step 3: no section of its own" ]
+  plan_of '### Step 1: a
+Needs: nothing.
+
+```
+### Step 2: b
+Needs: step 1.'
+  run --separate-stderr "$PR" "$PLAN"
+  [ "$status" -eq 2 ]
   [ -z "$output" ]
-  [ -z "$stderr" ]
+  [ "$stderr" = "step 1: needs itself" ]
 }
 
 @test "everything verified: exit 1" {

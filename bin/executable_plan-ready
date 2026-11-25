@@ -1,5 +1,5 @@
 #!/bin/sh
-# plan-ready - which steps of a plan can start now. `plan-ready --help` has
+# plan-ready - the candidate steps of a plan. `plan-ready --help` has
 # the format it reads and its exit codes. The program is python3, standard
 # library only, clean on 3.9.
 command -v python3 >/dev/null 2>&1 || {
@@ -7,13 +7,14 @@ command -v python3 >/dev/null 2>&1 || {
   exit 64
 }
 exec python3 -I - "$@" <<'PY'
-"""plan-ready - which steps of a plan can start now.
+"""plan-ready - the candidate steps of a plan.
 
     plan-ready <plan.md> [verified ids...] [--running ids...]
 
-Prints "<id><TAB><title>" for every step it can show is ready, in step order:
-every need the plan states for the step is a step of this plan in the verified
-list, and the step is neither verified nor running. Ids are strings ("1", "1b",
+Prints "<id><TAB><title>" for every candidate, in step order: a step whose every
+stated need is a step of this plan in the verified list, and which is neither
+verified nor running. A candidate is a lead, not a verdict: check it against
+the plan (and stderr) before starting it. Ids are strings ("1", "1b",
 "C9"); a list may also be comma-separated. Everything after --running is a step
 already dispatched: never printed, not counted as verified.
 
@@ -44,7 +45,11 @@ sentence. A Consumes line names what earlier steps produce, so only its step
 references are read. "Step 1" in a plan that has only 1a and 1b means both.
 
 A step is also withheld, with a line on stderr, when it has rows in two tables,
-an empty Needs, no Needs at all, or a need for a step the plan lacks. Nothing
+an empty Needs, no Needs at all, a need for a step the plan lacks, a need for
+itself ("needs itself") or a cycle among steps not yet verified ("steps A, B:
+cycle"). A table step with no section of its own, in a plan that has Step
+headings, gets a stderr line ("no section of its own") and is still listed if
+its cells say so: a fence or a sub-heading may have swallowed its heading. Nothing
 at all is printed when a row of a table with a Needs column, or a Step
 heading, does not name exactly one step, or a labelled needs line sits outside
 every step section: it may belong to a step this did not recognise.
@@ -52,7 +57,7 @@ every step section: it may belong to a step this did not recognise.
 Not read: a need written as plain prose in a step's body, under none of those
 labels. The Needs cell is where the planner's format puts every need.
 
-Exit 0: something was printed. 1: steps found, none ready. 2: no steps found,
+Exit 0: something was printed. 1: steps found, no candidates. 2: no steps found,
 or nothing printed and stderr says why (read the plan's needs yourself).
 64: bad usage or plan file.
 """
@@ -182,8 +187,9 @@ def cells_of(line):
 
 def parse(path):
     """({id: [title, section lines]}, {id: [(table, needs cell)]}, [why nothing
-    can be shown]) from a plan."""
+    can be shown], {ids with a heading}) from a plan."""
     steps, tables, stop, cur, level, fenced, cols = {}, [], [], None, 0, False, None
+    headed = set()
     with open(path, encoding="utf-8") as f:
         text = f.read()
     for no, line in enumerate(text.splitlines(), 1):
@@ -213,6 +219,7 @@ def parse(path):
         m = HEADING.match(line)
         if m:
             cur, level = m.group(2), len(m.group(1))
+            headed.add(cur)
             rest = m.group(3).strip()
             if MORE_IDS.match(rest):
                 stop.append("line %d: a heading that names more than one step" % no)
@@ -234,7 +241,7 @@ def parse(path):
             needs.setdefault(sid, []).extend((t, c) for c in cells)
             if sid not in steps or not steps[sid][0]:
                 steps.setdefault(sid, [title, []])[0] = title
-    return steps, needs, stop
+    return steps, needs, stop, headed
 
 
 def main(argv):
@@ -250,7 +257,7 @@ def main(argv):
     try:
         if not argv or not all(re.fullmatch(ID, t) for t in ids + running):
             raise ValueError("bad step id or no plan")
-        steps, cells, stop = parse(argv[0])
+        steps, cells, stop, headed = parse(argv[0])
     except (ValueError, OSError) as e:
         sys.stderr.write("usage: plan-ready <plan.md> [verified ids...] [--running ids...] (%s)\n" % e)
         return 64
@@ -261,11 +268,11 @@ def main(argv):
     if stop:
         sys.stderr.write("".join("%s\n" % s for s in stop))
         return 2
-    ready = bad = 0
+    info = {}
     for n in sorted(steps, key=order):
         if n in verified or n in running:
             continue
-        title, lines = steps[n]
+        lines = steps[n][1]
         deps, rest, stated, empty = set(), [], False, False
         for kind, text in [("strict", c) for _, c in cells.get(n, [])] + fields(lines):
             d, r = strict_needs(text, known) if kind == "strict" else lenient_needs(text, known)
@@ -277,20 +284,49 @@ def main(argv):
             elif d is None and kind == "strict":
                 empty = True
         if len({t for t, _ in cells.get(n, [])}) > 1:
-            sys.stderr.write("step %s: rows in more than one table with a Needs column\n" % n)
-            bad += 1
+            info[n] = (["rows in more than one table with a Needs column"], None)
         elif rest:
-            sys.stderr.write("step %s: also needs: %s\n" % (n, "; ".join(rest)))
-            bad += 1
+            info[n] = (["also needs: %s" % "; ".join(rest)], None)
         elif empty or not stated:
-            sys.stderr.write("step %s: needs unreadable\n" % n)
-            bad += 1
+            info[n] = (["needs unreadable"], None)
         elif deps - known:
-            for m in sorted(deps - known, key=order):
-                sys.stderr.write("step %s: needs unknown step %s\n" % (n, m))
+            info[n] = (["needs unknown step %s" % m for m in sorted(deps - known, key=order)], None)
+        else:
+            info[n] = ([], deps)
+    graph = {n: d & set(info) for n, (why, d) in info.items() if not why}
+    reach = {}
+    for n in graph:
+        seen, todo = set(), list(graph[n])
+        while todo:
+            d = todo.pop()
+            if d not in seen:
+                seen.add(d)
+                todo.extend(graph.get(d, ()))
+        reach[n] = seen
+    stuck, said = set(), {}
+    for n in sorted(graph, key=order):
+        if n in graph[n]:
+            said.setdefault(n, []).append("step %s: needs itself" % n)
+        comp = {m for m in graph if m in reach[n] and n in reach[m]} | {n}
+        if len(comp) > 1 and n in reach[n] and not comp & stuck:
+            first = min(comp, key=order)
+            said.setdefault(first, []).append("steps %s: cycle" % ", ".join(sorted(comp, key=order)))
+        if n in reach[n]:
+            stuck |= comp
+    ready = bad = 0
+    for n in sorted(info, key=order):
+        if headed and n not in headed:
+            sys.stderr.write("step %s: no section of its own\n" % n)
             bad += 1
-        elif deps <= verified:
-            print("%s\t%s" % (n, title))
+        for line in said.get(n, []):
+            sys.stderr.write(line + "\n")
+            bad += 1
+        why, deps = info[n]
+        for line in why:
+            sys.stderr.write("step %s: %s\n" % (n, line))
+            bad += 1
+        if not why and n not in stuck and deps <= verified:
+            print("%s\t%s" % (n, steps[n][0]))
             ready += 1
     return 0 if ready else (2 if bad else 1)
 
