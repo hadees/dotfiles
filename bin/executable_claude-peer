@@ -153,6 +153,16 @@
 #                            exit 1 without one
 #   log show [--all]         open claims and the last 24 hours of notes (--all:
 #                            the file), from <git common dir>/claude-peer.log
+#   job hook                 a Claude Code hook (SubagentStart, SubagentStop,
+#                            PostToolUse on SubagentHandback): appends the
+#                            payload on stdin to <git common dir>/claude-peer.jobs;
+#                            prints nothing, exits 0 whatever happens
+#   job settings             the three settings.json hook entries to paste
+#   jobs [--all | --since HOURS] [<dir>]
+#                            state<TAB>agent id<TAB>who<TAB>type<TAB>started<TAB>
+#                            ended<TAB>worktree<TAB>description<TAB>report per
+#                            subagent, newest first (default the last 24 hours);
+#                            state running, ended or reported
 #   path <branch>            print the worktree path for <branch> (nothing
 #                            is created)
 #   plan <branch>...         branch<TAB>worktree<TAB>create|reuse|conflict:<why>
@@ -2322,6 +2332,153 @@ cmd_log() {
   esac
 }
 
+# --- jobs ---------------------------------------------------------------------
+# What a session dispatched, kept by hooks: subagents have no pane, claim or
+# registry record, so Claude Code's own start, stop and handback events are
+# written to <git common dir>/claude-peer.jobs, which survives Lead's compaction.
+# Append-only, tab-separated: <UTC time> who event agent-id agent-type text worktree,
+# event start|stop|report; tabs and newlines in text are written as spaces.
+
+# [<dir>] -> the jobs file of the repository holding dir (default $PWD); status 1 outside one
+jobs_file() { jf_c=$(git -C "${1:-$PWD}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && printf '%s/claude-peer.jobs\n' "$jf_c"; }
+
+# One hook payload on stdin -> kind, cwd, agent id, agent type, text, one per line;
+# nothing for a payload that is not ours or has no agent. A SubagentStop's text is
+# the `description` of the agent's .meta.json (a layout observed at Claude Code
+# 2.1.325, not an interface: when it changes the text is empty).
+job_py() {
+  # shellcheck disable=SC2016
+  python3 -I -c '
+import json, re, sys
+try:
+    p = json.load(sys.stdin)
+    ev, aid, typ, text = p.get("hook_event_name"), p.get("agent_id") or "", p.get("agent_type") or "", ""
+    if not aid:
+        sys.exit()
+    if ev == "SubagentStart" and typ:
+        kind = "start"
+    elif ev == "SubagentStop" and typ:
+        kind = "stop"
+        t = p.get("agent_transcript_path") or ""
+        if t.endswith(".jsonl"):
+            try:
+                text = json.load(open(t[:-6] + ".meta.json", encoding="utf-8")).get("description") or ""
+            except Exception:
+                pass
+    elif ev == "PostToolUse" and p.get("tool_name") == "SubagentHandback":
+        kind = "report"
+        m = str((p.get("tool_input") or {}).get("message") or "")
+        text = (m.strip().split("\n") or [""])[0][:200]
+        r = re.search(r"[^\s\"`(<]*/claude-reports/[^\s\"`)>]*", m)
+        if r:
+            text += " " + r.group().rstrip(".,;:")
+    else:
+        sys.exit()
+    print("\n".join(re.sub(r"[\t\n\r]", " ", str(x)) for x in (kind, p.get("cwd") or "", aid, typ, text)))
+except Exception:
+    pass
+'
+}
+
+# The hook: appends one line, prints nothing, always returns 0. A SubagentStop
+# hook that prints or exits 2 keeps the subagent running, so no path here speaks.
+job_hook() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  jh_out=$(job_py 2>/dev/null) && [ -n "$jh_out" ] || return 0
+  jh_cwd=$(printf '%s\n' "$jh_out" | sed -n 2p)
+  [ -d "$jh_cwd" ] || return 0
+  jh_f=$(jobs_file "$jh_cwd") || return 0
+  jh_root=$(root_of "$jh_cwd") || return 0
+  jh_top=$(cd "$(git -C "$jh_cwd" rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null && pwd -P) || jh_top=
+  # who: a peer's own session has the variable (log_who answers Lead only while a
+  # peer holds a claim, which is not the question here)
+  jh_w=${CLAUDE_PEER_WORKTREE-}
+  if [ -n "$jh_w" ]; then jh_who=$(label_of "$(basename "$jh_w")"); else jh_who=Lead; fi
+  jh_wt=-
+  [ -z "$jh_top" ] || [ "$jh_top" = "$jh_root" ] || jh_wt=$jh_cwd
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$jh_who" \
+    "$(printf '%s\n' "$jh_out" | sed -n 1p)" "$(printf '%s\n' "$jh_out" | sed -n 3p)" \
+    "$(printf '%s\n' "$jh_out" | sed -n 4p)" "$(printf '%s\n' "$jh_out" | sed -n 5p)" "$jh_wt" >>"$jh_f"
+  return 0
+}
+
+job_settings() {
+  cat <<'JSON'
+claude-peer does not edit settings.json: each profile's file is owned by its
+overlay. Add these to that file's "hooks" (merging with what is there):
+
+  "SubagentStart": [
+    { "hooks": [{ "type": "command", "command": "[ -x ~/bin/claude-peer ] && exec ~/bin/claude-peer job hook || true", "timeout": 5 }] }
+  ],
+  "SubagentStop": [
+    { "hooks": [{ "type": "command", "command": "[ -x ~/bin/claude-peer ] && exec ~/bin/claude-peer job hook || true", "timeout": 5 }] }
+  ],
+  "PostToolUse": [
+    { "matcher": "SubagentHandback",
+      "hooks": [{ "type": "command", "command": "[ -x ~/bin/claude-peer ] && exec ~/bin/claude-peer job hook || true", "timeout": 5 }] }
+  ]
+
+The hook prints nothing and exits 0 whatever happens (a SubagentStop hook that
+prints, or exits 2, keeps the subagent running). `claude-peer jobs` reads what
+it wrote.
+JSON
+}
+
+# job hook | job settings
+cmd_job() {
+  [ $# -eq 1 ] || usage
+  case $1 in
+    hook) job_hook >/dev/null 2>&1; exit 0;;
+    settings) job_settings;;
+    *) usage;;
+  esac
+}
+
+# <hours|all> -> one row per agent id first seen in that window, newest first:
+# state, agent id, who, type, started, ended, worktree, description, report
+# (- for a missing field); state is running (no stop), ended or reported (a
+# stop, with a report)
+jobs_rows() {
+  jr_f=$(jobs_file) && [ -f "$jr_f" ] || return 0
+  jr_cut=0
+  if [ "$1" != all ]; then
+    jr_t=$(( $(date -u +%s) - $1 * 3600 ))
+    jr_cut=$(date -u -d "@$jr_t" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$jr_t" +%Y-%m-%dT%H:%M:%SZ)
+  fi
+  awk -F'\t' -v OFS='\t' -v cut="$jr_cut" '
+    function d(v) { return v == "" ? "-" : v }
+    $4 == "" { next }
+    { id = $4
+      if (first[id] == "") { first[id] = $1; ids[++n] = id }
+      if (who[id] == "" || $3 == "start") who[id] = $2
+      if (typ[id] == "") typ[id] = $5
+      if (wt[id] == "" && $7 != "-") wt[id] = $7
+      if ($3 == "start") st[id] = $1
+      else if ($3 == "stop") { en[id] = $1; desc[id] = $6 }
+      else if ($3 == "report") rep[id] = $6 }
+    END { for (i = 1; i <= n; i++) { id = ids[i]
+      if (first[id] < cut) continue
+      print first[id], (en[id] == "" ? "running" : rep[id] == "" ? "ended" : "reported"), id, d(who[id]), d(typ[id]), d(st[id]), d(en[id]), d(wt[id]), d(desc[id]), d(rep[id]) } }' "$jr_f" |
+    LC_ALL=C sort -r | cut -f2-
+}
+
+# <who>: status 0 when who has an agent started in the last 24 hours and not stopped
+jobs_running() {
+  jobs_rows 24 | awk -F'\t' -v w="$1" '$1 == "running" && $3 == w { f = 1 } END { exit !f }'
+}
+
+# [--all | --since HOURS] [<dir>]
+cmd_jobs() {
+  cj_h=24
+  case ${1-} in
+    --all) cj_h=all; shift;;
+    --since) [ $# -ge 2 ] || usage; case $2 in ''|*[!0-9]*) usage;; esac; cj_h=$2; shift 2;;
+  esac
+  [ $# -le 1 ] || usage
+  [ $# -eq 0 ] || cd -- "$1" 2>/dev/null || exit 1
+  jobs_rows "$cj_h"
+}
+
 cmd_path() {
   [ $# -eq 1 ] || usage
   valid_branch "$1"
@@ -3411,6 +3568,8 @@ case $cmd in
   slots) cmd_slots "$@";;
   panes) cmd_panes "$@";;
   log) cmd_log "$@";;
+  job) cmd_job "$@";;
+  jobs) cmd_jobs "$@";;
   claim) cmd_claim "$@";;
   name) cmd_name "$@";;
   path) cmd_path "$@";;

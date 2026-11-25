@@ -4826,3 +4826,121 @@ ov_ready() {
   run sh "$BIN" here extra
   [ "$status" -eq 2 ]
 }
+
+# --- the jobs record -------------------------------------------------------------
+# job hook turns Claude Code's subagent events into lines of claude-peer.jobs; jobs
+# reads them back. Payloads are fixtures: the layout of a real transcript's
+# .meta.json is observed, not an interface.
+
+JOBS=.git/claude-peer.jobs
+
+# job_hook <json>: run the hook with that payload, from the main checkout
+job_hook() { cd "$REPO" && printf '%s' "$1" | sh "$BIN" job hook; }
+
+# job_payload <event> <id> <type> <cwd> [<extra json members>]
+job_payload() {
+  printf '{"hook_event_name":"%s","agent_id":"%s","agent_type":"%s","cwd":"%s"%s}' "$1" "$2" "$3" "$4" "${5:+,$5}"
+}
+
+@test "job hook: start, stop and report each write one line; nothing reaches stdout, the exit is 0" {
+  git -C "$REPO" worktree add -q "$BATS_TEST_TMPDIR/wt" -b job-x
+  mkdir -p "$BATS_TEST_TMPDIR/sub"
+  : >"$BATS_TEST_TMPDIR/sub/agent-a1.jsonl"
+  printf '{"agentType":"work-sonnet","description":"Build step 1"}' >"$BATS_TEST_TMPDIR/sub/agent-a1.meta.json"
+  run --separate-stderr job_hook "$(job_payload SubagentStart a1 work-sonnet "$BATS_TEST_TMPDIR/wt")"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  run --separate-stderr job_hook "$(job_payload PostToolUse a1 work-sonnet "$BATS_TEST_TMPDIR/wt" \
+    '"tool_name":"SubagentHandback","tool_input":{"message":"DONE\nthe account is in ~/.local/state/claude-reports/proj/step1.md. ok"}')"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  run --separate-stderr job_hook "$(job_payload SubagentStop a1 work-sonnet "$REPO" \
+    "\"agent_transcript_path\":\"$BATS_TEST_TMPDIR/sub/agent-a1.jsonl\"")"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  [ "$(wc -l <"$REPO/$JOBS" | tr -d ' ')" -eq 3 ]
+  # who is Lead outside a peer; the worktree is the cwd when it is not the main checkout, else -
+  [ "$(sed -n 1p "$REPO/$JOBS" | cut -f2-)" = "$(printf 'Lead\tstart\ta1\twork-sonnet\t\t%s' "$BATS_TEST_TMPDIR/wt")" ]
+  [ "$(sed -n 2p "$REPO/$JOBS" | cut -f2-6)" = "$(printf 'Lead\treport\ta1\twork-sonnet\tDONE ~/.local/state/claude-reports/proj/step1.md')" ]
+  [ "$(sed -n 3p "$REPO/$JOBS" | cut -f2-)" = "$(printf 'Lead\tstop\ta1\twork-sonnet\tBuild step 1\t-')" ]
+}
+
+@test "job hook: a peer's session is its label; internal agents (no type), no agent id, other events, bad JSON and no repository write nothing" {
+  CLAUDE_PEER_WORKTREE="$REPO/.claude/worktrees/alpha" job_hook "$(job_payload SubagentStart a2 scout-haiku "$REPO")"
+  [ "$(sed -n 1p "$REPO/$JOBS" | cut -f2-5 | tr '\t' ' ')" = "Alpha start a2 scout-haiku" ]
+  job_hook "$(job_payload SubagentStop a3 '' "$REPO")"
+  job_hook "$(job_payload SubagentStart a3 '' "$REPO")"
+  job_hook "$(job_payload SubagentStart '' scout-haiku "$REPO")"
+  job_hook "$(job_payload PreToolUse a4 scout-haiku "$REPO" '"tool_name":"SubagentHandback"')"
+  job_hook "$(job_payload PostToolUse a4 scout-haiku "$REPO" '"tool_name":"Bash"')"
+  run --separate-stderr job_hook 'this is not json'
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  run --separate-stderr job_hook ''
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  mkdir "$BATS_TEST_TMPDIR/plain"
+  run --separate-stderr job_hook "$(job_payload SubagentStart a5 scout-haiku "$BATS_TEST_TMPDIR/plain")"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+  [ "$(wc -l <"$REPO/$JOBS" | tr -d ' ')" -eq 1 ]
+}
+
+@test "job hook: an unwritable jobs file is still silent and exit 0" {
+  mkdir "$REPO/$JOBS"
+  run --separate-stderr job_hook "$(job_payload SubagentStart a6 scout-haiku "$REPO")"
+  [ "$status" -eq 0 ]; [ -z "$output" ]; [ -z "$stderr" ]
+}
+
+@test "jobs: a start, a report and a stop are one reported row with the description; a running and an ended row beside it" {
+  mkdir -p "$BATS_TEST_TMPDIR/sub"
+  : >"$BATS_TEST_TMPDIR/sub/agent-b1.jsonl"
+  printf '{"description":"Plan the thing"}' >"$BATS_TEST_TMPDIR/sub/agent-b1.meta.json"
+  job_hook "$(job_payload SubagentStart b1 plan-fable "$REPO")"
+  job_hook "$(job_payload PostToolUse b1 plan-fable "$REPO" '"tool_name":"SubagentHandback","tool_input":{"message":"DONE_WITH_CONCERNS: one thing"}')"
+  job_hook "$(job_payload SubagentStop b1 plan-fable "$REPO" "\"agent_transcript_path\":\"$BATS_TEST_TMPDIR/sub/agent-b1.jsonl\"")"
+  job_hook "$(job_payload SubagentStart b2 scout-haiku "$REPO")"
+  job_hook "$(job_payload SubagentStart b3 scout-haiku "$REPO")"
+  job_hook "$(job_payload SubagentStop b3 scout-haiku "$REPO")"
+  run sh "$BIN" jobs
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 3 ]
+  # state, id, who, type, started, ended, worktree, description, report
+  printf '%s\n' "$output" | awk -F'\t' '$1 == "reported" && $2 == "b1" && $3 == "Lead" && $4 == "plan-fable" && $5 != "-" && $6 != "-" && $7 == "-" && $8 == "Plan the thing" && $9 == "DONE_WITH_CONCERNS: one thing" { f = 1 } END { exit !f }'
+  printf '%s\n' "$output" | awk -F'\t' '$2 == "b2" && $1 == "running" && $6 == "-" && $8 == "-" && $9 == "-" { f = 1 } END { exit !f }'
+  printf '%s\n' "$output" | awk -F'\t' '$2 == "b3" && $1 == "ended" { f = 1 } END { exit !f }'
+}
+
+@test "jobs: the window is 24 hours, --since HOURS widens it, --all is the file, newest first; a <dir>, no repository, a bad number" {
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  printf '2020-01-01T00:00:00Z\tLead\tstart\told1\twork-sonnet\t\t-\n%s\tLead\tstart\tnew1\twork-sonnet\t\t-\n' "$now" >"$REPO/$JOBS"
+  run sh "$BIN" jobs
+  [ "$(printf '%s\n' "$output" | cut -f2)" = new1 ]
+  run sh "$BIN" jobs --all
+  [ "$(printf '%s\n' "$output" | cut -f2 | tr '\n' ' ')" = "new1 old1 " ]
+  run sh "$BIN" jobs --since 1000000
+  [ "$(printf '%s\n' "$output" | cut -f2 | tr '\n' ' ')" = "new1 old1 " ]
+  cd "$BATS_TEST_TMPDIR"
+  run sh "$BIN" jobs "$REPO"
+  [ "$(printf '%s\n' "$output" | cut -f2)" = new1 ]
+  run sh "$BIN" jobs
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  run sh "$BIN" jobs --since x
+  [ "$status" -eq 2 ]
+}
+
+@test "jobs_running: true for a started and not stopped agent of that who in the last day, false for a stopped, another's or an old one" {
+  eval "$(sed -n '/^jobs_file() /p;/^jobs_rows() {/,/^}/p;/^jobs_running() {/,/^}/p' "$BIN")"
+  cd "$REPO"
+  no jobs_running Lead
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  printf '2020-01-01T00:00:00Z\tLead\tstart\told\tx\t\t-\n%s\tAlpha\tstart\tp1\tx\t\t-\n%s\tLead\tstart\tl1\tx\t\t-\n%s\tLead\tstop\tl1\tx\t\t-\n' "$now" "$now" "$now" >"$JOBS"
+  no jobs_running Lead
+  jobs_running Alpha
+  printf '%s\tLead\tstart\tl2\tx\t\t-\n' "$now" >>"$JOBS"
+  jobs_running Lead
+}
+
+@test "job settings: prints the three hook entries and edits nothing; a bad verb is usage" {
+  run sh "$BIN" job settings
+  [ "$status" -eq 0 ]
+  for e in SubagentStart SubagentStop PostToolUse; do [[ "$output" == *"\"$e\": ["* ]]; done
+  [[ "$output" == *'"matcher": "SubagentHandback"'* ]]
+  [ "$(printf '%s\n' "$output" | grep -c 'claude-peer job hook || true", "timeout": 5')" -eq 3 ]
+  run sh "$BIN" job
+  [ "$status" -eq 2 ]
+}
