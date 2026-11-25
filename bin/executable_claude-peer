@@ -729,6 +729,18 @@ pane_watch() {
   done
 }
 
+# the pane's own terminal device, from ps (tty </dev/tty would only say /dev/tty);
+# none, ? or ?? prints nothing and leaves the draft guard off. A function because
+# bash 3.2 misparses a case's ")" inside ${VAR:-$(...)}.
+pane_dev() {
+  pd_t=$(ps -o tty= -p $$ 2>/dev/null | tr -d ' ')
+  case $pd_t in
+    ''|'?'|'??') ;;
+    /dev/*) printf '%s\n' "$pd_t" ;;
+    *) printf '/dev/%s\n' "$pd_t" ;;
+  esac
+}
+
 # the watcher, and the sleep it is in
 pane_unwatch() {
   [ -n "${pn_watch-}" ] || return 0
@@ -872,9 +884,7 @@ $(handoff_note)"; fi
   pn_watch=
   if [ -n "$pg_sec" ] && [ "$pg_we" -gt 0 ]; then
     rm -f "$pg_sf.sid"
-    # the pane's own terminal device (tty </dev/tty would only say /dev/tty);
-    # none, ? or ?? leaves the draft guard off
-    pg_tty=${CLAUDE_PEER_TTY:-$(pg_t=$(ps -o tty= -p $$ 2>/dev/null | tr -d ' '); case $pg_t in ''|'?'|'??') ;; /dev/*) echo "$pg_t" ;; *) echo "/dev/$pg_t" ;; esac)}
+    pg_tty=${CLAUDE_PEER_TTY:-$(pane_dev)}
     ( trap - EXIT; cd -- "$repo" && pane_watch "$pg_l" "$pg_t0" "$pg_we" "$(pane_num pane-done-minutes 5)" "$pg_sf" "$pg_tty" ) </dev/null >/dev/null 2>&1 &
     pn_watch=$!
   fi
