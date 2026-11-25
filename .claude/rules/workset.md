@@ -85,9 +85,10 @@ instead; a `SessionStart` hook (`workset hook start`) prints the set's
 brief — every member's worktree and the live path it stands for, the
 set's `note` lines, and a fixed reminder to land in member order and revert
 forward, never rewrite, if a later member is rejected after an earlier one
-merged. Both hooks fail open (`[ -x ~/bin/workset ] && … || true`) — they
-are conveniences, not the sensitivity boundary; Bash is not parsed by either
-of them, and is fenced separately by `denyguard`, wired fail-closed.
+merged, and that the session already stands in those worktrees. Both hooks
+fail open (`[ -x ~/bin/workset ] && … || true`) — they are conveniences,
+not the sensitivity boundary; Bash is not parsed by either of them, and is
+fenced separately by `denyguard`, wired fail-closed.
 
 **Distinct from a `workspace.*` group.** Worktabs groups repos into windows
 by however the operator sorts tabs, which is not the same axis a working

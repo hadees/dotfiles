@@ -307,6 +307,8 @@ workset_fn() { # subcommand...
   [[ "$output" == *"primary"* ]]
   [[ "$output" == *"feat-probe -> "*"octo-alpha"* ]]
   [[ "$output" == *"octo-alpha lands first"* ]]
+  [[ "$output" == *"is already standing in"* ]]
+  [[ "$output" == *"so there is nothing further to check out."* ]]
 }
 
 @test "settings: prints valid-looking JSON with the fail-open guard, never denyguard's fail-closed one" {

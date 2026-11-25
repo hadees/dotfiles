@@ -10,7 +10,3 @@
   Do not create any directory or file directly in it (worktrees, scratch
   clones, copies) unless I have told you to create or clone a new repo.
   Throwaway files go in the session scratchpad.
-- A session opened by `workset open <name> <branch>` is already standing in
-  worktrees for every member of that set — `$WORKSET` names the set and the
-  opening brief lists each member's worktree and the live path it stands
-  for, so there is nothing further to check out.

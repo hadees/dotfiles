@@ -338,6 +338,10 @@ cmd_hook_start() {
   order. If a later member's change is rejected after an earlier one
   merged, revert the earlier one forward — never rewrite history. The leak
   guard runs per push, so a public commit message must not name an overlay.
+  A session opened by `workset open <name> <branch>` is already standing in
+  worktrees for every member of that set — `$WORKSET` names the set and the
+  opening brief lists each member's worktree and the live path it stands
+  for, so there is nothing further to check out.
 RULES
 }
 
