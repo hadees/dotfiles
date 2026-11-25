@@ -240,6 +240,10 @@ purely a function of which overlays a machine carries.
   guard enforces this on every push — the pushed tree, ref names, commit
   messages, added lines, and author/committer identities — and its
   `tests/no-public-leak.bats` audits the whole clone the same way.
+- Something useful that cannot be public (a test that reads this machine's
+  own files, a check naming a real account) moves to the overlay that owns
+  what it names; it is not deleted. A change that takes it out of a public
+  diff says where it goes.
 
 ### Where the detail lives
 
