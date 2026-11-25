@@ -52,3 +52,91 @@ text written as spaces:
 Tests: `tests/claude-peer.bats` ("job hook: ...", "jobs: ...", "jobs_running: ...",
 "job settings: ..."). `jobs_running` is a shell function, so its test extracts it
 from the script with `sed`.
+
+## The queue
+
+What the operator thinks up while Lead builds is a card in
+`<git common dir>/claude-peer.queue`, beside the jobs record. Nothing is pushed
+into Lead on a clock: Lead pulls the next card when `gh pr merge` returns, and
+Lead never reads the queue itself. Append-only, tab-separated:
+`<UTC time><TAB><id><TAB><event><TAB><who><TAB><value><TAB><text>[<TAB><file>]`;
+`id` is `Q<n>` from the highest id in the file (`-` for a refusal; two adds in one
+instant can share one, there is no lock), `event` is `add`, `refused`, `set`,
+`take`, `done`, `drop`, `park`, `reopen`, `escalated` or `link`. A card's state is
+its last `add` or `reopen` (waiting), `take` (taken), `done`, `drop` (dropped) or
+`park` (parked); `set` changes its `waiting` (he is waiting on it), `unblocks` 0 to
+9, `prio` 0 to 3 or `size` S, M, L (`?` until set).
+
+- `queue add [--kind idea|plan|ask|unfinished] [--waiting] [--unblocks N] [--prio P]
+  [--size S|M|L] [--session SID] [--as NAME] -- <one line> [<file>]` prints the id.
+  The value is `<kind>:w=<0|1>:u=<N>:p=<P>:s=<S|M|L|?>[:session=<SID>]`. An `idea` or
+  `plan` needs a file that meets the definition of done: the headings `## Goal`,
+  `## Matters`, `## Constraints`, `## Decided`, `## Open`, `## Next` in that order,
+  and a non-empty line under `Goal` and under `Next`. Otherwise exit 1, one stderr
+  line naming what is missing, and a `refused` line (id `-`, the reason as text). A
+  relative file is stored absolute. `who` is `--as`, else `log_who`.
+- **The wake.** Only when Lead has nothing in flight (no card `taken` and
+  `jobs_running Lead` fails) does `add` write `queue: <id> is waiting and nothing is
+  in flight` to the log as a `note` and call `tell_lead`. With work in flight it
+  writes and wakes nothing.
+- **The escalation**, with no timer of its own: `add`, and `job hook` on a `stop`
+  event, look for waiting-tier cards (`waiting=1`, not `unfinished`) older than
+  `git config claude-peer.queue-wait-minutes` (120; 0 never; not a number is 120)
+  with no `escalated` line, and for each write that line, then a `note` by `Queue`
+  (`queue: <id> has waited <n>m and he is waiting on it`) and `tell_lead`. Once per
+  card, ever. It is the one push into a busy Lead; postbox holds it to the end of
+  Lead's turn.
+- `queue list [--all] [<dir>]` prints the waiting cards in pull order, 13
+  tab-separated columns: `order id tier score lo hi terms age kind who cand text
+  file`. `terms` is the arithmetic (`u=20 p=10 h=7 /2`, ` size?` appended for an
+  unknown size), `age` is `dur_of` form (since the last `add` or `reopen`), scores
+  have one decimal, `cand` is `yes` or `-`, `file` is `-` for none. `--all` adds every
+  other card after them, newest first, with the state word in the first column and
+  `-` in the computed ones (a `taken` card is listed only there). `queue next [<dir>]`
+  prints the candidate rows and exits 3 with none. `queue show <id>` prints the card's
+  lines and, with a `session=`, how to reopen it: `claude-peer start <slot>
+  --continue` when the session is the newest transcript of the card's `who` slot
+  (`<root>/.claude/worktrees/<who in lower case>`, under
+  `${CLAUDE_CONFIG_DIR:-~/.claude}/projects/<path, non-alphanumerics as ->`, a layout
+  observed, not an interface), else `claude --resume <SID>` and the directory.
+- `take`, `done`, `reopen`, `drop`, `park`, `link`: an unknown id, or a state the verb
+  does not apply to (`take` waiting; `done` taken; `drop` and `park` waiting or taken;
+  `reopen` anything but waiting), is exit 3 with one stderr line; `drop` and `park`
+  without a reason, and a bad `set` or `link`, are exit 2. `take` writes `order=<n>`,
+  the card's position in `list` at that moment, so the formula's agreement with what
+  was picked can be counted.
+- **The pull order.** Tier 1 is `waiting=1`, tier 2 everything else, tier 3 kind
+  `unfinished` (listed, never offered). Inside a tier, highest score first, then the
+  older card:
+  `score = (20 x min(unblocks, 3) + 10 x prio + 1 x min(hours waiting, 24)) / D`, `D`
+  being 1, 2 or 4 for S, M or L. The tier is a sort key, never a term, so no age or
+  size lets a card pass the one he is waiting on. A `?` size scores as M and has a
+  range, `lo` as L and `hi` as S. The **candidates** are the cards of the first
+  non-empty tier whose `hi` is at least 85 percent of the largest `lo` in that tier.
+  While a card is `taken`, only tier 1 cards and cards with `unblocks` above 0 are
+  considered, so a plan in flight is interrupted between its pull requests only for
+  those. Weights: `git config claude-peer.queue-weights "unblocks=20 prio=10 hour=1
+  hourcap=24 margin=15"` (the defaults; an unknown name or a value that is not a
+  whole number is ignored with one stderr line each). It is computed in python in
+  integers (hundredths), because two awks round a float apart.
+- **The hook.** `queue hook` reads a PostToolUse payload and acts only for a Bash
+  call whose command contains `gh pr merge`, with no `agent_id`, no
+  `CLAUDE_PEER_WORKTREE`, and a `cwd` whose toplevel is the repository's main
+  checkout. Otherwise, and on any error, it prints nothing and exits 0. It prints one
+  JSON object (`hookSpecificOutput`, `PostToolUse`, `additionalContext`) of: a
+  `taken` card named first (`queue: <id> is still taken; if this merge finished it,
+  claude-peer queue done <id>.`); then, with one candidate, the card (`queue: next
+  card is <id> (<kind>, score <s>: <terms>): <text>. File: <file>. Take it with ...
+  Nothing worth doing is an answer: say so and stop; never invent work.` and ` <m>
+  more waiting.` when m is not 0), or with several, the brief for one `scout-haiku` that
+  reads only those files, so a model chooses among candidates and never over his
+  priority; with one candidate no model runs. Nothing at all when there is no card
+  and nothing is taken.
+- `queue settings` prints the one `PostToolUse` entry for the overlays (matcher
+  `Bash`, `"if": "Bash(gh pr merge *)"`, timeout 5). The `if` is what keeps the hook
+  off every other Bash call; without it the handler spawns on `ls`.
+
+Tests: `tests/claude-peer.bats` ("queue add: ...", "queue list: ...", "queue next:
+...", "queue take: ...", "queue verbs: ...", "queue show: ...", "queue escalation:
+...", "queue hook: ...", "queue settings: ..."). Fixture cards are written `ago`
+seconds back, whole hours plus ten minutes; a postbox stub records its calls.

@@ -163,6 +163,26 @@
 #                            ended<TAB>worktree<TAB>description<TAB>report per
 #                            subagent, newest first (default the last 24 hours);
 #                            state running, ended or reported
+#   queue add [--kind idea|plan|ask|unfinished] [--waiting] [--unblocks N]
+#             [--prio 0-3] [--size S|M|L] [--session SID] [--as NAME]
+#             -- <one line> [<file>]
+#                            queue a card in <git common dir>/claude-peer.queue
+#                            and print its id (an idea or plan needs a finished
+#                            idea file, else exit 1); wakes Lead when nothing
+#                            is in flight
+#   queue list [--all] [<dir>]
+#                            the waiting cards in pull order: order, id, tier,
+#                            score, lo, hi, terms, age, kind, who, cand, text,
+#                            file (--all: every other state after them)
+#   queue next [<dir>]       the candidate rows of list; exit 3 with none
+#   queue show <id>          a card's lines and how to reopen its session
+#   queue set <id> waiting=0|1 | unblocks=N | prio=0-3 | size=S|M|L
+#   queue take|done|reopen <id>
+#   queue drop|park <id> <reason words...>
+#   queue link <id> <issue number or URL>
+#   queue hook               a PostToolUse hook on `gh pr merge`: names Lead's
+#                            next card; prints nothing unless it has one
+#   queue settings           the settings.json hook entry to paste
 #   path <branch>            print the worktree path for <branch> (nothing
 #                            is created)
 #   plan <branch>...         branch<TAB>worktree<TAB>create|reuse|conflict:<why>
@@ -2399,6 +2419,7 @@ job_hook() {
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$jh_who" \
     "$(printf '%s\n' "$jh_out" | sed -n 1p)" "$(printf '%s\n' "$jh_out" | sed -n 3p)" \
     "$(printf '%s\n' "$jh_out" | sed -n 4p)" "$(printf '%s\n' "$jh_out" | sed -n 5p)" "$jh_wt" >>"$jh_f"
+  [ "$(printf '%s\n' "$jh_out" | sed -n 1p)" != stop ] || ( cd "$jh_cwd" && queue_escalate )
   return 0
 }
 
@@ -2477,6 +2498,361 @@ cmd_jobs() {
   [ $# -le 1 ] || usage
   [ $# -eq 0 ] || cd -- "$1" 2>/dev/null || exit 1
   jobs_rows "$cj_h"
+}
+
+# --- the queue ----------------------------------------------------------------
+# What the operator thought up while Lead builds, kept as cards in
+# <git common dir>/claude-peer.queue and pulled by Lead when a card is done
+# (`gh pr merge` returning), never pushed on a clock. Append-only, tab-separated:
+# <UTC time> id event who value text [file]; id is Q<n> (- for a refusal), event
+# add, refused, set, take, done, drop, park, reopen, escalated or link. An add's
+# value is <kind>:w=<0|1>:u=<N>:p=<P>:s=<S|M|L|?>[:session=<SID>].
+
+# [<dir>] -> the queue file of the repository holding dir (default $PWD); status 1 outside one
+queue_file() { qf_c=$(git -C "${1:-$PWD}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && printf '%s/claude-peer.queue\n' "$qf_c"; }
+
+# One hook payload on stdin -> the cwd, when it is a Bash call of a `gh pr merge`
+# made by the main session (no agent_id); nothing otherwise.
+queue_hook_py() {
+  python3 -I -c '
+import json, sys
+try:
+    p = json.load(sys.stdin)
+    if p.get("tool_name") == "Bash" and not p.get("agent_id") and "gh pr merge" in str((p.get("tool_input") or {}).get("command") or ""):
+        print(p.get("cwd") or "")
+except Exception:
+    pass
+'
+}
+
+# <mode> [<arg>]: the queue read in python, in integers (an awk's floating point
+# would order two scores differently): list [all], next, state <id>, taken, due
+# <minutes>, info <id>. The weights are git config claude-peer.queue-weights.
+queue_py() {
+  command -v python3 >/dev/null 2>&1 || die "queue needs python3"
+  qp_f=$(queue_file) || return 1
+  qp_w=$(git config --get claude-peer.queue-weights 2>/dev/null)
+  python3 -I -c '
+import calendar, re, sys, time
+mode, arg, path, wspec = sys.argv[1:5]
+W = {"unblocks": 20, "prio": 10, "hour": 1, "hourcap": 24, "margin": 15}
+for w in wspec.split():
+    k, _, v = w.partition("=")
+    if k in W and re.fullmatch("[0-9]+", v):
+        W[k] = int(v)
+    elif mode in ("list", "next"):
+        sys.stderr.write("claude-peer: queue-weights: ignored \"%s\"\n" % w)
+now = int(time.time())
+items = {}
+try:
+    data = open(path, encoding="utf-8", errors="replace").read()
+except OSError:
+    data = ""
+for ln in data.split("\n"):
+    f = ln.split("\t")
+    try:
+        t = calendar.timegm(time.strptime(f[0], "%Y-%m-%dT%H:%M:%SZ"))
+        i, ev, who, val = f[1:5]
+        text = f[5] if len(f) > 5 else ""
+        it = items.get(i)
+        if ev == "add":
+            kind, *rest = val.split(":")
+            d = dict(x.split("=", 1) for x in rest if "=" in x)
+            items[i] = {"id": i, "n": int(i[1:]), "kind": kind, "who": who, "w": int(d["w"]), "u": int(d["u"]),
+                        "p": int(d["p"]), "s": d["s"], "sid": d.get("session", ""), "text": text,
+                        "file": (f[6] if len(f) > 6 else "") or "-", "state": "waiting", "since": t, "esc": False}
+        elif it is None:
+            continue
+        elif ev == "set":
+            k, _, v = val.partition("=")
+            k = {"waiting": "w", "unblocks": "u", "prio": "p", "size": "s"}[k]
+            it[k] = v if k == "s" else int(v)
+        elif ev == "take":
+            it["state"] = "taken"
+        elif ev in ("done", "drop", "park"):
+            it["state"] = {"done": "done", "drop": "dropped", "park": "parked"}[ev]
+        elif ev == "reopen":
+            it["state"], it["since"] = "waiting", t
+        elif ev == "escalated":
+            it["esc"] = True
+    except Exception:
+        continue
+D = {"S": 1, "M": 2, "L": 4}
+def hrs(it): return max(0, (now - it["since"]) // 3600)
+def sc(it, s):
+    return (W["unblocks"] * min(it["u"], 3) + W["prio"] * it["p"] + W["hour"] * min(hrs(it), W["hourcap"])) * 100 // D[s]
+def one(v):
+    v = (v + 5) // 10
+    return "%d.%d" % (v // 10, v % 10)
+def dur(s):
+    return "%ds" % s if s < 60 else "%dm" % (s // 60) if s < 3600 else "%dh" % (s // 3600) if s < 86400 else "%dd" % (s // 86400)
+wait = [it for it in items.values() if it["state"] == "waiting"]
+for it in wait:
+    s = it["s"]
+    it["tier"] = 3 if it["kind"] == "unfinished" else 1 if it["w"] else 2
+    it["mid"] = sc(it, "M" if s == "?" else s)
+    it["lo"] = sc(it, "L") if s == "?" else it["mid"]
+    it["hi"] = sc(it, "S") if s == "?" else it["mid"]
+wait.sort(key=lambda it: (it["tier"], -it["mid"], it["n"]))
+taken = any(it["state"] == "taken" for it in items.values())
+cand = set()
+elig = [it for it in wait if it["tier"] < 3 and (not taken or it["tier"] == 1 or it["u"] > 0)]
+for tier in (1, 2):
+    ts = [it for it in elig if it["tier"] == tier]
+    if ts:
+        top = max(it["lo"] for it in ts)
+        cand = {it["id"] for it in ts if it["hi"] * 100 >= (100 - W["margin"]) * top}
+        break
+def row(k, it):
+    s = it["s"]
+    terms = "u=%d p=%d h=%d /%d%s" % (W["unblocks"] * min(it["u"], 3), W["prio"] * it["p"],
+            W["hour"] * min(hrs(it), W["hourcap"]), D["M" if s == "?" else s], " size?" if s == "?" else "")
+    print("\t".join([str(k), it["id"], str(it["tier"]), one(it["mid"]), one(it["lo"]), one(it["hi"]), terms,
+                     dur(max(0, now - it["since"])), it["kind"], it["who"], "yes" if it["id"] in cand else "-",
+                     it["text"], it["file"]]))
+if mode in ("list", "next"):
+    n = 0
+    for it in wait:
+        n += 1
+        if mode == "list" or it["id"] in cand:
+            row(n, it)
+    if mode == "list" and arg == "all":
+        for it in sorted((x for x in items.values() if x["state"] != "waiting"), key=lambda x: -x["n"]):
+            print("\t".join([it["state"], it["id"]] + ["-"] * 5 + ["-", it["kind"], it["who"], "-", it["text"], it["file"]]))
+    sys.exit(0 if mode == "list" or cand else 3)
+elif mode == "state":
+    if arg not in items:
+        sys.exit(3)
+    print(items[arg]["state"])
+elif mode == "taken":
+    print("\n".join(it["id"] for it in items.values() if it["state"] == "taken"))
+elif mode == "due":
+    for it in wait:
+        if it["tier"] == 1 and not it["esc"] and now - it["since"] >= int(arg) * 60:
+            print(it["id"], (now - it["since"]) // 60)
+elif mode == "info":
+    if arg not in items:
+        sys.exit(3)
+    print("%s\t%s" % (items[arg]["sid"] or "-", items[arg]["who"]))
+' "$1" "${2-}" "$qp_f" "$qp_w"
+}
+
+# <id> <event> <who> <value> <text> [<file>]
+queue_append() {
+  qa_f=$(queue_file) || return 1
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$(log_clean "$3")" "$(log_clean "$4")" "$(log_clean "${5--}")" "$(log_clean "${6--}")" >>"$qa_f"
+}
+
+# <file> -> nothing when the idea file meets the definition of done (all six headings in
+# order, a line under Goal and under Next), else one line saying what is missing; status 1
+queue_idea_check() {
+  [ -r "$1" ] && [ -f "$1" ] || { echo "no such file: $1"; return 1; }
+  awk '
+    BEGIN { split("Goal Matters Constraints Decided Open Next", H, " ") }
+    { sub(/\r$/, "") }
+    /^## / { h = $0; sub(/^## +/, "", h); sub(/ +$/, "", h); cur = 0
+      for (i = 1; i <= 6; i++) if (h == H[i] && !pos[i]) { cur = i; pos[i] = NR }
+      next }
+    cur && $0 !~ /^[ \t]*$/ { body[cur] = 1 }
+    END {
+      for (i = 1; i <= 6; i++) if (!pos[i]) miss = miss " ## " H[i]
+      if (miss != "") { print "idea file is missing" miss; exit 1 }
+      for (i = 2; i <= 6; i++) if (pos[i] < pos[i - 1]) { print "idea file headings are not in order (Goal, Matters, Constraints, Decided, Open, Next)"; exit 1 }
+      if (!body[1]) { print "idea file has nothing under ## Goal"; exit 1 }
+      if (!body[6]) { print "idea file has nothing under ## Next"; exit 1 }
+    }' "$1"
+}
+
+# Waiting-tier cards older than claude-peer.queue-wait-minutes (default 120, 0 never)
+# with no escalated line: one line each, once, and Lead is told. Runs from $PWD's
+# repository; no timer of its own (add and the job hook's stop call it).
+queue_escalate() {
+  qe_m=$(git config --get claude-peer.queue-wait-minutes 2>/dev/null)
+  case $qe_m in ''|*[!0-9]*) qe_m=120;; esac
+  [ "$qe_m" -gt 0 ] || return 0
+  qe_lead=$(repo_root_q) || return 0
+  queue_py due "$qe_m" | while read -r qe_i qe_n; do
+    queue_append "$qe_i" escalated Queue - "waited ${qe_n}m"
+    log_add Queue note "queue: $qe_i has waited ${qe_n}m and he is waiting on it"
+    tell_lead "$qe_lead" - -
+  done
+  return 0
+}
+
+queue_add() {
+  qa_kind=idea qa_w=0 qa_u=0 qa_p=0 qa_s='?' qa_sid= qa_as=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --kind) [ $# -ge 2 ] || usage; qa_kind=$2; shift 2;;
+      --waiting) qa_w=1; shift;;
+      --unblocks) [ $# -ge 2 ] || usage; qa_u=$2; shift 2;;
+      --prio) [ $# -ge 2 ] || usage; qa_p=$2; shift 2;;
+      --size) [ $# -ge 2 ] || usage; qa_s=$2; shift 2;;
+      --session) [ $# -ge 2 ] || usage; qa_sid=$2; shift 2;;
+      --as) [ $# -ge 2 ] || usage; qa_as=$2; shift 2;;
+      --) shift; break;;
+      *) usage;;
+    esac
+  done
+  [ $# -ge 1 ] && [ $# -le 2 ] || usage
+  case $qa_kind in idea|plan|ask|unfinished) ;; *) usage;; esac
+  case $qa_u in [0-9]) ;; *) usage;; esac
+  case $qa_p in [0-3]) ;; *) usage;; esac
+  case $qa_s in S|M|L|'?') ;; *) usage;; esac
+  case $qa_sid in *[!A-Za-z0-9._-]*) usage;; esac
+  qa_text=$(log_clean "$1")
+  [ -n "$qa_text" ] || usage
+  qa_file=${2-}
+  case $qa_file in ''|/*) ;; *) qa_file=$PWD/$qa_file;; esac
+  qa_q=$(queue_file) || die "not inside a git repository"
+  qa_who=${qa_as:-$(log_who)}
+  case $qa_kind in
+    idea|plan)
+      if [ -z "$qa_file" ]; then qa_why="an $qa_kind needs its idea file"; else qa_why=$(queue_idea_check "$qa_file"); fi
+      if [ -n "$qa_why" ]; then
+        queue_append - refused "$qa_who" "$qa_kind" "$qa_why"
+        warn "queue add: $qa_why"
+        exit 1
+      fi;;
+  esac
+  # ponytail: the id is read, then written, with no lock; two adds in one instant can share
+  # an id. Take the slot lock if that is ever seen.
+  qa_n=$(awk -F'\t' '$2 ~ /^Q[0-9]+$/ { n = substr($2, 2) + 0; if (n > m) m = n } END { print m + 1 }' "$qa_q" 2>/dev/null)
+  qa_id=Q${qa_n:-1}
+  queue_append "$qa_id" add "$qa_who" "$qa_kind:w=$qa_w:u=$qa_u:p=$qa_p:s=$qa_s${qa_sid:+:session=$qa_sid}" "$qa_text" "${qa_file:--}"
+  printf '%s\n' "$qa_id"
+  queue_escalate
+  # nothing in flight: no card taken, no running agent of Lead's; else nobody is woken
+  if [ -z "$(queue_py taken)" ] && ! jobs_running Lead; then
+    log_add "$qa_who" note "queue: $qa_id is waiting and nothing is in flight"
+    tell_lead "$(repo_root_q)" - -
+  fi
+  return 0
+}
+
+# <id> take|done|reopen|drop|park|link [<value> [<text>]]: the card must be in a state the verb applies to
+queue_move() {
+  qm_id=$1 qm_ev=$2 qm_bad=
+  case $qm_id in Q[0-9]*) ;; *) warn "queue: unknown card '$qm_id'"; exit 3;; esac
+  qm_st=$(queue_py state "$qm_id") || true
+  [ -n "$qm_st" ] || { warn "queue: unknown card '$qm_id'"; exit 3; }
+  case $qm_ev:$qm_st in
+    take:waiting|done:taken|drop:waiting|drop:taken|park:waiting|park:taken|link:*) ;;
+    reopen:waiting) qm_bad=1;;
+    reopen:*) ;;
+    *) qm_bad=1;;
+  esac
+  [ -z "$qm_bad" ] || { warn "queue: $qm_id is $qm_st; $qm_ev does not apply"; exit 3; }
+  qm_val=${3--}
+  [ "$qm_ev" != take ] || qm_val="order=$(queue_py list | awk -F'\t' -v i="$qm_id" '$2 == i { print $1 }')"
+  queue_append "$qm_id" "$qm_ev" "$(log_who)" "$qm_val" "${4:--}"
+}
+
+queue_show() {
+  qs_f=$(queue_file) && [ -f "$qs_f" ] || { warn "queue: unknown card '$1'"; exit 3; }
+  qs_i=$(queue_py info "$1") || { warn "queue: unknown card '$1'"; exit 3; }
+  awk -F'\t' -v i="$1" '$2 == i' "$qs_f"
+  qs_tab=$(printf '\t')
+  qs_sid=${qs_i%%"$qs_tab"*} qs_who=${qs_i#*"$qs_tab"}
+  [ "$qs_sid" != - ] || return 0
+  qs_root=$(root_of .) || return 0
+  qs_slot=$(printf '%s' "$qs_who" | tr 'A-Z' 'a-z')
+  qs_wt=$qs_root/.claude/worktrees/$qs_slot
+  if slot_ok "$qs_slot" && [ -d "$qs_wt" ]; then
+    # the slot's latest session is the newest transcript of its worktree (Claude Code's
+    # projects/<path with every non-alphanumeric as ->/ layout, observed, not an interface)
+    qs_pd=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$(cd "$qs_wt" && pwd -P | tr -c 'A-Za-z0-9\n' -)
+    qs_last=$(ls -t "$qs_pd" 2>/dev/null | grep '\.jsonl$' | sed -n 1p)
+    if [ "$qs_last" = "$qs_sid.jsonl" ]; then
+      printf 'reopen: claude-peer start %s --continue\n' "$qs_slot"
+    else
+      printf 'reopen: claude --resume %s   (in %s)\n' "$qs_sid" "$qs_wt"
+    fi
+  else
+    printf 'reopen: claude --resume %s   (in %s)\n' "$qs_sid" "$qs_root"
+  fi
+}
+
+# The hook: names Lead's next card after a `gh pr merge`. Prints one JSON object when
+# there is something to say and nothing otherwise, always exit 0.
+queue_hook() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  [ -z "${CLAUDE_PEER_WORKTREE-}" ] || return 0
+  qh_cwd=$(queue_hook_py 2>/dev/null) && [ -d "$qh_cwd" ] || return 0
+  cd "$qh_cwd" || return 0
+  qh_root=$(root_of .) || return 0
+  [ "$(cd "$(git rev-parse --show-toplevel)" && pwd -P)" = "$qh_root" ] || return 0
+  qh_msg=
+  for qh_t in $(queue_py taken); do
+    qh_msg="queue: $qh_t is still taken; if this merge finished it, claude-peer queue done $qh_t."
+  done
+  qh_rows=$(queue_py next 2>/dev/null) || qh_rows=
+  qh_n=$(printf '%s' "$qh_rows" | grep -c .)
+  if [ "$qh_n" -ge 1 ]; then
+    # more waiting: the waiting cards that are neither shown nor unfinished reminders
+    qh_more=$(queue_py list 2>/dev/null | awk -F'\t' '$9 != "unfinished" && $11 != "yes"' | grep -c .)
+    qh_tail=; [ "$qh_more" -eq 0 ] || qh_tail=" $qh_more more waiting."
+    if [ "$qh_n" -eq 1 ]; then
+      qh_nxt=$(printf '%s\n' "$qh_rows" | awk -F'\t' '{ printf "queue: next card is %s (%s, score %s: %s): %s. File: %s. Take it with claude-peer queue take %s, or park or drop it with a reason. Nothing worth doing is an answer: say so and stop; never invent work.", $2, $9, $4, $7, $12, $13, $2 }')$qh_tail
+    else
+      qh_files=$(printf '%s\n' "$qh_rows" | awk -F'\t' '{ printf "%s%s %s", (NR > 1 ? ", " : ""), $2, ($13 == "-" ? "(no file: " $12 ")" : $13) }')
+      qh_nxt="queue: $qh_n cards are too close to call. Spawn one scout-haiku with exactly this brief, then take the id it returns: \"Read these files: $qh_files. For any marked size?, say S, M or L. Reply with one id and two lines saying why it goes first, or NONE and one line. Read nothing else.\"$qh_tail"
+    fi
+    qh_msg=${qh_msg:+$qh_msg }$qh_nxt
+  fi
+  [ -n "$qh_msg" ] || return 0
+  printf '%s' "$qh_msg" | python3 -I -c '
+import json, sys
+print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": sys.stdin.read()}}))'
+  return 0
+}
+
+queue_settings() {
+  cat <<'JSON'
+claude-peer does not edit settings.json: each profile's file is owned by its
+overlay. Add this to that file's "hooks" (merging with what is there):
+
+  "PostToolUse": [
+    { "matcher": "Bash",
+      "hooks": [{ "type": "command", "if": "Bash(gh pr merge *)", "command": "[ -x ~/bin/claude-peer ] && exec ~/bin/claude-peer queue hook || true", "timeout": 5 }] }
+  ]
+
+The `if` keeps the hook off every other Bash call. The hook prints one line of
+context after a merge and nothing otherwise, and always exits 0.
+JSON
+}
+
+# queue add|list|next|show|set|take|done|reopen|drop|park|link|hook|settings
+cmd_queue() {
+  [ $# -ge 1 ] || usage
+  cq_v=$1; shift
+  case $cq_v in
+    hook) queue_hook 2>/dev/null; exit 0;;
+    settings) queue_settings; exit 0;;
+    add) queue_add "$@"; exit 0;;
+    list|next)
+      cq_all=
+      if [ "$cq_v" = list ] && [ "${1-}" = --all ]; then cq_all=all; shift; fi
+      [ $# -le 1 ] || usage
+      [ $# -eq 0 ] || cd -- "$1" 2>/dev/null || exit 1
+      queue_file >/dev/null || exit 1
+      queue_py "$cq_v" "$cq_all"; exit $?;;
+    show) [ $# -eq 1 ] || usage; queue_show "$1"; exit 0;;
+    set)
+      [ $# -eq 2 ] || usage
+      case $2 in waiting=[01]|unblocks=[0-9]|prio=[0-3]|size=[SML]) ;; *) usage;; esac
+      cq_st=$(queue_py state "$1" 2>/dev/null) || true
+      [ -n "$cq_st" ] || { warn "queue: unknown card '$1'"; exit 3; }
+      queue_append "$1" set "$(log_who)" "$2" -
+      exit 0;;
+    take|done|reopen) [ $# -eq 1 ] || usage; queue_move "$1" "$cq_v"; exit 0;;
+    drop|park) [ $# -ge 2 ] || usage; cq_id=$1; shift; queue_move "$cq_id" "$cq_v" - "$*"; exit 0;;
+    link)
+      [ $# -eq 2 ] || usage
+      case $2 in *[!0-9]*) case $2 in https://*|http://*) ;; *) usage;; esac;; esac
+      queue_move "$1" link "$2" -; exit 0;;
+    *) usage;;
+  esac
 }
 
 cmd_path() {
@@ -3570,6 +3946,7 @@ case $cmd in
   log) cmd_log "$@";;
   job) cmd_job "$@";;
   jobs) cmd_jobs "$@";;
+  queue) cmd_queue "$@";;
   claim) cmd_claim "$@";;
   name) cmd_name "$@";;
   path) cmd_path "$@";;
