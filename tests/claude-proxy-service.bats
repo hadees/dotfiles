@@ -160,7 +160,8 @@ print(eval(sys.argv[2]))' "$BATS_TEST_TMPDIR/out.plist" "$1"
 
 @test "no systemd unit is shipped, and no chezmoi script or wrapper loads the service" {
   [ -z "$(git -C "$SRC" ls-files '*.service' '*systemd*')" ]
-  ! grep -rnE 'launchctl[^ ]* +(load|bootstrap|enable|kickstart)' "$SRC/.chezmoiscripts" "$SRC/dot_functions" "$SRC/dot_zshrc" "$SRC/dot_exports" || { echo "something loads a service with launchctl"; false; }
+  # Reading an agent's state (print, list) is allowed; any other launchctl verb is not.
+  ! grep -rnE 'launchctl' "$SRC/.chezmoiscripts" "$SRC/dot_functions" "$SRC/dot_zshrc" "$SRC/dot_exports" | grep -vE 'launchctl[^[:space:]]*[[:space:]]+(print|list)([[:space:]]|$)' || { echo "something loads or starts a service with launchctl"; false; }
 }
 
 @test "the plan-gpt agent stubs deploy only once the proxy is installed" {
