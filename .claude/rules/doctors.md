@@ -23,8 +23,8 @@ executable will run, a version-manager shim followed to the install it
 selects for the cwd (or "not installed under the selected node"), and the
 version read off the install without executing it (npm `package.json`,
 cask/native path segment). `doctor` runs them all (git, gh, claude,
-wrangler, hermes, tailnet, worktabs, postbox, remote-mcp, workset, onepassword,
-iterm2 — the last two
+wrangler, hermes, tailnet, worktabs, postbox, remote-mcp, workboard, workset,
+onepassword, iterm2 — the last two
 are not per-repo, but 1Password is what signing and `~/.extra` rest on and
 iTerm2 is the terminal the rest run inside, so their failures arrive
 disguised as per-repo ones). Every doctor also opens with a `defined:` line — are
@@ -42,6 +42,14 @@ silent there and this is where it shows. `doctor` itself opens with a
 the caller, and the calling shell's non-default pattern/glob options —
 read before any `emulate`, so a pasted transcript says which shell it
 came from.
+
+`workboard-doctor` prints `wrapper:` and `defined:` as `<none>` (the work board
+is a script that calls no helpers), `script:` (the path, `WARNING` when it is
+not `~/bin/workboard`, `NOT FOUND (chezmoi apply; macOS only)` when nothing is on `PATH`), `agent:` (`no
+plist`, `deployed, not loaded (workboard install)` or `loaded`: the
+LaunchAgent's own state, read with `launchctl print`), then `workboard status`
+indented, which is counts, ages and fixed words only (`server: not running`
+when nothing answers). It reads and starts nothing.
 
 `iterm2-cookie` is the verb `iterm2-doctor` will point at, not a doctor: it
 mints the API cookie the hooks read, and `iterm2_cookie_state` names whether

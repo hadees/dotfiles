@@ -1,0 +1,41 @@
+{{- /* The work board's server as a user LaunchAgent. Shipped Disabled: nothing
+     here loads it; `workboard install` enables and loads it. .chezmoiignore
+     limits it to macOS on the mac class. */ -}}
+{{- $home := .chezmoi.homeDir | html -}}
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>local.workboard</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/sh</string>
+		<string>{{ $home }}/bin/workboard</string>
+		<string>serve</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Disabled</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>StandardOutPath</key>
+	<string>{{ $home }}/Library/Logs/workboard.log</string>
+	<key>StandardErrorPath</key>
+	<string>{{ $home }}/Library/Logs/workboard.log</string>
+	<key>WorkingDirectory</key>
+	<string>{{ $home }}</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>{{ $home }}</string>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+</dict>
+</plist>

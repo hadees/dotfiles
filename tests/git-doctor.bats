@@ -153,7 +153,7 @@ doctor_in() {
   printf '#!/bin/sh\nexit 0\n' > "$BATS_TEST_TMPDIR/bin/gh"; chmod +x "$BATS_TEST_TMPDIR/bin/gh"
   run zsh -c "PATH='$BATS_TEST_TMPDIR/bin':\$PATH; source '$DOTFUNCTIONS'; cd '$REPO'; doctor"
   [ "$status" -eq 0 ]
-  [[ "$output" == "shell:   zsh "*"== git-doctor"*"== gh-doctor"*"== claude-doctor"*"== wrangler-doctor"*"== hermes-doctor"*"== tailnet-doctor"*"== worktabs-doctor"*"== postbox-doctor"*"== remote-mcp-doctor"*"== workset-doctor"*"== onepassword-doctor"*"== iterm2-doctor"* ]]
+  [[ "$output" == "shell:   zsh "*"== git-doctor"*"== gh-doctor"*"== claude-doctor"*"== wrangler-doctor"*"== hermes-doctor"*"== tailnet-doctor"*"== worktabs-doctor"*"== postbox-doctor"*"== remote-mcp-doctor"*"== workboard-doctor"*"== workset-doctor"*"== onepassword-doctor"*"== iterm2-doctor"* ]]
   [[ "$output" == *"author:  Octo Person <octo@example.com>"* ]]
 }
 
@@ -182,9 +182,9 @@ doctor_in() {
       done
       print -r -- ${(ok)seen}
     }
-    typeset -A wrapped=(claude claude worktabs "" postbox "" remote-mcp "" workset workset wrangler wrangler gh gh hermes hermes tailnet "ssh scp sftp curl tailnet-as" git "" onepassword "" iterm2 "")
+    typeset -A wrapped=(claude claude worktabs "" postbox "" remote-mcp "" workboard "" workset workset wrangler wrangler gh gh hermes hermes tailnet "ssh scp sftp curl tailnet-as" git "" onepassword "" iterm2 "")
     local d h n=0 bad=0
-    for d in claude worktabs postbox remote-mcp workset wrangler gh hermes tailnet git onepassword iterm2; do
+    for d in claude worktabs postbox remote-mcp workboard workset wrangler gh hermes tailnet git onepassword iterm2; do
       for h in $(callees ${=wrapped[$d]} $d-doctor); do
         n=$((n+1))
         [[ "$( (unfunction $h; $d-doctor) 2>/dev/null )" == *"defined: MISSING"*" $h "* ]] \

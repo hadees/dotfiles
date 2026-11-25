@@ -21,8 +21,10 @@ serves one HTML page (`dot_local/share/workboard/board.html`) on
 tool deploys on macOS only** (`.chezmoiignore`).
 
 **What exists today.** The read side, tested alone and together in
-`tests/workboard-e2e.bats`; nothing has run live yet. The plug-in modules
-(below) do not exist, so nothing writes and `workboard list` is exit 2.
+`tests/workboard-e2e.bats`, and the plug-ins `verbs`, `mcp_endpoint` and
+`service` (what a session may write, the MCP tools, the LaunchAgent:
+`workboard-verbs.md`), tested alone and in `tests/workboard-e2e-writes.bats`. Nothing has
+run live. `notice` and `pane` do not exist.
 
 ## What a card is
 
@@ -55,7 +57,7 @@ board live in the server's memory and are rebuilt after a restart. The state
 directory, `${XDG_STATE_HOME:-$HOME/.local/state}/workboard/` (mode 0700, files
 0600, every write through a temporary file and a rename), holds `secret`,
 `tally.json` (counters), `links.tsv` (slug, issue number, worktree path, time;
-read by the server, written by nothing yet), and from the entry script `pid`,
+read by the server, written by `take`, `add` and `move`), and from the entry script `pid`,
 `log` and `log.prev`. No title, body, label or claim text reaches any of them.
 A pass that raises is one log line with the pass's name and the exception's
 **class**, never its message (a message can quote a response), and a counter.
@@ -199,8 +201,8 @@ proof (`ask:all`, sent as `X-Workboard-Ask`, makes `/api/url` full scope).
 **No page token or tool key is ever in a URL, argv, the environment, a log or
 `/status.json`.** A page token is in one `/enter` answer, the page's memory and
 tab storage, and an `Authorization` header; a tool key in one `/api/bearer`
-answer and an `Authorization` header. The tools' key, and the `connect` that
-stores it, arrive with the write PR.
+answer and an `Authorization` header. `workboard connect` stores the tool key
+(`workboard-verbs.md`).
 
 **The link: `workboard url` and `/api/url`.** `POST /api/url` (body `{"group"?,
 "repo"?}`) answers `http://127.0.0.1:<port>/enter/<nonce>`, with `#g=<group>` or
