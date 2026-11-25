@@ -869,7 +869,9 @@ $(handoff_note)"; fi
   pn_watch=
   if [ -n "$pg_sec" ] && [ "$pg_we" -gt 0 ]; then
     rm -f "$pg_sf.sid"
-    pg_tty=${CLAUDE_PEER_TTY:-$(tty 2>/dev/null </dev/tty)}
+    # the pane's own terminal device (tty </dev/tty would only say /dev/tty);
+    # none, ? or ?? leaves the draft guard off
+    pg_tty=${CLAUDE_PEER_TTY:-$(pg_t=$(ps -o tty= -p $$ 2>/dev/null | tr -d ' '); case $pg_t in ''|'?'|'??') ;; /dev/*) echo "$pg_t" ;; *) echo "/dev/$pg_t" ;; esac)}
     ( trap - EXIT; cd -- "$repo" && pane_watch "$pg_l" "$pg_t0" "$pg_we" "$(pane_num pane-done-minutes 5)" "$pg_sf" "$pg_tty" ) </dev/null >/dev/null 2>&1 &
     pn_watch=$!
   fi
