@@ -211,8 +211,14 @@ disable $TARGET" ]
 }
 
 # workboard-doctor, in a plain zsh the way the other doctors are driven.
+# A workboard already deployed on this machine's PATH is dropped, so the test sees only its own.
 doctor() {
-  run zsh -c "PATH='$BATS_TEST_TMPDIR/bin':\$PATH; source '$WB_ROOT/dot_functions'; workboard-doctor"
+  local p=$PATH real
+  real=$(command -v workboard 2>/dev/null) || true
+  if [[ -n "$real" && "${real#"$BATS_TEST_TMPDIR"}" == "$real" ]]; then
+    p=$(tr ':' '\n' <<<"$PATH" | grep -vxF -- "${real%/workboard}" | paste -sd: -)
+  fi
+  run zsh -c "PATH='$BATS_TEST_TMPDIR/bin':'$p'; source '$WB_ROOT/dot_functions'; workboard-doctor"
 }
 
 @test "workboard-doctor with the script absent: wrapper, defined, script NOT FOUND, agent, no status" {
