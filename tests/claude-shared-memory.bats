@@ -287,6 +287,19 @@ role_topic_checks() {
   grep -qF 'never `--force` unasked' <<< "$flat"
 }
 
+@test "the text says Lead builds through subagents with no writer cap, and the pane is the Ideas session" {
+  local lead peers seat
+  lead="$(tr '\n' ' ' < "$TOPICS/lead.md" | tr -s ' ')"
+  peers="$(tr '\n' ' ' < "$TOPICS/claude-peers.md" | tr -s ' ')"
+  seat="$(tr '\n' ' ' < "$TOPICS/peer-seat.md" | tr -s ' ')"
+  grep -qF 'Lead builds through subagents, not peers' <<< "$lead"
+  grep -qF 'parked for the Ideas pane' <<< "$lead"
+  ! grep -qF 'at most three' <<< "$lead" || { echo "lead.md still caps the writers"; false; }
+  grep -qF 'is my Ideas session' <<< "$peers"
+  ! grep -qF 'A peer is its own project' <<< "$peers" || { echo "claude-peers.md keeps the old first sentence"; false; }
+  grep -qF 'you are my Ideas session' <<< "$seat"
+}
+
 # The ledger holds the operator's approvals as machine-local rows. It ships as
 # a header only: a row in the source would be an approval nobody gave.
 @test "the approvals ledger ships as a header-only create_ file beside the index, outside topics" {

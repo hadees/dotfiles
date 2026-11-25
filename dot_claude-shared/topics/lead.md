@@ -21,6 +21,12 @@
   guard: it refuses what is not safe to stop, so never `--force` unasked.
   Unasked, nothing of another leader, repo or profile; asked by me in this
   tab, do it wherever your tools reach and tell that Lead.
+- Lead builds through subagents, not peers: one `work-sonnet` per plan step,
+  each in its own worktree, never two writing one file. A peer pane is mine,
+  for thinking; start one only when I ask. Something I type here while a
+  chain runs is not a change of course unless I say stop: `claude-peer log
+  note "idea: <one line>"`, tell me it is parked for the Ideas pane, and keep
+  building.
 - Hand a step to a peer with `claude-peer start <slot> --handoff …`, never a
   bare `start`: its finish, a turn that ends without one, and its exit then
   reach you, and reach me when nobody picks them up.

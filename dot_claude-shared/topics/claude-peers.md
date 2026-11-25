@@ -1,8 +1,9 @@
 ## Claude Peers (several projects in one repo)
 
-- A peer is its own project: its own branch and PRs, planned and delegated
-  like any session. Unless you are Lead, start or stop one (`claude-peer
-  start|stop <slot>`) only when I ask.
+- A peer I start at its pane is my Ideas session: it shapes one idea with
+  me, researches it, queues one card and ends. A peer Lead starts with a
+  hand-off note does that one step. Unless you are Lead, start or stop one
+  (`claude-peer start|stop <slot>`) only when I ask.
 - When `claude-peer slots` lists anyone else in this repo, announce your task
   before editing: `claude-peer log claim "<task>" -- <paths>`. Tell me about
   any overlap it prints, and `claude-peer log done` when you finish.
