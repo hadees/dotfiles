@@ -53,11 +53,12 @@
   needs. Before dispatching and after each verification, run `plan-ready
   <plan> <verified ids> --running <running ids>` and dispatch what it prints;
   on exit 2, read the plan's needs yourself. The main conversation
-  orchestrates and verifies; it builds no step itself and redesigns nothing. A step that cannot land as written (a worker
-  hands it back, a gate stays red, an Unverified item proves false) goes back
-  to `plan-fable` for a revised plan, never quietly into the code; a failure
-  nobody can explain is still `unstick-fable`'s, below. Only live hands-on
-  steps with the operator — a login, an approval, their terminal — stay here.
+  orchestrates and verifies; it builds no step itself and redesigns nothing.
+  A step that cannot land as written (a worker hands it back, a gate stays
+  red, an Unverified item proves false) goes back to `plan-fable` for a
+  revised plan, never quietly into the code; a failure nobody can explain is
+  still `unstick-fable`'s, below. Only live hands-on steps with the
+  operator — a login, an approval, their terminal — stay here.
 - **Escalation is a rule, not a mood.** Any one of these means stop and spawn
   `unstick-fable` with the failure verbatim and every attempt so far: the same
   failure has survived two attempts with different hypotheses; a worker has

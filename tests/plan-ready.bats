@@ -76,7 +76,7 @@ Needs: step 1.'
 | 1b | none |
 | 2 | 1a (the fixture); signed PR Z |
 | 3 | Step 1 finished; row 14 |
-| 4 | after Sign-off 2 |
+| 4 | Sign-off 2 |
 | 5 | 1a to 1b |
 | 6 | PR Q merged |'
   run --separate-stderr "$PR" "$PLAN" 1a
@@ -84,6 +84,49 @@ Needs: step 1.'
   [ "$stderr" = "step 6: needs unreadable" ]
   run --separate-stderr "$PR" "$PLAN" 1a 1b
   [ "$(ids)" = "2 3 4 5 " ]
+}
+
+@test "a cell with ids and an outside event is not ready: stderr says what else it needs, exit 2 when nothing else is" {
+  plan_of '| Step | Needs |
+|---|---|
+| 1 | none |
+| 2 | 1; the vendor key issued |
+| 3 | 1 and the operator has rotated the token |'
+  run --separate-stderr "$PR" "$PLAN" 1
+  [ "$status" -eq 2 ]
+  [ -z "$output" ]
+  [ "$stderr" = "step 2: also needs: the vendor key issued
+step 3: also needs: the operator has rotated the token" ]
+  run --separate-stderr "$PR" "$PLAN"
+  [ "$status" -eq 0 ]
+  [ "$(ids)" = "1 " ]
+}
+
+@test "a cell that is only an outside event is unreadable; completion words and an unknown bare id are handled" {
+  plan_of '| Step | Needs |
+|---|---|
+| 1 | none |
+| 2 | the vendor key issued |
+| 3 | 1 merged and deployed; step 1 verified |
+| 4 | 1, 9 |'
+  run --separate-stderr "$PR" "$PLAN" 1
+  [ "$(ids)" = "3 " ]
+  [ "$stderr" = "step 2: needs unreadable
+step 4: needs unknown step 9" ]
+}
+
+@test "a Needs: line with an outside event is not ready; a Consumes: line stays lenient" {
+  plan_of '### Step 1: a
+Needs: nothing.
+
+### Step 2: b
+Needs: step 1 and the operator has rotated the token.
+
+### Step 3: c
+Consumes: step 1 and its fixture files.'
+  run --separate-stderr "$PR" "$PLAN" 1
+  [ "$(ids)" = "3 " ]
+  [ "$stderr" = "step 2: also needs: the operator has rotated the token" ]
 }
 
 @test "with several tables the one with the most step rows is the Build sequence" {
