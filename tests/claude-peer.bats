@@ -513,7 +513,8 @@ pane() {
     exec ${PANE_SH:-sh} "$BIN" run --as "$s" --wait >"$BATS_TEST_TMPDIR/pane-$t.out" 2>&1 3>&- ) &
   LAST_PANE=$!
   PANES="$PANES $LAST_PANE"
-  until_ok "[ -f '$(git -C "$d" rev-parse --path-format=absolute --git-common-dir)/claude-peer.wait/$s.$LAST_PANE' ]"
+  # -s: the pane creates the file and then writes it, and `slots` skips one with no line 1
+  until_ok "[ -s '$(git -C "$d" rev-parse --path-format=absolute --git-common-dir)/claude-peer.wait/$s.$LAST_PANE' ]"
 }
 
 # press <tag> <text>: type a line into that pane's terminal
@@ -552,7 +553,7 @@ hold() {
   [ "$(shell_runs)" -eq 0 ]
   run sh "$BIN" peers
   [ -z "$output" ]
-  grep -q "^Alpha: Return starts a Claude here, c continues the last session, q leaves a shell$" "$BATS_TEST_TMPDIR/pane-alpha.out"
+  until_ok 'grep -q "^Alpha: Return starts a Claude here, c continues the last session, q leaves a shell$" "$BATS_TEST_TMPDIR/pane-alpha.out"'
 }
 
 @test "run --as --wait: Return starts a session, and the pane waits again when it ends" {
@@ -1340,8 +1341,9 @@ claim_by() {
 @test "a killed pane takes its reader and its wait file with it" {
   pane alpha
   pp=$LAST_PANE
-  kids=$(ps -Ao pid=,ppid= | awk -v p="$pp" '$2 == p { print $1 }')
-  [ -n "$kids" ]
+  # the wait file exists before the pane draws and forks its reader: wait for the reader
+  until_ok 'grep -q "^Alpha: Return" "$BATS_TEST_TMPDIR/pane-alpha.out"'
+  until_ok 'kids=$(ps -Ao pid=,ppid= | awk -v p="$pp" "\$2 == p { print \$1 }"); [ -n "$kids" ]'
   kill "$pp"
   until_ok '! kill -0 $pp 2>/dev/null'
   for k in $kids; do until_ok "! kill -0 $k 2>/dev/null"; done
@@ -4306,7 +4308,7 @@ opane() {
     exec sh "$BIN" overlay "$n" >"$BATS_TEST_TMPDIR/pane-$t.out" 2>&1 3>&- ) &
   LAST_PANE=$!
   PANES="$PANES $LAST_PANE"
-  until_ok "[ -f '$r/.git/claude-peer.wait/overlay.$LAST_PANE' ]"
+  until_ok "[ -s '$r/.git/claude-peer.wait/overlay.$LAST_PANE' ]"
 }
 
 # obg <arg> <tag>: `overlay <arg>` in the background from $REPO, output in bg-<tag>.out, then
@@ -4329,7 +4331,7 @@ obg() {
   [ ! -e "$REPO/.claude" ]
   [ -z "$(find "$REPO/.git" -name 'claude-peer.*')" ]
   [ "$(shell_runs)" -eq 0 ]
-  grep -q "^Fake1: Return starts a Claude here, c continues the last session, q leaves a shell$" "$BATS_TEST_TMPDIR/pane-fake1.out"
+  until_ok 'grep -q "^Fake1: Return starts a Claude here, c continues the last session, q leaves a shell$" "$BATS_TEST_TMPDIR/pane-fake1.out"'
   run sh "$BIN" overlays
   [ "$output" = "fake1"$'\t'"$OV1"$'\t'"waiting"$'\t'"$REPO"$'\t'"$LAST_PANE" ]
 }
