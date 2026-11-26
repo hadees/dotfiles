@@ -1844,7 +1844,10 @@ pane_fzf() {
         return 0;;
     esac
     if [ "$pf_rc" = 0 ] && [ -n "$pf_id" ]; then PG_WAKE=1; pane_choose "$pf_id" "$@"; PG_WAKE=
-    elif [ "$pf_rc" = 1 ] && [ -n "$pf_q" ]; then PG_WAKE=1; pane_newidea "$pf_q" "$@"; PG_WAKE=
+    elif [ "$pf_rc" = 1 ] && [ -n "$pf_q" ]; then
+      PG_WAKE=1
+      if [ -n "$pn_ideas" ]; then pane_newidea "$pf_q" "$@"; else pane_task "$pf_q" "" "$@"; fi
+      PG_WAKE=
     else pn_state=quiet
     fi
     return 0

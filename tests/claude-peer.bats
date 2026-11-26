@@ -6340,6 +6340,27 @@ dup_ask() {
   no grep -q 'You had this already: Rework' "$BATS_TEST_TMPDIR/pane-secretary.out"
 }
 
+@test "ideas pane: with fzf, exit 1 with a query that matches shows the block in the Ideas pane; in slot alpha and in secretary with claude-peer.ideas false it starts the task with no block" {
+  dup_fix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  FAKE_FZF_RC=1 FAKE_FZF_OUT=$'nightly backup rotation\n\n' FAKE_SHELL_SLEEP=2 pane secretary
+  hold_tty secretary
+  pane_says secretary 'You had this already: Rework the nightly backup rotation (shaping 10h).'
+  [ "$(shell_runs)" -eq 0 ]
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  rm -f "$FAKE_FZF_LOG.calls"
+  FAKE_FZF_RC=1 FAKE_FZF_OUT=$'nightly backup rotation\n\n' FAKE_SHELL_SLEEP=2 pane alpha
+  until_ok 'grep -q "claude-peer proj-alpha nightly backup rotation\$" "$FAKE_SHELL_LOG"'
+  no grep -q 'You had this already' "$BATS_TEST_TMPDIR/pane-alpha.out"
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  rm -f "$FAKE_FZF_LOG.calls"
+  git config --global claude-peer.ideas false
+  FAKE_FZF_RC=1 FAKE_FZF_OUT=$'nightly backup rotation\n\n' FAKE_SHELL_SLEEP=2 pane secretary
+  until_ok 'grep -q "claude-peer proj-secretary nightly backup rotation\$" "$FAKE_SHELL_LOG"'
+  no grep -q 'You had this already' "$BATS_TEST_TMPDIR/pane-secretary.out"
+}
+
 @test "ideas pane: a start request while the question is open is served and the question is gone" {
   dup_fix
   raw=$BATS_TEST_TMPDIR/raw
