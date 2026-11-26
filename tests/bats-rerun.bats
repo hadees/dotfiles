@@ -71,13 +71,13 @@ ran_nothing() { [ -z "$(grep -v -e '--count' "$STUB_LOG")" ]; }
   [ "$(tail -n 1 "$STUB_LOG")" = "--timing --print-output-on-failure --filter-status failed $SUITE" ]
   [ -z "$(grep -e '--jobs' "$STUB_LOG")" ]
   # the output went through the awk files
-  [[ "$output" == *"[1/3] not ok 1 alpha: a poll that never comes true"* ]]
+  [[ "$output" == *"not ok 1/3 alpha: a poll that never comes true"* ]]
 }
 
 @test "bats-rerun: a green re-run exits 0" {
   STUB_COUNT=2 STUB_TAP="$FIXTURES/green.tap" STUB_RC=0 run bash "$RERUN" "$SUITE"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"[2/2] ok 2 beta: passes"* ]]
+  [[ "$output" == *"ok 2/2 beta: passes"* ]]
 }
 
 @test "bats-rerun: a decline is appended to the job summary" {
@@ -90,7 +90,7 @@ ran_nothing() { [ -z "$(grep -v -e '--count' "$STUB_LOG")" ]; }
   cd "$BATS_TEST_TMPDIR"
   STUB_COUNT=2 STUB_TAP="$FIXTURES/green.tap" run bash "$RERUN" "$SUITE"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"[1/2] ok 1 alpha: passes"* ]]
+  [[ "$output" == *"ok 1/2 alpha: passes"* ]]
 }
 
 @test "ci: each suite job re-runs its failed tests under the suite's own promises" {

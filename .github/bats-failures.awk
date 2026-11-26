@@ -24,7 +24,7 @@ BEGIN {
 
 {
   bf_l = $0
-  sub(/^\[[0-9]+\/[0-9]+\] /, "", bf_l)
+  if (bf_l ~ /^(not )?ok [0-9]+\/[0-9]+( |$)/) sub(/\/[0-9]+/, "", bf_l)
   if (bf_l ~ /^1\.\.[0-9]+$/) {
     if (bf_plan == "") bf_plan = substr(bf_l, 4)
   } else if (bf_l ~ /^(not )?ok [0-9]+ /) bf_result(bf_l)

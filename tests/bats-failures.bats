@@ -135,7 +135,7 @@ TAP
   [ ! -e "$GITHUB_STEP_SUMMARY" ]
 }
 
-@test "bats-failures: a stream already carrying [n/total] prefixes finds the same failures" {
+@test "bats-failures: a stream whose numbers already carry /total finds the same failures" {
   awk -f "$PROG_AWK" <"$FIX/first.tap" | filt >"$BATS_TEST_TMPDIR/prefixed"
   filt <"$FIX/first.tap" >"$BATS_TEST_TMPDIR/plain"
   sed -n '/^===== bats failures/,$p' "$BATS_TEST_TMPDIR/prefixed" >"$BATS_TEST_TMPDIR/a"

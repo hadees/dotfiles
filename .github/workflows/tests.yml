@@ -93,7 +93,7 @@ jobs:
           # is no log, the suite runs as before and the re-run declines.
           mkdir -p tests/.bats/run-logs && { : >'tests/.bats/run-logs/0 write test: a.log' && rm -f 'tests/.bats/run-logs/0 write test: a.log'; } 2>/dev/null || rm -rf tests/.bats
           # bats-failures.awk lists the failures at the end and annotates them,
-          # bats-progress.awk prefixes each result with [done/total]; pipefail keeps
+          # bats-progress.awk appends /total to each result's number; pipefail keeps
           # bats' exit status through the pipe.
           set -o pipefail
           TESTS_WAIT_SCALE=3 NODE_TESTS_REQUIRED=1 SCREEN_TESTS_REQUIRE='tmux fzf' bats --timing --print-output-on-failure $par tests 2>&1 | awk -f .github/bats-failures.awk -f .github/bats-progress.awk
