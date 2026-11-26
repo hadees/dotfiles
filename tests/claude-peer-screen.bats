@@ -1209,3 +1209,22 @@ ideas_open() {
   [ "$(count_lines '✻')" -eq 1 ] || { screen_show; false; }
   [[ "$(line 5)" == *'✻ Ideas · proj' ]] || { screen_show; false; }
 }
+
+@test "ideas: a typed line that matches an idea shows the three-line block under the erased picker, whole and under the padding, and Return starts the line" {
+  need tmux fzf
+  ideafile nightly "Nightly backup rotation rework" 5 >/dev/null
+  ideas_open 80 24 FAKE_SHELL_SLEEP=3
+  screen_wait 'esc hide'
+  screen_type 'nightly backup rotation'
+  screen_keys C-t
+  screen_wait 'resumes it:$'
+  screen_still
+  printf '%s\n' "$SCREEN" | grep -qE '^ {11}You had this already: Nightly backup rotation rework \(shaping 5h\)\.$' || { screen_show; false; }
+  printf '%s\n' "$SCREEN" | grep -qE '^ {11}Return starts the new idea · 1 or r resumes it:$' ||{ screen_show; false; }
+  [ "$(count_lines 'esc hide')" -eq 0 ] || { screen_show; false; }
+  [ "$(widest)" -le 79 ] || { screen_show; false; }
+  [ ! -s "$FAKE_SHELL_LOG" ]
+  screen_keys Enter
+  screen_wait ' · nightly backup rotation$'
+  until_ok 'grep -qF "claude-peer proj-secretary nightly backup rotation" "$FAKE_SHELL_LOG"'
+}

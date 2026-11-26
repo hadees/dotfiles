@@ -6240,3 +6240,124 @@ STUB
   CLAUDE_PEER_SIZE='12 60' run sh "$BIN" art --screen --slot secretary
   [ "$output" = 'Ideas: Return lists the ideas, c continues the last session, q leaves a shell' ]
 }
+
+# --- the Ideas pane: the typed line's duplicate check ---------------------------------
+
+# dup_fix [two]: ideas_fix plus an idea (card Q3, session s-9 with a transcript) that a line
+# about "nightly backup rotation" reads like; with an argument a second one (a file, no card)
+dup_fix() {
+  ideas_fix
+  FM=$(ideafile backup "Rework the nightly backup rotation" "Rotate the nightly backups to cold storage."); oldfile 10 "$FM"
+  qshape 10 Q3 Ideas s-9 "Rework the nightly backup rotation" "$FM"
+  idea_transcript_at s-9
+  if [ -n "${1-}" ]; then
+    FN=$(ideafile archive "Nightly backup rotation for the archive" "Keep the archive backups."); oldfile 12 "$FN"
+  fi
+}
+
+# dup_ask <slot>: n, then the line that matches the fixture; the question is on screen
+dup_ask() {
+  typeline "$1" n
+  pane_says "$1" 'Idea: '
+  typeline "$1" 'nightly backup rotation'
+}
+
+@test "ideas pane: a typed line that matches shows the block and starts nothing until answered; Return starts the new idea, 1 and r resume the earlier one, anything else draws the list again" {
+  dup_fix
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane secretary
+  hold_tty secretary
+  pane_says secretary "$ISLHINT"
+  dup_ask secretary
+  pane_says secretary 'You had this already: Rework the nightly backup rotation (shaping 10h).'
+  pane_says secretary 'Return starts the new idea · 1 or r resumes it: '
+  [ "$(shell_runs)" -eq 0 ]
+  typeline secretary ''
+  isl_n "$raw" 7
+  grep -qF 'Earlier ideas the operator was shown and passed over for this one: Q3 (Rework the nightly backup rotation). Do not ask about them again.' "$raw"
+  no grep -q -e '--resume' "$raw"
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 2 ]'
+  dup_ask secretary
+  until_ok '[ "$(pane_count secretary "Return starts the new idea")" -eq 2 ]'
+  typeline secretary 1
+  until_ok 'grep -q -e "--resume" "$raw"'
+  grep -qx 'A:s-9' "$raw"
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 3 ]'
+  dup_ask secretary
+  until_ok '[ "$(pane_count secretary "Return starts the new idea")" -eq 3 ]'
+  typeline secretary r
+  until_ok '[ "$(grep -c -e "--resume" "$raw")" -eq 2 ]'
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 4 ]'
+  runs=$(shell_runs)
+  dup_ask secretary
+  until_ok '[ "$(pane_count secretary "Return starts the new idea")" -eq 4 ]'
+  typeline secretary x
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 5 ]'
+  [ "$(shell_runs)" -eq "$runs" ]
+}
+
+@test "ideas pane: with two matches the block numbers the second and 2 resumes it" {
+  dup_fix two
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane secretary
+  hold_tty secretary
+  pane_says secretary "$ISLHINT"
+  dup_ask secretary
+  pane_says secretary 'You had this already:'
+  pane_says secretary '  2  '
+  grep -qE '^ *2  Nightly backup rotation for the archive \(shaping 12h\)$' "$BATS_TEST_TMPDIR/pane-secretary.out"
+  typeline secretary 2
+  isl_n "$raw" 7
+  [[ "$(isl_args "$raw" | tail -n 1)" == "A:Continue this idea. Its file is $FN"* ]]
+  no grep -q -e '--resume' "$raw"
+}
+
+@test "ideas pane: a typed line that matches nothing starts at once with no block, and so does a matching line when claude-peer.idea-match is 0" {
+  dup_fix
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane secretary
+  hold_tty secretary
+  pane_says secretary "$ISLHINT"
+  typeline secretary n
+  pane_says secretary 'Idea: '
+  typeline secretary 'a wholly different thought'
+  isl_n "$raw" 7
+  [ "$(isl_args "$raw" | tail -n 1)" = "A:a wholly different thought" ]
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 2 ]'
+  git config claude-peer.idea-match 0
+  dup_ask secretary
+  isl_n "$raw" 14
+  [ "$(isl_args "$raw" | tail -n 1)" = "A:nightly backup rotation" ]
+  no grep -q 'You had this already' "$BATS_TEST_TMPDIR/pane-secretary.out"
+}
+
+@test "ideas pane: a start request while the question is open is served and the question is gone" {
+  dup_fix
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane secretary
+  hold_tty secretary
+  pane_says secretary "$ISLHINT"
+  dup_ask secretary
+  pane_says secretary 'Return starts the new idea'
+  run sh "$BIN" start secretary some other task
+  until_ok '[ "$(shell_runs)" -eq 1 ]'
+  isl_n "$raw" 7
+  [ "$(isl_args "$raw" | tail -n 1)" = "A:some other task" ]
+  no grep -q 'Earlier ideas the operator was shown' "$raw"
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 2 ]'
+  [ "$(shell_runs)" -eq 1 ]
+}
+
+@test "ideas pane: the cap says pick again in slot secretary and Return again in slot alpha" {
+  git config --global claude-peer.picker list
+  fake_secretaries aa bb
+  FAKE_SHELL_SLEEP=1 pane secretary
+  hold_tty secretary
+  press secretary ''
+  pane_says secretary 'claude-peer: 2 conversations are open (aa-secretary, bb-secretary); pick again to open another'
+  FAKE_SHELL_SLEEP=1 pane alpha
+  hold_tty alpha
+  press alpha ''
+  pane_says alpha 'claude-peer: 2 conversations are open (aa-secretary, bb-secretary); Return again opens another'
+  [ "$(shell_runs)" -eq 0 ]
+}

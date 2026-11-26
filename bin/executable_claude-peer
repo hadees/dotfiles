@@ -821,7 +821,7 @@ pane_go() {
       pg_now=$(date +%s)
       if [ $((pg_now - ${pn_cap_t:-0})) -gt 60 ]; then
         pn_cap_t=$pg_now
-        echo "claude-peer: $pg_n conversations are open ($(printf '%s\n' "$pg_open" | sort | paste -sd, - | sed 's/,/, /g')); Return again opens another"
+        echo "claude-peer: $pg_n conversations are open ($(printf '%s\n' "$pg_open" | sort | paste -sd, - | sed 's/,/, /g')); $([ -n "${pn_ideas-}" ] && echo 'pick again to open another' || echo 'Return again opens another')"
         return 0
       fi
       pn_cap_t=0 pg_over=$((pg_n + 1))
@@ -1649,12 +1649,18 @@ pane_named() {
   pane_go "${px_m:-fresh}" - "$(ctx_prompt "$px_p" "$px_v")" "$@"
 }
 
-# N definition-args...: pick line N of pn_me.ideas. An idea that is open in another pane is
-# not opened twice; one whose session Claude Code still has resumes by id; any other starts
-# fresh from its file (or its card), and `queue shape` there links the new session to it.
+# N definition-args...: pick line N of pn_me.ideas
 pane_idea() {
   pi_n=$1; shift
-  pi_l=$(sed -n "${pi_n}p" "$pn_me.ideas")
+  pane_idea_row "$(sed -n "${pi_n}p" "$pn_me.ideas")" "$@"
+}
+
+# row definition-args...: start the idea of one reader row (seven tab columns). An idea that is
+# open in another pane is not opened twice; one whose session Claude Code still has resumes by
+# id; any other starts fresh from its file (or its card), and `queue shape` there links the new
+# session to it.
+pane_idea_row() {
+  pi_l=$1; shift
   [ -n "$pi_l" ] || return 0
   pi_id=$(printf '%s\n' "$pi_l" | cut -f2) pi_sid=$(printf '%s\n' "$pi_l" | cut -f4)
   pi_live=$(printf '%s\n' "$pi_l" | cut -f5) pi_t=$(printf '%s\n' "$pi_l" | cut -f6)
@@ -1676,10 +1682,41 @@ pane_idea() {
   fi
 }
 
-# text definition-args...: a typed line that starts a new idea
+# text definition-args...: a typed line that starts a new idea. When `ideas similar` finds
+# earlier ones, show them first: Return starts the new idea anyway, 1 or r (2, 3) resumes one,
+# anything else goes back to the picker. It never blocks a new idea.
 pane_newidea() {
   pw_t=$1; shift
-  pane_task "$pw_t" "" "$@"
+  pw_r=$(ideas_similar -- "$pw_t" 2>/dev/null) || pw_r=
+  [ -n "$pw_r" ] || { pane_task "$pw_t" "" "$@"; return 0; }
+  pw_i=0 pw_p= pw_tab=$(printf '\t')
+  # each line must fit the pad plus the screen, with one column spare
+  pw_room=
+  [ -z "$pn_cols" ] || pw_room=$((pn_cols - ${#pn_pad} - 1))
+  while IFS=$pw_tab read -r _ pw_st pw_id pw_ag _ pw_lv pw_ti pw_fl; do
+    pw_i=$((pw_i + 1))
+    case $pw_lv:$pw_st in -:waiting|-:taken) pw_wd='with Lead';; -:*) pw_wd=$pw_st;; *) pw_wd=open;; esac
+    if [ "$pw_i" = 1 ]; then pw_lead='You had this already: ' pw_x=" ($pw_wd $pw_ag)."; else pw_lead="  $pw_i  " pw_x=" ($pw_wd $pw_ag)"; fi
+    if [ -n "$pw_room" ]; then
+      pw_c=$((pw_room - ${#pw_lead} - ${#pw_x})); [ "$pw_c" -ge 10 ] || pw_c=10
+      # ponytail: cut counts bytes under some locales, so a long non-ASCII title can lose half a character
+      pw_ti=$(printf '%s' "$pw_ti" | cut -c1-"$pw_c")
+    fi
+    printf '%s%s%s%s\n' "$pn_pad" "$pw_lead" "$pw_ti" "$pw_x"
+    if [ "$pw_id" != - ]; then pw_n=$pw_id; else pw_n=$pw_fl; fi
+    pw_p="${pw_p:+$pw_p, }$pw_n ($pw_ti)"
+  done <<ROWS
+$pw_r
+ROWS
+  if [ "$pw_i" -gt 1 ]; then pw_q='Return starts the new idea · 1 or r, 2, 3 resumes: '; else pw_q='Return starts the new idea · 1 or r resumes it: '; fi
+  pane_ask "$pw_q" || return 0
+  case $pn_ans in
+    '') pane_task "$pw_t
+Earlier ideas the operator was shown and passed over for this one: $pw_p. Do not ask about them again." "" "$@";;
+    1|r) pane_idea_row "$(printf '%s\n' "$pw_r" | sed -n 1p | cut -f2-)" "$@";;
+    2|3) [ "$pn_ans" -gt "$pw_i" ] || pane_idea_row "$(printf '%s\n' "$pw_r" | sed -n "${pn_ans}p" | cut -f2-)" "$@";;
+  esac
+  return 0
 }
 
 # row-id definition-args...: what each row runs
