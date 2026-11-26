@@ -97,7 +97,7 @@ VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 A red suite job names its failed tests: `gh run view <run>` lists each as an
 annotation with file and line, the step log ends with a digest between
 `===== bats failures` and `===== end bats failures`, and a second step
-re-runs them and marks the ones that pass as flaky.
+re-runs them and marks the ones that pass as flaky (not yet on WSL).
 
 ## Architecture
 

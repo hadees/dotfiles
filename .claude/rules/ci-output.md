@@ -13,7 +13,8 @@ Each bats line in `.github/workflows/tests.yml` ends
 after a `set -o pipefail` line, and passes `--print-output-on-failure` (a
 failed test's log gains `Last output:` and the value of `$output`). The suite
 step of `test`, `test-rocky` and `test-wsl` has `id: suite`. `test-macos-apply`
-and `test-bootstrap` run no bats and have none of this.
+pipes its one bats file through both filters but has no re-run step;
+`test-bootstrap` runs no bats and has none of this.
 
 ## Reading a red check
 
@@ -56,7 +57,10 @@ suite's own promises, serially and with a 10-minute limit.
 `.github/bats-rerun.sh` asks bats for `--filter-status failed`, which reads
 the run log bats writes under `tests/.bats/run-logs` (git-ignored; the suite
 step makes the directory, and where the checkout cannot hold bats' file names
-there is no log and the re-run declines with `no run log`). A test that fails
+there is no log and the re-run declines with `no run log`). On `test-wsl` today
+the log is there but bats cannot count it, and the re-run declines with `bats
+could not count the failed tests`: WSL's red check carries the digest and its
+annotations, never a flaky label. A test that fails
 again is marked `failed twice`; one that passes is marked `flaky (passed on
 re-run)`, with a warning annotation.
 
