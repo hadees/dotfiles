@@ -802,13 +802,13 @@ NOTE
 # mode(fresh|continue|resume) slot(or -) prompt claude-args...: take a slot, run one
 # session in it, return. Never exits: a refusal is printed and the pane waits on.
 # The caller sets PG_CTX (a context path), PG_CTXNAME, PG_BY (who started it) and
-# PG_TASK (one line), and for a hand-off PG_HANDOFF (1), PG_LEADPID, PG_LEADSID;
-# they are read, and cleared, here.
+# PG_TASK (one line), for a hand-off PG_HANDOFF (1), PG_LEADPID, PG_LEADSID, and for
+# resuming one known session (mode resume) PG_SID; they are read, and cleared, here.
 pane_go() {
   pg_mode=$1 pg_req=$2 pg_prompt=$3; shift 3
   pg_ctx=${PG_CTX-} pg_ctxname=${PG_CTXNAME-} pg_by=${PG_BY-} pg_task=${PG_TASK-} pg_wake=${PG_WAKE-}
-  pg_ho=${PG_HANDOFF-} pg_lpid=${PG_LEADPID-} pg_lsid=${PG_LEADSID-}
-  PG_CTX= PG_CTXNAME= PG_BY= PG_TASK= PG_WAKE= PG_HANDOFF= PG_LEADPID= PG_LEADSID=
+  pg_ho=${PG_HANDOFF-} pg_lpid=${PG_LEADPID-} pg_lsid=${PG_LEADSID-} pg_rsid=${PG_SID-}
+  PG_CTX= PG_CTXNAME= PG_BY= PG_TASK= PG_WAKE= PG_HANDOFF= PG_LEADPID= PG_LEADSID= PG_SID=
   # a session a pane starts is a secretary's unless it is a hand-off (pg_sec is 1)
   pg_sec=1 pg_over=
   [ "$pg_ho" != 1 ] || pg_sec=
@@ -869,6 +869,7 @@ pane_go() {
 
 $(handoff_note)"; fi
   [ "$pg_mode" != continue ] || set -- --continue "$@"
+  [ "$pg_mode" != resume ] || [ -z "$pg_rsid" ] || set -- --resume "$pg_rsid" "$@"
   pg_ca= pg_cm= pg_ce= pg_cs=
   if [ -n "$pg_ctx" ]; then
     pg_ca=$(ctx_get "$pg_ctx" agent) pg_cm=$(ctx_get "$pg_ctx" model)
@@ -896,7 +897,7 @@ $(handoff_note)"; fi
   [ -z "$pg_ce" ] || set -- "$@" --effort "$pg_ce"
   [ -z "$pg_cs" ] || set -- "$@" --append-system-prompt "$pg_cs"
   [ -z "$pg_prompt" ] || set -- "$@" "$pg_prompt"
-  [ "$pg_mode" != resume ] || set -- "$@" --resume   # no value: Claude's own list chooses
+  [ "$pg_mode" != resume ] || [ -n "$pg_rsid" ] || set -- "$@" --resume   # no value: Claude's own list chooses
   # the clock: a session nobody ended is ended here (pane-end-minutes 0: never)
   pg_we=$(pane_num pane-end-minutes 60)
   pn_watch=
@@ -906,7 +907,7 @@ $(handoff_note)"; fi
     ( trap - EXIT; cd -- "$repo" && pane_watch "$pg_l" "$pg_t0" "$pg_we" "$(pane_num pane-done-minutes 5)" "$pg_sf" "$pg_tty" ) </dev/null >/dev/null 2>&1 &
     pn_watch=$!
   fi
-  run_session "$pg_wt" "$(session_name "$pg_taken")" "$@"
+  run_session "$pg_wt" "$(session_name "$pg_taken")" "$@"; pg_src=$?
   pane_unwatch
   # only after a session ran: a refused start returned above, and its `end`
   # would close a live peer's claims
@@ -940,6 +941,11 @@ $(handoff_note)"; fi
     ( cd -- "$repo" && log_add "$pg_l" gone "$pg_txt" ) 2>/dev/null && tell_lead "$LEADER" "$pg_lpid" "$pg_lsid"
   else
     ( cd -- "$repo" && log_add "$pg_l" end "$pg_txt" "$pg_ex" ) 2>/dev/null
+  fi
+  # a resume that failed at once is not tried again: the next pick of that idea starts fresh
+  if [ -n "$pg_rsid" ] && [ "$pg_src" -ne 0 ] && [ $(( $(date +%s) - pg_t0 )) -lt 15 ]; then
+    pn_nores="${pn_nores-} $pg_rsid"
+    echo "claude-peer: that session did not open (exit $pg_src); pick the idea again to start it fresh from its file"
   fi
   [ ! -t 1 ] || printf '\033]21337;status=;indicator=;status-color=;detail=\a'
   return 0
@@ -1406,9 +1412,9 @@ herm_pick() {
 # and the second line, dim. <repo> is cut, never the label, to fit pn_w - 3 columns.
 art_block() {
   ab_room=$((pn_w - 3)); [ "$pn_lay" != beside ] || ab_room=$((ab_room - 29))
-  ab_r=$((ab_room - 5 - ${#label})); [ "$ab_r" -ge 0 ] || ab_r=0
+  ab_r=$((ab_room - 5 - ${#pn_name})); [ "$ab_r" -ge 0 ] || ab_r=0
   ab_repo=$(printf '%s' "$rname" | cut -c1-"$((ab_r > 0 ? ab_r : 1))"); [ "$ab_r" -gt 0 ] || ab_repo=
-  ab_t=$(printf '✻ \033[1m%s\033[0m · %s' "$label" "$ab_repo") ab_s=$(printf '\033[2m%s\033[0m' "$1")
+  ab_t=$(printf '✻ \033[1m%s\033[0m · %s' "$pn_name" "$ab_repo") ab_s=$(printf '\033[2m%s\033[0m' "$1")
   art_lines "${2:-asleep}" "${3:-all}" "$slot" | AB_T=$ab_t AB_S=$ab_s AB_L=$pn_lay awk '
       { print $0 (ENVIRON["AB_L"] == "beside" ? (NR == 5 ? "  " ENVIRON["AB_T"] : NR == 6 ? "  " ENVIRON["AB_S"] : "") : "") }
       END { if (ENVIRON["AB_L"] == "under") { print ENVIRON["AB_T"]; print ENVIRON["AB_S"] } }'
@@ -1431,6 +1437,31 @@ pane_size() {
   pn_rows=$1 pn_cols=$2
 }
 
+# The Ideas pane (slot secretary; git config claude-peer.ideas false turns it off, and a
+# picker of off has no list to fill): pn_ideas is 1 and the screen says Ideas, else pn_name
+# is the slot's label.
+pane_mode() {
+  pn_ideas= pn_name=$label
+  [ "$slot" = secretary ] && [ "$pn_pick" != off ] || return 0
+  [ "$(git config --get claude-peer.ideas 2>/dev/null)" != false ] || return 0
+  pn_ideas=1 pn_name=Ideas
+}
+
+# The picker's rows, id<TAB>display, in pn_me.rows. In the Ideas pane: New idea, then one
+# `@i<N>` row per line N of pn_me.ideas (the reader's output, which a pick looks up).
+# Elsewhere pick_rows, as ever.
+pane_rows() {
+  if [ -z "$pn_ideas" ]; then pick_rows "$pn_slug" >"$pn_me.rows"; return 0; fi
+  pr_w=72
+  if [ -n "$pn_cols" ]; then
+    if [ "$pn_cols" -ge 80 ]; then pr_w=$((pn_cols - 5)); [ "$pr_w" -le 96 ] || pr_w=96
+    else pr_w=$((pn_cols - 3)); fi
+  fi
+  [ "$pr_w" -ge 30 ] || pr_w=30
+  ideas_rows '' "$pr_w" >"$pn_me.ideas" 2>/dev/null || :
+  { printf '@new\tNew idea\n'; awk -F'\t' '{ printf "@i%d\t%s\n", NR, $8 }' "$pn_me.ideas"; } >"$pn_me.rows"
+}
+
 # The block: pn_n rows, pn_head header lines, pn_w wide, centred by pn_left and
 # pn_right (pn_pad: pn_left spaces) from 80 columns, pn_vis rows shown, pn_h high.
 # pn_lay: where the sleeper goes (beside, under, none) and pn_al its block's lines.
@@ -1442,13 +1473,20 @@ pane_geom() {
     elif [ "$pn_cols" -ge 30 ] && [ "$pn_rows" -ge 18 ]; then pn_lay=under; fi
   fi
   pn_head=1
-  pn_w=$(awk -F'\t' '{ if (length($2) + 3 > w) w = length($2) + 3 } END { print (w > 58 ? w : 58) }' "$pn_me.rows")
+  if [ -n "$pn_ideas" ]; then
+    # every display has one length: the first idea's, in characters (not wc -m: that counts
+    # bytes where the locale is not UTF-8)
+    pn_w=$(( $(sed -n 1p "$pn_me.ideas" | cut -f8 | tr -d '\n' | LC_ALL=C tr -d '\200-\277' | wc -c) + 3 ))
+    [ "$pn_w" -ge 58 ] || pn_w=58
+  else
+    pn_w=$(awk -F'\t' '{ if (length($2) + 3 > w) w = length($2) + 3 } END { print (w > 58 ? w : 58) }' "$pn_me.rows")
+  fi
   if [ "$pn_lay" != none ]; then
     pn_al=$(art_lines asleep none "$slot" 2>/dev/null | wc -l | tr -d ' ')
     [ "$pn_lay" = beside ] || pn_al=$((pn_al + 2))
     pn_head=$((pn_al + 2))
     # the beside title row: 3 of fzf's, 27 of art, 2, then `✻ <Label> · <repo>`
-    pg_t=$((3 + 29 + 5 + ${#label} + ${#rname}))
+    pg_t=$((3 + 29 + 5 + ${#pn_name} + ${#rname}))
     [ "$pg_t" -le $((pn_cols - 2)) ] || pg_t=$((pn_cols - 2))
     [ "$pn_w" -ge "$pg_t" ] || pn_w=$pg_t
   fi
@@ -1467,8 +1505,12 @@ pane_geom() {
 # [frame [z]] -> fzf's header: the sleeper's block and an empty line when it shows,
 # then the hint, dim; the short one under 56 columns.
 pane_head() {
-  [ "$pn_lay" = none ] || { art_block 'waiting · ⏎ pick a context' "$@"; echo; }
-  if [ -n "$pn_cols" ] && [ "$pn_cols" -lt 56 ]; then ph_t='↵ start · ^T type a task · esc hide'
+  if [ -n "$pn_ideas" ]; then ph_s='waiting · ⏎ pick an idea'; else ph_s='waiting · ⏎ pick a context'; fi
+  [ "$pn_lay" = none ] || { art_block "$ph_s" "$@"; echo; }
+  if [ -n "$pn_ideas" ]; then
+    if [ -n "$pn_cols" ] && [ "$pn_cols" -lt 56 ]; then ph_t='↵ open · ^T new idea · esc hide'
+    else ph_t='↵ open · ^T new idea from what you typed · esc hide'; fi
+  elif [ -n "$pn_cols" ] && [ "$pn_cols" -lt 56 ]; then ph_t='↵ start · ^T type a task · esc hide'
   else ph_t='↵ start · ^T type a task · ^S …and save it · esc hide'; fi
   printf '\033[2m%s\033[0m' "$ph_t"
 }
@@ -1517,14 +1559,16 @@ art_wake() {
 # pn_qn: how many lines to erase before it is drawn again (0: leave them).
 pane_quiet() {
   pane_size
-  [ -f "$pn_me.rows" ] || pick_rows "$pn_slug" >"$pn_me.rows"
+  [ -f "$pn_me.rows" ] || pane_rows
   pane_geom
   pn_qn=0
   if [ "$pn_lay" != none ]; then
     if [ "$pn_pick" = off ]; then pane_art '⏎ start · c continue · q shell'
+    elif [ -n "$pn_ideas" ]; then pane_art '⏎ ideas · c continue · q shell'
     else pane_art '⏎ picker · c continue · q shell'; fi
     pn_qn=$((pn_al + 2))
   elif [ "$pn_pick" = off ]; then printf '%s: Return starts a Claude here, c continues the last session, q leaves a shell\n' "$label"
+  elif [ -n "$pn_ideas" ]; then printf 'Ideas: Return lists the ideas, c continues the last session, q leaves a shell\n'
   else printf '%s: Return picks a context, c continues the last session, q leaves a shell\n' "$label"; fi
 }
 
@@ -1605,11 +1649,46 @@ pane_named() {
   pane_go "${px_m:-fresh}" - "$(ctx_prompt "$px_p" "$px_v")" "$@"
 }
 
+# N definition-args...: pick line N of pn_me.ideas. An idea that is open in another pane is
+# not opened twice; one whose session Claude Code still has resumes by id; any other starts
+# fresh from its file (or its card), and `queue shape` there links the new session to it.
+pane_idea() {
+  pi_n=$1; shift
+  pi_l=$(sed -n "${pi_n}p" "$pn_me.ideas")
+  [ -n "$pi_l" ] || return 0
+  pi_id=$(printf '%s\n' "$pi_l" | cut -f2) pi_sid=$(printf '%s\n' "$pi_l" | cut -f4)
+  pi_live=$(printf '%s\n' "$pi_l" | cut -f5) pi_t=$(printf '%s\n' "$pi_l" | cut -f6)
+  pi_f=$(printf '%s\n' "$pi_l" | cut -f7)
+  if [ "$pi_live" != - ]; then
+    echo "claude-peer: $pi_t is open in $pi_live; it comes back here when that session ends"
+    return 0
+  fi
+  rm -f "$pn_me"
+  PG_BY=pane PG_TASK=$(task_line "$pi_t")
+  case " ${pn_nores-} " in *" $pi_sid "*) pi_sid=-;; esac
+  if [ "$pi_sid" != - ] && idea_transcript "$pi_sid"; then
+    PG_SID=$pi_sid
+    pane_go resume - '' "$@"
+  elif [ "$pi_f" != - ]; then
+    pane_go fresh - "Continue this idea. Its file is $pi_f: read it first, then run claude-peer queue shape $pi_f so this session is the one the pane's list brings back, and carry on from its Open and Next." "$@"
+  else
+    pane_go fresh - "Continue this idea from the queue (card $pi_id): $pi_t. Start its idea file as the seat note says." "$@"
+  fi
+}
+
+# text definition-args...: a typed line that starts a new idea
+pane_newidea() {
+  pw_t=$1; shift
+  pane_task "$pw_t" "" "$@"
+}
+
 # row-id definition-args...: what each row runs
 pane_choose() {
   pc_id=$1; shift
   case $pc_id in
     @fresh|@continue|@resume) rm -f "$pn_me"; PG_BY=pane; pane_go "${pc_id#@}" - '' "$@";;
+    @new) rm -f "$pn_me"; PG_BY=pane; pane_go fresh - '' "$@";;
+    @i[0-9]*) pane_idea "${pc_id#@i}" "$@";;
     @task) pane_newtask "" "$@";;
     @shell) pane_shell;;
     *) pane_named "$pc_id" "$@";;
@@ -1679,6 +1758,7 @@ pane_fzf() {
     else
       pn_header=$(pane_head) pn_in=$pn_me.rows
     fi
+    pf_x=ctrl-t,ctrl-s; [ -z "$pn_ideas" ] || pf_x=ctrl-t
     # shellcheck disable=SC2086
     ( trap - TTIN TTOU; unset FZF_DEFAULT_OPTS FZF_DEFAULT_OPTS_FILE
       CLAUDE_PEER_FRAMES=$pn_me.frame CLAUDE_PEER_ART_SECONDS=$pn_secs
@@ -1687,9 +1767,9 @@ pane_fzf() {
         --no-multi --no-sort --no-mouse --layout=reverse --header-first \
         --height="$pn_h" --info=hidden --no-separator \
         --margin="0,$pn_right,0,$pn_left" --pointer='▸' --gutter=' ' \
-        --delimiter='\t' --with-nth=2 --prompt="$label ▸ " \
+        --delimiter='\t' --with-nth=2 --prompt="$pn_name ▸ " \
         ${pn_lk:+--ansi} ${pn_lk:+"--header-lines=$pn_head"} ${pn_header:+"--header=$pn_header"} \
-        --print-query --expect=ctrl-t,ctrl-s \
+        --print-query --expect=$pf_x \
         ${pn_anim:+"--with-shell=sh -c"} ${pn_anim:+"--bind=change,focus:rebind(every(1))"} \
         ${pn_anim:+"--bind=every(1):bg-transform:$PANE_TICK"} \
         ${pn_lk:+"--listen=$pn_look"} ${pn_lku:+"--bind=start:unbind(every(1))"} \
@@ -1720,11 +1800,13 @@ pane_fzf() {
     case $pf_k in
       ctrl-t|ctrl-s)
         [ -n "$pf_q" ] || continue   # nothing typed: the picker again
-        PG_WAKE=1; pane_task "$pf_q" "$([ "$pf_k" = ctrl-s ] && echo 1)" "$@"; PG_WAKE=
+        PG_WAKE=1
+        if [ -n "$pn_ideas" ]; then pane_newidea "$pf_q" "$@"; else pane_task "$pf_q" "$([ "$pf_k" = ctrl-s ] && echo 1)" "$@"; fi
+        PG_WAKE=
         return 0;;
     esac
     if [ "$pf_rc" = 0 ] && [ -n "$pf_id" ]; then PG_WAKE=1; pane_choose "$pf_id" "$@"; PG_WAKE=
-    elif [ "$pf_rc" = 1 ] && [ -n "$pf_q" ]; then PG_WAKE=1; pane_task "$pf_q" "" "$@"; PG_WAKE=
+    elif [ "$pf_rc" = 1 ] && [ -n "$pf_q" ]; then PG_WAKE=1; pane_newidea "$pf_q" "$@"; PG_WAKE=
     else pn_state=quiet
     fi
     return 0
@@ -1758,23 +1840,48 @@ pane_list() {
   done
 }
 
+# The Ideas pane's numbered list: at most pn_vis rows (New idea is 1), then how many were cut.
+pane_ideas_list() {
+  while :; do
+    pane_art 'waiting · ⏎ pick an idea'
+    awk -F'\t' -v p="$pn_pad" -v n="$pn_vis" 'NR <= n { printf "%s%2d  %s\n", p, NR, $2 }' "$pn_me.rows"
+    [ "$pn_n" -le "$pn_vis" ] || printf '%s… %d more: claude-peer ideas\n' "$pn_pad" $((pn_n - pn_vis))
+    printf '%sn new idea, typed · q shell\n' "$pn_pad"
+    if ! pane_ask "$pn_prompt"; then
+      case $pn_why in intr) pane_shell;; eof) pn_state=quiet;; esac
+      return 0
+    fi
+    case $pn_ans in
+      '') pane_choose @new "$@"; return 0;;
+      n) pane_ask 'Idea: ' || return 0
+         [ -z "$pn_ans" ] || pane_newidea "$pn_ans" "$@"
+         return 0;;
+      q) pane_shell;;
+      *[!0-9]*) ;;
+      *) if [ "$pn_ans" -ge 1 ] && [ "$pn_ans" -le "$pn_vis" ]; then
+           pane_choose "$(awk -F'\t' -v n="$pn_ans" 'NR == n { print $1 }' "$pn_me.rows")" "$@"; return 0
+         fi;;
+    esac
+  done
+}
+
 # The picker state of a waiting pane: show fzf or the list at once, start what is
 # chosen, or set pn_state=quiet.
 pane_pick() {
   pane_size
-  pick_rows "$pn_slug" >"$pn_me.rows"
+  pane_rows
   pane_geom
   # the selector takes the hat's colour while the sleeper shows
-  pn_hatc= pn_prompt="$label ▸ "
+  pn_hatc= pn_prompt="$pn_name ▸ "
   if [ "$pn_lay" != none ]; then
     art_hat "$slot"
     pn_hatc="--color=pointer:$hat_fzf,prompt:$hat_fzf"
-    pn_prompt=$(printf '\033[%sm%s ▸\033[0m ' "$hat_sgr" "$label")
+    pn_prompt=$(printf '\033[%sm%s ▸\033[0m ' "$hat_sgr" "$pn_name")
   fi
   if [ "$pn_pick" = fzf ]; then
     pane_fzf "$@" && return 0
   fi
-  pane_list "$@"
+  if [ -n "$pn_ideas" ]; then pane_ideas_list "$@"; else pane_list "$@"; fi
 }
 
 # Did a workgroup entry open this pane? claude() records each entry as
@@ -1846,6 +1953,8 @@ pane() {
     elif ! fzf_ok; then echo "claude-peer: fzf $fzf_ver is older than 0.75; using the list"; pn_pick=list
     fi
   fi
+  pane_mode
+  pn_nores=
   pn_colors=$(fzf_colors)
   pn_secs=$(git config --get claude-peer.art-seconds 2>/dev/null) || pn_secs=20
   case $pn_secs in ''|*[!0-9]*) pn_secs=20;; esac
@@ -1890,7 +1999,7 @@ pane() {
           '') if [ "$pn_pick" = off ]; then pn_ev=fresh; else pane_unquiet; pn_ev=pick; fi;;
           c) pn_ev=continue;;
           q) pn_ev=quit;;
-          *) if [ "$pn_pick" != off ] && pane_has_ctx "$pn_k"; then pn_ev=named; else pane_unquiet; pn_show=1; fi;;
+          *) if [ "$pn_pick" != off ] && [ -z "$pn_ideas" ] && pane_has_ctx "$pn_k"; then pn_ev=named; else pane_unquiet; pn_show=1; fi;;
         esac
       elif [ "$pn_ended" = 1 ] && [ "$pn_reader" = 1 ]; then
         pane_lost && exit 0
@@ -4375,6 +4484,7 @@ cmd_art() {
   pn_pick=$(git config --get claude-peer.picker 2>/dev/null) || pn_pick=
   pn_slug=
   [ "$pn_pick" = off ] || pn_slug=$(origin_slug 2>/dev/null) || pn_slug=
+  pane_mode
   pn_tty=/dev/tty
   ar_d=$(mktemp -d "${TMPDIR:-/tmp}/claude-peer-art.XXXXXX") || die "cannot make a temporary directory"
   pn_me=$ar_d/screen

@@ -6023,3 +6023,220 @@ chars() { LC_ALL=C tr -d '\200-\277' | LC_ALL=C awk '{ print length($0) }'; }
   idea_transcript s-1
   no idea_transcript s-2
 }
+
+# --- the Ideas pane: the wait screen -------------------------------------------------
+# The pane of slot `secretary` lists ideas where every other pane lists contexts. Rows of the
+# fixture: 1 New idea, 2 Beta (a card, session s-1), 3 Alpha (a file no card names), 4 Delta
+# (parked, session s-2).
+
+# ideas_fix: three ideas in the order above; the list picker
+ideas_fix() {
+  local fa fb fd
+  fa=$(ideafile alpha "Alpha idea"); oldfile 10 "$fa"
+  fb=$(ideafile beta "Beta idea"); oldfile 10 "$fb"
+  fd=$(ideafile delta "Delta idea"); oldfile 10 "$fd"
+  qshape 3 Q1 Ideas s-1 "Beta idea" "$fb"
+  qshape 5 Q2 Ideas s-2 "Delta idea" "$fd"
+  qev 1 Q2 park Ideas - later
+  FA=$fa FB=$fb FD=$fd
+  git config --global claude-peer.picker list
+  export CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/cfg
+  mkdir -p "$CLAUDE_CONFIG_DIR"
+}
+
+# isl_args <file>: the arguments after the Ideas session's name; isl_n <file> <n> waits for n
+isl_args() { sed -n '/^A:proj-secretary$/,$p' "$1" | sed 1d; }
+isl_n() { until_ok "[ \"\$(isl_args '$1' | wc -l | tr -d ' ')\" -ge $2 ]"; }
+
+ISLHINT='n new idea, typed · q shell'
+
+@test "ideas pane: slot secretary lists New idea and the ideas, parked last, and no context rows; another slot lists what it always did" {
+  ideas_fix
+  FAKE_SHELL_SLEEP=2 pane secretary
+  pane_says secretary "$ISLHINT"
+  o=$BATS_TEST_TMPDIR/pane-secretary.out
+  [ "$(grep -E '^ ?[0-9]+  ' "$o" | sed -E 's/^ ?[0-9]+  //; s/ +· .*//' | tr '\n' ',')" = "New idea,Beta idea,Alpha idea,Delta idea," ]
+  grep -qE '^ 2  Beta idea +· shaping +· +3h$' "$o"
+  grep -qE '^ 4  Delta idea +· parked +· +1h$' "$o"
+  grep -qF 'Ideas ▸' "$o"
+  no grep -qE 'Pick up the last conversation|Choose an earlier|Drop to a shell|A new session, no prompt' "$o"
+  pane alpha
+  pane_says alpha "$LISTHINT"
+  grep -qx ' 1  fresh     A new session, no prompt' "$BATS_TEST_TMPDIR/pane-alpha.out"
+}
+
+@test "ideas pane: claude-peer.ideas false gives slot secretary the generic list" {
+  ideas_fix
+  git config --global claude-peer.ideas false
+  pane secretary
+  pane_says secretary "$LISTHINT"
+  no grep -q 'New idea' "$BATS_TEST_TMPDIR/pane-secretary.out"
+}
+
+@test "ideas pane: Return starts a session with no prompt and no --resume; n asks for a line and starts it" {
+  ideas_fix
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane secretary
+  hold_tty secretary
+  pane_says secretary "$ISLHINT"
+  typeline secretary ''
+  isl_n "$raw" 6
+  [ "$(isl_args "$raw" | head -n 1)" = "A:--disallowedTools" ]
+  [ "$(isl_args "$raw" | wc -l | tr -d ' ')" -eq 6 ]
+  no grep -q -e '--resume' "$raw"
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 2 ]'
+  typeline secretary n
+  pane_says secretary 'Idea: '
+  typeline secretary 'a new thought'
+  isl_n "$raw" 13
+  [ "$(isl_args "$raw" | tail -n 1)" = "A:a new thought" ]
+}
+
+@test "ideas pane: a row with a session and a transcript resumes by id, the seat's arguments follow and no --model is passed" {
+  ideas_fix
+  idea_transcript_at s-1
+  git config claude-peer.model opus
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane secretary
+  pane_says secretary "$ISLHINT"
+  typeline secretary 2
+  isl_n "$raw" 8
+  [ "$(isl_args "$raw" | sed -n 1,2p | tr '\n' ' ')" = "A:--resume A:s-1 " ]
+  [ "$(isl_args "$raw" | sed -n 3p)" = "A:--disallowedTools" ]
+  [ "$(isl_args "$raw" | wc -l | tr -d ' ')" -eq 8 ]
+  no grep -q -e '--model' "$raw"
+}
+
+@test "ideas pane: a row whose transcript is gone, and a row with no session, start fresh from the file and tell the session to link itself" {
+  ideas_fix
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane secretary
+  hold_tty secretary
+  pane_says secretary "$ISLHINT"
+  typeline secretary 2
+  isl_n "$raw" 7
+  no grep -q -e '--resume' "$raw"
+  [ "$(isl_args "$raw" | tail -n 1)" = "A:Continue this idea. Its file is $FB: read it first, then run claude-peer queue shape $FB so this session is the one the pane's list brings back, and carry on from its Open and Next." ]
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 2 ]'
+  typeline secretary 3
+  isl_n "$raw" 14
+  [[ "$(isl_args "$raw" | tail -n 1)" == "A:Continue this idea. Its file is $FA: read it first, then run claude-peer queue shape $FA "* ]]
+  no grep -q -e '--resume' "$raw"
+}
+
+@test "ideas pane: a row that is open in another pane is not opened twice; the line is printed and the list is drawn again" {
+  ideas_fix
+  idea_transcript_at s-1
+  idea_live s-1 proj-secretary
+  pane secretary
+  hold_tty secretary
+  pane_says secretary "$ISLHINT"
+  typeline secretary 2
+  pane_says secretary 'claude-peer: Beta idea is open in proj-secretary; it comes back here when that session ends'
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 2 ]'
+  [ "$(shell_runs)" -eq 0 ]
+  grep -qE '^ 2  Beta idea +· open +· +3h$' "$BATS_TEST_TMPDIR/pane-secretary.out"
+}
+
+@test "ideas pane: a resume that ends at once is said once and the next pick of that idea starts fresh from its file" {
+  ideas_fix
+  idea_transcript_at s-1
+  cat >"$BATS_TEST_TMPDIR/bin/failshell" <<'STUB'
+#!/bin/sh
+echo "args=$*" >>"$FAKE_SHELL_LOG"
+exit 3
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/failshell"
+  export SHELL=$BATS_TEST_TMPDIR/bin/failshell
+  pane secretary
+  hold_tty secretary
+  pane_says secretary "$ISLHINT"
+  typeline secretary 2
+  pane_says secretary 'claude-peer: that session did not open (exit 3); pick the idea again to start it fresh from its file'
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 2 ]'
+  grep -q -e '--resume s-1' "$FAKE_SHELL_LOG"
+  typeline secretary 2
+  until_ok '[ "$(shell_runs)" -eq 2 ]'
+  [ "$(grep -c -e '--resume' "$FAKE_SHELL_LOG")" -eq 1 ]
+  tail -n 1 "$FAKE_SHELL_LOG" | grep -qF "Continue this idea. Its file is $FB"
+  [ "$(pane_count secretary 'that session did not open')" -eq 1 ]
+}
+
+@test "ideas pane: the fresh-tree rule holds for New idea and an idea started from its file, and not for a resume" {
+  remote_head
+  ideas_fix
+  idea_transcript_at s-1
+  sh "$BIN" run --as secretary </dev/null >/dev/null
+  wt=$REPO/.claude/worktrees/secretary
+  old=$(git -C "$wt" rev-parse HEAD)
+  git update-ref refs/remotes/origin/main "$(git rev-parse HEAD)"
+  head=$(git rev-parse origin/HEAD)
+  [ "$head" != "$old" ]
+  FAKE_SHELL_SLEEP=1 pane secretary
+  hold_tty secretary
+  pane_says secretary "$ISLHINT"
+  # a resume leaves the slot where it was
+  typeline secretary 2
+  until_ok '[ "$(shell_runs)" -eq 2 ]'
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 2 ]'
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$old" ]
+  # an idea started fresh from its file moves it
+  typeline secretary 3
+  until_ok '[ "$(git -C "$wt" rev-parse HEAD)" = "$head" ]'
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 3 ]'
+  git -C "$wt" checkout -q --detach "$old"
+  # so does New idea
+  typeline secretary ''
+  until_ok '[ "$(git -C "$wt" rev-parse HEAD)" = "$head" ]'
+}
+
+@test "ideas pane: after an idea pick has ended, a hand-off start gets no --resume and none of the seat's arguments" {
+  ideas_fix
+  idea_transcript_at s-1
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane secretary
+  pane_says secretary "$ISLHINT"
+  typeline secretary 2
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 2 ]'
+  : >"$raw"
+  CLAUDE_PID=4242 run sh "$BIN" start secretary --handoff fix thing
+  [ "$status" -eq 0 ]
+  isl_n "$raw" 1
+  [ "$(isl_args "$raw" | wc -l | tr -d ' ')" -eq 1 ]
+  no grep -q -e '--resume' -e 'disallowedTools' "$raw"
+}
+
+@test "ideas pane: with fzf the rows are the ideas, the prompt is Ideas, ctrl-t alone is expected; a pick resumes, ^T and exit 1 with a query start that line" {
+  ideas_fix
+  idea_transcript_at s-1
+  fzfstub
+  git config --global claude-peer.picker fzf
+  FAKE_FZF_OUT=$'\n\n@i1\tBeta idea\n' FAKE_SHELL_SLEEP=2 pane secretary
+  until_ok 'grep -q -e "--resume s-1" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(fzf_calls)" -eq 2 ]'
+  [ "$(cut -f1 "$FAKE_FZF_LOG.rows" | tr '\n' ' ')" = "@new @i1 @i2 @i3 " ]
+  grep -qx -- '--prompt=Ideas ▸ ' "$FAKE_FZF_LOG"
+  grep -qx -- '--expect=ctrl-t' "$FAKE_FZF_LOG"
+  fzf_header | grep -q '↵ open · ^T new idea from what you typed · esc hide'
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  rm -f "$FAKE_FZF_LOG.calls"
+  FAKE_FZF_OUT=$'a typed idea\nctrl-t\n@new\tNew idea\n' FAKE_SHELL_SLEEP=2 pane secretary
+  until_ok 'grep -q "claude-peer proj-secretary a typed idea\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(fzf_calls)" -eq 2 ]'
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  rm -f "$FAKE_FZF_LOG.calls"
+  FAKE_FZF_RC=1 FAKE_FZF_OUT=$'another idea\n\n' FAKE_SHELL_SLEEP=2 pane secretary
+  until_ok 'grep -q "claude-peer proj-secretary another idea\$" "$FAKE_SHELL_LOG"'
+}
+
+@test "ideas pane: art --screen shows the Ideas quiet block for slot secretary and today's for another slot" {
+  git config --global claude-peer.picker list
+  CLAUDE_PEER_SIZE='24 80' run sh "$BIN" art --screen --slot secretary
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'✻ '*'Ideas'*' · proj'* ]]
+  [[ "$output" == *'⏎ ideas · c continue · q shell'* ]]
+  CLAUDE_PEER_SIZE='24 80' run sh "$BIN" art --screen --slot alpha
+  [[ "$output" == *'⏎ picker · c continue · q shell'* ]]
+  CLAUDE_PEER_SIZE='12 60' run sh "$BIN" art --screen --slot secretary
+  [ "$output" = 'Ideas: Return lists the ideas, c continues the last session, q leaves a shell' ]
+}
