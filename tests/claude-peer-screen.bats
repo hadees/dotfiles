@@ -158,10 +158,11 @@ teardown() {
   [ ! -e "$BATS_TEST_TMPDIR/claude-ran" ]
 }
 
-# until_ok '<command>': retry for ten seconds
+# until_ok '<command>': retry for ten seconds (times TESTS_WAIT_SCALE, which the
+# parallel CI jobs set: a loaded runner starts processes late)
 until_ok() {
   local i
-  for i in $(seq 1 100); do
+  for i in $(seq 1 $((100 * ${TESTS_WAIT_SCALE:-1}))); do
     eval "$1" && return 0
     sleep 0.1
   done
@@ -231,7 +232,7 @@ screen_grab() {
 
 # screen_wait '<ERE>' [seconds]: until a line of the screen matches
 screen_wait() {
-  local i n=$(( ${2:-15} * 10 ))
+  local i n=$(( ${2:-15} * 10 * ${TESTS_WAIT_SCALE:-1} ))
   for i in $(seq 1 "$n"); do
     screen_grab
     printf '%s\n' "$SCREEN" | grep -Eq -- "$1" && return 0
@@ -244,7 +245,7 @@ screen_wait() {
 
 # screen_still [count] [gap] [seconds]: until count captures in a row are identical
 screen_still() {
-  local count=${1:-3} gap=${2:-0.2} limit=${3:-15} same=0 prev= now start=$SECONDS
+  local count=${1:-3} gap=${2:-0.2} limit=$(( ${3:-15} * ${TESTS_WAIT_SCALE:-1} )) same=0 prev= now start=$SECONDS
   while [ $((SECONDS - start)) -lt "$limit" ]; do
     now=$(tm capture-pane -p -t s)
     if [ "$now" = "$prev" ]; then same=$((same + 1)); else same=1 prev=$now; fi
@@ -778,6 +779,8 @@ below_args() { printf '%s\n' "$SCREEN" | sed -n "$((ARGS_AT + 1)),\$p"; }
   [[ "$SCREEN" != *'Alpha: Return picks'* && "$SCREEN" != *'esc hide'* ]] || { screen_show; false; }
   screen_type x
   screen_keys Enter
+  # the line read and the block redrawn: the typed x gone from its own line, four ▬ back
+  until_ok 'screen_grab; ! below_args | grep -qx x && [ "$(below_args | grep -o ▬ | wc -l | tr -d " ")" -eq 4 ]' || { screen_show; false; }
   screen_still
   [ "$(below_args | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ] || { screen_show; false; }
   [ "$(below_args | grep -o '✻' | wc -l | tr -d ' ')" -eq 1 ] || { screen_show; false; }
