@@ -34,14 +34,12 @@ again, `q` (or end of input) leaves a plain shell, so a failing `claude` never s
 Outside a repository it is one line and a plain shell. Unlike the Ideas pane it
 starts at entry, since there is nothing to wait for.
 
-`install` builds no overlay pair: it passes no overlay names, so a stale `Claude
-Peers + Overlays` pair and the overlays state file are removed (the branch a machine
-with no overlays already took) and `here` answers `base`. The overlay code
-(`build_overlays`, `overlay`, the `overlays:` lines of `status`) stays until the step
-that deletes it, and `status` still says `overlays: not installed` for a machine that
-has overlays. `status` reports `workgroup:` and `hermes:` as `installed, out of date
-(...)` until the next `install` (iTerm2 quit); a tab opened before the relaunch keeps
-its older panes.
+`install` builds no overlay pair and passes no overlay names, so a stale `Claude Peers +
+Overlays` pair and the overlays state file are removed and `here` answers `base`. The overlay
+code (`build_overlays`, `overlay`, the `overlays:` lines of `status`) stays until the step that
+deletes it, and `status` still says `overlays: not installed` for a machine that has overlays.
+`status` reports `workgroup:` and `hermes:` as `installed, out of date (...)` until the next
+`install` (iTerm2 quit); a tab opened before the relaunch keeps its older panes.
 
 ## The jobs record
 
@@ -93,9 +91,9 @@ Lead never reads the queue itself. Append-only, tab-separated:
 `<UTC time><TAB><id><TAB><event><TAB><who><TAB><value><TAB><text>[<TAB><file>]`;
 `id` is `Q<n>` from the highest id in the file (`-` for a refusal; two adds in one
 instant can share one, there is no lock), `event` is `add`, `refused`, `set`,
-`take`, `done`, `drop`, `park`, `reopen`, `escalated` or `link`. A card's state is
-its last `add` or `reopen` (waiting), `take` (taken), `done`, `drop` (dropped) or
-`park` (parked); `set` changes its `waiting` (the operator is waiting on it), `unblocks` 0 to
+`take`, `done`, `drop`, `park`, `reopen`, `escalated`, `link` or `shape`. A card's state
+is its last `add` or `reopen` (waiting), `take` (taken), `done`, `drop` (dropped),
+`park` (parked) or, for a card that has only a `shape` line, `shaping`; `set` changes its `waiting` (the operator is waiting on it), `unblocks` 0 to
 9, `prio` 0 to 3 or `size` S, M, L (`?` until set).
 
 - `queue add [--kind idea|plan|ask|unfinished] [--waiting] [--unblocks N] [--prio P]
@@ -107,6 +105,8 @@ its last `add` or `reopen` (waiting), `take` (taken), `done`, `drop` (dropped) o
   line naming what is missing, and a `refused` line (id `-`, the reason as text). A
   relative file is stored absolute. `who` is `--as`, else `log_who`. A bad option value is
   exit 2.
+- `queue shape` (an idea before its verdict, state `shaping`) and the reuse of an idea's card
+  by `add`: `claude-peer-ideas.md`.
 - **The wake.** Only when Lead has nothing in flight (no card `taken` and
   `jobs_running Lead` fails) does `add` write `queue: <id> is waiting and nothing is
   in flight` to the log as a `note` and call `tell_lead`. With work in flight it
@@ -132,8 +132,8 @@ its last `add` or `reopen` (waiting), `take` (taken), `done`, `drop` (dropped) o
   `${CLAUDE_CONFIG_DIR:-~/.claude}/projects/<path, non-alphanumerics as ->`, a layout
   observed, not an interface), else `claude --resume <SID>` and the directory.
 - `take`, `done`, `reopen`, `drop`, `park`, `link`: an unknown id, or a state other than
-  the ones the verb applies to (`take` waiting; `done` taken; `drop` and `park` waiting or taken;
-  `reopen` anything but waiting), is exit 3 with one stderr line; `drop` and `park`
+  the ones the verb applies to (`take` waiting; `done` taken; `drop` and `park` waiting, taken
+  or shaping; `reopen` anything but waiting or shaping), is exit 3 with one stderr line; `drop` and `park`
   without a reason, and a bad `set` or `link`, are exit 2. `take` writes `order=<n>`,
   the card's position in `list` at that moment, so the formula's agreement with what
   was picked can be counted.

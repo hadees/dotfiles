@@ -176,6 +176,12 @@
 #                            and print its id (an idea or plan needs a finished
 #                            idea file, else exit 1); wakes Lead when nothing
 #                            is in flight
+#   queue shape [--session SID] [--as NAME] -- <idea file>
+#                            record the idea's session as a card in state
+#                            shaping, which Lead is never offered, and print
+#                            its id, then (a new idea only) up to three lines
+#                            `similar<TAB>score<TAB>` and the ideas rows below
+#                            that read like it; a later queue add reuses the id
 #   queue list [--all] [<dir>]
 #                            the waiting cards in pull order: order, id, tier,
 #                            score, lo, hi, terms, age, kind, who, cand, text,
@@ -189,6 +195,18 @@
 #   queue hook               a PostToolUse hook on `gh pr merge`: names Lead's
 #                            next card; prints nothing unless it has one
 #   queue settings           the settings.json hook entry to paste
+#   ideas [--all] [--width N] [<dir>]
+#                            one row per idea of the repository of <dir>:
+#                            state<TAB>id<TAB>age<TAB>session<TAB>live<TAB>title<TAB>file
+#                            (--width N, at least 30, adds a display column);
+#                            shaping, waiting, taken and unfinished ideas first,
+#                            then parked ones; --all adds done and dropped
+#   ideas similar (--file <idea file> | -- <words>...)
+#                            up to three ideas that share words with the file's
+#                            title and first Goal sentence, or with the words:
+#                            score<TAB> then the columns above; exit 3 with none
+#                            (git config claude-peer.idea-match, default 3, is
+#                            the words needed; 0 turns it off)
 #   path <branch>            print the worktree path for <branch> (nothing
 #                            is created)
 #   plan <branch>...         branch<TAB>worktree<TAB>create|reuse|conflict:<why>
@@ -673,7 +691,8 @@ peer_mode() {
 
 # --- the secretary seat: what a session started at a pane is -------------------------
 # Every session a pane starts that is not a hand-off. The text is the operator's
-# (signed 2026-11-25), as signed in the third person; only <rname> is replaced.
+# (signed 2026-11-26, the go for the ideas picker), worded in the third person; only
+# <rname> is replaced.
 
 # git config claude-peer.pane-deny: the tools removed at launch, one comma-joined
 # argument; unset or empty is the default, `none` nothing; a value that could read
@@ -777,20 +796,20 @@ pane_secretaries() {
 # shellcheck disable=SC2016
 secretary_note() {
   sed "s|<rname>|$rname|" <<'NOTE'
-Secretary seat. The operator opened this pane to think one idea through with you. The repository's Lead is building and is not to be interrupted, so nothing you do reaches it except through the queue. Shape the idea with the operator in chat, research it (the web, scout-haiku), and keep one file for it, ${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<rname>/idea-<slug>.md, with the headings Goal, Matters, Constraints, Decided, Open and Next, rewritten in the turn anything is decided. You do not edit the repository, commit, merge, dispatch work-sonnet, message another session, or write claude-peer log lines. Your one aim is to finish this idea and end. Finished is exactly one of: a big idea handed to plan-fable from here, with the file as its brief, and then claude-peer queue add --kind plan -- "<one line>" <the plan's path> (Lead builds the plan, not you, and only on the operator's go); something Lead should do, claude-peer queue add -- "<one line>" <the idea file>; parked or dropped, claude-peer queue add ... followed by claude-peer queue park|drop <id> <why>. Add --waiting when the operator says they are waiting on it, --unblocks N when N other cards or steps in flight wait for it, --prio 1 to 3 when the operator ranks it, --size S, M or L when you can tell (a plan: 1 to 2 steps S, 3 to 6 M, more L). A go the operator types here for work Lead must do is a `once` row in ~/.claude-shared/approvals-ledger.md, written by you, their words quoted. After the verdict say so in one line and stop: this pane ends the session by itself, c brings it back, and Return starts a fresh one for the next idea. For a question about what Lead is doing right now, tell the operator /btw in Lead's pane answers it without interrupting.
+Secretary seat. The operator opened this pane to think one idea through with you. The repository's Lead is building and is not to be interrupted, so nothing you do reaches it except through the queue. Shape the idea with the operator in chat, research it (the web, scout-haiku), and keep one file for it, ${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<rname>/idea-<slug>.md, whose first line is `# ` and the idea in a few words (the name the operator sees in this pane's list), with the headings Goal, Matters, Constraints, Decided, Open and Next, rewritten in the turn anything is decided. As soon as the file has its Goal, run claude-peer queue shape <the idea file>: it records this session against the idea, so the pane's list can bring it back, and it prints the idea's card id and any earlier idea that reads like this one. For a line that starts `similar`, ask the operator: "You had this already: <title> (<state> <age>). Resume it?" On yes, add what is new here under Open in that idea's file, run claude-peer queue drop <this card> duplicate of <that card or file>, tell them to type /exit and then pick it in this pane's list, and stop; on no, carry on. You do not edit the repository, commit, merge, dispatch work-sonnet, message another session, or write claude-peer log lines. This session is for this one idea; the pane lists the operator's others, each with a session of its own, and one that stops before a verdict comes back from that list. Your aim is to bring this idea to a verdict. A verdict is exactly one of: a big idea handed to plan-fable from here, with the file as its brief, and then claude-peer queue add --kind plan -- "<one line>" <the plan's path> (Lead builds the plan, not you, and only on the operator's go); something Lead should do, claude-peer queue add -- "<one line>" <the idea file>; parked or dropped, claude-peer queue park|drop <this card> <why>. Add --waiting when the operator says they are waiting on it, --unblocks N when N other cards or steps in flight wait for it, --prio 1 to 3 when the operator ranks it, --size S, M or L when you can tell (a plan: 1 to 2 steps S, 3 to 6 M, more L). A go the operator types here for work Lead must do is a `once` row in ~/.claude-shared/approvals-ledger.md, written by you, their words quoted. After the verdict say so in one line and stop: this pane ends the session by itself, and its list brings this idea back or starts a new one. For a question about what Lead is doing right now, tell the operator /btw in Lead's pane answers it without interrupting.
 NOTE
 }
 
 # mode(fresh|continue|resume) slot(or -) prompt claude-args...: take a slot, run one
 # session in it, return. Never exits: a refusal is printed and the pane waits on.
 # The caller sets PG_CTX (a context path), PG_CTXNAME, PG_BY (who started it) and
-# PG_TASK (one line), and for a hand-off PG_HANDOFF (1), PG_LEADPID, PG_LEADSID;
-# they are read, and cleared, here.
+# PG_TASK (one line), for a hand-off PG_HANDOFF (1), PG_LEADPID, PG_LEADSID, and for
+# resuming one known session (mode resume) PG_SID; they are read, and cleared, here.
 pane_go() {
   pg_mode=$1 pg_req=$2 pg_prompt=$3; shift 3
   pg_ctx=${PG_CTX-} pg_ctxname=${PG_CTXNAME-} pg_by=${PG_BY-} pg_task=${PG_TASK-} pg_wake=${PG_WAKE-}
-  pg_ho=${PG_HANDOFF-} pg_lpid=${PG_LEADPID-} pg_lsid=${PG_LEADSID-}
-  PG_CTX= PG_CTXNAME= PG_BY= PG_TASK= PG_WAKE= PG_HANDOFF= PG_LEADPID= PG_LEADSID=
+  pg_ho=${PG_HANDOFF-} pg_lpid=${PG_LEADPID-} pg_lsid=${PG_LEADSID-} pg_rsid=${PG_SID-}
+  PG_CTX= PG_CTXNAME= PG_BY= PG_TASK= PG_WAKE= PG_HANDOFF= PG_LEADPID= PG_LEADSID= PG_SID=
   # a session a pane starts is a secretary's unless it is a hand-off (pg_sec is 1)
   pg_sec=1 pg_over=
   [ "$pg_ho" != 1 ] || pg_sec=
@@ -803,7 +822,7 @@ pane_go() {
       pg_now=$(date +%s)
       if [ $((pg_now - ${pn_cap_t:-0})) -gt 60 ]; then
         pn_cap_t=$pg_now
-        echo "claude-peer: $pg_n conversations are open ($(printf '%s\n' "$pg_open" | sort | paste -sd, - | sed 's/,/, /g')); Return again opens another"
+        echo "claude-peer: $pg_n conversations are open ($(printf '%s\n' "$pg_open" | sort | paste -sd, - | sed 's/,/, /g')); $([ -n "${pn_ideas-}" ] && echo 'pick again to open another' || echo 'Return again opens another')"
         return 0
       fi
       pn_cap_t=0 pg_over=$((pg_n + 1))
@@ -851,6 +870,7 @@ pane_go() {
 
 $(handoff_note)"; fi
   [ "$pg_mode" != continue ] || set -- --continue "$@"
+  [ "$pg_mode" != resume ] || [ -z "$pg_rsid" ] || set -- --resume "$pg_rsid" "$@"
   pg_ca= pg_cm= pg_ce= pg_cs=
   if [ -n "$pg_ctx" ]; then
     pg_ca=$(ctx_get "$pg_ctx" agent) pg_cm=$(ctx_get "$pg_ctx" model)
@@ -878,7 +898,7 @@ $(handoff_note)"; fi
   [ -z "$pg_ce" ] || set -- "$@" --effort "$pg_ce"
   [ -z "$pg_cs" ] || set -- "$@" --append-system-prompt "$pg_cs"
   [ -z "$pg_prompt" ] || set -- "$@" "$pg_prompt"
-  [ "$pg_mode" != resume ] || set -- "$@" --resume   # no value: Claude's own list chooses
+  [ "$pg_mode" != resume ] || [ -n "$pg_rsid" ] || set -- "$@" --resume   # no value: Claude's own list chooses
   # the clock: a session nobody ended is ended here (pane-end-minutes 0: never)
   pg_we=$(pane_num pane-end-minutes 60)
   pn_watch=
@@ -888,7 +908,7 @@ $(handoff_note)"; fi
     ( trap - EXIT; cd -- "$repo" && pane_watch "$pg_l" "$pg_t0" "$pg_we" "$(pane_num pane-done-minutes 5)" "$pg_sf" "$pg_tty" ) </dev/null >/dev/null 2>&1 &
     pn_watch=$!
   fi
-  run_session "$pg_wt" "$(session_name "$pg_taken")" "$@"
+  run_session "$pg_wt" "$(session_name "$pg_taken")" "$@"; pg_src=$?
   pane_unwatch
   # only after a session ran: a refused start returned above, and its `end`
   # would close a live peer's claims
@@ -922,6 +942,11 @@ $(handoff_note)"; fi
     ( cd -- "$repo" && log_add "$pg_l" gone "$pg_txt" ) 2>/dev/null && tell_lead "$LEADER" "$pg_lpid" "$pg_lsid"
   else
     ( cd -- "$repo" && log_add "$pg_l" end "$pg_txt" "$pg_ex" ) 2>/dev/null
+  fi
+  # a resume that failed at once is not tried again: the next pick of that idea starts fresh
+  if [ -n "$pg_rsid" ] && [ "$pg_src" -ne 0 ] && [ $(( $(date +%s) - pg_t0 )) -lt 15 ]; then
+    pn_nores="${pn_nores-} $pg_rsid"
+    echo "claude-peer: that session did not open (exit $pg_src); pick the idea again to start it fresh from its file"
   fi
   [ ! -t 1 ] || printf '\033]21337;status=;indicator=;status-color=;detail=\a'
   return 0
@@ -1388,9 +1413,9 @@ herm_pick() {
 # and the second line, dim. <repo> is cut, never the label, to fit pn_w - 3 columns.
 art_block() {
   ab_room=$((pn_w - 3)); [ "$pn_lay" != beside ] || ab_room=$((ab_room - 29))
-  ab_r=$((ab_room - 5 - ${#label})); [ "$ab_r" -ge 0 ] || ab_r=0
+  ab_r=$((ab_room - 5 - ${#pn_name})); [ "$ab_r" -ge 0 ] || ab_r=0
   ab_repo=$(printf '%s' "$rname" | cut -c1-"$((ab_r > 0 ? ab_r : 1))"); [ "$ab_r" -gt 0 ] || ab_repo=
-  ab_t=$(printf '✻ \033[1m%s\033[0m · %s' "$label" "$ab_repo") ab_s=$(printf '\033[2m%s\033[0m' "$1")
+  ab_t=$(printf '✻ \033[1m%s\033[0m · %s' "$pn_name" "$ab_repo") ab_s=$(printf '\033[2m%s\033[0m' "$1")
   art_lines "${2:-asleep}" "${3:-all}" "$slot" | AB_T=$ab_t AB_S=$ab_s AB_L=$pn_lay awk '
       { print $0 (ENVIRON["AB_L"] == "beside" ? (NR == 5 ? "  " ENVIRON["AB_T"] : NR == 6 ? "  " ENVIRON["AB_S"] : "") : "") }
       END { if (ENVIRON["AB_L"] == "under") { print ENVIRON["AB_T"]; print ENVIRON["AB_S"] } }'
@@ -1413,6 +1438,31 @@ pane_size() {
   pn_rows=$1 pn_cols=$2
 }
 
+# The Ideas pane (slot secretary; git config claude-peer.ideas false turns it off, and a
+# picker of off has no list to fill): pn_ideas is 1 and the screen says Ideas, else pn_name
+# is the slot's label.
+pane_mode() {
+  pn_ideas= pn_name=$label
+  [ "$slot" = secretary ] && [ "$pn_pick" != off ] || return 0
+  [ "$(git config --get claude-peer.ideas 2>/dev/null)" != false ] || return 0
+  pn_ideas=1 pn_name=Ideas
+}
+
+# The picker's rows, id<TAB>display, in pn_me.rows. In the Ideas pane: New idea, then one
+# `@i<N>` row per line N of pn_me.ideas (the reader's output, which a pick looks up).
+# Elsewhere pick_rows, as ever.
+pane_rows() {
+  if [ -z "$pn_ideas" ]; then pick_rows "$pn_slug" >"$pn_me.rows"; return 0; fi
+  pr_w=72
+  if [ -n "$pn_cols" ]; then
+    if [ "$pn_cols" -ge 80 ]; then pr_w=$((pn_cols - 5)); [ "$pr_w" -le 96 ] || pr_w=96
+    else pr_w=$((pn_cols - 3)); fi
+  fi
+  [ "$pr_w" -ge 30 ] || pr_w=30
+  ideas_rows '' "$pr_w" >"$pn_me.ideas" 2>/dev/null || :
+  { printf '@new\tNew idea\n'; awk -F'\t' '{ printf "@i%d\t%s\n", NR, $8 }' "$pn_me.ideas"; } >"$pn_me.rows"
+}
+
 # The block: pn_n rows, pn_head header lines, pn_w wide, centred by pn_left and
 # pn_right (pn_pad: pn_left spaces) from 80 columns, pn_vis rows shown, pn_h high.
 # pn_lay: where the sleeper goes (beside, under, none) and pn_al its block's lines.
@@ -1424,13 +1474,20 @@ pane_geom() {
     elif [ "$pn_cols" -ge 30 ] && [ "$pn_rows" -ge 18 ]; then pn_lay=under; fi
   fi
   pn_head=1
-  pn_w=$(awk -F'\t' '{ if (length($2) + 3 > w) w = length($2) + 3 } END { print (w > 58 ? w : 58) }' "$pn_me.rows")
+  if [ -n "$pn_ideas" ]; then
+    # every display has one length: the first idea's, in characters (not wc -m: that counts
+    # bytes where the locale is not UTF-8)
+    pn_w=$(( $(sed -n 1p "$pn_me.ideas" | cut -f8 | tr -d '\n' | LC_ALL=C tr -d '\200-\277' | wc -c) + 3 ))
+    [ "$pn_w" -ge 58 ] || pn_w=58
+  else
+    pn_w=$(awk -F'\t' '{ if (length($2) + 3 > w) w = length($2) + 3 } END { print (w > 58 ? w : 58) }' "$pn_me.rows")
+  fi
   if [ "$pn_lay" != none ]; then
     pn_al=$(art_lines asleep none "$slot" 2>/dev/null | wc -l | tr -d ' ')
     [ "$pn_lay" = beside ] || pn_al=$((pn_al + 2))
     pn_head=$((pn_al + 2))
     # the beside title row: 3 of fzf's, 27 of art, 2, then `✻ <Label> · <repo>`
-    pg_t=$((3 + 29 + 5 + ${#label} + ${#rname}))
+    pg_t=$((3 + 29 + 5 + ${#pn_name} + ${#rname}))
     [ "$pg_t" -le $((pn_cols - 2)) ] || pg_t=$((pn_cols - 2))
     [ "$pn_w" -ge "$pg_t" ] || pn_w=$pg_t
   fi
@@ -1449,8 +1506,12 @@ pane_geom() {
 # [frame [z]] -> fzf's header: the sleeper's block and an empty line when it shows,
 # then the hint, dim; the short one under 56 columns.
 pane_head() {
-  [ "$pn_lay" = none ] || { art_block 'waiting · ⏎ pick a context' "$@"; echo; }
-  if [ -n "$pn_cols" ] && [ "$pn_cols" -lt 56 ]; then ph_t='↵ start · ^T type a task · esc hide'
+  if [ -n "$pn_ideas" ]; then ph_s='waiting · ⏎ pick an idea'; else ph_s='waiting · ⏎ pick a context'; fi
+  [ "$pn_lay" = none ] || { art_block "$ph_s" "$@"; echo; }
+  if [ -n "$pn_ideas" ]; then
+    if [ -n "$pn_cols" ] && [ "$pn_cols" -lt 56 ]; then ph_t='↵ open · ^T new idea · esc hide'
+    else ph_t='↵ open · ^T new idea from what you typed · esc hide'; fi
+  elif [ -n "$pn_cols" ] && [ "$pn_cols" -lt 56 ]; then ph_t='↵ start · ^T type a task · esc hide'
   else ph_t='↵ start · ^T type a task · ^S …and save it · esc hide'; fi
   printf '\033[2m%s\033[0m' "$ph_t"
 }
@@ -1499,14 +1560,16 @@ art_wake() {
 # pn_qn: how many lines to erase before it is drawn again (0: leave them).
 pane_quiet() {
   pane_size
-  [ -f "$pn_me.rows" ] || pick_rows "$pn_slug" >"$pn_me.rows"
+  [ -f "$pn_me.rows" ] || pane_rows
   pane_geom
   pn_qn=0
   if [ "$pn_lay" != none ]; then
     if [ "$pn_pick" = off ]; then pane_art '⏎ start · c continue · q shell'
+    elif [ -n "$pn_ideas" ]; then pane_art '⏎ ideas · c continue · q shell'
     else pane_art '⏎ picker · c continue · q shell'; fi
     pn_qn=$((pn_al + 2))
   elif [ "$pn_pick" = off ]; then printf '%s: Return starts a Claude here, c continues the last session, q leaves a shell\n' "$label"
+  elif [ -n "$pn_ideas" ]; then printf 'Ideas: Return lists the ideas, c continues the last session, q leaves a shell\n'
   else printf '%s: Return picks a context, c continues the last session, q leaves a shell\n' "$label"; fi
 }
 
@@ -1587,11 +1650,83 @@ pane_named() {
   pane_go "${px_m:-fresh}" - "$(ctx_prompt "$px_p" "$px_v")" "$@"
 }
 
+# N definition-args...: pick line N of pn_me.ideas
+pane_idea() {
+  pi_n=$1; shift
+  pane_idea_row "$(sed -n "${pi_n}p" "$pn_me.ideas")" "$@"
+}
+
+# row definition-args...: start the idea of one reader row (seven tab columns). An idea that is
+# open in another pane is not opened twice; one whose session Claude Code still has resumes by
+# id; any other starts fresh from its file (or its card), and `queue shape` there links the new
+# session to it.
+pane_idea_row() {
+  pi_l=$1; shift
+  [ -n "$pi_l" ] || return 0
+  pi_id=$(printf '%s\n' "$pi_l" | cut -f2) pi_sid=$(printf '%s\n' "$pi_l" | cut -f4)
+  pi_live=$(printf '%s\n' "$pi_l" | cut -f5) pi_t=$(printf '%s\n' "$pi_l" | cut -f6)
+  pi_f=$(printf '%s\n' "$pi_l" | cut -f7)
+  if [ "$pi_live" != - ]; then
+    echo "claude-peer: $pi_t is open in $pi_live; it comes back here when that session ends"
+    return 0
+  fi
+  rm -f "$pn_me"
+  PG_BY=pane PG_TASK=$(task_line "$pi_t")
+  case " ${pn_nores-} " in *" $pi_sid "*) pi_sid=-;; esac
+  if [ "$pi_sid" != - ] && idea_transcript "$pi_sid"; then
+    PG_SID=$pi_sid
+    pane_go resume - '' "$@"
+  elif [ "$pi_f" != - ]; then
+    pane_go fresh - "Continue this idea. Its file is $pi_f: read it first, then run claude-peer queue shape $pi_f so this session is the one the pane's list brings back, and carry on from its Open and Next." "$@"
+  else
+    pane_go fresh - "Continue this idea from the queue (card $pi_id): $pi_t. Start its idea file as the seat note says." "$@"
+  fi
+}
+
+# text definition-args...: a typed line that starts a new idea. When `ideas similar` finds
+# earlier ones, show them first: Return starts the new idea anyway, 1 or r (2, 3) resumes one,
+# anything else goes back to the picker. It never blocks a new idea.
+pane_newidea() {
+  pw_t=$1; shift
+  pw_r=$(ideas_similar -- "$pw_t" 2>/dev/null) || pw_r=
+  [ -n "$pw_r" ] || { pane_task "$pw_t" "" "$@"; return 0; }
+  pw_i=0 pw_p= pw_tab=$(printf '\t')
+  # each line must fit the pad plus the screen, with one column spare
+  pw_room=
+  [ -z "$pn_cols" ] || pw_room=$((pn_cols - ${#pn_pad} - 1))
+  while IFS=$pw_tab read -r _ pw_st pw_id pw_ag _ pw_lv pw_ti pw_fl; do
+    pw_i=$((pw_i + 1))
+    case $pw_lv:$pw_st in -:waiting|-:taken) pw_wd='with Lead';; -:*) pw_wd=$pw_st;; *) pw_wd=open;; esac
+    if [ "$pw_i" = 1 ]; then pw_lead='You had this already: ' pw_x=" ($pw_wd $pw_ag)."; else pw_lead="  $pw_i  " pw_x=" ($pw_wd $pw_ag)"; fi
+    if [ -n "$pw_room" ]; then
+      pw_c=$((pw_room - ${#pw_lead} - ${#pw_x})); [ "$pw_c" -ge 10 ] || pw_c=10
+      # ponytail: cut counts bytes under some locales, so a long non-ASCII title can lose half a character
+      pw_ti=$(printf '%s' "$pw_ti" | cut -c1-"$pw_c")
+    fi
+    printf '%s%s%s%s\n' "$pn_pad" "$pw_lead" "$pw_ti" "$pw_x"
+    if [ "$pw_id" != - ]; then pw_n=$pw_id; else pw_n=$pw_fl; fi
+    pw_p="${pw_p:+$pw_p, }$pw_n ($pw_ti)"
+  done <<ROWS
+$pw_r
+ROWS
+  if [ "$pw_i" -gt 1 ]; then pw_q='Return starts the new idea · 1 or r, 2, 3 resumes: '; else pw_q='Return starts the new idea · 1 or r resumes it: '; fi
+  pane_ask "$pw_q" || return 0
+  case $pn_ans in
+    '') pane_task "$pw_t
+Earlier ideas the operator was shown and passed over for this one: $pw_p. Do not ask about them again." "" "$@";;
+    1|r) pane_idea_row "$(printf '%s\n' "$pw_r" | sed -n 1p | cut -f2-)" "$@";;
+    2|3) [ "$pn_ans" -gt "$pw_i" ] || pane_idea_row "$(printf '%s\n' "$pw_r" | sed -n "${pn_ans}p" | cut -f2-)" "$@";;
+  esac
+  return 0
+}
+
 # row-id definition-args...: what each row runs
 pane_choose() {
   pc_id=$1; shift
   case $pc_id in
     @fresh|@continue|@resume) rm -f "$pn_me"; PG_BY=pane; pane_go "${pc_id#@}" - '' "$@";;
+    @new) rm -f "$pn_me"; PG_BY=pane; pane_go fresh - '' "$@";;
+    @i[0-9]*) pane_idea "${pc_id#@i}" "$@";;
     @task) pane_newtask "" "$@";;
     @shell) pane_shell;;
     *) pane_named "$pc_id" "$@";;
@@ -1661,6 +1796,7 @@ pane_fzf() {
     else
       pn_header=$(pane_head) pn_in=$pn_me.rows
     fi
+    pf_x=ctrl-t,ctrl-s; [ -z "$pn_ideas" ] || pf_x=ctrl-t
     # shellcheck disable=SC2086
     ( trap - TTIN TTOU; unset FZF_DEFAULT_OPTS FZF_DEFAULT_OPTS_FILE
       CLAUDE_PEER_FRAMES=$pn_me.frame CLAUDE_PEER_ART_SECONDS=$pn_secs
@@ -1669,9 +1805,9 @@ pane_fzf() {
         --no-multi --no-sort --no-mouse --layout=reverse --header-first \
         --height="$pn_h" --info=hidden --no-separator \
         --margin="0,$pn_right,0,$pn_left" --pointer='▸' --gutter=' ' \
-        --delimiter='\t' --with-nth=2 --prompt="$label ▸ " \
+        --delimiter='\t' --with-nth=2 --prompt="$pn_name ▸ " \
         ${pn_lk:+--ansi} ${pn_lk:+"--header-lines=$pn_head"} ${pn_header:+"--header=$pn_header"} \
-        --print-query --expect=ctrl-t,ctrl-s \
+        --print-query --expect=$pf_x \
         ${pn_anim:+"--with-shell=sh -c"} ${pn_anim:+"--bind=change,focus:rebind(every(1))"} \
         ${pn_anim:+"--bind=every(1):bg-transform:$PANE_TICK"} \
         ${pn_lk:+"--listen=$pn_look"} ${pn_lku:+"--bind=start:unbind(every(1))"} \
@@ -1702,11 +1838,16 @@ pane_fzf() {
     case $pf_k in
       ctrl-t|ctrl-s)
         [ -n "$pf_q" ] || continue   # nothing typed: the picker again
-        PG_WAKE=1; pane_task "$pf_q" "$([ "$pf_k" = ctrl-s ] && echo 1)" "$@"; PG_WAKE=
+        PG_WAKE=1
+        if [ -n "$pn_ideas" ]; then pane_newidea "$pf_q" "$@"; else pane_task "$pf_q" "$([ "$pf_k" = ctrl-s ] && echo 1)" "$@"; fi
+        PG_WAKE=
         return 0;;
     esac
     if [ "$pf_rc" = 0 ] && [ -n "$pf_id" ]; then PG_WAKE=1; pane_choose "$pf_id" "$@"; PG_WAKE=
-    elif [ "$pf_rc" = 1 ] && [ -n "$pf_q" ]; then PG_WAKE=1; pane_task "$pf_q" "" "$@"; PG_WAKE=
+    elif [ "$pf_rc" = 1 ] && [ -n "$pf_q" ]; then
+      PG_WAKE=1
+      if [ -n "$pn_ideas" ]; then pane_newidea "$pf_q" "$@"; else pane_task "$pf_q" "" "$@"; fi
+      PG_WAKE=
     else pn_state=quiet
     fi
     return 0
@@ -1740,23 +1881,48 @@ pane_list() {
   done
 }
 
+# The Ideas pane's numbered list: at most pn_vis rows (New idea is 1), then how many were cut.
+pane_ideas_list() {
+  while :; do
+    pane_art 'waiting · ⏎ pick an idea'
+    awk -F'\t' -v p="$pn_pad" -v n="$pn_vis" 'NR <= n { printf "%s%2d  %s\n", p, NR, $2 }' "$pn_me.rows"
+    [ "$pn_n" -le "$pn_vis" ] || printf '%s… %d more: claude-peer ideas\n' "$pn_pad" $((pn_n - pn_vis))
+    printf '%sn new idea, typed · q shell\n' "$pn_pad"
+    if ! pane_ask "$pn_prompt"; then
+      case $pn_why in intr) pane_shell;; eof) pn_state=quiet;; esac
+      return 0
+    fi
+    case $pn_ans in
+      '') pane_choose @new "$@"; return 0;;
+      n) pane_ask 'Idea: ' || return 0
+         [ -z "$pn_ans" ] || pane_newidea "$pn_ans" "$@"
+         return 0;;
+      q) pane_shell;;
+      *[!0-9]*) ;;
+      *) if [ "$pn_ans" -ge 1 ] && [ "$pn_ans" -le "$pn_vis" ]; then
+           pane_choose "$(awk -F'\t' -v n="$pn_ans" 'NR == n { print $1 }' "$pn_me.rows")" "$@"; return 0
+         fi;;
+    esac
+  done
+}
+
 # The picker state of a waiting pane: show fzf or the list at once, start what is
 # chosen, or set pn_state=quiet.
 pane_pick() {
   pane_size
-  pick_rows "$pn_slug" >"$pn_me.rows"
+  pane_rows
   pane_geom
   # the selector takes the hat's colour while the sleeper shows
-  pn_hatc= pn_prompt="$label ▸ "
+  pn_hatc= pn_prompt="$pn_name ▸ "
   if [ "$pn_lay" != none ]; then
     art_hat "$slot"
     pn_hatc="--color=pointer:$hat_fzf,prompt:$hat_fzf"
-    pn_prompt=$(printf '\033[%sm%s ▸\033[0m ' "$hat_sgr" "$label")
+    pn_prompt=$(printf '\033[%sm%s ▸\033[0m ' "$hat_sgr" "$pn_name")
   fi
   if [ "$pn_pick" = fzf ]; then
     pane_fzf "$@" && return 0
   fi
-  pane_list "$@"
+  if [ -n "$pn_ideas" ]; then pane_ideas_list "$@"; else pane_list "$@"; fi
 }
 
 # Did a workgroup entry open this pane? claude() records each entry as
@@ -1828,6 +1994,8 @@ pane() {
     elif ! fzf_ok; then echo "claude-peer: fzf $fzf_ver is older than 0.75; using the list"; pn_pick=list
     fi
   fi
+  pane_mode
+  pn_nores=
   pn_colors=$(fzf_colors)
   pn_secs=$(git config --get claude-peer.art-seconds 2>/dev/null) || pn_secs=20
   case $pn_secs in ''|*[!0-9]*) pn_secs=20;; esac
@@ -1872,7 +2040,7 @@ pane() {
           '') if [ "$pn_pick" = off ]; then pn_ev=fresh; else pane_unquiet; pn_ev=pick; fi;;
           c) pn_ev=continue;;
           q) pn_ev=quit;;
-          *) if [ "$pn_pick" != off ] && pane_has_ctx "$pn_k"; then pn_ev=named; else pane_unquiet; pn_show=1; fi;;
+          *) if [ "$pn_pick" != off ] && [ -z "$pn_ideas" ] && pane_has_ctx "$pn_k"; then pn_ev=named; else pane_unquiet; pn_show=1; fi;;
         esac
       elif [ "$pn_ended" = 1 ] && [ "$pn_reader" = 1 ]; then
         pane_lost && exit 0
@@ -2708,8 +2876,12 @@ cmd_jobs() {
 # <git common dir>/claude-peer.queue and pulled by Lead when a card is done
 # (`gh pr merge` returning), never pushed on a clock. Append-only, tab-separated:
 # <UTC time> id event who value text [file]; id is Q<n> (- for a refusal), event
-# add, refused, set, take, done, drop, park, reopen, escalated or link. An add's
-# value is <kind>:w=<0|1>:u=<N>:p=<P>:s=<S|M|L|?>[:session=<SID>].
+# shape, add, refused, set, take, done, drop, park, reopen, escalated or link. An add's
+# value is <kind>:w=<0|1>:u=<N>:p=<P>:s=<S|M|L|?>[:session=<SID>]. A shape's is
+# session=<SID or ->:by=session:similar=<n or ->, its text the idea's title and its
+# file the idea file: it makes a card in state shaping, which no reading Lead makes sees,
+# and the add that follows reuses the card's id. similar is how many ideas the call named
+# as like this one, - when it did not look.
 
 # [<dir>] -> the queue file of the repository holding dir (default $PWD); status 1 outside one
 queue_file() { qf_c=$(git -C "${1:-$PWD}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && printf '%s/claude-peer.queue\n' "$qf_c"; }
@@ -2730,13 +2902,17 @@ except Exception:
 
 # <mode> [<arg>]: the queue read in python, in integers (an awk's floating point
 # would order two scores differently): list [all], next, state <id>, taken, due
-# <minutes>, info <id>. The weights are git config claude-peer.queue-weights.
+# <minutes>, info <id>, title <idea file>, cardof <idea file> (id, state, session, title of
+# the card whose idea it is), shaped <SID><TAB><idea file> (id of the newest shaping, parked
+# or dropped card with that session or that idea file), ideas and similar (the idea rows and
+# the ones that read like a query; their inputs come in IDEAS_* environment variables, see
+# ideas_rows and ideas_similar). The weights are git config claude-peer.queue-weights.
 queue_py() {
   command -v python3 >/dev/null 2>&1 || die "queue needs python3"
   qp_f=$(queue_file) || return 1
   qp_w=$(git config --get claude-peer.queue-weights 2>/dev/null)
   python3 -I -c '
-import calendar, re, sys, time
+import calendar, os, re, sys, time
 mode, arg, path, wspec = sys.argv[1:5]
 W = {"unblocks": 20, "prio": 10, "hour": 1, "hourcap": 24, "margin": 15}
 for w in wspec.split():
@@ -2745,6 +2921,58 @@ for w in wspec.split():
         W[k] = int(v)
     elif mode in ("list", "next"):
         sys.stderr.write("claude-peer: queue-weights: ignored \"%s\"\n" % w)
+def title_of(f):
+    try:
+        lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+    except OSError:
+        lines = []
+    t = ""
+    for l in lines:
+        if l.startswith("# ") and l[2:].strip():
+            t = l[2:].strip()
+            break
+    if not t:
+        goal = False
+        for l in lines:
+            if l.startswith("## "):
+                goal = l[3:].strip() == "Goal"
+            elif goal and l.strip():
+                t = l.strip()
+                break
+    if not t:
+        b = os.path.basename(f)
+        b = b[:-3] if b.endswith(".md") else b
+        t = (b[5:] if b.startswith("idea-") else b).replace("-", " ")
+    return re.sub("[\t\r\n]", " ", t)[:80]
+def goal_sentence(f):
+    try:
+        lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+    except OSError:
+        return ""
+    goal, body = False, []
+    for l in lines:
+        if l.startswith("## "):
+            goal = l[3:].strip() == "Goal"
+        elif goal:
+            body.append(l)
+    g = "\n".join(body).strip()
+    m = re.search(r"[.?!](?=\s|$)", g)
+    return re.sub(r"\s+", " ", g[:m.end()] if m else g.split("\n\n")[0])[:300]
+STOP = set("the and for are but not you all any can had her was one our out has have with this that from they will would there their what when which been were into than then them these those about also its how why who should could just more some such only very use used using get got".split())
+def words(t):
+    out = set()
+    for w in re.findall(r"[^\W_]+", t.lower()):
+        if len(w) < 3 or w in STOP:
+            continue
+        for suf in ("ing", "ed", "es", "s"):
+            if w.endswith(suf) and len(w) - len(suf) >= 4:
+                w = w[:-len(suf)]
+                break
+        out.add(w)
+    return out
+if mode == "title":
+    print(title_of(arg))
+    sys.exit(0)
 now = int(time.time())
 items = {}
 try:
@@ -2758,12 +2986,26 @@ for ln in data.split("\n"):
         i, ev, who, val = f[1:5]
         text = f[5] if len(f) > 5 else ""
         it = items.get(i)
-        if ev == "add":
+        if ev == "shape":
+            d = dict(x.split("=", 1) for x in val.split(":") if "=" in x)
+            sid = d.get("session", "")
+            sid = "" if sid == "-" else sid
+            fl = (f[6] if len(f) > 6 else "") or "-"
+            if it is None:
+                items[i] = {"id": i, "n": int(i[1:]), "kind": "idea", "who": who, "w": 0, "u": 0, "p": 0, "s": "?",
+                            "sid": sid, "text": text, "stitle": text, "file": fl, "idea": fl, "added": False, "state": "shaping",
+                            "since": t, "esc": False}
+            else:
+                it["sid"], it["who"], it["idea"], it["stitle"] = sid or it["sid"], who, fl, text
+                if it["state"] == "shaping":
+                    it["text"], it["file"] = text, fl
+        elif ev == "add":
             kind, *rest = val.split(":")
             d = dict(x.split("=", 1) for x in rest if "=" in x)
             items[i] = {"id": i, "n": int(i[1:]), "kind": kind, "who": who, "w": int(d["w"]), "u": int(d["u"]),
-                        "p": int(d["p"]), "s": d["s"], "sid": d.get("session", ""), "text": text,
-                        "file": (f[6] if len(f) > 6 else "") or "-", "state": "waiting", "since": t, "esc": False}
+                        "p": int(d["p"]), "s": d["s"], "sid": d.get("session", "") or (it or {}).get("sid", ""),
+                        "text": text, "file": (f[6] if len(f) > 6 else "") or "-", "state": "waiting", "since": t,
+                        "esc": False, "idea": (it or {}).get("idea", ""), "stitle": (it or {}).get("stitle", ""), "added": True}
         elif it is None:
             continue
         elif ev == "set":
@@ -2775,11 +3017,59 @@ for ln in data.split("\n"):
         elif ev in ("done", "drop", "park"):
             it["state"] = {"done": "done", "drop": "dropped", "park": "parked"}[ev]
         elif ev == "reopen":
-            it["state"], it["since"] = "waiting", t
+            it["state"], it["since"] = "waiting" if it["added"] else "shaping", t
         elif ev == "escalated":
             it["esc"] = True
+        items[i]["last"] = t
     except Exception:
         continue
+def idea_rows(show_all):
+    E = os.environ.get
+    live = {}
+    for l in E("IDEAS_LIVE", "").split("\n"):
+        k, _, n = l.partition("\t")
+        if k and k not in live:
+            live[k] = n or "open"
+    def readable(f):
+        return f not in ("", "-") and os.path.isfile(f) and os.access(f, os.R_OK)
+    cards, held, named = [], set(), set()
+    for it in items.values():
+        for f in (it["idea"], it["file"]):
+            if f not in ("", "-"):
+                named.add(os.path.realpath(f))
+        f = it["idea"] if it["idea"] not in ("", "-") else (it["file"] if it["kind"] == "idea" else "-")
+        if it["kind"] in ("idea", "plan") or it["idea"] not in ("", "-") or it["sid"]:
+            cards.append((it, f))
+            if it["sid"] and it["kind"] != "unfinished":
+                held.add(it["sid"])
+    rows = []
+    for it, f in cards:
+        if it["kind"] == "unfinished" and it["sid"] in held:
+            continue
+        t = it.get("last", it["since"])
+        if readable(f):
+            t = max(t, int(os.path.getmtime(f)))
+        rows.append({"state": "unfinished" if it["kind"] == "unfinished" and it["state"] == "waiting" else it["state"],
+                     "id": it["id"], "n": it["n"], "t": t, "sid": it["sid"] or "-", "live": live.get(it["sid"], "-"),
+                     "title": title_of(f) if readable(f) else it["text"], "file": f, "readable": readable(f)})
+    d = E("IDEAS_DIR", "")
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        names = []
+    for nm in names:
+        f = os.path.join(d, nm)
+        if nm.startswith("idea-") and nm.endswith(".md") and readable(f) and os.path.realpath(f) not in named:
+            rows.append({"state": "shaping", "id": "-", "n": 0, "t": int(os.path.getmtime(f)), "sid": "-", "live": "-",
+                         "title": title_of(f), "file": f, "readable": True})
+    grp = {"parked": 1, "done": 2, "dropped": 2}
+    rows = [r for r in rows if show_all or grp.get(r["state"], 0) < 2]
+    rows.sort(key=lambda r: (grp.get(r["state"], 0), -r["t"], -r["n"], r["file"]))
+    for r in rows:
+        r["age"] = dur(max(0, now - r["t"]))
+    return rows
+def idea_cols(r):
+    return [r["state"], r["id"], r["age"], r["sid"], r["live"], r["title"], r["file"] or "-"]
 D = {"S": 1, "M": 2, "L": 4}
 def hrs(it): return max(0, (now - it["since"]) // 3600)
 def sc(it, s):
@@ -2837,6 +3127,56 @@ elif mode == "info":
     if arg not in items:
         sys.exit(3)
     print("%s\t%s" % (items[arg]["sid"] or "-", items[arg]["who"]))
+elif mode == "cardof":
+    for it in sorted(items.values(), key=lambda x: -x["n"]):
+        if it["idea"] == arg:
+            print("\t".join([it["id"], it["state"], it["sid"] or "-", it["stitle"]]))
+            sys.exit(0)
+    sys.exit(3)
+elif mode == "shaped":
+    sid, _, idea = arg.partition("\t")
+    for it in sorted(items.values(), key=lambda x: -x["n"]):
+        if it["state"] in ("shaping", "parked", "dropped") and ((sid and it["sid"] == sid) or (idea and it["idea"] == idea)):
+            print(it["id"])
+            sys.exit(0)
+    sys.exit(3)
+elif mode in ("ideas", "similar"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="surrogateescape")
+    E = os.environ.get
+    if mode == "ideas":
+        rows = idea_rows(E("IDEAS_ALL") == "all")
+        wd = E("IDEAS_WIDTH", "")
+        if wd:
+            ws = max([len(("open" if r["live"] != "-" else "with Lead" if r["state"] in ("waiting", "taken") else r["state"])) for r in rows] or [0])
+            wa = max([len(r["age"]) for r in rows] or [0])
+            wt = min(max([len(r["title"]) for r in rows] or [0]), max(1, int(wd) - 6 - ws - wa))
+        for r in rows:
+            out = idea_cols(r)
+            if wd:
+                sw = "open" if r["live"] != "-" else "with Lead" if r["state"] in ("waiting", "taken") else r["state"]
+                tl = r["title"] if len(r["title"]) <= wt else r["title"][:wt - 1] + "\u2026"
+                out.append("%s \u00b7 %s \u00b7 %s" % (tl.ljust(wt), sw.ljust(ws), r["age"].rjust(wa)))
+            print("\t".join(out))
+    else:
+        try:
+            need = int(E("IDEAS_MIN", "3"))
+        except ValueError:
+            need = 3
+        need = 0 if need == 0 else max(3, need)
+        me = E("IDEAS_SELF", "")
+        qw = words(title_of(me) + " " + goal_sentence(me) if me else E("IDEAS_QUERY", ""))
+        found = []
+        for r in idea_rows(True):
+            if me and os.path.realpath(r["file"]) == os.path.realpath(me):
+                continue
+            txt = r["title"] + " " + goal_sentence(r["file"]) if r["readable"] else r["title"]
+            sc_ = len(qw & words(txt))
+            if need and sc_ >= need:
+                found.append((sc_, r))
+        found.sort(key=lambda x: (-x[0], -x[1]["t"], -x[1]["n"], x[1]["file"]))
+        for sc_, r in found[:3]:
+            print("\t".join([str(sc_)] + idea_cols(r)))
+        sys.exit(0 if found else 3)
 ' "$1" "${2-}" "$qp_f" "$qp_w"
 }
 
@@ -2882,6 +3222,59 @@ queue_escalate() {
   return 0
 }
 
+# the next card id, from the highest id in the queue file
+# ponytail: the id is read, then written, with no lock; two adds in one instant can share
+# an id. Take the slot lock if that is ever seen.
+queue_nextid() {
+  qn_n=$(awk -F'\t' '$2 ~ /^Q[0-9]+$/ { n = substr($2, 2) + 0; if (n > m) m = n } END { print m + 1 }' "$(queue_file)" 2>/dev/null)
+  printf 'Q%s\n' "${qn_n:-1}"
+}
+
+# [--session SID] [--as NAME] -- <idea file>: record the idea's session as a card in state
+# shaping (one card per idea file), and print its id, then for a new card the ideas that read
+# like it. Never wakes Lead, escalates or logs.
+queue_shape() {
+  qsh_sid= qsh_as= qsh_new= qsh_sim=-
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --session) [ $# -ge 2 ] || usage; qsh_sid=$2; shift 2;;
+      --as) [ $# -ge 2 ] || usage; qsh_as=$2; shift 2;;
+      --) shift; break;;
+      *) usage;;
+    esac
+  done
+  [ $# -eq 1 ] || usage
+  case $qsh_sid in *[!A-Za-z0-9._-]*) usage;; esac
+  if [ -z "$qsh_sid" ]; then
+    qsh_sid=${CLAUDE_CODE_SESSION_ID:--}
+    case $qsh_sid in *[!A-Za-z0-9._-]*) qsh_sid=-;; esac
+  fi
+  qsh_f=$1
+  case $qsh_f in /*) ;; *) qsh_f=$PWD/$qsh_f;; esac
+  queue_file >/dev/null || die "not inside a git repository"
+  [ -f "$qsh_f" ] && [ -r "$qsh_f" ] || die "queue shape: no such file: $qsh_f"
+  qsh_title=$(log_clean "$(queue_py title "$qsh_f")")
+  qsh_tab=$(printf '\t')
+  qsh_c=$(queue_py cardof "$qsh_f") || qsh_c=
+  if [ -n "$qsh_c" ]; then
+    qsh_id=${qsh_c%%"$qsh_tab"*}; qsh_c=${qsh_c#*"$qsh_tab"}; qsh_c=${qsh_c#*"$qsh_tab"}
+    qsh_csid=${qsh_c%%"$qsh_tab"*}; qsh_ctitle=${qsh_c#*"$qsh_tab"}
+    # a session of - leaves the card's as it is, so it is equal to any
+    if { [ "$qsh_sid" = - ] || [ "$qsh_sid" = "$qsh_csid" ]; } && [ "$qsh_title" = "$qsh_ctitle" ]; then
+      printf '%s\n' "$qsh_id"
+      return 0
+    fi
+  else
+    qsh_id=$(queue_nextid)
+    # a new idea: look for one that reads like it before this card is written
+    qsh_new=$(ideas_similar --file "$qsh_f" | awk '{ print "similar\t" $0 }')
+    qsh_sim=$(printf '%s' "$qsh_new" | grep -c .)
+  fi
+  queue_append "$qsh_id" shape "${qsh_as:-$(log_who)}" "session=$qsh_sid:by=session:similar=$qsh_sim" "$qsh_title" "$qsh_f"
+  printf '%s\n' "$qsh_id"
+  [ -z "$qsh_new" ] || printf '%s\n' "$qsh_new"
+}
+
 queue_add() {
   qa_kind=idea qa_w=0 qa_u=0 qa_p=0 qa_s='?' qa_sid= qa_as=
   while [ $# -gt 0 ]; do
@@ -2918,10 +3311,16 @@ queue_add() {
         exit 1
       fi;;
   esac
-  # ponytail: the id is read, then written, with no lock; two adds in one instant can share
-  # an id. Take the slot lock if that is ever seen.
-  qa_n=$(awk -F'\t' '$2 ~ /^Q[0-9]+$/ { n = substr($2, 2) + 0; if (n > m) m = n } END { print m + 1 }' "$qa_q" 2>/dev/null)
-  qa_id=Q${qa_n:-1}
+  # an idea or plan from the session of a card that is shaping (or was parked or dropped), or
+  # for its idea file, is that card; anything else is a new one
+  qa_id=
+  case $qa_kind in
+    idea|plan)
+      qa_ses=${qa_sid:-${CLAUDE_CODE_SESSION_ID-}}
+      case $qa_ses in *[!A-Za-z0-9._-]*) qa_ses=;; esac
+      qa_id=$(queue_py shaped "$qa_ses$(printf '\t')$qa_file") || qa_id=;;
+  esac
+  [ -n "$qa_id" ] || qa_id=$(queue_nextid)
   queue_append "$qa_id" add "$qa_who" "$qa_kind:w=$qa_w:u=$qa_u:p=$qa_p:s=$qa_s${qa_sid:+:session=$qa_sid}" "$qa_text" "${qa_file:--}"
   printf '%s\n' "$qa_id"
   queue_escalate
@@ -2941,8 +3340,9 @@ queue_move() {
   qm_st=$(queue_py state "$qm_id") || true
   [ -n "$qm_st" ] || { warn "queue: unknown card '$qm_id'"; exit 3; }
   case $qm_ev:$qm_st in
-    take:waiting|done:taken|drop:waiting|drop:taken|park:waiting|park:taken|link:*) ;;
+    take:waiting|done:taken|drop:waiting|drop:taken|drop:shaping|park:waiting|park:taken|park:shaping|link:*) ;;
     reopen:waiting) qm_bad=1;;
+    reopen:shaping) qm_bad=1;;
     reopen:*) ;;
     *) qm_bad=1;;
   esac
@@ -3026,7 +3426,7 @@ context after a merge and nothing otherwise, and always exits 0.
 JSON
 }
 
-# queue add|list|next|show|set|take|done|reopen|drop|park|link|hook|settings
+# queue add|shape|list|next|show|set|take|done|reopen|drop|park|link|hook|settings
 cmd_queue() {
   [ $# -ge 1 ] || usage
   cq_v=$1; shift
@@ -3034,6 +3434,7 @@ cmd_queue() {
     hook) ( queue_hook ) 2>/dev/null; exit 0;;
     settings) queue_settings; exit 0;;
     add) queue_add "$@"; exit 0;;
+    shape) queue_shape "$@"; exit 0;;
     list|next)
       cq_all=
       if [ "$cq_v" = list ] && [ "${1-}" = --all ]; then cq_all=all; shift; fi
@@ -3057,6 +3458,91 @@ cmd_queue() {
       queue_move "$1" link "$2" -; exit 0;;
     *) usage;;
   esac
+}
+
+# --- the ideas ----------------------------------------------------------------
+# One row per idea of the repository: the queue's cards that are ideas, and the idea files
+# nothing names. The reader is queue_py's `ideas` and `similar` modes; these functions feed
+# it what only the shell knows (the reports directory, the live sessions), print its rows
+# and never exit, so the pane can call them.
+
+# the reports directory of the repository's main checkout; status 1 outside one
+ideas_dir() {
+  idd_r=$(repo_root_q) || return 1
+  printf '%s/claude-reports/%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}" "$(rname_of "$idd_r")"
+}
+
+# <session id><TAB><name> of every live session in the registry of every profile
+ideas_live() {
+  for il_d in $(profile_dirs); do
+    for il_r in "$il_d"/sessions/*.json; do
+      [ -f "$il_r" ] || continue
+      il_p=${il_r##*/}; il_p=${il_p%.json}
+      case $il_p in ''|*[!0-9]*) continue;; esac
+      il_s=$(rec_get "$il_r" sessionId)
+      [ -n "$il_s" ] || continue
+      session_same "$il_p" "$il_r" && printf '%s\t%s\n' "$il_s" "$(rec_get "$il_r" name)"
+    done
+  done
+  return 0
+}
+
+# [all] [<width>]: the ideas of $PWD's repository, one row each (see the usage header)
+ideas_rows() {
+  command -v python3 >/dev/null 2>&1 || { warn "ideas: needs python3, so no rows"; return 0; }
+  ir_d=$(ideas_dir) || return 1
+  ir_l=$(ideas_live)
+  ( IDEAS_DIR=$ir_d IDEAS_LIVE=$ir_l IDEAS_ALL=${1-} IDEAS_WIDTH=${2-}; export IDEAS_DIR IDEAS_LIVE IDEAS_ALL IDEAS_WIDTH
+    queue_py ideas )
+}
+
+# --file <idea file> | -- <words...>: up to three ideas that read like it; status 3 with none
+ideas_similar() {
+  command -v python3 >/dev/null 2>&1 || { warn "ideas: needs python3, so no rows"; return 3; }
+  is_f= is_q=
+  case ${1-} in
+    --file) [ $# -eq 2 ] || return 2; is_f=$2; case $is_f in /*) ;; *) is_f=$PWD/$is_f;; esac;;
+    --) shift; is_q=$*;;
+    *) return 2;;
+  esac
+  is_d=$(ideas_dir) || return 1
+  is_l=$(ideas_live)
+  is_m=$(git config --get claude-peer.idea-match 2>/dev/null) || is_m=
+  ( IDEAS_DIR=$is_d IDEAS_LIVE=$is_l IDEAS_SELF=$is_f IDEAS_QUERY=$is_q IDEAS_MIN=$is_m; export IDEAS_DIR IDEAS_LIVE IDEAS_SELF IDEAS_QUERY IDEAS_MIN
+    queue_py similar )
+}
+
+# <SID> -> 0 when Claude Code still has that session's transcript, in any profile
+idea_transcript() {
+  for it_d in $(profile_dirs); do
+    for it_f in "$it_d"/projects/*/"$1".jsonl; do
+      [ -f "$it_f" ] && return 0
+    done
+  done
+  return 1
+}
+
+# ideas [--all] [--width N] [<dir>] | ideas similar (--file <idea file> | -- <words...>)
+cmd_ideas() {
+  if [ "${1-}" = similar ]; then
+    shift
+    ideas_similar "$@"; ci_s=$?
+    [ "$ci_s" -ne 2 ] || usage
+    exit "$ci_s"
+  fi
+  ci_all= ci_w=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --all) ci_all=all; shift;;
+      --width) [ $# -ge 2 ] || usage; case $2 in ''|*[!0-9]*) usage;; esac; [ "$2" -ge 30 ] || usage; ci_w=$2; shift 2;;
+      *) break;;
+    esac
+  done
+  [ $# -le 1 ] || usage
+  [ $# -eq 0 ] || cd -- "$1" 2>/dev/null || exit 1
+  ideas_dir >/dev/null || exit 1
+  ideas_rows "$ci_all" "$ci_w"
+  exit 0
 }
 
 cmd_path() {
@@ -4039,6 +4525,7 @@ cmd_art() {
   pn_pick=$(git config --get claude-peer.picker 2>/dev/null) || pn_pick=
   pn_slug=
   [ "$pn_pick" = off ] || pn_slug=$(origin_slug 2>/dev/null) || pn_slug=
+  pane_mode
   pn_tty=/dev/tty
   ar_d=$(mktemp -d "${TMPDIR:-/tmp}/claude-peer-art.XXXXXX") || die "cannot make a temporary directory"
   pn_me=$ar_d/screen
@@ -4153,6 +4640,7 @@ case $cmd in
   job) cmd_job "$@";;
   jobs) cmd_jobs "$@";;
   queue) cmd_queue "$@";;
+  ideas) cmd_ideas "$@";;
   claim) cmd_claim "$@";;
   name) cmd_name "$@";;
   path) cmd_path "$@";;

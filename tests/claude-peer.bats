@@ -41,7 +41,15 @@ setup() {
   cat >"$BATS_TEST_TMPDIR/bin/fakeshell" <<'STUB'
 #!/bin/sh
 # FAKE_SHELL_RAW=<file>: one line per argument, as it arrived, newlines as |
-[ -z "${FAKE_SHELL_RAW-}" ] || for a in "$@"; do printf 'A:%s\n' "$(printf '%s' "$a" | tr '\n' '|')"; done >>"$FAKE_SHELL_RAW"
+# One append for the whole block: a reader counting lines must not see a launch half written.
+if [ -n "${FAKE_SHELL_RAW-}" ] && [ $# -gt 0 ]; then
+  blk=
+  for a in "$@"; do
+    blk="${blk}A:$(printf '%s' "$a" | tr '\n' '|')
+"
+  done
+  printf '%s' "$blk" >>"$FAKE_SHELL_RAW"
+fi
 # What a pane adds to every session that is not a hand-off (the secretary seat) is
 # left out of what the tests below read, unless FAKE_SHELL_SEAT is set: they are
 # about the other arguments.
@@ -5408,6 +5416,14 @@ fake_secretaries() {
   [[ "$note" == *'/claude-reports/proj/idea-<slug>.md'* ]]
   [[ "$note" == *"claude-peer queue add --kind plan"* ]]
   [[ "$note" != *"<rname>"* ]]
+  [[ "$note" == *"claude-peer queue shape"* ]]
+  [[ "$note" == *"You had this already"* ]]
+  [[ "$note" == *"queue park|drop"* ]]
+  [[ "$note" == *"the pane lists the operator's others"* ]]
+  [[ "$note" == *"type /exit"* ]]
+  [[ "$note" != *"Your one aim"* ]]
+  [[ "$note" != *"c brings it back"* ]]
+  ! printf '%s' "$note" | grep -Eiw 'he|his|him|she|her'
   [ "$(seat_args "$raw" | wc -l | tr -d ' ')" -eq 6 ]
 }
 
@@ -5690,4 +5706,735 @@ CNT
   sh "$BIN" queue list | grep -q "unfinished"
   run sh "$BIN" queue next
   [ "$status" -eq 3 ]
+}
+
+# --- a card at birth: queue shape and the shaping state ------------------------------
+# Idea files and fixture shape lines for the cards that exist before an idea has a verdict.
+
+# ideafile <slug> <title> [<goal line>]: a complete idea file under the reports directory
+# of the fixture repository, on stdout its path
+ideafile() {
+  local f="$XDG_STATE_HOME/claude-reports/proj/idea-$1.md" h
+  mkdir -p "${f%/*}"
+  : >"$f"
+  [ -z "$2" ] || printf '# %s\n\n' "$2" >>"$f"
+  for h in Goal Matters Constraints Decided Open Next; do
+    if [ "$h" = Goal ]; then printf '## Goal\n%s\n\n' "${3:-the goal of $1}" >>"$f"
+    else printf '## %s\nsomething under %s\n\n' "$h" "$h" >>"$f"; fi
+  done
+  printf '%s\n' "$f"
+}
+
+# qshape <hours ago> <id> <who> <SID or -> <title> <file>: a shape line written that long ago
+qshape() {
+  printf '%s\t%s\tshape\t%s\tsession=%s:by=session:similar=-\t%s\t%s\n' "$(ago $(( $1 * 3600 + 600 )))" "$2" "$3" "$4" "$5" "$6" >>"$REPO/$Q"
+}
+
+@test "queue shape: a first call prints Q1 and writes one line with the title from the # line; the same call again writes nothing; another session writes a second line with the same id; a missing file is exit 1" {
+  f=$(ideafile one "A first idea")
+  run sh "$BIN" queue shape --session s-1 --as Ideas -- "$f"
+  [ "$status" -eq 0 ]; [ "$output" = Q1 ]
+  [ "$(wc -l <"$REPO/$Q" | tr -d ' ')" -eq 1 ]
+  [ "$(cut -f2-7 "$REPO/$Q" | tr '\t' ' ')" = "Q1 shape Ideas session=s-1:by=session:similar=0 A first idea $f" ]
+  run sh "$BIN" queue shape --session s-1 --as Ideas -- "$f"
+  [ "$output" = Q1 ]
+  [ "$(wc -l <"$REPO/$Q" | tr -d ' ')" -eq 1 ]
+  run sh "$BIN" queue shape --session s-2 -- "$f"
+  [ "$output" = Q1 ]
+  [ "$(wc -l <"$REPO/$Q" | tr -d ' ')" -eq 2 ]
+  [ "$(tail -n 1 "$REPO/$Q" | cut -f2-3,5 | tr '\t' ' ')" = "Q1 shape session=s-2:by=session:similar=-" ]
+  # a changed title is a new line; another file is another card
+  sed -i.bak 's/^# A first idea/# A first idea, renamed/' "$f"
+  run sh "$BIN" queue shape --session s-2 -- "$f"
+  [ "$output" = Q1 ]
+  [ "$(wc -l <"$REPO/$Q" | tr -d ' ')" -eq 3 ]
+  run sh "$BIN" queue shape --session s-3 -- "$(ideafile two "Another")"
+  [ "$output" = Q2 ]
+  # the session comes from the environment when --session is not given
+  CLAUDE_CODE_SESSION_ID=env-1 run sh "$BIN" queue shape -- "$(ideafile three "Third")"
+  [ "$output" = Q3 ]
+  [[ "$(tail -n 1 "$REPO/$Q" | cut -f5)" == session=env-1:* ]]
+  n=$(wc -l <"$REPO/$Q" | tr -d ' ')
+  run --separate-stderr sh "$BIN" queue shape --session s-1 -- "$BATS_TEST_TMPDIR/nothing.md"
+  [ "$status" -eq 1 ]; [ -z "$output" ]
+  [ "$stderr" = "claude-peer: queue shape: no such file: $BATS_TEST_TMPDIR/nothing.md" ]
+  [ "$(wc -l <"$REPO/$Q" | tr -d ' ')" -eq "$n" ]
+  # a card is always recorded by the session: there is no --by
+  run sh "$BIN" queue shape --by session -- "$f"
+  [ "$status" -eq 2 ]
+}
+
+@test "queue shape: the title is the # line, else the first line under ## Goal, else the file name" {
+  d="$XDG_STATE_HOME/claude-reports/proj"
+  mkdir -p "$d"
+  printf '## Goal\n\nthe goal line\nmore\n\n## Next\nx\n' >"$d/idea-no-heading.md"
+  run sh "$BIN" queue shape -- "$d/idea-no-heading.md"
+  [ "$(tail -n 1 "$REPO/$Q" | cut -f6)" = "the goal line" ]
+  printf 'nothing of use\n' >"$d/idea-plain-file-name.md"
+  run sh "$BIN" queue shape -- "$d/idea-plain-file-name.md"
+  [ "$(tail -n 1 "$REPO/$Q" | cut -f6)" = "plain file name" ]
+  # a long title is cut to 80 characters
+  long=$(printf 'x%.0s' $(seq 1 100))
+  run sh "$BIN" queue shape -- "$(ideafile long "$long")"
+  [ "$(tail -n 1 "$REPO/$Q" | cut -f6 | tr -d '\n' | wc -c | tr -d ' ')" -eq 80 ]
+}
+
+@test "queue shape: a shaping card is in no reading Lead makes, wakes nobody and writes no log line" {
+  qpb
+  qshape 3 Q1 Ideas s-1 "First" "$(ideafile one First)"
+  run sh "$BIN" queue shape --session s-2 -- "$(ideafile two Second)"
+  [ "$output" = Q2 ]
+  run sh "$BIN" queue list
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  run sh "$BIN" queue next
+  [ "$status" -eq 3 ]
+  run sh "$BIN" queue list --all
+  [ "$(printf '%s\n' "$output" | cut -f1,2 | tr '\t' ' ' | tr '\n' ',')" = "shaping Q2,shaping Q1," ]
+  run qhook "$(qhook_payload 'gh pr merge 3')"
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  sleep 0.3
+  [ ! -e "$BATS_TEST_TMPDIR/pb.log" ]
+  [ ! -e .git/claude-peer.log ]
+  # show and set work on it
+  run sh "$BIN" queue show Q1
+  [ "$status" -eq 0 ]
+  run sh "$BIN" queue set Q1 prio=2
+  [ "$status" -eq 0 ]
+  run sh "$BIN" queue list
+  [ -z "$output" ]
+}
+
+@test "queue shape: take, done and reopen on a shaping card are exit 3 and write nothing; park then reopen is shaping again; drop works" {
+  qshape 3 Q1 Ideas s-1 "First" "$(ideafile one First)"
+  n=$(wc -l <"$REPO/$Q" | tr -d ' ')
+  for v in take done reopen; do
+    run sh "$BIN" queue "$v" Q1
+    [ "$status" -eq 3 ]
+    [ "$(wc -l <"$REPO/$Q" | tr -d ' ')" -eq "$n" ]
+  done
+  run sh "$BIN" queue park Q1 later
+  [ "$status" -eq 0 ]
+  run sh "$BIN" queue list --all
+  [ "$(printf '%s\n' "$output" | cut -f1 | head -n 1)" = parked ]
+  run sh "$BIN" queue reopen Q1
+  [ "$status" -eq 0 ]
+  run sh "$BIN" queue list --all
+  [ "$(printf '%s\n' "$output" | cut -f1 | head -n 1)" = shaping ]
+  run sh "$BIN" queue list
+  [ -z "$output" ]
+  run sh "$BIN" queue drop Q1 not wanted
+  [ "$status" -eq 0 ]
+  run sh "$BIN" queue list --all
+  [ "$(printf '%s\n' "$output" | cut -f1 | head -n 1)" = dropped ]
+}
+
+@test "queue add: from the session of a shaping card it is that card's id and the card is waiting; another file or no session is a new id; a second add after the promotion is a new id; an ask never reuses" {
+  qpb
+  f=$(ideafile one First)
+  qshape 3 Q1 Ideas s-1 "First" "$f"
+  qshape 2 Q2 Ideas s-2 "Second" "$(ideafile two Second)"
+  CLAUDE_CODE_SESSION_ID=s-1 run sh "$BIN" queue add -- "Do the first thing" "$(qidea other)"
+  [ "$status" -eq 0 ]; [ "$output" = Q1 ]
+  run sh "$BIN" queue list
+  [ "$(qids)" = "Q1 " ]
+  [ "$(printf '%s\n' "$output" | cut -f12)" = "Do the first thing" ]
+  run sh "$BIN" queue show Q1
+  [ "$(printf '%s\n' "$output" | grep -c 'Q1')" -eq 2 ]
+  # the same session again: the card is waiting now, so a new id
+  CLAUDE_CODE_SESSION_ID=s-1 run sh "$BIN" queue add -- "Another from the same session" "$(qidea other2)"
+  [ "$output" = Q3 ]
+  # --session names it too, for a plan whose file is another path
+  run sh "$BIN" queue add --kind plan --session s-2 -- "A plan" "$(qidea plan1)"
+  [ "$output" = Q2 ]
+  # no session, another file: new
+  run sh "$BIN" queue add -- "Unrelated" "$(qidea other3)"
+  [ "$output" = Q4 ]
+  # the idea file names it as well
+  qshape 1 Q5 Ideas - "Fifth" "$(ideafile five Fifth)"
+  run sh "$BIN" queue add -- "Fifth, done" "$XDG_STATE_HOME/claude-reports/proj/idea-five.md"
+  [ "$output" = Q5 ]
+  # an ask and an unfinished card never reuse
+  qshape 1 Q6 Ideas s-6 "Sixth" "$(ideafile six Sixth)"
+  CLAUDE_CODE_SESSION_ID=s-6 run sh "$BIN" queue add --kind ask --session s-6 -- "A question"
+  [ "$output" = Q7 ]
+  run sh "$BIN" queue add --kind unfinished --session s-6 -- "left unfinished"
+  [ "$output" = Q8 ]
+  # a promoted card is written as the caller passed it: no session= the caller did not pass
+  [ "$(awk -F'\t' '$2 == "Q1" && $3 == "add" { print $5 }' "$REPO/$Q")" = "idea:w=0:u=0:p=0:s=?" ]
+}
+
+@test "verdict_since: false after a shape line, true after the promotion" {
+  eval "$(sed -n '/^queue_file() /p;/^verdict_since() {/,/^}/p' "$BIN")"
+  cd "$REPO"
+  start=$(( $(date +%s) - 60 ))
+  qshape 0 Q1 Ideas s-1 "First" "$(ideafile one First)"
+  no verdict_since Ideas "$start"
+  CLAUDE_CODE_SESSION_ID=s-1 sh "$BIN" queue add --as Ideas -- "Do it" "$(qidea other)"
+  verdict_since Ideas "$start"
+}
+
+# --- the reader: ideas and ideas similar ---------------------------------------------
+
+# oldfile <hours> <file>: its modification time that long ago, and ten minutes
+oldfile() { python3 -c 'import os, sys, time; t = time.time() - int(sys.argv[1]) * 3600 - 600; os.utime(sys.argv[2], (t, t))' "$1" "$2"; }
+
+# qev <hours ago> <id> <event> <who> <value> <text>: a line of that event, written that long ago
+qev() { printf '%s\t%s\t%s\t%s\t%s\t%s\t-\n' "$(ago $(( $1 * 3600 + 600 )))" "$2" "$3" "$4" "$5" "$6" >>"$REPO/$Q"; }
+
+# idea_live <SID> <name>: a live session in the registry of $CLAUDE_CONFIG_DIR (the sleep is
+# on PANES, which teardown kills)
+idea_live() {
+  mkdir -p "$BATS_TEST_TMPDIR/cfg/sessions"
+  sleep 300 3>&- &
+  PANES="$PANES $!"
+  printf '{"pid":%s,"name":"%s","status":"idle","sessionId":"%s"}\n' "$!" "$2" "$1" >"$BATS_TEST_TMPDIR/cfg/sessions/$!.json"
+  export CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/cfg
+}
+
+# idea_dead <SID> <name>: the same record, its pid that of a process that has ended
+idea_dead() {
+  mkdir -p "$BATS_TEST_TMPDIR/cfg/sessions"
+  sleep 0 3>&- &
+  local p=$!
+  wait "$p"
+  printf '{"pid":%s,"name":"%s","status":"idle","sessionId":"%s"}\n' "$p" "$2" "$1" >"$BATS_TEST_TMPDIR/cfg/sessions/$p.json"
+  export CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/cfg
+}
+
+# idea_transcript_at <SID>: Claude Code's transcript of that session, in $CLAUDE_CONFIG_DIR
+idea_transcript_at() {
+  mkdir -p "$CLAUDE_CONFIG_DIR/projects/x"
+  : >"$CLAUDE_CONFIG_DIR/projects/x/$1.jsonl"
+}
+
+# chars: the characters of each input line (bytes but UTF-8 continuation bytes, in the C
+# locale), so a width measures the same under every locale
+chars() { LC_ALL=C tr -d '\200-\277' | LC_ALL=C awk '{ print length($0) }'; }
+
+@test "ideas: open ideas come newest first, then the parked, a card and its own file are one row, --all adds the dropped" {
+  fa=$(ideafile alpha "Alpha idea"); oldfile 5 "$fa"
+  fb=$(ideafile beta "Beta idea"); oldfile 10 "$fb"
+  qshape 3 Q1 Ideas s-1 "Beta idea" "$fb"
+  fc=$(ideafile gamma "Gamma idea"); oldfile 10 "$fc"
+  qshape 6 Q2 Ideas s-2 "Gamma idea" "$fc"
+  qline 2 Q2 "idea:w=0:u=0:p=0:s=?" "Gamma, for Lead" "$fc"
+  fd=$(ideafile delta "Delta idea"); oldfile 10 "$fd"
+  qshape 4 Q3 Ideas s-3 "Delta idea" "$fd"
+  qev 1 Q3 park Ideas - later
+  fe=$(ideafile epsilon "Epsilon idea"); oldfile 10 "$fe"
+  qshape 8 Q4 Ideas s-4 "Epsilon idea" "$fe"
+  qev 7 Q4 drop Ideas - "not wanted"
+  run sh "$BIN" ideas
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | cut -f1-3 | tr '\t' ' ' | tr '\n' ',')" = "waiting Q2 2h,shaping Q1 3h,shaping - 5h,parked Q3 1h," ]
+  [ "$(printf '%s\n' "$output" | cut -f4 | tr '\n' ',')" = "s-2,s-1,-,s-3," ]
+  # the title is the file's, not the card's text
+  [ "$(printf '%s\n' "$output" | cut -f6 | tr '\n' ',')" = "Gamma idea,Beta idea,Alpha idea,Delta idea," ]
+  [ "$(printf '%s\n' "$output" | cut -f7 | tr '\n' ',')" = "$fc,$fb,$fa,$fd," ]
+  [ "$(printf '%s\n' "$output" | awk -F'\t' '{ print NF }' | sort -u)" = 7 ]
+  run sh "$BIN" ideas --all
+  [ "$(printf '%s\n' "$output" | cut -f1-3 | tr '\t' ' ' | tail -n 1)" = "dropped Q4 7h" ]
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 5 ]
+  [ "$(printf '%s\n' "$output" | cut -f7 | sort | uniq -d | wc -l | tr -d ' ')" -eq 0 ]
+}
+
+@test "ideas: an unfinished card that shares a session with another row is not a row; one with a session of its own is; an ask with neither file nor session is not" {
+  f=$(ideafile one First); oldfile 10 "$f"
+  qshape 3 Q1 Ideas s-1 First "$f"
+  qline 2 Q2 "unfinished:w=0:u=0:p=0:s=?:session=s-1" "(left unfinished)"
+  qline 1 Q3 "unfinished:w=0:u=0:p=0:s=?:session=s-9" "a conversation (left unfinished)"
+  qline 1 Q4 "ask:w=0:u=0:p=0:s=?" "a question"
+  run sh "$BIN" ideas
+  [ "$(printf '%s\n' "$output" | cut -f1-4,6,7 | tr '\t' ' ' | tr '\n' ',')" = "unfinished Q3 1h s-9 a conversation (left unfinished) -,shaping Q1 3h s-1 First $f," ]
+}
+
+@test "ideas: a live session marks its row with the record's name; a record whose pid is dead does not" {
+  f1=$(ideafile one First); oldfile 10 "$f1"
+  f2=$(ideafile two Second); oldfile 10 "$f2"
+  qshape 3 Q1 Ideas s-1 First "$f1"
+  qshape 2 Q2 Ideas s-2 Second "$f2"
+  idea_live s-1 proj-secretary
+  idea_dead s-2 gone-secretary
+  run sh "$BIN" ideas
+  [ "$(printf '%s\n' "$output" | cut -f2,5 | tr '\t' ' ' | tr '\n' ',')" = "Q2 -,Q1 proj-secretary," ]
+}
+
+@test "ideas --width: eight columns, every display the same number of characters and none over the width, in any locale" {
+  long="A very long idea title that goes on and on and on for ages"
+  f1=$(ideafile one "$long"); oldfile 10 "$f1"
+  f2=$(ideafile two "Café idea"); oldfile 10 "$f2"
+  f3=$(ideafile three "Short"); oldfile 10 "$f3"
+  qshape 5 Q1 Ideas s-1 "$long" "$f1"
+  qline 4 Q1 "idea:w=0:u=0:p=0:s=?" "Do the long one" "$f1"
+  qshape 3 Q2 Ideas s-2 "Café idea" "$f2"
+  qshape 2 Q3 Ideas s-3 Short "$f3"
+  idea_live s-2 proj-secretary
+  run sh "$BIN" ideas --width 40
+  [ "$status" -eq 0 ]
+  first=$output
+  [ "$(printf '%s\n' "$output" | awk -F'\t' '{ print NF }' | sort -u)" = 8 ]
+  [ "$(printf '%s\n' "$output" | cut -f8 | chars | sort -u | wc -l | tr -d ' ')" -eq 1 ]
+  [ "$(printf '%s\n' "$output" | cut -f8 | chars | sort -u)" -le 40 ]
+  printf '%s\n' "$output" | cut -f8 | grep -q '^A very long idea title… · with Lead · 4h$'
+  printf '%s\n' "$output" | cut -f8 | grep -q '^Café idea  *· open  *· 3h$'
+  printf '%s\n' "$output" | cut -f8 | grep -q '^Short  *· shaping  *· 2h$'
+  run env LC_ALL=C sh "$BIN" ideas --width 40
+  [ "$output" = "$first" ]
+  run sh "$BIN" ideas --width 29
+  [ "$status" -eq 2 ]
+}
+
+@test "ideas similar: three shared words with a title or first Goal sentence is a row; two, or words only in a later sentence, is not" {
+  f1=$(ideafile pick "Picker of ideas for the secretary pane" "Show the operator their ideas to resume when the pane waits. A second sentence mentions queue cards sessions transcripts.")
+  qshape 9 Q1 Ideas s-1 "Picker of ideas for the secretary pane" "$f1"
+  qev 8 Q1 park Ideas - later
+  f2=$(ideafile res "Operator ideas resume" "Resume ideas.")
+  qshape 7 Q2 Ideas s-2 "Operator ideas resume" "$f2"
+  qev 6 Q2 drop Ideas - "no longer wanted"
+  oldfile 20 "$f1"; oldfile 20 "$f2"
+  run sh "$BIN" ideas similar -- show the operator ideas
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | cut -f1-3 | tr '\t' ' ' | head -n 1)" = "3 parked Q1" ]
+  run sh "$BIN" ideas similar -- operator ideas
+  [ "$status" -eq 3 ]; [ -z "$output" ]
+  run sh "$BIN" ideas similar -- operator ideas banana kiwi
+  [ "$status" -eq 3 ]
+  # in the later sentences of the Goal only
+  run sh "$BIN" ideas similar -- queue cards sessions
+  [ "$status" -eq 3 ]
+  # more words in common first; a dropped idea is found
+  run sh "$BIN" ideas similar -- operator ideas resume pane
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | cut -f1-3 | tr '\t' ' ' | tr '\n' ',')" = "4 parked Q1,3 dropped Q2," ]
+  # the least number of words: 5 finds nothing here, 1 and 2 are 3, 0 is off
+  git config claude-peer.idea-match 5
+  run sh "$BIN" ideas similar -- operator ideas resume pane
+  [ "$status" -eq 3 ]
+  git config claude-peer.idea-match 1
+  run sh "$BIN" ideas similar -- operator ideas
+  [ "$status" -eq 3 ]
+  run sh "$BIN" ideas similar -- operator ideas resume pane
+  [ "$status" -eq 0 ]
+  git config claude-peer.idea-match 0
+  run sh "$BIN" ideas similar -- operator ideas resume pane
+  [ "$status" -eq 3 ]
+  git config claude-peer.idea-match many
+  run sh "$BIN" ideas similar -- operator ideas resume pane
+  [ "$status" -eq 0 ]
+  git config --unset claude-peer.idea-match
+  # --file never returns its own idea
+  run sh "$BIN" ideas similar --file "$f1"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | cut -f2,3 | tr '\t' ' ')" = "dropped Q2" ]
+  run sh "$BIN" ideas similar
+  [ "$status" -eq 2 ]
+}
+
+@test "queue shape: a new idea prints the ideas that read like it and writes how many; an update prints the id alone; a new idea like none prints the id alone" {
+  f1=$(ideafile pick "Picker of ideas for the secretary pane" "Show the operator their ideas to resume when the pane waits.")
+  qshape 9 Q1 Ideas s-1 "Picker of ideas for the secretary pane" "$f1"
+  qev 8 Q1 park Ideas - later
+  oldfile 20 "$f1"
+  f2=$(ideafile like "Show operator ideas to resume" "The pane lists them.")
+  run sh "$BIN" queue shape --session s-2 -- "$f2"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | head -n 1)" = Q2 ]
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 2 ]
+  [ "$(printf '%s\n' "$output" | sed -n 2p | cut -f1-4 | tr '\t' ' ')" = "similar 5 parked Q1" ]
+  [ "$(tail -n 1 "$REPO/$Q" | cut -f5)" = "session=s-2:by=session:similar=1" ]
+  run sh "$BIN" queue shape --session s-3 -- "$f2"
+  [ "$output" = Q2 ]
+  [ "$(tail -n 1 "$REPO/$Q" | cut -f5)" = "session=s-3:by=session:similar=-" ]
+  f3=$(ideafile cook "Cook dinner for guests" "Buy vegetables and bread.")
+  run sh "$BIN" queue shape --session s-4 -- "$f3"
+  [ "$output" = Q3 ]
+  [ "$(tail -n 1 "$REPO/$Q" | cut -f5)" = "session=s-4:by=session:similar=0" ]
+}
+
+@test "ideas: outside a repository it is exit 1; from a slot worktree and with a directory it reads the main checkout's ideas" {
+  f=$(ideafile one First); oldfile 10 "$f"
+  qshape 3 Q1 Ideas s-1 First "$f"
+  run sh "$BIN" ideas
+  main=$output
+  [ -n "$main" ]
+  git worktree add -q "$REPO/.claude/worktrees/x" -b wt-x
+  cd "$REPO/.claude/worktrees/x"
+  run sh "$BIN" ideas
+  [ "$output" = "$main" ]
+  mkdir "$BATS_TEST_TMPDIR/out"
+  cd "$BATS_TEST_TMPDIR/out"
+  run sh "$BIN" ideas
+  [ "$status" -eq 1 ]
+  run sh "$BIN" ideas similar -- operator ideas resume pane
+  [ "$status" -eq 1 ]
+  run sh "$BIN" ideas "$REPO"
+  [ "$output" = "$main" ]
+}
+
+@test "idea_transcript: true when Claude Code has the session's transcript in a profile directory" {
+  eval "$(sed -n '/^profile_dirs() {/,/^}/p;/^idea_transcript() {/,/^}/p' "$BIN")"
+  export CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/cfg
+  mkdir -p "$CLAUDE_CONFIG_DIR"
+  idea_transcript_at s-1
+  idea_transcript s-1
+  no idea_transcript s-2
+}
+
+# --- the Ideas pane: the wait screen -------------------------------------------------
+# The pane of slot `secretary` lists ideas where every other pane lists contexts. Rows of the
+# fixture: 1 New idea, 2 Beta (a card, session s-1), 3 Alpha (a file no card names), 4 Delta
+# (parked, session s-2).
+
+# ideas_fix: three ideas in the order above; the list picker
+ideas_fix() {
+  local fa fb fd
+  fa=$(ideafile alpha "Alpha idea"); oldfile 10 "$fa"
+  fb=$(ideafile beta "Beta idea"); oldfile 10 "$fb"
+  fd=$(ideafile delta "Delta idea"); oldfile 10 "$fd"
+  qshape 3 Q1 Ideas s-1 "Beta idea" "$fb"
+  qshape 5 Q2 Ideas s-2 "Delta idea" "$fd"
+  qev 1 Q2 park Ideas - later
+  FA=$fa FB=$fb FD=$fd
+  git config --global claude-peer.picker list
+  export CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/cfg
+  mkdir -p "$CLAUDE_CONFIG_DIR"
+}
+
+# isl_args <file>: the arguments after the Ideas session's name; isl_n <file> <n> waits for n
+isl_args() { sed -n '/^A:proj-secretary$/,$p' "$1" | sed 1d; }
+isl_n() { until_ok "[ \"\$(isl_args '$1' | wc -l | tr -d ' ')\" -ge $2 ]"; }
+
+ISLHINT='n new idea, typed · q shell'
+
+@test "ideas pane: slot secretary lists New idea and the ideas, parked last, and no context rows; another slot lists what it always did" {
+  ideas_fix
+  FAKE_SHELL_SLEEP=2 pane secretary
+  pane_says secretary "$ISLHINT"
+  o=$BATS_TEST_TMPDIR/pane-secretary.out
+  [ "$(grep -E '^ ?[0-9]+  ' "$o" | sed -E 's/^ ?[0-9]+  //; s/ +· .*//' | tr '\n' ',')" = "New idea,Beta idea,Alpha idea,Delta idea," ]
+  grep -qE '^ 2  Beta idea +· shaping +· +3h$' "$o"
+  grep -qE '^ 4  Delta idea +· parked +· +1h$' "$o"
+  grep -qF 'Ideas ▸' "$o"
+  no grep -qE 'Pick up the last conversation|Choose an earlier|Drop to a shell|A new session, no prompt' "$o"
+  pane alpha
+  pane_says alpha "$LISTHINT"
+  grep -qx ' 1  fresh     A new session, no prompt' "$BATS_TEST_TMPDIR/pane-alpha.out"
+}
+
+@test "ideas pane: claude-peer.ideas false gives slot secretary the generic list" {
+  ideas_fix
+  git config --global claude-peer.ideas false
+  pane secretary
+  pane_says secretary "$LISTHINT"
+  no grep -q 'New idea' "$BATS_TEST_TMPDIR/pane-secretary.out"
+}
+
+@test "ideas pane: Return starts a session with no prompt and no --resume; n asks for a line and starts it" {
+  ideas_fix
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane secretary
+  hold_tty secretary
+  pane_says secretary "$ISLHINT"
+  typeline secretary ''
+  isl_n "$raw" 6
+  [ "$(isl_args "$raw" | head -n 1)" = "A:--disallowedTools" ]
+  [ "$(isl_args "$raw" | wc -l | tr -d ' ')" -eq 6 ]
+  no grep -q -e '--resume' "$raw"
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 2 ]'
+  typeline secretary n
+  pane_says secretary 'Idea: '
+  typeline secretary 'a new thought'
+  isl_n "$raw" 13
+  [ "$(isl_args "$raw" | tail -n 1)" = "A:a new thought" ]
+}
+
+@test "ideas pane: a row with a session and a transcript resumes by id, the seat's arguments follow and no --model is passed" {
+  ideas_fix
+  idea_transcript_at s-1
+  git config claude-peer.model opus
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane secretary
+  pane_says secretary "$ISLHINT"
+  typeline secretary 2
+  isl_n "$raw" 8
+  [ "$(isl_args "$raw" | sed -n 1,2p | tr '\n' ' ')" = "A:--resume A:s-1 " ]
+  [ "$(isl_args "$raw" | sed -n 3p)" = "A:--disallowedTools" ]
+  [ "$(isl_args "$raw" | wc -l | tr -d ' ')" -eq 8 ]
+  no grep -q -e '--model' "$raw"
+}
+
+@test "ideas pane: a row whose transcript is gone, and a row with no session, start fresh from the file and tell the session to link itself" {
+  ideas_fix
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane secretary
+  hold_tty secretary
+  pane_says secretary "$ISLHINT"
+  typeline secretary 2
+  isl_n "$raw" 7
+  no grep -q -e '--resume' "$raw"
+  [ "$(isl_args "$raw" | tail -n 1)" = "A:Continue this idea. Its file is $FB: read it first, then run claude-peer queue shape $FB so this session is the one the pane's list brings back, and carry on from its Open and Next." ]
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 2 ]'
+  typeline secretary 3
+  isl_n "$raw" 14
+  [[ "$(isl_args "$raw" | tail -n 1)" == "A:Continue this idea. Its file is $FA: read it first, then run claude-peer queue shape $FA "* ]]
+  no grep -q -e '--resume' "$raw"
+}
+
+@test "ideas pane: a row that is open in another pane is not opened twice; the line is printed and the list is drawn again" {
+  ideas_fix
+  idea_transcript_at s-1
+  idea_live s-1 proj-secretary
+  pane secretary
+  hold_tty secretary
+  pane_says secretary "$ISLHINT"
+  typeline secretary 2
+  pane_says secretary 'claude-peer: Beta idea is open in proj-secretary; it comes back here when that session ends'
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 2 ]'
+  [ "$(shell_runs)" -eq 0 ]
+  grep -qE '^ 2  Beta idea +· open +· +3h$' "$BATS_TEST_TMPDIR/pane-secretary.out"
+}
+
+@test "ideas pane: a resume that ends at once is said once and the next pick of that idea starts fresh from its file" {
+  ideas_fix
+  idea_transcript_at s-1
+  cat >"$BATS_TEST_TMPDIR/bin/failshell" <<'STUB'
+#!/bin/sh
+echo "args=$*" >>"$FAKE_SHELL_LOG"
+exit 3
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/failshell"
+  export SHELL=$BATS_TEST_TMPDIR/bin/failshell
+  pane secretary
+  hold_tty secretary
+  pane_says secretary "$ISLHINT"
+  typeline secretary 2
+  pane_says secretary 'claude-peer: that session did not open (exit 3); pick the idea again to start it fresh from its file'
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 2 ]'
+  grep -q -e '--resume s-1' "$FAKE_SHELL_LOG"
+  typeline secretary 2
+  until_ok '[ "$(shell_runs)" -eq 2 ]'
+  [ "$(grep -c -e '--resume' "$FAKE_SHELL_LOG")" -eq 1 ]
+  tail -n 1 "$FAKE_SHELL_LOG" | grep -qF "Continue this idea. Its file is $FB"
+  [ "$(pane_count secretary 'that session did not open')" -eq 1 ]
+}
+
+@test "ideas pane: the fresh-tree rule holds for New idea and an idea started from its file, and not for a resume" {
+  remote_head
+  ideas_fix
+  idea_transcript_at s-1
+  sh "$BIN" run --as secretary </dev/null >/dev/null
+  wt=$REPO/.claude/worktrees/secretary
+  old=$(git -C "$wt" rev-parse HEAD)
+  git update-ref refs/remotes/origin/main "$(git rev-parse HEAD)"
+  head=$(git rev-parse origin/HEAD)
+  [ "$head" != "$old" ]
+  FAKE_SHELL_SLEEP=1 pane secretary
+  hold_tty secretary
+  pane_says secretary "$ISLHINT"
+  # a resume leaves the slot where it was
+  typeline secretary 2
+  until_ok '[ "$(shell_runs)" -eq 2 ]'
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 2 ]'
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$old" ]
+  # an idea started fresh from its file moves it
+  typeline secretary 3
+  until_ok '[ "$(git -C "$wt" rev-parse HEAD)" = "$head" ]'
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 3 ]'
+  git -C "$wt" checkout -q --detach "$old"
+  # so does New idea
+  typeline secretary ''
+  until_ok '[ "$(git -C "$wt" rev-parse HEAD)" = "$head" ]'
+}
+
+@test "ideas pane: after an idea pick has ended, a hand-off start gets no --resume and none of the seat's arguments" {
+  ideas_fix
+  idea_transcript_at s-1
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane secretary
+  pane_says secretary "$ISLHINT"
+  typeline secretary 2
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 2 ]'
+  : >"$raw"
+  CLAUDE_PID=4242 run sh "$BIN" start secretary --handoff fix thing
+  [ "$status" -eq 0 ]
+  isl_n "$raw" 1
+  [ "$(isl_args "$raw" | wc -l | tr -d ' ')" -eq 1 ]
+  no grep -q -e '--resume' -e 'disallowedTools' "$raw"
+}
+
+@test "ideas pane: with fzf the rows are the ideas, the prompt is Ideas, ctrl-t alone is expected; a pick resumes, ^T and exit 1 with a query start that line" {
+  ideas_fix
+  idea_transcript_at s-1
+  fzfstub
+  git config --global claude-peer.picker fzf
+  FAKE_FZF_OUT=$'\n\n@i1\tBeta idea\n' FAKE_SHELL_SLEEP=2 pane secretary
+  until_ok 'grep -q -e "--resume s-1" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(fzf_calls)" -eq 2 ]'
+  [ "$(cut -f1 "$FAKE_FZF_LOG.rows" | tr '\n' ' ')" = "@new @i1 @i2 @i3 " ]
+  grep -qx -- '--prompt=Ideas ▸ ' "$FAKE_FZF_LOG"
+  grep -qx -- '--expect=ctrl-t' "$FAKE_FZF_LOG"
+  fzf_header | grep -q '↵ open · ^T new idea from what you typed · esc hide'
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  rm -f "$FAKE_FZF_LOG.calls"
+  FAKE_FZF_OUT=$'a typed idea\nctrl-t\n@new\tNew idea\n' FAKE_SHELL_SLEEP=2 pane secretary
+  until_ok 'grep -q "claude-peer proj-secretary a typed idea\$" "$FAKE_SHELL_LOG"'
+  until_ok '[ "$(fzf_calls)" -eq 2 ]'
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  rm -f "$FAKE_FZF_LOG.calls"
+  FAKE_FZF_RC=1 FAKE_FZF_OUT=$'another idea\n\n' FAKE_SHELL_SLEEP=2 pane secretary
+  until_ok 'grep -q "claude-peer proj-secretary another idea\$" "$FAKE_SHELL_LOG"'
+}
+
+@test "ideas pane: art --screen shows the Ideas quiet block for slot secretary and today's for another slot" {
+  git config --global claude-peer.picker list
+  CLAUDE_PEER_SIZE='24 80' run sh "$BIN" art --screen --slot secretary
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'✻ '*'Ideas'*' · proj'* ]]
+  [[ "$output" == *'⏎ ideas · c continue · q shell'* ]]
+  CLAUDE_PEER_SIZE='24 80' run sh "$BIN" art --screen --slot alpha
+  [[ "$output" == *'⏎ picker · c continue · q shell'* ]]
+  CLAUDE_PEER_SIZE='12 60' run sh "$BIN" art --screen --slot secretary
+  [ "$output" = 'Ideas: Return lists the ideas, c continues the last session, q leaves a shell' ]
+}
+
+# --- the Ideas pane: the typed line's duplicate check ---------------------------------
+
+# dup_fix [two]: ideas_fix plus an idea (card Q3, session s-9 with a transcript) that a line
+# about "nightly backup rotation" reads like; with an argument a second one (a file, no card)
+dup_fix() {
+  ideas_fix
+  FM=$(ideafile backup "Rework the nightly backup rotation" "Rotate the nightly backups to cold storage."); oldfile 10 "$FM"
+  qshape 10 Q3 Ideas s-9 "Rework the nightly backup rotation" "$FM"
+  idea_transcript_at s-9
+  if [ -n "${1-}" ]; then
+    FN=$(ideafile archive "Nightly backup rotation for the archive" "Keep the archive backups."); oldfile 12 "$FN"
+  fi
+}
+
+# dup_ask <slot>: n, then the line that matches the fixture; the question is on screen
+dup_ask() {
+  typeline "$1" n
+  pane_says "$1" 'Idea: '
+  typeline "$1" 'nightly backup rotation'
+}
+
+@test "ideas pane: a typed line that matches shows the block and starts nothing until answered; Return starts the new idea, 1 and r resume the earlier one, anything else draws the list again" {
+  dup_fix
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane secretary
+  hold_tty secretary
+  pane_says secretary "$ISLHINT"
+  dup_ask secretary
+  pane_says secretary 'You had this already: Rework the nightly backup rotation (shaping 10h).'
+  pane_says secretary 'Return starts the new idea · 1 or r resumes it: '
+  [ "$(shell_runs)" -eq 0 ]
+  typeline secretary ''
+  isl_n "$raw" 7
+  grep -qF 'Earlier ideas the operator was shown and passed over for this one: Q3 (Rework the nightly backup rotation). Do not ask about them again.' "$raw"
+  no grep -q -e '--resume' "$raw"
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 2 ]'
+  dup_ask secretary
+  until_ok '[ "$(pane_count secretary "Return starts the new idea")" -eq 2 ]'
+  typeline secretary 1
+  until_ok 'grep -q -e "--resume" "$raw"'
+  grep -qx 'A:s-9' "$raw"
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 3 ]'
+  dup_ask secretary
+  until_ok '[ "$(pane_count secretary "Return starts the new idea")" -eq 3 ]'
+  typeline secretary r
+  until_ok '[ "$(grep -c -e "--resume" "$raw")" -eq 2 ]'
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 4 ]'
+  runs=$(shell_runs)
+  dup_ask secretary
+  until_ok '[ "$(pane_count secretary "Return starts the new idea")" -eq 4 ]'
+  typeline secretary x
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 5 ]'
+  [ "$(shell_runs)" -eq "$runs" ]
+}
+
+@test "ideas pane: with two matches the block numbers the second and 2 resumes it" {
+  dup_fix two
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane secretary
+  hold_tty secretary
+  pane_says secretary "$ISLHINT"
+  dup_ask secretary
+  pane_says secretary 'You had this already:'
+  pane_says secretary '  2  '
+  grep -qE '^ *2  Nightly backup rotation for the archive \(shaping 12h\)$' "$BATS_TEST_TMPDIR/pane-secretary.out"
+  typeline secretary 2
+  isl_n "$raw" 7
+  [[ "$(isl_args "$raw" | tail -n 1)" == "A:Continue this idea. Its file is $FN"* ]]
+  no grep -q -e '--resume' "$raw"
+}
+
+@test "ideas pane: a typed line that matches nothing starts at once with no block, and so does a matching line when claude-peer.idea-match is 0" {
+  dup_fix
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane secretary
+  hold_tty secretary
+  pane_says secretary "$ISLHINT"
+  typeline secretary n
+  pane_says secretary 'Idea: '
+  typeline secretary 'a wholly different thought'
+  isl_n "$raw" 7
+  [ "$(isl_args "$raw" | tail -n 1)" = "A:a wholly different thought" ]
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 2 ]'
+  git config claude-peer.idea-match 0
+  dup_ask secretary
+  isl_n "$raw" 14
+  [ "$(isl_args "$raw" | tail -n 1)" = "A:nightly backup rotation" ]
+  no grep -q 'You had this already: Rework' "$BATS_TEST_TMPDIR/pane-secretary.out"
+}
+
+@test "ideas pane: with fzf, exit 1 with a query that matches shows the block in the Ideas pane; in slot alpha and in secretary with claude-peer.ideas false it starts the task with no block" {
+  dup_fix
+  fzfstub
+  git config --global claude-peer.picker fzf
+  FAKE_FZF_RC=1 FAKE_FZF_OUT=$'nightly backup rotation\n\n' FAKE_SHELL_SLEEP=2 pane secretary
+  hold_tty secretary
+  pane_says secretary 'You had this already: Rework the nightly backup rotation (shaping 10h).'
+  [ "$(shell_runs)" -eq 0 ]
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  rm -f "$FAKE_FZF_LOG.calls"
+  FAKE_FZF_RC=1 FAKE_FZF_OUT=$'nightly backup rotation\n\n' FAKE_SHELL_SLEEP=2 pane alpha
+  until_ok 'grep -q "claude-peer proj-alpha nightly backup rotation\$" "$FAKE_SHELL_LOG"'
+  no grep -q 'You had this already' "$BATS_TEST_TMPDIR/pane-alpha.out"
+  kill "$LAST_PANE"; wait "$LAST_PANE" 2>/dev/null || true
+  rm -f "$FAKE_FZF_LOG.calls"
+  git config --global claude-peer.ideas false
+  FAKE_FZF_RC=1 FAKE_FZF_OUT=$'nightly backup rotation\n\n' FAKE_SHELL_SLEEP=2 pane secretary
+  until_ok 'grep -q "claude-peer proj-secretary nightly backup rotation\$" "$FAKE_SHELL_LOG"'
+  no grep -q 'You had this already' "$BATS_TEST_TMPDIR/pane-secretary.out"
+}
+
+@test "ideas pane: a start request while the question is open is served and the question is gone" {
+  dup_fix
+  raw=$BATS_TEST_TMPDIR/raw
+  FAKE_SHELL_SEAT=1 FAKE_SHELL_RAW=$raw FAKE_SHELL_SLEEP=1 pane secretary
+  hold_tty secretary
+  pane_says secretary "$ISLHINT"
+  dup_ask secretary
+  pane_says secretary 'Return starts the new idea'
+  run sh "$BIN" start secretary some other task
+  until_ok '[ "$(shell_runs)" -eq 1 ]'
+  isl_n "$raw" 7
+  [ "$(isl_args "$raw" | tail -n 1)" = "A:some other task" ]
+  no grep -q 'Earlier ideas the operator was shown' "$raw"
+  until_ok '[ "$(pane_count secretary "$ISLHINT")" -eq 2 ]'
+  [ "$(shell_runs)" -eq 1 ]
+}
+
+@test "ideas pane: the cap says pick again in slot secretary and Return again in slot alpha" {
+  git config --global claude-peer.picker list
+  fake_secretaries aa bb
+  FAKE_SHELL_SLEEP=1 pane secretary
+  hold_tty secretary
+  press secretary ''
+  pane_says secretary 'claude-peer: 2 conversations are open (aa-secretary, bb-secretary); pick again to open another'
+  FAKE_SHELL_SLEEP=1 pane alpha
+  hold_tty alpha
+  press alpha ''
+  pane_says alpha 'claude-peer: 2 conversations are open (aa-secretary, bb-secretary); Return again opens another'
+  [ "$(shell_runs)" -eq 0 ]
 }

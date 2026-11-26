@@ -1146,3 +1146,134 @@ hermes_open() {
   # 58 wide at 80 columns: 11 columns of margin, as the slot picker's
   [ "$(count_lines '^           Hermes ▸')" -eq 1 ] || { screen_show; false; }
 }
+
+# --- the Ideas pane: the wait screen ---------------------------------------------------------
+# The pane of slot secretary lists the repository's ideas where the others list contexts. Its
+# fixtures are the queue and the idea files tests/claude-peer.bats writes, written here by hand.
+
+# ago <seconds>: the UTC time that long ago, as the queue file writes it
+ago() { python3 -c 'import sys, time; print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - int(sys.argv[1]))))' "$1"; }
+
+# ideafile <slug> <title> [<hours old>]: a complete idea file under the reports directory,
+# its path on stdout
+ideafile() {
+  local f="$XDG_STATE_HOME/claude-reports/proj/idea-$1.md" h
+  mkdir -p "${f%/*}"
+  printf '# %s\n\n' "$2" >"$f"
+  for h in Goal Matters Constraints Decided Open Next; do
+    printf '## %s\nsomething under %s\n\n' "$h" "$h" >>"$f"
+  done
+  python3 -c 'import os, sys, time; t = time.time() - int(sys.argv[1]) * 3600 - 600; os.utime(sys.argv[2], (t, t))' "${3:-10}" "$f"
+  printf '%s\n' "$f"
+}
+
+# qshape <hours ago> <id> <SID> <title> <file>: a shape line written that long ago
+qshape() {
+  printf '%s\t%s\tshape\tIdeas\tsession=%s:by=session:similar=-\t%s\t%s\n' \
+    "$(ago $(( $1 * 3600 + 600 )))" "$2" "$3" "$4" "$5" >>"$REPO/.git/claude-peer.queue"
+}
+
+# ideas_open <cols> <rows>: the Ideas pane of a repository with a file-only idea, two shaping
+# cards, one for Lead and one parked, on the list or fzf picker already chosen
+ideas_open() {
+  local f
+  ideafile alpha "Alpha idea" 5 >/dev/null
+  f=$(ideafile beta "Beta idea"); qshape 3 Q1 s-1 "Beta idea" "$f"
+  f=$(ideafile gamma "Gamma idea"); qshape 8 Q2 s-2 "Gamma idea" "$f"
+  printf '%s\tQ2\tadd\tIdeas\tidea:w=0:u=0:p=0:s=?\tGamma, for Lead\t%s\n' "$(ago 7200)" "$f" >>"$REPO/.git/claude-peer.queue"
+  f=$(ideafile delta "Delta idea"); qshape 30 Q3 s-3 "Delta idea" "$f"
+  printf '%s\tQ3\tpark\tIdeas\t-\tlater\t-\n' "$(ago 3600)" >>"$REPO/.git/claude-peer.queue"
+  SCREEN_SLOT=secretary screen_open "$@"
+}
+
+@test "ideas: fzf at 80x24, New idea marked, every row whole, the three columns lined up, the block's indent 11, parked last" {
+  need tmux fzf
+  ideas_open 80 24
+  screen_wait 'esc hide'
+  screen_still
+  [ "$(line 1)" = "$(printf '%13s' '')↵ open · ^T new idea from what you typed · esc hide" ] || { screen_show; false; }
+  [ "$(line 2)" = "$(printf '%11s' '')Ideas ▸" ] || { screen_show; false; }
+  [ "$(marked | grep -c .)" -eq 1 ] || { screen_show; false; }
+  [[ "$(marked)" =~ ^\ *▸\ New\ idea$ ]] || { screen_show; false; }
+  [ "$(indent_of '^ *▸ New idea')" -eq 11 ] || { screen_show; false; }
+  printf '%s\n' "$SCREEN" | grep -qE '^ {13}Gamma idea +· with Lead +· +2h$' || { screen_show; false; }
+  printf '%s\n' "$SCREEN" | grep -qE '^ {13}Beta idea +· shaping +· +3h$' || { screen_show; false; }
+  printf '%s\n' "$SCREEN" | grep -qE '^ {13}Alpha idea +· shaping +· +5h$' || { screen_show; false; }
+  printf '%s\n' "$SCREEN" | grep -qE '^ {13}Delta idea +· parked +· +1h$' || { screen_show; false; }
+  [ "$(printf '%s\n' "$SCREEN" | sed -n 4,7p | awk '{ printf "%s ", $1 }')" = 'Gamma Beta Alpha Delta ' ] || { screen_show; false; }
+  [ "$(printf '%s\n' "$SCREEN" | sed -n 4,7p | flat | LC_ALL=C awk '{ print length($0) }' | sort -u | wc -l | tr -d ' ')" -eq 1 ] || { screen_show; false; }
+  [ "$(filled)" -eq 7 ] || { screen_show; false; }
+  no_cut
+  no_border
+}
+
+@test "ideas: fzf at 60x20 with a 70-character title ends the title in an ellipsis, cuts nothing else and fits the pane" {
+  need tmux fzf
+  local long; long="Long title $(printf 'w%.0s' $(seq 1 59))"
+  [ "${#long}" -eq 70 ]
+  ideafile long "$long" >/dev/null
+  SCREEN_SLOT=secretary screen_open 60 20
+  screen_wait 'esc hide'
+  screen_still
+  printf '%s\n' "$SCREEN" | grep -qE '^ *Long title w+… +· shaping +· +[0-9]+h$' || { screen_show; false; }
+  [ "$(widest)" -le 60 ] || { screen_show; false; }
+  no_cut
+}
+
+@test "ideas: the list at 80x24 with fifteen ideas shows twelve numbered rows, the more line, the hint and the prompt, and scrolls nothing off the top" {
+  need tmux
+  git config --global claude-peer.picker list
+  local i
+  for i in $(seq -w 1 15); do ideafile "i$i" "Idea number $i" "$((10 + 10#$i))" >/dev/null; done
+  SCREEN_SLOT=secretary screen_open 80 24
+  screen_wait 'q shell$'
+  screen_still
+  [ "$(count_lines '^ *[0-9]+  ')" -eq 12 ] || { screen_show; false; }
+  [ "$(line 1)" = "$(printf '%12s' '')1  New idea" ] || { screen_show; false; }
+  printf '%s\n' "$SCREEN" | grep -qE '^ {11}… 4 more: claude-peer ideas$' || { screen_show; false; }
+  [ "$(count_lines '^ {11}n new idea, typed · q shell$')" -eq 1 ] || { screen_show; false; }
+  [ "$(count_lines '^ {11}Ideas ▸')" -eq 1 ] || { screen_show; false; }
+  no_cut
+}
+
+@test "ideas: with the sleeper on, one figure sits above the picker, one after Esc and Return, and its title line says Ideas" {
+  need tmux fzf
+  git config --global --unset claude-peer.art
+  ideafile alpha "Alpha idea" >/dev/null
+  SCREEN_SLOT=secretary screen_open 80 24
+  screen_wait 'esc hide'
+  screen_still
+  [ "$(printf '%s\n' "$SCREEN" | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ] || { screen_show; false; }
+  [ "$(count_lines '✻')" -eq 1 ] || { screen_show; false; }
+  [[ "$(line 5)" == *'✻ Ideas · proj' ]] || { screen_show; false; }
+  [[ "$(line 6)" == *'waiting · ⏎ pick an idea' ]] || { screen_show; false; }
+  screen_keys Escape
+  screen_wait '⏎ ideas · c continue · q shell'
+  screen_still
+  [ "$(printf '%s\n' "$SCREEN" | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ] || { screen_show; false; }
+  screen_keys Enter
+  screen_wait 'esc hide'
+  screen_still
+  [ "$(printf '%s\n' "$SCREEN" | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ] || { screen_show; false; }
+  [ "$(count_lines '✻')" -eq 1 ] || { screen_show; false; }
+  [[ "$(line 5)" == *'✻ Ideas · proj' ]] || { screen_show; false; }
+}
+
+@test "ideas: a typed line that matches an idea shows the three-line block under the erased picker, whole and under the padding, and Return starts the line" {
+  need tmux fzf
+  ideafile nightly "Nightly backup rotation rework" 5 >/dev/null
+  ideas_open 80 24 FAKE_SHELL_SLEEP=3
+  screen_wait 'esc hide'
+  screen_type 'nightly backup rotation'
+  screen_keys C-t
+  screen_wait 'resumes it:$'
+  screen_still
+  printf '%s\n' "$SCREEN" | grep -qE '^ {11}You had this already: Nightly backup rotation rework \(shaping 5h\)\.$' || { screen_show; false; }
+  printf '%s\n' "$SCREEN" | grep -qE '^ {11}Return starts the new idea · 1 or r resumes it:$' ||{ screen_show; false; }
+  [ "$(count_lines 'esc hide')" -eq 0 ] || { screen_show; false; }
+  [ "$(widest)" -le 79 ] || { screen_show; false; }
+  [ ! -s "$FAKE_SHELL_LOG" ]
+  screen_keys Enter
+  screen_wait ' · nightly backup rotation$'
+  until_ok 'grep -qF "claude-peer proj-secretary nightly backup rotation" "$FAKE_SHELL_LOG"'
+}
