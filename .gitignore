@@ -32,3 +32,5 @@ scratch.*
 .extra
 # hermes --worktree puts its throwaway worktrees here (hardcoded path)
 .worktrees/
+# bats' record of the last run; made only where a run asks for it (CI's suite step)
+tests/.bats/
