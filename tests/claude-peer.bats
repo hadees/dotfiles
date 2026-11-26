@@ -5368,6 +5368,14 @@ fake_secretaries() {
   [[ "$note" == *'/claude-reports/proj/idea-<slug>.md'* ]]
   [[ "$note" == *"claude-peer queue add --kind plan"* ]]
   [[ "$note" != *"<rname>"* ]]
+  [[ "$note" == *"claude-peer queue shape"* ]]
+  [[ "$note" == *"You had this already"* ]]
+  [[ "$note" == *"queue park|drop"* ]]
+  [[ "$note" == *"the pane lists the operator's others"* ]]
+  [[ "$note" == *"type /exit"* ]]
+  [[ "$note" != *"Your one aim"* ]]
+  [[ "$note" != *"c brings it back"* ]]
+  ! printf '%s' "$note" | grep -Eiw 'he|his|him|she|her'
   [ "$(seat_args "$raw" | wc -l | tr -d ' ')" -eq 6 ]
 }
 
@@ -6328,7 +6336,7 @@ dup_ask() {
   dup_ask secretary
   isl_n "$raw" 14
   [ "$(isl_args "$raw" | tail -n 1)" = "A:nightly backup rotation" ]
-  no grep -q 'You had this already' "$BATS_TEST_TMPDIR/pane-secretary.out"
+  no grep -q 'You had this already: Rework' "$BATS_TEST_TMPDIR/pane-secretary.out"
 }
 
 @test "ideas pane: a start request while the question is open is served and the question is gone" {
