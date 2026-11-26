@@ -2817,7 +2817,15 @@ function gh() {
 	emulate -L zsh;
 	[[ $1 == auth ]] && { command gh "$@"; return; };
 	local -A gh_owners;
-	local key val owner acct arg seg;
+	local key val owner acct arg seg dash_repo;
+
+	# `gh dash` (the gh-dash extension) finds its repo through go-gh, which
+	# skips an origin whose host is an ssh alias rather than github.com and
+	# falls back to another remote. Hand it the origin's slug as GH_REPO for
+	# this call only; an explicit GH_REPO wins, and no origin leaves it unset.
+	if [[ $1 == dash && -z $GH_REPO ]] && dash_repo="$(git_origin_slug)"; then
+		local -x GH_REPO=$dash_repo;
+	fi;
 
 	# Unscoped `git config` is required here: --global does not traverse the
 	# include that defines these pins, so it returns nothing.
