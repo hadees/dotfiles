@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import socket
+import socketserver
 import subprocess
 import sys
 import tempfile
@@ -210,7 +211,16 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
-class Upstream(ThreadingHTTPServer):
+class LoopbackServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # http.server's own bind asks for the host's name (socket.getfqdn, a reverse
+        # lookup of 127.0.0.1) that nothing here uses, and on a macOS CI runner
+        # that lookup waited on mDNS for longer than the server could be waited for.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[0], self.server_address[1]
+
+
+class Upstream(LoopbackServer):
     """Loopback stand-in for the Anthropic API that records what it receives."""
     daemon_threads = True
 
@@ -714,7 +724,7 @@ class _TapHandler(BaseHTTPRequestHandler):
         conn.close()
 
 
-class TapUpstream(ThreadingHTTPServer):
+class TapUpstream(LoopbackServer):
     """Forwards everything to `target` except Fable requests, which it answers
     as `mode` says (quota, quota-partial or throttle). Keeps no credentials."""
     daemon_threads = True
