@@ -92,3 +92,17 @@ ran_nothing() { [ -z "$(grep -v -e '--count' "$STUB_LOG")" ]; }
   [ "$status" -eq 0 ]
   [[ "$output" == *"[1/2] ok 1 alpha: passes"* ]]
 }
+
+@test "ci: each suite job re-runs its failed tests under the suite's own promises" {
+  local wf="$BATS_TEST_DIRNAME/../.github/workflows/tests.yml"
+  [ "$(grep -c '^        id: suite$' "$wf")" -eq 3 ]
+  [ "$(grep -c "^        if: failure() && steps.suite.outcome == 'failure'$" "$wf")" -eq 3 ]
+  [ "$(grep -cE "^ *mkdir -p tests/\.bats/run-logs && .*\|\| rm -rf tests/\.bats$" "$wf")" -eq 3 ]
+  # a re-run line ending in || true would let a twice-failed test pass
+  [ "$(grep -cE "TESTS_WAIT_SCALE=3 .*SCREEN_TESTS_REQUIRE='tmux fzf' (setsid -w )?bash \.github/bats-rerun\.sh$" "$wf")" -eq 3 ]
+  [ "$(grep -E 'bash \.github/bats-rerun\.sh' "$wf" | grep -c 'NODE_TESTS_REQUIRED=1')" -eq 1 ]
+  # the run-log line is above pipefail, never between it and the bats line
+  [ -z "$(grep -A1 -E '^ *mkdir -p tests/\.bats/run-logs' "$wf" | grep -E ' bats --timing')" ]
+  # nothing may turn a red suite green
+  [ "$(grep -c 'continue-on-error' "$wf")" -eq 0 ]
+}
