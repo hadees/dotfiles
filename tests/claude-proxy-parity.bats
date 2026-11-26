@@ -67,7 +67,7 @@ PY
   # the IDs of the transport checks that failed.
   cat > "$BATS_TEST_TMPDIR/refproxy.py" <<'PY'
 import http.client, importlib.util, json, sys, threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 spec = importlib.util.spec_from_file_location("parity", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
@@ -110,7 +110,7 @@ class Ref(BaseHTTPRequestHandler):
                 chunk(d)
         self.wfile.write(b"0\r\n\r\n")
 
-srv = ThreadingHTTPServer(("127.0.0.1", 0), Ref)
+srv = m.LoopbackServer(("127.0.0.1", 0), Ref)
 srv.daemon_threads = True
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 checks = m.run_transport(srv.server_address[1], up)
@@ -246,6 +246,23 @@ assess_with() {
 
 @test "transport: a faithful reference proxy passes every transport check" {
   run "$PY" "$BATS_TEST_TMPDIR/refproxy.py" "$HELPER" faithful
+  [ "$status" -eq 0 ]
+  [ "$output" = "" ]
+}
+
+@test "transport: the fixture servers come up without the reverse lookup of their address" {
+  run "$PY" "$BATS_TEST_TMPDIR/withm.py" "$HELPER" '
+import runpy, socket, sys
+def no_lookup(*a): raise AssertionError("socket.getfqdn was called")
+socket.getfqdn = no_lookup
+try:
+    socket.getfqdn(); sys.exit("vacuous: the replacement is not live")
+except AssertionError: pass
+up = m.Upstream()
+m.TapUpstream(up.url)
+sys.argv = ["refproxy.py", sys.argv[1], "faithful"]
+runpy.run_path("'"$BATS_TEST_TMPDIR"'/refproxy.py", run_name="__main__")
+'
   [ "$status" -eq 0 ]
   [ "$output" = "" ]
 }
