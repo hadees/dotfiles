@@ -87,7 +87,7 @@ jobs:
           # bats refuses --no-parallelize-within-files below --jobs 2
           par="--jobs $(getconf _NPROCESSORS_ONLN) --no-parallelize-within-files"
           [ "$RUNNER_OS" = macOS ] && par=
-          # The awk filter prefixes each result with [done/total]; pipefail keeps
+          # The awk filter appends /total to each result's number; pipefail keeps
           # bats' exit status through the pipe.
           set -o pipefail
           TESTS_WAIT_SCALE=3 NODE_TESTS_REQUIRED=1 SCREEN_TESTS_REQUIRE='tmux fzf' bats --timing $par tests 2>&1 | awk -f .github/bats-progress.awk
