@@ -94,6 +94,11 @@ A separate macOS job, `test-macos-apply`, executes `.macos` for real and asserts
 stuck (`tests/macos-apply.bats`) — safe there because runners are throwaway
 VMs; the test skips everywhere else unless `MACOS_APPLY_OK=1` is set.
 
+A red suite job names its failed tests: `gh run view <run>` lists each as an
+annotation with file and line, the step log ends with a digest between
+`===== bats failures` and `===== end bats failures`, and a second step
+re-runs them and marks the ones that pass as flaky (not yet on WSL).
+
 ## Architecture
 
 ### Shell loading order (zsh)
@@ -297,6 +302,7 @@ rule first.
 | `cc-status-shim` | Session Status rows, seat colours, row names, terminal titles |
 | `dot-functions` | what else lives in `dot_functions`, and `emulate -L zsh` |
 | `step-cost` | the transcript measuring script: its columns, the window, what counts as a human prompt |
+| `ci-output` | what a red CI job prints: the failure digest, annotations, the job summary, the re-run of failed tests |
 
 `docs/private-overlays.md` is the overlay manual. `docs/espanso.md` covers
 the text expander, whose config is a separate private repo.
