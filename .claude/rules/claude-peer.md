@@ -156,7 +156,8 @@ registered `peer-N` worktrees remain; nothing uses or removes them any more
 what a slot pane runs, and makes no worktree, claim or Claude until it is
 woken. With the picker on (below) the waiting screen *is* the picker, open at
 once; Esc puts it away and leaves the quiet line `<Label>: Return picks a
-context, c continues the last session, q leaves a shell`, where Return opens it
+context, c continues the last session, q leaves a shell` (the Ideas pane's reads `Ideas:
+Return lists the ideas, c continues the last session, q leaves a shell`), where Return opens it
 again. With the picker `off` the quiet line is all there is: `<Label>: Return
 starts a Claude here, c continues the last session, q leaves a shell`. At the
 quiet line Return starts (or picks), `c` continues with `--continue`, `q` (or
@@ -327,7 +328,8 @@ so Claude's own list chooses), `@task`, `@shell`. `pane_size` reads `CLAUDE_PEER
 (`rows cols`, the tests' handle) or `stty size`; `pane_geom` makes the block at least 58
 wide (fzf keeps three columns of it, so it is 3 plus the longest display: nothing is cut
 while `3 + name column + 2 + title` fits the pane), centred when the pane has 80 columns or
-more, and at most 12 rows tall. fzf is called
+more, and at most 12 rows tall. Slot `secretary` (the Ideas pane) shows the ideas list in
+place of these rows (`claude-peer-secretary.md`). fzf is called
 small and flat: `--height` the block's, `--margin` the centring, no preview, no border, the
 hint dim in its header (`pane_head`; a shorter one under 56 columns, and under 38 columns the hint itself is cut), `--no-mouse` so the
 wheel still scrolls back through what the last session left, `FZF_DEFAULT_OPTS` unset and
