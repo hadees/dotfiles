@@ -41,7 +41,15 @@ setup() {
   cat >"$BATS_TEST_TMPDIR/bin/fakeshell" <<'STUB'
 #!/bin/sh
 # FAKE_SHELL_RAW=<file>: one line per argument, as it arrived, newlines as |
-[ -z "${FAKE_SHELL_RAW-}" ] || for a in "$@"; do printf 'A:%s\n' "$(printf '%s' "$a" | tr '\n' '|')"; done >>"$FAKE_SHELL_RAW"
+# One append for the whole block: a reader counting lines must not see a launch half written.
+if [ -n "${FAKE_SHELL_RAW-}" ] && [ $# -gt 0 ]; then
+  blk=
+  for a in "$@"; do
+    blk="${blk}A:$(printf '%s' "$a" | tr '\n' '|')
+"
+  done
+  printf '%s' "$blk" >>"$FAKE_SHELL_RAW"
+fi
 # What a pane adds to every session that is not a hand-off (the secretary seat) is
 # left out of what the tests below read, unless FAKE_SHELL_SEAT is set: they are
 # about the other arguments.
