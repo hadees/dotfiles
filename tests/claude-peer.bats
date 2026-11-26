@@ -1562,9 +1562,9 @@ pb_stub() {
   printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"$PB_CALLS"\n' >"$CLAUDE_PEER_POSTBOX"
   chmod +x "$CLAUDE_PEER_POSTBOX"
 }
-pb_wait() { # count
+pb_wait() { # count; the tries times TESTS_WAIT_SCALE, which the parallel CI jobs set
   local i
-  for i in $(seq 1 40); do [ "$(grep -c . "$PB_CALLS" 2>/dev/null || echo 0)" -ge "$1" ] && return 0; sleep 0.05; done
+  for i in $(seq 1 $((40 * ${TESTS_WAIT_SCALE:-1}))); do [ "$(grep -c . "$PB_CALLS" 2>/dev/null || echo 0)" -ge "$1" ] && return 0; sleep 0.05; done
   return 1
 }
 
@@ -4953,9 +4953,10 @@ qpb() {
   chmod +x "$BATS_TEST_TMPDIR/pb"
   export CLAUDE_PEER_POSTBOX="$BATS_TEST_TMPDIR/pb"
 }
+# (the tries times TESTS_WAIT_SCALE, which the parallel CI jobs set)
 qwait_pb() {
   local i
-  for i in $(seq 1 100); do
+  for i in $(seq 1 $((100 * ${TESTS_WAIT_SCALE:-1}))); do
     [ "$(cat "$BATS_TEST_TMPDIR/pb.log" 2>/dev/null | wc -l | tr -d ' ')" -ge "$1" ] && return 0
     sleep 0.1
   done

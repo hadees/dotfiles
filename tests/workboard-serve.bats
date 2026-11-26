@@ -80,9 +80,10 @@ jget() {
   $WB_PY -c 'import json, sys; d = json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2"
 }
 
+# wait_for <command>...: polled, up to ten seconds (times TESTS_WAIT_SCALE).
 wait_for() {
   local i
-  for i in $(seq 1 100); do
+  for i in $(seq 1 $((100 * ${TESTS_WAIT_SCALE:-1}))); do
     "$@" && return 0
     sleep 0.1
   done

@@ -1229,10 +1229,10 @@ cookie_allow_all() {
   : > "$HOME/Library/Application Support/iTerm2/disable-automation-auth"
 }
 
-# Poll (ten per second, five seconds) until the command succeeds.
+# Poll (ten per second, five seconds, times TESTS_WAIT_SCALE) until the command succeeds.
 cookie_wait() {
   local i
-  for i in $(seq 50); do "$@" && return 0; sleep 0.1; done
+  for i in $(seq $((50 * ${TESTS_WAIT_SCALE:-1}))); do "$@" && return 0; sleep 0.1; done
   return 1
 }
 
