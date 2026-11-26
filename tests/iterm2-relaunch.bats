@@ -1319,17 +1319,38 @@ assert a["title"] == "Switch iTerm2 to composed preferences" and a["arg"] == "pr
 ' "$output"
 }
 
-@test "alfred: two ready rows add Everything that is ready first, its arg the comma list" {
+@test "alfred: two valid rows add Everything first, its arg the comma list" {
   cask claude-code@latest 2.1.322 2.1.323 true false binary none
   FAKE_PREFS_LINE="composed, 1 waiting, x" alfred_json
   python3 -I -c '
 import json, sys
 items = json.loads(sys.argv[1])["items"]
 e = items[0]
-assert e["title"] == "Everything that is ready (2 items)", e
-assert e["arg"] == "prefs,brew:claude-code@latest" and e["subtitle"] == "prefs, brew:claude-code@latest" and e["valid"], e
+assert e["title"] == "Everything (2 items)", e
+assert e["arg"] == "prefs,brew:claude-code@latest" and e["valid"], e
+assert e["subtitle"] == "prefs, brew:claude-code@latest; quits iTerm2 only if something needs it", e
 assert [i.get("arg") for i in items[1:]] == ["prefs", None, "brew:claude-code@latest"], items
 assert items[3]["title"] == "Upgrade claude-code@latest (2.1.322 -> 2.1.323)", items[3]
+' "$output"
+}
+
+@test "alfred: one ready row and a current cask still get Everything; refused and nothing rows are left out" {
+  cask claude-code@latest 2.1.323 2.1.323 true false binary none
+  FAKE_PEER_STATUS="default: x - claude-peer default peers" FAKE_PREFS_LINE="composed, in sync" alfred_json
+  python3 -I -c '
+import json, sys
+items = json.loads(sys.argv[1])["items"]
+assert [i["title"] for i in items][:2] == ["Everything (2 items)", "iTerm2 preferences are in sync"], items
+e = items[0]
+assert e["arg"] == "claude-peer,brew:claude-code@latest" and e["valid"], e
+assert e["subtitle"] == "claude-peer, brew:claude-code@latest; quits iTerm2 only if something needs it", e
+' "$output"
+  FAKE_PREFS_LINE="composed, 1 waiting, x" ITERM2_RELAUNCH_CLAUDE_PEER="$BATS_TEST_TMPDIR/no-such-peer" alfred_json
+  python3 -I -c '
+import json, sys
+items = json.loads(sys.argv[1])["items"]
+assert items[0]["title"] == "Everything (2 items)" and items[0]["arg"] == "prefs,brew:claude-code@latest", items
+assert [i.get("arg") for i in items[1:]] == ["prefs", None, "brew:claude-code@latest"], items
 ' "$output"
 }
 
@@ -1368,7 +1389,9 @@ sf = by_type["alfred.workflow.input.scriptfilter"]["config"]
 act = by_type["alfred.workflow.action.script"]["config"]
 assert sf["script"] == '"$HOME/bin/iterm2-relaunch" alfred\n', sf["script"]
 assert act["script"] == '"$HOME/bin/iterm2-relaunch" --yes "$1"\n', act["script"]
-assert sf["keyword"] == "irelaunch" and sf["scriptargtype"] == 1 and act["scriptargtype"] == 1
+assert sf["keyword"] == "iterm" and sf["withspace"] is True and sf["argumenttype"] == 1
+assert sf["title"] == "iTerm Relaunch" and p["name"] == "iTerm Relaunch"
+assert sf["scriptargtype"] == 1 and act["scriptargtype"] == 1
 uids = {o["uid"] for o in p["objects"]}
 assert len(uids) == 2
 assert set(p["connections"]) <= uids and set(p["uidata"]) == uids
@@ -1401,7 +1424,7 @@ PY
   [ "$status" -eq 0 ]
   [[ "$output" != *"Alfred does not appear to be installed"* ]]
   [[ "$output" == *'iterm2-relaunch: handed iTerm2-Relaunch.alfredworkflow to Alfred; confirm the import in its window'* ]]
-  [[ "$output" == *'iterm2-relaunch: then the keyword is "irelaunch"'* ]]
+  [[ "$output" == *'iterm2-relaunch: then the keyword is "iterm"'* ]]
   [ "$(wc -l <"$OPEN_LOG" | tr -d ' ')" -eq 1 ]
   zipfile=$(cat "$OPEN_LOG")
   [ "${zipfile##*/}" = iTerm2-Relaunch.alfredworkflow ]

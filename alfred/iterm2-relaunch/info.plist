@@ -29,7 +29,7 @@
 	<key>disabled</key>
 	<false/>
 	<key>name</key>
-	<string>iTerm2 Relaunch</string>
+	<string>iTerm Relaunch</string>
 	<key>objects</key>
 	<array>
 		<dict>
@@ -48,7 +48,7 @@
 				<key>escaping</key>
 				<integer>100</integer>
 				<key>keyword</key>
-				<string>irelaunch</string>
+				<string>iterm</string>
 				<key>queuedelaycustom</key>
 				<integer>3</integer>
 				<key>queuedelayimmediatelyinitially</key>
@@ -69,7 +69,7 @@
 				<key>subtext</key>
 				<string>Preferences and upgrades that need it down</string>
 				<key>title</key>
-				<string>Relaunch iTerm2</string>
+				<string>iTerm Relaunch</string>
 				<key>type</key>
 				<integer>0</integer>
 				<key>withspace</key>
@@ -120,7 +120,7 @@ into it, so there is nothing here to keep in sync. Alfred runs scripts
 with /bin/zsh --no-rcs and a fixed PATH that excludes ~/bin, which is why
 both scripts use an absolute $HOME/bin/iterm2-relaunch.
 
-  irelaunch   list what is ready, hit return to run it
+  iterm   list what is ready, hit return to run it
 </string>
 	<key>uidata</key>
 	<dict>
