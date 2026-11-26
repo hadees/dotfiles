@@ -69,6 +69,7 @@ jobs:
       - name: Check that the fzf on PATH is the pinned one
         run: sh .github/install-fzf.sh --check
       - name: Run tests
+        id: suite
         # Files run N at a time (N = cores) through GNU parallel, tests within a
         # file stay in order: across files, the step took 144 s on ubuntu
         # (serial: 398 s), whereas within-file parallelism was twice as slow
@@ -87,10 +88,23 @@ jobs:
         run: |
           # bats refuses --no-parallelize-within-files below --jobs 2
           par="--jobs $(getconf _NPROCESSORS_ONLN) --no-parallelize-within-files"
-          # The awk filter prefixes each result with [done/total]; pipefail keeps
+          # bats records each result in tests/.bats/run-logs and the re-run step reads
+          # it; where the checkout cannot hold bats' file names (spaces, colons) there
+          # is no log, the suite runs as before and the re-run declines.
+          mkdir -p tests/.bats/run-logs && { : >'tests/.bats/run-logs/0 write test: a.log' && rm -f 'tests/.bats/run-logs/0 write test: a.log'; } 2>/dev/null || rm -rf tests/.bats
+          # bats-failures.awk lists the failures at the end and annotates them,
+          # bats-progress.awk appends /total to each result's number; pipefail keeps
           # bats' exit status through the pipe.
           set -o pipefail
-          TESTS_WAIT_SCALE=3 NODE_TESTS_REQUIRED=1 SCREEN_TESTS_REQUIRE='tmux fzf' bats --timing $par tests 2>&1 | awk -f .github/bats-progress.awk
+          TESTS_WAIT_SCALE=3 NODE_TESTS_REQUIRED=1 SCREEN_TESTS_REQUIRE='tmux fzf' bats --timing --print-output-on-failure $par tests 2>&1 | awk -f .github/bats-failures.awk -f .github/bats-progress.awk
+
+      # Red: at least one test failed twice, or the re-run was declined. Green: every
+      # failed test passed on its own, so the failure is flaky. The job is red either
+      # way, because the suite step before this one failed.
+      - name: Re-run the failed tests
+        if: failure() && steps.suite.outcome == 'failure'
+        timeout-minutes: 10
+        run: TESTS_WAIT_SCALE=3 NODE_TESTS_REQUIRED=1 SCREEN_TESTS_REQUIRE='tmux fzf' bash .github/bats-rerun.sh
 
   # .macos applied for real and read back (tests/macos-apply.bats). Its own job
   # so its ~5 minutes run beside the suite instead of after it on the macOS job.
@@ -105,7 +119,7 @@ jobs:
       - name: Apply .macos on the throwaway runner and verify
         run: |
           set -o pipefail
-          MACOS_APPLY_OK=1 bats tests/macos-apply.bats 2>&1 | awk -f .github/bats-progress.awk
+          MACOS_APPLY_OK=1 bats --print-output-on-failure tests/macos-apply.bats 2>&1 | awk -f .github/bats-failures.awk -f .github/bats-progress.awk
 
   # The README's fresh-machine command, run for real end to end: the get.chezmoi.io
   # installer, --one-shot against this checkout, ephemeral class. Proves a
@@ -183,6 +197,7 @@ jobs:
       - name: Check that the fzf on PATH is the pinned one
         run: sh .github/install-fzf.sh --check
       - name: Run tests
+        id: suite
         # No Node here on purpose: tests/finicky.bats and tests/chrome-pairing.bats
         # are OS-independent logic, run on ubuntu and macOS, so skipping them on
         # Rocky is intended (NODE_TESTS_REQUIRED stays unset).
@@ -193,8 +208,22 @@ jobs:
           LANG: C.UTF-8
         timeout-minutes: 30
         run: |
+          # bats records each result in tests/.bats/run-logs and the re-run step reads
+          # it; where the checkout cannot hold bats' file names (spaces, colons) there
+          # is no log, the suite runs as before and the re-run declines.
+          mkdir -p tests/.bats/run-logs && { : >'tests/.bats/run-logs/0 write test: a.log' && rm -f 'tests/.bats/run-logs/0 write test: a.log'; } 2>/dev/null || rm -rf tests/.bats
           set -o pipefail
-          TESTS_WAIT_SCALE=3 SCREEN_TESTS_REQUIRE='tmux fzf' bats --timing --jobs "$(getconf _NPROCESSORS_ONLN)" --no-parallelize-within-files tests 2>&1 | awk -f .github/bats-progress.awk
+          TESTS_WAIT_SCALE=3 SCREEN_TESTS_REQUIRE='tmux fzf' bats --timing --print-output-on-failure --jobs "$(getconf _NPROCESSORS_ONLN)" --no-parallelize-within-files tests 2>&1 | awk -f .github/bats-failures.awk -f .github/bats-progress.awk
+
+      # Red: at least one test failed twice, or the re-run was declined. Green: every
+      # failed test passed on its own, so the failure is flaky. The job is red either
+      # way, because the suite step before this one failed.
+      - name: Re-run the failed tests
+        if: failure() && steps.suite.outcome == 'failure'
+        env:
+          LANG: C.UTF-8
+        timeout-minutes: 10
+        run: TESTS_WAIT_SCALE=3 SCREEN_TESTS_REQUIRE='tmux fzf' bash .github/bats-rerun.sh
 
   test-wsl:
     runs-on: windows-2025
@@ -225,14 +254,35 @@ jobs:
       - name: Check that the fzf on PATH is the pinned one
         run: sh .github/install-fzf.sh --check
       - name: Run tests
+        id: suite
         # No Node here on purpose: tests/finicky.bats and tests/chrome-pairing.bats
         # are OS-independent logic, run on ubuntu and macOS, so skipping them on
         # WSL is intended (NODE_TESTS_REQUIRED stays unset).
         # Parallel across files as on the test job, but in a session of its own
         # with no terminal: with the step's terminal, --jobs hung; without one it
         # passed three runs of three at 530 s (serial: 1066 s).
+        # A wsl-bash step does not inherit the runner's variables; WSLENV hands
+        # GITHUB_STEP_SUMMARY over, and /p translates the path.
+        env:
+          WSLENV: GITHUB_STEP_SUMMARY/p
         timeout-minutes: 30
         run: |
           exec </dev/null
+          # bats records each result in tests/.bats/run-logs and the re-run step reads
+          # it; where the checkout cannot hold bats' file names (spaces, colons) there
+          # is no log, the suite runs as before and the re-run declines.
+          mkdir -p tests/.bats/run-logs && { : >'tests/.bats/run-logs/0 write test: a.log' && rm -f 'tests/.bats/run-logs/0 write test: a.log'; } 2>/dev/null || rm -rf tests/.bats
           set -o pipefail
-          TESTS_WAIT_SCALE=3 SCREEN_TESTS_REQUIRE='tmux fzf' setsid -w bats --timing --jobs "$(getconf _NPROCESSORS_ONLN)" --no-parallelize-within-files tests 2>&1 | awk -f .github/bats-progress.awk
+          TESTS_WAIT_SCALE=3 SCREEN_TESTS_REQUIRE='tmux fzf' setsid -w bats --timing --print-output-on-failure --jobs "$(getconf _NPROCESSORS_ONLN)" --no-parallelize-within-files tests 2>&1 | awk -f .github/bats-failures.awk -f .github/bats-progress.awk
+
+      # Red: at least one test failed twice, or the re-run was declined. Green: every
+      # failed test passed on its own, so the failure is flaky. The job is red either
+      # way, because the suite step before this one failed.
+      - name: Re-run the failed tests
+        if: failure() && steps.suite.outcome == 'failure'
+        env:
+          WSLENV: GITHUB_STEP_SUMMARY/p
+        timeout-minutes: 10
+        run: |
+          exec </dev/null
+          TESTS_WAIT_SCALE=3 SCREEN_TESTS_REQUIRE='tmux fzf' setsid -w bash .github/bats-rerun.sh
