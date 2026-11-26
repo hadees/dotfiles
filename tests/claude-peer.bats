@@ -89,8 +89,21 @@ STUB
   cd "$REPO"
 }
 
+# show_panes: what each pane printed (the tail of pane-<tag>.out), for a failed test's
+# log; bats shows nothing of a failed test's files. Always returns 0.
+show_panes() {
+  local f
+  for f in "$BATS_TEST_TMPDIR"/pane-*.out; do
+    [ -s "$f" ] || continue
+    echo "--- ${f##*/} (last 40 lines)"
+    tail -n 40 "$f"
+  done
+  return 0
+}
+
 teardown() {
   local p
+  [ -z "${BATS_TEST_COMPLETED-}${BATS_TEST_SKIPPED-}" ] && show_panes || true
   for p in $PANES; do kill "$p" 2>/dev/null || true; done
   case ${CLAUDE_PEER_LOOK-} in /tmp/cpl.*) rm -rf "$CLAUDE_PEER_LOOK";; esac
 }
@@ -493,14 +506,40 @@ remote_head() {
 # session lasts long enough for `start` to see its claim.
 
 # until_ok '<command>': retry for ten seconds (times TESTS_WAIT_SCALE, which the
-# parallel CI jobs set: a loaded runner starts processes late)
+# parallel CI jobs set: a loaded runner starts processes late). UNTIL_OK_TRIES
+# overrides the count. On giving up it prints the command and the stderr of the last
+# try only; the stderr of earlier tries is dropped on purpose.
 until_ok() {
-  local i
-  for i in $(seq 1 $((100 * ${TESTS_WAIT_SCALE:-1}))); do
-    eval "$1" && return 0
+  local i n=${UNTIL_OK_TRIES:-$((100 * ${TESTS_WAIT_SCALE:-1}))}
+  local err=$BATS_TEST_TMPDIR/.until_ok.err
+  for i in $(seq 1 "$n"); do
+    eval "$1" 2>"$err" && return 0
     sleep 0.1
   done
+  echo "until_ok: gave up after $n tries: $1"
+  if [ -s "$err" ]; then
+    echo "until_ok: stderr of the last try:"
+    cat "$err"
+  fi
   return 1
+}
+
+@test "harness: until_ok gives up with one line and the stderr of its last try" {
+  UNTIL_OK_TRIES=3 run until_ok 'echo oops >&2; false'
+  [ "$status" -eq 1 ]
+  [ "$(grep -cx oops <<<"$output")" -eq 1 ]
+  [[ "$output" == *"until_ok: gave up after 3 tries: echo oops >&2; false"* ]]
+}
+
+@test "harness: a failed test's teardown shows what each pane printed" {
+  seq 1 50 | sed 's/^/line /' >"$BATS_TEST_TMPDIR/pane-a.out"
+  : >"$BATS_TEST_TMPDIR/pane-b.out"
+  run show_panes
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--- pane-a.out (last 40 lines)"* ]]
+  [[ "$output" == *"line 11"$'\n'* && "$output" == *"line 50" ]]
+  [[ "$output" != *"line 10"* ]]
+  [[ "$output" != *"pane-b.out"* ]]
 }
 
 # pane <slot> [<dir> [<tag>]]: a waiting pane started in <dir> (default $REPO);

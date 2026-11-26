@@ -1,22 +1,32 @@
 #!/usr/bin/env bats
-# .github/bats-progress.awk: the [done/total] prefix CI puts on bats result lines.
+# .github/bats-progress.awk: the /total CI appends to the number on bats result lines.
 
 setup() {
   AWK="$BATS_TEST_DIRNAME/../.github/bats-progress.awk"
 }
 
-@test "bats-progress: counts ok and not ok lines against the plan" {
+@test "bats-progress: appends the plan's total to bats' own number on ok and not ok lines" {
   run awk -f "$AWK" <<'TAP'
-1..3
-ok 1 first in 12ms
-not ok 2 second in 3ms
-ok 3 third # skip why
+1..2541
+ok 1137 first in 12ms
+not ok 12 second in 3ms
 TAP
   [ "$status" -eq 0 ]
-  [ "${lines[0]}" = "1..3" ]
-  [ "${lines[1]}" = "[1/3] ok 1 first in 12ms" ]
-  [ "${lines[2]}" = "[2/3] not ok 2 second in 3ms" ]
-  [ "${lines[3]}" = "[3/3] ok 3 third # skip why" ]
+  [ "${lines[0]}" = "1..2541" ]
+  [ "${lines[1]}" = "ok 1137/2541 first in 12ms" ]
+  [ "${lines[2]}" = "not ok 12/2541 second in 3ms" ]
+}
+
+@test "bats-progress: a skip or todo line keeps its suffix" {
+  run awk -f "$AWK" <<'TAP'
+1..3
+ok 1 a # skip not on this OS
+not ok 2 b # TODO later
+ok 3 c ok 9 # skip ok 4
+TAP
+  [ "${lines[1]}" = "ok 1/3 a # skip not on this OS" ]
+  [ "${lines[2]}" = "not ok 2/3 b # TODO later" ]
+  [ "${lines[3]}" = "ok 3/3 c ok 9 # skip ok 4" ]
 }
 
 @test "bats-progress: passes every other line through unchanged" {
@@ -30,10 +40,10 @@ TAP
   [ "${lines[1]}" = "# (in test file x.bats, line 4) diagnostic" ]
   [ "${lines[2]}" = "   okay is not a result line" ]
   [ "${lines[3]}" = "plain output" ]
-  [ "${lines[4]}" = "[1/1] ok 1 only" ]
+  [ "${lines[4]}" = "ok 1/1 only" ]
 }
 
-@test "bats-progress: with no plan line nothing is prefixed" {
+@test "bats-progress: with no plan line nothing is changed" {
   run awk -f "$AWK" <<'TAP'
 ok 1 a
 not ok 2 b

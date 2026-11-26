@@ -153,19 +153,26 @@ STUB
 }
 
 teardown() {
+  # a test that failed (or died) before it printed its screen: show it now, once
+  [ -n "${BATS_TEST_COMPLETED-}" ] || [ -n "${BATS_TEST_SKIPPED-}" ] || screen_last || true
   case ${CLAUDE_PEER_LOOK-} in /tmp/cpl.*) rm -rf "$CLAUDE_PEER_LOOK";; esac
   tm kill-server >/dev/null 2>&1 || true
   [ ! -e "$BATS_TEST_TMPDIR/claude-ran" ]
 }
 
 # until_ok '<command>': retry for ten seconds (times TESTS_WAIT_SCALE, which the
-# parallel CI jobs set: a loaded runner starts processes late)
+# parallel CI jobs set: a loaded runner starts processes late). UNTIL_OK_TRIES sets the
+# number of tries. On giving up it says what it waited for and shows the stderr of the
+# last try only: the stderr of the earlier tries is dropped on purpose (one line, not
+# a hundred of the same).
 until_ok() {
-  local i
-  for i in $(seq 1 $((100 * ${TESTS_WAIT_SCALE:-1}))); do
-    eval "$1" && return 0
+  local i n=${UNTIL_OK_TRIES:-$((100 * ${TESTS_WAIT_SCALE:-1}))} err="$BATS_TEST_TMPDIR/.until_ok.err"
+  for i in $(seq 1 "$n"); do
+    eval "$1" 2>"$err" && return 0
     sleep 0.1
   done
+  echo "until_ok: gave up after $n tries: $1"
+  [ ! -s "$err" ] || { echo 'until_ok: stderr of the last try:'; cat "$err"; }
   return 1
 }
 
@@ -265,10 +272,22 @@ screen_still() {
 
 # --- looking ------------------------------------------------------------------------------
 
+# screen_show [<label>]: SCREEN_SHOWN tells the teardown that this test printed its screen
 screen_show() {
-  echo "--- screen ${SCREEN_COLS}x$SCREEN_ROWS"
+  SCREEN_SHOWN=1
+  echo "--- screen${1:+ $1} ${SCREEN_COLS}x$SCREEN_ROWS"
   awk -v c="$SCREEN_COLS" 'BEGIN { for (i = 1; i <= c; i++) printf "%d", i % 10; print "" }'
   printf '%s\n' "$SCREEN" | sed 's/$/|/'
+}
+
+# screen_last: the teardown's look at a failed test's pane, unless the test already showed
+# it or the server is gone; it never fails
+screen_last() {
+  [ -z "${SCREEN_SHOWN-}" ] || return 0
+  tm has-session -t s 2>/dev/null || return 0
+  screen_grab
+  screen_show 'at teardown'
+  return 0
 }
 
 # one byte per column (UTF-8 continuation bytes dropped): for measuring only
@@ -308,11 +327,16 @@ line() { printf '%s\n' "$SCREEN" | sed -n "$1p"; }
 
 @test "ci: every job that runs the suite says what the screen tests may not skip" {
   local wf="$BATS_TEST_DIRNAME/../.github/workflows/tests.yml" pin="$BATS_TEST_DIRNAME/../.github/fzf-version"
-  local suite=' bats ((--[a-z-]+|"[^"]*"|\$[a-z]+) )*tests 2>&1 \| awk -f \.github/bats-progress\.awk$'
+  local suite=' bats ((--[a-z-]+|"[^"]*"|\$[a-z]+) )*tests 2>&1 \| awk -f \.github/bats-failures\.awk -f \.github/bats-progress\.awk$'
   [ "$(grep -cE "$suite" "$wf")" -eq 3 ]
   [ "$(grep -cE "SCREEN_TESTS_REQUIRE='tmux fzf'( setsid -w)?$suite" "$wf")" -eq 3 ]
   # the filter hides bats' exit status unless the line before it sets pipefail
   [ "$(grep -B1 -E "$suite" "$wf" | grep -c '^ *set -o pipefail$')" -eq 3 ]
+  # four lines pipe through both awk files and four print a failing test's output
+  [ "$(grep -c 'awk -f \.github/bats-failures\.awk -f \.github/bats-progress\.awk$' "$wf")" -eq 4 ]
+  [ "$(grep -c -- '--print-output-on-failure' "$wf")" -eq 4 ]
+  # nothing may let a red suite step pass
+  [ "$(grep -c 'continue-on-error' "$wf")" -eq 0 ]
   # each of the three installs the pinned fzf, then checks that it is the first on PATH
   [ "$(grep -c 'sh \.github/install-fzf\.sh [^-]' "$wf")" -eq 3 ]
   [ "$(grep -c '^ *run: sh \.github/install-fzf\.sh --check$' "$wf")" -eq 3 ]
@@ -362,6 +386,28 @@ line() { printf '%s\n' "$SCREEN" | sed -n "$1p"; }
     screen_still
     screen_close
   done
+}
+
+@test "harness: until_ok gives up with one line and the stderr of its last try" {
+  UNTIL_OK_TRIES=3 run until_ok 'echo oops >&2; false'
+  [ "$status" -eq 1 ]
+  [ "$(printf '%s\n' "$output" | grep -cx oops)" -eq 1 ]
+  [ "$(printf '%s\n' "$output" | grep -c '^until_ok: gave up after 3 tries: ')" -eq 1 ]
+}
+
+@test "harness: a failed test's teardown shows the screen once" {
+  need tmux
+  screen_run 80 24 sh -c 'echo marker; sleep 30'
+  screen_wait marker
+  run screen_last
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | grep -c '^--- screen at teardown 80x24$')" -eq 1 ]
+  printf '%s\n' "$output" | grep -q 'marker'
+  # a test that already showed its screen gets no second one
+  SCREEN_SHOWN=1
+  run screen_last
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
 }
 
 # --- the numbered list ------------------------------------------------------------------------
