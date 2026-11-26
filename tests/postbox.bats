@@ -1086,10 +1086,11 @@ live_session_at() {
   printf '{"pid":%s,"cwd":"%s","name":"%s","status":"%s"}\n' "$$" "$2" "$3" "$4" > "$1/sessions/$$-$3.json"
 }
 
-# The relay is detached, so give it a moment to land in the stub's log.
+# The relay is detached, so give it a moment to land in the stub's log
+# (twenty tries times TESTS_WAIT_SCALE, which the parallel CI jobs set).
 wait_relays() { # expected-count
   local i
-  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  for i in $(seq 1 $((20 * ${TESTS_WAIT_SCALE:-1}))); do
     [ "$(grep -c . "$CLAUDE_LOG" 2>/dev/null || echo 0)" -ge "$1" ] && return 0
     sleep 0.25
   done
