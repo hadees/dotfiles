@@ -269,6 +269,46 @@ remote_head() {
   [ "$(git worktree list | grep -c worktrees/)" -eq 1 ]
 }
 
+@test "run --as ideas: the move carries each profile's transcript dir to the new path, and never over one that is there" {
+  remote_head
+  git worktree add -q --detach "$REPO/.claude/worktrees/secretary" HEAD
+  enc() { printf '%s' "$1" | tr -c 'A-Za-z0-9' -; }
+  old=$(cd "$REPO/.claude/worktrees/secretary" && pwd -P)
+  new=${old%/secretary}/ideas
+  export CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/cfg
+  mkdir -p "$CLAUDE_CONFIG_DIR/projects/$(enc "$old")" "$CLAUDE_CONFIG_DIR/projects/-other-dir" \
+    "$HOME/.claude/projects/$(enc "$old")" "$HOME/.claude/projects/$(enc "$new")"
+  echo moved >"$CLAUDE_CONFIG_DIR/projects/$(enc "$old")/s.jsonl"
+  echo mine >"$HOME/.claude/projects/$(enc "$old")/s.jsonl"
+  echo there >"$HOME/.claude/projects/$(enc "$new")/t.jsonl"
+  run sh "$BIN" run --as ideas </dev/null
+  [ "$status" -eq 0 ]
+  [ "$(cat "$CLAUDE_CONFIG_DIR/projects/$(enc "$new")/s.jsonl")" = moved ]
+  [ ! -e "$CLAUDE_CONFIG_DIR/projects/$(enc "$old")" ]
+  [ -d "$CLAUDE_CONFIG_DIR/projects/-other-dir" ]
+  # a target already there is left as it is, and so is the source beside it
+  [ "$(cat "$HOME/.claude/projects/$(enc "$new")/t.jsonl")" = there ]
+  [ ! -e "$HOME/.claude/projects/$(enc "$new")/s.jsonl" ]
+  [ "$(cat "$HOME/.claude/projects/$(enc "$old")/s.jsonl")" = mine ]
+}
+
+@test "run --as ideas: when git refuses the move, one warning names the command and the old worktree is used, start after start" {
+  remote_head
+  git worktree add -q --detach "$REPO/.claude/worktrees/secretary" HEAD
+  git worktree lock "$REPO/.claude/worktrees/secretary"
+  run sh "$BIN" run --as ideas </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"claude-peer: ideas: git did not move the secretary worktree"* ]]
+  [[ "$output" == *"git -C $REPO worktree move $REPO/.claude/worktrees/secretary $REPO/.claude/worktrees/ideas"* ]]
+  [[ "$output" == *"ideas"$'\t'"$REPO/.claude/worktrees/secretary"$'\t'"reused"* ]]
+  [[ "$output" == *"pwd=$REPO/.claude/worktrees/secretary"* ]]
+  [ ! -e "$REPO/.claude/worktrees/ideas" ]
+  run sh "$BIN" run --as ideas </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pwd=$REPO/.claude/worktrees/secretary"* ]]
+  [ ! -e "$REPO/.claude/worktrees/ideas" ]
+}
+
 @test "run --as ideas: both names present leaves the old worktree alone" {
   remote_head
   git worktree add -q --detach "$REPO/.claude/worktrees/secretary" HEAD

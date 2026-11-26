@@ -450,10 +450,21 @@ slot_checkout() {
 
 slot_pick() {
   wt=$1/.claude/worktrees/$2
-  # The Ideas slot's worktree was `secretary`: moved once. Can go once no repo has one.
+  # The Ideas slot's worktree was `secretary`: moved once, with its transcripts (Claude Code
+  # keys them by directory). If git refuses, this start uses the old path. Can go once no repo has one.
   if [ "$2" = ideas ] && [ ! -e "$wt" ] && git -C "$1" worktree list --porcelain | grep -qx "worktree $1/.claude/worktrees/secretary" &&
     ! claim_live "$1/.claude/worktrees/secretary"; then
-    git_immune -C "$1" worktree move "$1/.claude/worktrees/secretary" "$wt" || die "ideas: cannot move the secretary worktree"
+    sm_old=$1/.claude/worktrees/secretary
+    sm_from=$(cd -- "$sm_old" && pwd -P | tr -c 'A-Za-z0-9\n' -)
+    if git_immune -C "$1" worktree move "$sm_old" "$wt"; then
+      sm_to=$(cd -- "$wt" && pwd -P | tr -c 'A-Za-z0-9\n' -)
+      for sm_d in $(profile_dirs); do
+        if [ -d "$sm_d/projects/$sm_from" ] && [ ! -e "$sm_d/projects/$sm_to" ]; then mv "$sm_d/projects/$sm_from" "$sm_d/projects/$sm_to" || :; fi
+      done
+    else
+      warn "ideas: git did not move the secretary worktree; using it where it is. To move it: git -C $1 worktree move $sm_old $wt"
+      wt=$sm_old
+    fi
   fi
   if git -C "$1" worktree list --porcelain | grep -qx "worktree $wt"; then
     [ -d "$wt" ] || die "$2: $wt is registered but missing; git worktree prune (from $1), then start it again"
@@ -787,14 +798,14 @@ pane_num() {
 
 # the names of the live sessions called *-ideas, in every profile's registry
 pane_idea_sessions() {
-  for ps_d in $(profile_dirs); do
-    for ps_r in "$ps_d"/sessions/*.json; do
-      [ -f "$ps_r" ] || continue
-      ps_n=$(rec_get "$ps_r" name)
-      case $ps_n in *-ideas) ;; *) continue;; esac
-      ps_p=${ps_r##*/}; ps_p=${ps_p%.json}
-      case $ps_p in ''|*[!0-9]*) continue;; esac
-      session_same "$ps_p" "$ps_r" && printf '%s\n' "$ps_n"
+  for pis_d in $(profile_dirs); do
+    for pis_r in "$pis_d"/sessions/*.json; do
+      [ -f "$pis_r" ] || continue
+      pis_n=$(rec_get "$pis_r" name)
+      case $pis_n in *-ideas) ;; *) continue;; esac
+      pis_p=${pis_r##*/}; pis_p=${pis_p%.json}
+      case $pis_p in ''|*[!0-9]*) continue;; esac
+      session_same "$pis_p" "$pis_r" && printf '%s\n' "$pis_n"
     done
   done
   return 0
@@ -817,10 +828,10 @@ pane_go() {
   pg_ctx=${PG_CTX-} pg_ctxname=${PG_CTXNAME-} pg_by=${PG_BY-} pg_task=${PG_TASK-} pg_wake=${PG_WAKE-}
   pg_ho=${PG_HANDOFF-} pg_lpid=${PG_LEADPID-} pg_lsid=${PG_LEADSID-} pg_rsid=${PG_SID-}
   PG_CTX= PG_CTXNAME= PG_BY= PG_TASK= PG_WAKE= PG_HANDOFF= PG_LEADPID= PG_LEADSID= PG_SID=
-  # a session a pane starts is an Ideas session's unless it is a hand-off (pg_sec is 1)
-  pg_sec=1 pg_over=
-  [ "$pg_ho" != 1 ] || pg_sec=
-  if [ -n "$pg_sec" ]; then
+  # a session a pane starts is an Ideas session's unless it is a hand-off (pg_ideas is 1)
+  pg_ideas=1 pg_over=
+  [ "$pg_ho" != 1 ] || pg_ideas=
+  if [ -n "$pg_ideas" ]; then
     # the cap comes before the slot: a refusal after it would leave a claim behind
     pg_max=$(pane_num pane-max 2)
     pg_open=$(pane_idea_sessions)
@@ -860,7 +871,7 @@ pane_go() {
     "$([ "$pg_ho" = 1 ] && echo handoff || echo -)" "${pg_lpid:--}" "${pg_lsid:--}" >>"$(claim_file "$pg_wt")"
   pg_l=$(label_of "$pg_taken") pg_sf=$(stop_file "$pg_wt")
   pg_h0= pg_b0=
-  if [ -n "$pg_sec" ]; then
+  if [ -n "$pg_ideas" ]; then
     # a clean detached slot starts from where the remote's head is now, not from where it
     # was when the slot was made; no fetch, and anything else is left as it is
     # (not when its commits are on no branch of the remote's: the move would hide them)
@@ -891,7 +902,7 @@ $(handoff_note)"; fi
   for pg_a in "$@"; do [ "$pg_a" != --permission-mode ] || pg_has=1; done
   [ -n "$pg_has" ] || pg_pm=$(peer_mode)
   [ -z "$pg_pm" ] || set -- "$@" --permission-mode "$pg_pm"
-  if [ -n "$pg_sec" ]; then
+  if [ -n "$pg_ideas" ]; then
     # --disallowedTools takes every word after it: one argument, and --settings after it
     pg_dn=$(pane_deny)
     [ -z "$pg_dn" ] || set -- "$@" --disallowedTools "$pg_dn"
@@ -909,7 +920,7 @@ $(handoff_note)"; fi
   # the clock: a session nobody ended is ended here (pane-end-minutes 0: never)
   pg_we=$(pane_num pane-end-minutes 60)
   pn_watch=
-  if [ -n "$pg_sec" ] && [ "$pg_we" -gt 0 ]; then
+  if [ -n "$pg_ideas" ] && [ "$pg_we" -gt 0 ]; then
     rm -f "$pg_sf.sid"
     pg_tty=${CLAUDE_PEER_TTY:-$(pane_dev)}
     ( trap - EXIT; cd -- "$repo" && pane_watch "$pg_l" "$pg_t0" "$pg_we" "$(pane_num pane-done-minutes 5)" "$pg_sf" "$pg_tty" ) </dev/null >/dev/null 2>&1 &
@@ -921,7 +932,7 @@ $(handoff_note)"; fi
   # would close a live peer's claims
   # A requested stop says who asked and wakes nobody; a hand-off that ended by
   # itself is `gone` and tells Lead; anything else is a plain end.
-  if [ -n "$pg_sec" ] && [ -d "$pg_wt" ]; then
+  if [ -n "$pg_ideas" ] && [ -d "$pg_wt" ]; then
     # an Ideas session leaves the repository as it found it; said in the log, nobody is told
     pg_br=$(git -C "$pg_wt" symbolic-ref -q --short HEAD 2>/dev/null)
     pg_dr=
@@ -933,7 +944,7 @@ $(handoff_note)"; fi
   pg_txt="$pg_l ended after $(dur_of $(( $(date +%s) - pg_t0 )))${pg_task:+ ($pg_task)}"
   # an Ideas session's end line names its session, as a stop line does; the clock saw the id
   pg_sid= pg_ex=
-  if [ -n "$pg_sec" ]; then
+  if [ -n "$pg_ideas" ]; then
     [ ! -f "$pg_sf.sid" ] || pg_sid=$(sed -n 1p "$pg_sf.sid")
     pg_ex=$(printf '\tsession=%s' "${pg_sid:--}")
   fi
