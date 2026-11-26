@@ -95,7 +95,7 @@ setup() {
   git config --global claude-peer.art-seconds 0
   cat >"$BATS_TEST_TMPDIR/bin/fakeshell" <<'STUB'
 #!/bin/sh
-# a session a pane starts carries the secretary seat's arguments; the screen would
+# a session a pane starts carries the ideas seat's arguments; the screen would
 # show their long note, so they are left out here (tests/claude-peer.bats keeps them)
 nn='
 
@@ -108,8 +108,8 @@ while [ "$c" -gt 0 ]; do
     --append-system-prompt)
       v=$1; shift; c=$((c - 1))
       case $v in
-        'Secretary seat.'*) continue;;
-        *"${nn}Secretary seat."*) v=${v%%"${nn}Secretary seat."*};;
+        'Ideas seat.'*) continue;;
+        *"${nn}Ideas seat."*) v=${v%%"${nn}Ideas seat."*};;
       esac
       set -- "$@" "$a" "$v"; continue;;
   esac
@@ -1148,7 +1148,7 @@ hermes_open() {
 }
 
 # --- the Ideas pane: the wait screen ---------------------------------------------------------
-# The pane of slot secretary lists the repository's ideas where the others list contexts. Its
+# The pane of slot ideas lists the repository's ideas where the others list contexts. Its
 # fixtures are the queue and the idea files tests/claude-peer.bats writes, written here by hand.
 
 # ago <seconds>: the UTC time that long ago, as the queue file writes it
@@ -1183,7 +1183,7 @@ ideas_open() {
   printf '%s\tQ2\tadd\tIdeas\tidea:w=0:u=0:p=0:s=?\tGamma, for Lead\t%s\n' "$(ago 7200)" "$f" >>"$REPO/.git/claude-peer.queue"
   f=$(ideafile delta "Delta idea"); qshape 30 Q3 s-3 "Delta idea" "$f"
   printf '%s\tQ3\tpark\tIdeas\t-\tlater\t-\n' "$(ago 3600)" >>"$REPO/.git/claude-peer.queue"
-  SCREEN_SLOT=secretary screen_open "$@"
+  SCREEN_SLOT=ideas screen_open "$@"
 }
 
 @test "ideas: fzf at 80x24, New idea marked, every row whole, the three columns lined up, the block's indent 11, parked last" {
@@ -1212,7 +1212,7 @@ ideas_open() {
   local long; long="Long title $(printf 'w%.0s' $(seq 1 59))"
   [ "${#long}" -eq 70 ]
   ideafile long "$long" >/dev/null
-  SCREEN_SLOT=secretary screen_open 60 20
+  SCREEN_SLOT=ideas screen_open 60 20
   screen_wait 'esc hide'
   screen_still
   printf '%s\n' "$SCREEN" | grep -qE '^ *Long title w+… +· shaping +· +[0-9]+h$' || { screen_show; false; }
@@ -1225,7 +1225,7 @@ ideas_open() {
   git config --global claude-peer.picker list
   local i
   for i in $(seq -w 1 15); do ideafile "i$i" "Idea number $i" "$((10 + 10#$i))" >/dev/null; done
-  SCREEN_SLOT=secretary screen_open 80 24
+  SCREEN_SLOT=ideas screen_open 80 24
   screen_wait 'q shell$'
   screen_still
   [ "$(count_lines '^ *[0-9]+  ')" -eq 12 ] || { screen_show; false; }
@@ -1240,7 +1240,7 @@ ideas_open() {
   need tmux fzf
   git config --global --unset claude-peer.art
   ideafile alpha "Alpha idea" >/dev/null
-  SCREEN_SLOT=secretary screen_open 80 24
+  SCREEN_SLOT=ideas screen_open 80 24
   screen_wait 'esc hide'
   screen_still
   [ "$(printf '%s\n' "$SCREEN" | grep -o '▬' | wc -l | tr -d ' ')" -eq 4 ] || { screen_show; false; }
@@ -1275,5 +1275,5 @@ ideas_open() {
   [ ! -s "$FAKE_SHELL_LOG" ]
   screen_keys Enter
   screen_wait ' · nightly backup rotation$'
-  until_ok 'grep -qF "claude-peer proj-secretary nightly backup rotation" "$FAKE_SHELL_LOG"'
+  until_ok 'grep -qF "claude-peer proj-ideas nightly backup rotation" "$FAKE_SHELL_LOG"'
 }

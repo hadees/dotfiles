@@ -14,7 +14,7 @@
 #
 # Two more Workgroups, not extra peers on the builtin Claude Code one: peers
 # spawn eagerly when a workgroup is entered, and the builtin is entered on
-# every claude job. `Claude Peers` is Lead, the Ideas pane (slot secretary) and the Agents viewer;
+# every claude job. `Claude Peers` is Lead, the Ideas pane (slot ideas) and the Agents viewer;
 # the Ideas pane waits (below), so entering it on every claude job costs a
 # blocked shell and an agent list, not a Claude. `Claude Peers + Hermes` is the same plus a Hermes
 # pane, a twin because a pane cannot remove itself from a workgroup: where no
@@ -450,6 +450,11 @@ slot_checkout() {
 
 slot_pick() {
   wt=$1/.claude/worktrees/$2
+  # The Ideas slot's worktree was `secretary`: moved once. Can go once no repo has one.
+  if [ "$2" = ideas ] && [ ! -e "$wt" ] && git -C "$1" worktree list --porcelain | grep -qx "worktree $1/.claude/worktrees/secretary" &&
+    ! claim_live "$1/.claude/worktrees/secretary"; then
+    git_immune -C "$1" worktree move "$1/.claude/worktrees/secretary" "$wt" || die "ideas: cannot move the secretary worktree"
+  fi
   if git -C "$1" worktree list --porcelain | grep -qx "worktree $wt"; then
     [ -d "$wt" ] || die "$2: $wt is registered but missing; git worktree prune (from $1), then start it again"
     if claim_live "$wt"; then
@@ -497,6 +502,8 @@ POOL_DEFAULT='alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu
 slot_ok() { case $1 in next|lead|claude|hermes) return 1;; esac; printf '%s\n' "$1" | LC_ALL=C grep -Eq '^[a-z][a-z0-9_-]*$'; }
 # The one place a session name is composed: <repo>-<slot>. Needs rname.
 session_name() { printf '%s-%s\n' "$rname" "$1"; }
+# The Ideas slot was called `secretary`; panes and habits still pass it. Can go once nothing does.
+slot_alias() { if [ "$1" = secretary ]; then echo ideas; else echo "$1"; fi; }
 label_of() { printf '%s%s' "$(printf '%s' "$1" | cut -c1 | tr a-z A-Z)" "$(printf '%s' "$1" | cut -c2-)"; }
 rname_of() { printf '%s' "${1##*/}" | tr -c 'A-Za-z0-9._-' '-'; }
 settle() { st=${CLAUDE_PEER_SETTLE:-2}; [ "$st" -gt 0 ] && sleep "$st"; return 0; }
@@ -689,7 +696,7 @@ peer_mode() {
   esac
 }
 
-# --- the secretary seat: what a session started at a pane is -------------------------
+# --- the Ideas seat: what a session started at a pane is -------------------------
 # Every session a pane starts that is not a hand-off. The text is the operator's
 # (signed 2026-11-26, the go for the ideas picker), worded in the third person; only
 # <rname> is replaced.
@@ -713,7 +720,7 @@ verdict_since() {
   awk -F'\t' -v w="$1" -v m="$vs_t" '$3 ~ /^(add|park|drop)$/ && $4 == w && $1 >= m { f = 1 } END { exit !f }' "$vs_f"
 }
 
-# The secretary's clock, one background subshell per running session. Arguments: label,
+# The Ideas pane's clock, one background subshell per running session. Arguments: label,
 # start time (epoch seconds), minutes to end a session with no verdict, minutes after
 # one, stop file, the pane's terminal. Each tick it finds the session under the pane's own
 # pid and ends it with TERM when the registry says idle, that status is as old as the limit,
@@ -778,13 +785,13 @@ pane_num() {
   printf '%s\n' "$pu_v"
 }
 
-# the names of the live sessions called *-secretary, in every profile's registry
-pane_secretaries() {
+# the names of the live sessions called *-ideas, in every profile's registry
+pane_idea_sessions() {
   for ps_d in $(profile_dirs); do
     for ps_r in "$ps_d"/sessions/*.json; do
       [ -f "$ps_r" ] || continue
       ps_n=$(rec_get "$ps_r" name)
-      case $ps_n in *-secretary) ;; *) continue;; esac
+      case $ps_n in *-ideas) ;; *) continue;; esac
       ps_p=${ps_r##*/}; ps_p=${ps_p%.json}
       case $ps_p in ''|*[!0-9]*) continue;; esac
       session_same "$ps_p" "$ps_r" && printf '%s\n' "$ps_n"
@@ -794,9 +801,9 @@ pane_secretaries() {
 }
 
 # shellcheck disable=SC2016
-secretary_note() {
+ideas_note() {
   sed "s|<rname>|$rname|" <<'NOTE'
-Secretary seat. The operator opened this pane to think one idea through with you. The repository's Lead is building and is not to be interrupted, so nothing you do reaches it except through the queue. Shape the idea with the operator in chat, research it (the web, scout-haiku), and keep one file for it, ${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<rname>/idea-<slug>.md, whose first line is `# ` and the idea in a few words (the name the operator sees in this pane's list), with the headings Goal, Matters, Constraints, Decided, Open and Next, rewritten in the turn anything is decided. As soon as the file has its Goal, run claude-peer queue shape <the idea file>: it records this session against the idea, so the pane's list can bring it back, and it prints the idea's card id and any earlier idea that reads like this one. For a line that starts `similar`, ask the operator: "You had this already: <title> (<state> <age>). Resume it?" On yes, add what is new here under Open in that idea's file, run claude-peer queue drop <this card> duplicate of <that card or file>, tell them to type /exit and then pick it in this pane's list, and stop; on no, carry on. You do not edit the repository, commit, merge, dispatch work-sonnet, message another session, or write claude-peer log lines. This session is for this one idea; the pane lists the operator's others, each with a session of its own, and one that stops before a verdict comes back from that list. Your aim is to bring this idea to a verdict. A verdict is exactly one of: a big idea handed to plan-fable from here, with the file as its brief, and then claude-peer queue add --kind plan -- "<one line>" <the plan's path> (Lead builds the plan, not you, and only on the operator's go); something Lead should do, claude-peer queue add -- "<one line>" <the idea file>; parked or dropped, claude-peer queue park|drop <this card> <why>. Add --waiting when the operator says they are waiting on it, --unblocks N when N other cards or steps in flight wait for it, --prio 1 to 3 when the operator ranks it, --size S, M or L when you can tell (a plan: 1 to 2 steps S, 3 to 6 M, more L). A go the operator types here for work Lead must do is a `once` row in ~/.claude-shared/approvals-ledger.md, written by you, their words quoted. After the verdict say so in one line and stop: this pane ends the session by itself, and its list brings this idea back or starts a new one. For a question about what Lead is doing right now, tell the operator /btw in Lead's pane answers it without interrupting.
+Ideas seat. The operator opened this pane to think one idea through with you. The repository's Lead is building and is not to be interrupted, so nothing you do reaches it except through the queue. Shape the idea with the operator in chat, research it (the web, scout-haiku), and keep one file for it, ${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<rname>/idea-<slug>.md, whose first line is `# ` and the idea in a few words (the name the operator sees in this pane's list), with the headings Goal, Matters, Constraints, Decided, Open and Next, rewritten in the turn anything is decided. As soon as the file has its Goal, run claude-peer queue shape <the idea file>: it records this session against the idea, so the pane's list can bring it back, and it prints the idea's card id and any earlier idea that reads like this one. For a line that starts `similar`, ask the operator: "You had this already: <title> (<state> <age>). Resume it?" On yes, add what is new here under Open in that idea's file, run claude-peer queue drop <this card> duplicate of <that card or file>, tell them to type /exit and then pick it in this pane's list, and stop; on no, carry on. You do not edit the repository, commit, merge, dispatch work-sonnet, message another session, or write claude-peer log lines. This session is for this one idea; the pane lists the operator's others, each with a session of its own, and one that stops before a verdict comes back from that list. Your aim is to bring this idea to a verdict. A verdict is exactly one of: a big idea handed to plan-fable from here, with the file as its brief, and then claude-peer queue add --kind plan -- "<one line>" <the plan's path> (Lead builds the plan, not you, and only on the operator's go); something Lead should do, claude-peer queue add -- "<one line>" <the idea file>; parked or dropped, claude-peer queue park|drop <this card> <why>. Add --waiting when the operator says they are waiting on it, --unblocks N when N other cards or steps in flight wait for it, --prio 1 to 3 when the operator ranks it, --size S, M or L when you can tell (a plan: 1 to 2 steps S, 3 to 6 M, more L). A go the operator types here for work Lead must do is a `once` row in ~/.claude-shared/approvals-ledger.md, written by you, their words quoted. After the verdict say so in one line and stop: this pane ends the session by itself, and its list brings this idea back or starts a new one. For a question about what Lead is doing right now, tell the operator /btw in Lead's pane answers it without interrupting.
 NOTE
 }
 
@@ -810,13 +817,13 @@ pane_go() {
   pg_ctx=${PG_CTX-} pg_ctxname=${PG_CTXNAME-} pg_by=${PG_BY-} pg_task=${PG_TASK-} pg_wake=${PG_WAKE-}
   pg_ho=${PG_HANDOFF-} pg_lpid=${PG_LEADPID-} pg_lsid=${PG_LEADSID-} pg_rsid=${PG_SID-}
   PG_CTX= PG_CTXNAME= PG_BY= PG_TASK= PG_WAKE= PG_HANDOFF= PG_LEADPID= PG_LEADSID= PG_SID=
-  # a session a pane starts is a secretary's unless it is a hand-off (pg_sec is 1)
+  # a session a pane starts is an Ideas session's unless it is a hand-off (pg_sec is 1)
   pg_sec=1 pg_over=
   [ "$pg_ho" != 1 ] || pg_sec=
   if [ -n "$pg_sec" ]; then
     # the cap comes before the slot: a refusal after it would leave a claim behind
     pg_max=$(pane_num pane-max 2)
-    pg_open=$(pane_secretaries)
+    pg_open=$(pane_idea_sessions)
     pg_n=$(printf '%s' "$pg_open" | grep -c .)
     if [ "$pg_max" -gt 0 ] && [ "$pg_n" -ge "$pg_max" ]; then
       pg_now=$(date +%s)
@@ -891,7 +898,7 @@ $(handoff_note)"; fi
     set -- "$@" --settings '{"crossSessionInbound":"refuse"}'
     pg_cs=${pg_cs:+$pg_cs
 
-}$(secretary_note)
+}$(ideas_note)
   fi
   [ -z "$pg_ca" ] || set -- "$@" --agent "$pg_ca"
   [ -z "$pg_cm" ] || set -- "$@" --model "$pg_cm"
@@ -915,7 +922,7 @@ $(handoff_note)"; fi
   # A requested stop says who asked and wakes nobody; a hand-off that ended by
   # itself is `gone` and tells Lead; anything else is a plain end.
   if [ -n "$pg_sec" ] && [ -d "$pg_wt" ]; then
-    # a secretary leaves the repository as it found it; said in the log, nobody is told
+    # an Ideas session leaves the repository as it found it; said in the log, nobody is told
     pg_br=$(git -C "$pg_wt" symbolic-ref -q --short HEAD 2>/dev/null)
     pg_dr=
     if [ -n "$pg_br" ] && [ "$pg_br" != "$pg_b0" ]; then pg_dr="branch $pg_br"
@@ -924,7 +931,7 @@ $(handoff_note)"; fi
     [ -z "$pg_dr" ] || ( cd -- "$repo" && log_add "$pg_l" note "pane drift: $pg_dr in $pg_taken" ) 2>/dev/null
   fi
   pg_txt="$pg_l ended after $(dur_of $(( $(date +%s) - pg_t0 )))${pg_task:+ ($pg_task)}"
-  # a secretary's end line names its session, as a stop line does; the clock saw the id
+  # an Ideas session's end line names its session, as a stop line does; the clock saw the id
   pg_sid= pg_ex=
   if [ -n "$pg_sec" ]; then
     [ ! -f "$pg_sf.sid" ] || pg_sid=$(sed -n 1p "$pg_sf.sid")
@@ -1171,6 +1178,8 @@ art_awk() {
 # (Base16 Eighties hues; the second is the approved blue).
 art_cap() {
   ac_h=$(git config --get "claude-peer.$1.cap" 2>/dev/null) || ac_h=
+  # the old name's key, read as a fallback; can go with slot_alias
+  [ -n "$ac_h" ] || [ "$1" != ideas ] || ac_h=$(git config --get claude-peer.secretary.cap 2>/dev/null) || ac_h=
   ac_h=${ac_h#\#}
   if ! printf '%s\n' "$ac_h" | LC_ALL=C grep -Eq '^[0-9A-Fa-f]{6}$'; then
     ac_i=0 ac_pos=${cap_index:-0}
@@ -1438,12 +1447,12 @@ pane_size() {
   pn_rows=$1 pn_cols=$2
 }
 
-# The Ideas pane (slot secretary; git config claude-peer.ideas false turns it off, and a
+# The Ideas pane (slot ideas; git config claude-peer.ideas false turns it off, and a
 # picker of off has no list to fill): pn_ideas is 1 and the screen says Ideas, else pn_name
 # is the slot's label.
 pane_mode() {
   pn_ideas= pn_name=$label
-  [ "$slot" = secretary ] && [ "$pn_pick" != off ] || return 0
+  [ "$slot" = ideas ] && [ "$pn_pick" != off ] || return 0
   [ "$(git config --get claude-peer.ideas 2>/dev/null)" != false ] || return 0
   pn_ideas=1 pn_name=Ideas
 }
@@ -2085,7 +2094,7 @@ cmd_run() {
   slot= b= wait=0
   if [ "${1-}" = --as ]; then
     [ $# -ge 2 ] || usage
-    slot=$2; shift 2
+    slot=$(slot_alias "$2"); shift 2
     if [ "${1-}" = --wait ]; then wait=1; shift; fi
   elif [ $# -gt 0 ] && [ "$1" != -- ]; then b=$1; shift; fi
   if [ $# -gt 0 ]; then
@@ -2196,7 +2205,7 @@ cmd_peers() {
 # <slot|next> [--continue] [--leader <dir>] [--context <name>] [--] [words...]
 cmd_start() {
   [ $# -ge 1 ] || usage
-  st_req=$1; shift
+  st_req=$(slot_alias "$1"); shift
   [ "$st_req" = next ] || slot_ok "$st_req" || die "'$st_req' is not a slot name (lowercase letters, digits, - and _)"
   st_mode=fresh st_leader= st_cont=0 st_cx= st_ho=0
   while [ $# -gt 0 ]; do
@@ -2416,7 +2425,7 @@ stop_refuse() {
 # <slot> [--force]
 cmd_stop() {
   [ $# -ge 1 ] && [ $# -le 2 ] || usage
-  sp_slot=$1 sp_force=0
+  sp_slot=$(slot_alias "$1") sp_force=0
   if [ $# -eq 2 ]; then [ "$2" = --force ] || usage; sp_force=1; fi
   slot_ok "$sp_slot" || die "'$sp_slot' is not a slot name (lowercase letters, digits, - and _)"
   repo=$(repo_root) || exit 1
@@ -2637,7 +2646,7 @@ tell_lead() {
 # so two leaders of one repository never share a name.
 cmd_name() {
   [ $# -ge 1 ] && [ $# -le 2 ] || usage
-  nm_role=$1
+  nm_role=$(slot_alias "$1")
   cd -- "${2:-$PWD}" 2>/dev/null || exit 1
   repo=$(repo_root_q) || exit 1
   rname=$(rname_of "$repo")
@@ -3360,7 +3369,7 @@ queue_show() {
   qs_sid=${qs_i%%"$qs_tab"*} qs_who=${qs_i#*"$qs_tab"}
   [ "$qs_sid" != - ] || return 0
   qs_root=$(root_of .) || return 0
-  qs_slot=$(printf '%s' "$qs_who" | tr 'A-Z' 'a-z')
+  qs_slot=$(slot_alias "$(printf '%s' "$qs_who" | tr 'A-Z' 'a-z')")
   qs_wt=$qs_root/.claude/worktrees/$qs_slot
   if slot_ok "$qs_slot" && [ -d "$qs_wt" ]; then
     # the slot's latest session is the newest transcript of its worktree (Claude Code's
@@ -3809,13 +3818,13 @@ def session(ident, name, kind, command="", items=None, parent=None):
     return s
 
 def build_base(prefix):
-    """Lead, the Ideas pane (slot secretary) and the Agents viewer, ids under prefix.
+    """Lead, the Ideas pane (slot ideas) and the Agents viewer, ids under prefix.
     The slot pane waits (--wait): nothing starts in it until Return or
     `claude-peer start`. The Agents pane is a viewer: no slot, claim or worktree."""
     root = prefix + ".main"
     return [session(root, "Lead", "root", items=[{"kind": "modeSwitcher"}, {"kind": "gitStatus"}]),
-            session(prefix + ".secretary", "Ideas", "peer",
-                    "claude-peer run --as secretary --wait", parent=root),
+            session(prefix + ".ideas", "Ideas", "peer",
+                    "claude-peer run --as ideas --wait", parent=root),
             session(prefix + ".agents", "Agents", "peer", "claude-peer agents", parent=root)]
 
 def with_hermes(group):
@@ -4499,7 +4508,7 @@ cmd_art() {
       --at) [ $# -ge 2 ] || usage; case $2 in ''|*[!0-9]*) usage;; esac; ar_at=$2; shift;;
       --wait) ar_w=1;;
       --pick) ar_p=1;;
-      --slot) [ $# -ge 2 ] || usage; slot=$2; shift;;
+      --slot) [ $# -ge 2 ] || usage; slot=$(slot_alias "$2"); shift;;
       --frame) [ $# -ge 2 ] || usage; ar_f=$2; shift;;
       --z) [ $# -ge 2 ] || usage; case $2 in all|near|near-mid|none) ar_z=$2;; *) usage;; esac; shift;;
       --truecolor) ar_m=truecolor;;

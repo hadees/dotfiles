@@ -455,7 +455,7 @@ import glob, json, os, re, sys
 owners, repos = {"octo-work-org", "octo-personal"}, {"proj-one", "proj-two"}
 slugs = {"octo-work-org/proj-one", "octo-personal/proj-two"}
 accounts = {"work-acct", "personal-acct", "-"}
-people = accounts | {"colleague-a", "colleague-b", "Lead", "Secretary"}
+people = accounts | {"colleague-a", "colleague-b", "Lead", "Ideas"}
 bad = []
 
 def walk(v, key, where):
