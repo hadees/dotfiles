@@ -135,10 +135,10 @@ jget() {
 # bget <python expression of d>: the expression over the last response's body.
 bget() { jget "$BATS_TEST_TMPDIR/resp.body" "$1"; }
 
-# wait_for <command>...: polled, up to ten seconds.
+# wait_for <command>...: polled, up to ten seconds (times TESTS_WAIT_SCALE).
 wait_for() {
   local i
-  for i in $(seq 1 100); do
+  for i in $(seq 1 $((100 * ${TESTS_WAIT_SCALE:-1}))); do
     "$@" && return 0
     sleep 0.1
   done

@@ -262,7 +262,7 @@ cmd_forward() {
   want=$(forwarder_want "$1") || exit 1
   mkdir -p "$STATE/$1" || die "$1: cannot write under $STATE"
   exec python3 - "$HOST" "$port" "$(url_origin "$(cfg "$1" url)")" "${want##* }" "$want" "$STATE/$1/pid" <<'PY'
-import http.client, os, sys, urllib.parse
+import http.client, os, socketserver, sys, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 host, port, ident, pidfile = sys.argv[1], int(sys.argv[2]), sys.argv[5], sys.argv[6]
@@ -271,6 +271,16 @@ proxy_host, proxy_port = sys.argv[4].rsplit(":", 1)
 HOP = {"connection", "keep-alive", "proxy-connection", "transfer-encoding", "te",
        "upgrade", "host", "content-length"}
 LOCAL = {"%s:%d" % (host, port), "localhost:%d" % port}
+
+
+class LoopbackServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # http.server's own bind asks for the name of its address (socket.getfqdn,
+        # a reverse lookup of 127.0.0.1) that nothing here uses, and on a hosted
+        # macOS runner that lookup waited on mDNS for longer than the server could
+        # be waited for.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[0], self.server_address[1]
 
 
 class Relay(BaseHTTPRequestHandler):
@@ -330,7 +340,7 @@ class Relay(BaseHTTPRequestHandler):
 # Started detached by a helper: hold none of the descriptors it was handed,
 # or whoever is reading one of them waits for this process instead.
 os.closerange(3, 1024)
-server = ThreadingHTTPServer((host, port), Relay)
+server = LoopbackServer((host, port), Relay)
 try:
     os.setsid()  # outlive the helper that started us; fails harmlessly in a terminal
 except OSError:

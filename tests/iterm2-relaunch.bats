@@ -250,7 +250,7 @@ in_order() {
 runner() {
   local r=$1 p=$2 c=$3
   shift 3
-  run sh "$BIN" _run "${WAIT:-5}" "${GRACE:-1}" "$r" "$p" "$c" "$@"
+  run sh "$BIN" _run "${WAIT:-50}" "${GRACE:-1}" "$r" "$p" "$c" "$@"
 }
 
 @test "_run prefs: waits the grace, asks iTerm2 to quit, composes once it is gone, starts it again" {
@@ -460,7 +460,7 @@ compose" ]
 @test "_detach: the command runs in a session of its own, logging to a 0600 file" {
   run sh "$BIN" _detach "$STATE/d.log" /bin/sh -c 'echo detached'
   [ "$status" -eq 0 ]
-  for _ in $(seq 1 50); do grep -q detached "$STATE/d.log" 2>/dev/null && break; sleep 0.1; done
+  for _ in $(seq 1 $(( 50 * ${TESTS_WAIT_SCALE:-1} ))); do grep -q detached "$STATE/d.log" 2>/dev/null && break; sleep 0.1; done
   grep -Fxq detached "$STATE/d.log"
   [ "$(ls -l "$STATE/d.log" | cut -c1-10)" = "-rw-------" ]
 }
@@ -626,7 +626,7 @@ compose" ]
   fake_iterm >/dev/null
   run sh "$BIN" --yes --grace 1 prefs
   [ "$status" -eq 0 ]
-  for _ in $(seq 1 150); do grep -q " done: " "$LOG" && break; sleep 0.1; done
+  for _ in $(seq 1 $(( 150 * ${TESTS_WAIT_SCALE:-1} ))); do grep -q " done: " "$LOG" && break; sleep 0.1; done
   grep -q "done: 1 items, 0 failed, restore ok" "$LOG"
   grep -q "caller=abc " "$LOG"
   [ -s "$CT_ENV" ]
@@ -646,16 +646,16 @@ compose" ]
 @test "detached: it returns only after the runner is alive and has logged start, and prints the runner's pid and the log path" {
   export FAKE_PREFS_LINE="composed, 1 waiting, 0 kept"
   fake_iterm >/dev/null
-  run sh "$BIN" --yes --grace 2 prefs
+  run sh "$BIN" --yes --grace 30 prefs
   [ "$status" -eq 0 ]
   pid=$(cat "$STATE/run.pid")
   kill -0 "$pid"
-  [ "${lines[0]}" = "iterm2-relaunch: runner $pid has the work (prefs) and asks iTerm2 to quit in 2s" ]
+  [ "${lines[0]}" = "iterm2-relaunch: runner $pid has the work (prefs) and asks iTerm2 to quit in 30s" ]
   [ "${lines[1]}" = "iterm2-relaunch: log: $LOG" ]
   [ "${lines[2]}" = "iterm2-relaunch: to call it off before iTerm2 is asked: iterm2-relaunch cancel" ]
   grep -q " start: items=prefs " "$LOG"
   no grep -q "quit: asked" "$LOG"
-  for _ in $(seq 1 150); do grep -q " done: " "$LOG" && break; sleep 0.1; done
+  for _ in $(seq 1 $(( 150 * ${TESTS_WAIT_SCALE:-1} ))); do grep -q " done: " "$LOG" && break; sleep 0.1; done
   grep -q "done: 1 items, 0 failed" "$LOG"
 }
 
@@ -815,7 +815,7 @@ compose" ]
   pid=$(fake_iterm)
   run sh "$BIN" --yes --grace 5 prefs
   [ "$status" -eq 0 ]
-  for _ in $(seq 1 50); do [ -e "$BATS_TEST_TMPDIR/hu.waiting" ] && break; sleep 0.1; done
+  for _ in $(seq 1 $(( 50 * ${TESTS_WAIT_SCALE:-1} ))); do [ -e "$BATS_TEST_TMPDIR/hu.waiting" ] && break; sleep 0.1; done
   [ -e "$BATS_TEST_TMPDIR/hu.waiting" ]
   run sh "$BIN" cancel
   [ "$status" -eq 0 ]
@@ -830,7 +830,7 @@ compose" ]
 @test "cancel: before the quit was asked it stops the runner and says so" {
   export FAKE_PREFS_LINE="composed, 1 waiting, 0 kept"
   pid=$(fake_iterm)
-  run sh "$BIN" --yes --grace 5 prefs
+  run sh "$BIN" --yes --grace 100 prefs
   [ "$status" -eq 0 ]
   run sh "$BIN" cancel
   [ "$status" -eq 0 ]
@@ -868,10 +868,10 @@ compose" ]
   run sh "$BIN" --yes --grace 1 prefs
   [ "$status" -eq 0 ]
   pid=$(cat "$STATE/run.pid")
-  for _ in $(seq 1 100); do grep -q " quit: asked" "$LOG" && break; sleep 0.05; done
+  for _ in $(seq 1 $(( 100 * ${TESTS_WAIT_SCALE:-1} ))); do grep -q " quit: asked" "$LOG" && break; sleep 0.05; done
   kill -TERM "$pid"
   kill -INT "$pid"
-  for _ in $(seq 1 150); do grep -q " done: " "$LOG" && break; sleep 0.1; done
+  for _ in $(seq 1 $(( 150 * ${TESTS_WAIT_SCALE:-1} ))); do grep -q " done: " "$LOG" && break; sleep 0.1; done
   in_order "quit: asking" "quit: asked" "prefs: exit 0" "launch: started" "done: 1 items, 0 failed"
   no grep -q "cancelled:" "$LOG"
   grep -Fxq -- "-b com.googlecode.iterm2" "$OPEN_LOG"
@@ -1319,17 +1319,38 @@ assert a["title"] == "Switch iTerm2 to composed preferences" and a["arg"] == "pr
 ' "$output"
 }
 
-@test "alfred: two ready rows add Everything that is ready first, its arg the comma list" {
+@test "alfred: two valid rows add Everything first, its arg the comma list" {
   cask claude-code@latest 2.1.322 2.1.323 true false binary none
   FAKE_PREFS_LINE="composed, 1 waiting, x" alfred_json
   python3 -I -c '
 import json, sys
 items = json.loads(sys.argv[1])["items"]
 e = items[0]
-assert e["title"] == "Everything that is ready (2 items)", e
-assert e["arg"] == "prefs,brew:claude-code@latest" and e["subtitle"] == "prefs, brew:claude-code@latest" and e["valid"], e
+assert e["title"] == "Everything (2 items)", e
+assert e["arg"] == "prefs,brew:claude-code@latest" and e["valid"], e
+assert e["subtitle"] == "prefs, brew:claude-code@latest; quits iTerm2 only if something needs it", e
 assert [i.get("arg") for i in items[1:]] == ["prefs", None, "brew:claude-code@latest"], items
 assert items[3]["title"] == "Upgrade claude-code@latest (2.1.322 -> 2.1.323)", items[3]
+' "$output"
+}
+
+@test "alfred: one ready row and a current cask still get Everything; refused and nothing rows are left out" {
+  cask claude-code@latest 2.1.323 2.1.323 true false binary none
+  FAKE_PEER_STATUS="default: x - claude-peer default peers" FAKE_PREFS_LINE="composed, in sync" alfred_json
+  python3 -I -c '
+import json, sys
+items = json.loads(sys.argv[1])["items"]
+assert [i["title"] for i in items][:2] == ["Everything (2 items)", "iTerm2 preferences are in sync"], items
+e = items[0]
+assert e["arg"] == "claude-peer,brew:claude-code@latest" and e["valid"], e
+assert e["subtitle"] == "claude-peer, brew:claude-code@latest; quits iTerm2 only if something needs it", e
+' "$output"
+  FAKE_PREFS_LINE="composed, 1 waiting, x" ITERM2_RELAUNCH_CLAUDE_PEER="$BATS_TEST_TMPDIR/no-such-peer" alfred_json
+  python3 -I -c '
+import json, sys
+items = json.loads(sys.argv[1])["items"]
+assert items[0]["title"] == "Everything (2 items)" and items[0]["arg"] == "prefs,brew:claude-code@latest", items
+assert [i.get("arg") for i in items[1:]] == ["prefs", None, "brew:claude-code@latest"], items
 ' "$output"
 }
 
@@ -1368,7 +1389,9 @@ sf = by_type["alfred.workflow.input.scriptfilter"]["config"]
 act = by_type["alfred.workflow.action.script"]["config"]
 assert sf["script"] == '"$HOME/bin/iterm2-relaunch" alfred\n', sf["script"]
 assert act["script"] == '"$HOME/bin/iterm2-relaunch" --yes "$1"\n', act["script"]
-assert sf["keyword"] == "irelaunch" and sf["scriptargtype"] == 1 and act["scriptargtype"] == 1
+assert sf["keyword"] == "iterm" and sf["withspace"] is True and sf["argumenttype"] == 1
+assert sf["title"] == "iTerm Relaunch" and p["name"] == "iTerm Relaunch"
+assert sf["scriptargtype"] == 1 and act["scriptargtype"] == 1
 uids = {o["uid"] for o in p["objects"]}
 assert len(uids) == 2
 assert set(p["connections"]) <= uids and set(p["uidata"]) == uids
@@ -1401,7 +1424,7 @@ PY
   [ "$status" -eq 0 ]
   [[ "$output" != *"Alfred does not appear to be installed"* ]]
   [[ "$output" == *'iterm2-relaunch: handed iTerm2-Relaunch.alfredworkflow to Alfred; confirm the import in its window'* ]]
-  [[ "$output" == *'iterm2-relaunch: then the keyword is "irelaunch"'* ]]
+  [[ "$output" == *'iterm2-relaunch: then the keyword is "iterm"'* ]]
   [ "$(wc -l <"$OPEN_LOG" | tr -d ' ')" -eq 1 ]
   zipfile=$(cat "$OPEN_LOG")
   [ "${zipfile##*/}" = iTerm2-Relaunch.alfredworkflow ]
