@@ -101,7 +101,7 @@
 # the caller's Claude session (CLAUDE_PID, CLAUDE_CODE_SESSION_ID) as its own.
 # The caller's id reaches the runner as an argument.
 #
-# The Alfred front (keyword `irelaunch`, alfred/iterm2-relaunch): the Script Filter runs
+# The Alfred front (keyword `iterm`, alfred/iterm2-relaunch): the Script Filter runs
 # `alfred`, which turns the rows of `items` (no `brew update`, so it is quick) into
 # JSON, and Return runs `iterm2-relaunch --yes <item>`, outside any Claude session
 # and with Alfred's minimal environment; the only thing here that starts an app,
@@ -291,7 +291,7 @@ NOTHING = {
 
 def alfred(rows):
     """The rows of `items` in, one line of Alfred Script Filter JSON out."""
-    out, ready = [], []
+    out, valid = [], []
     for row in rows.splitlines():
         name, state, detail = (row.split("\t", 2) + ["", ""])[:3]
         arg = name
@@ -308,15 +308,17 @@ def alfred(rows):
         else:
             title, sub = NOTHING.get(name, (name, detail))
             arg = None
-        if state == "ready":
-            ready.append(name)
+        if arg is not None:
+            valid.append(arg)
         item = {"title": title, "subtitle": sub, "valid": arg is not None}
         if arg is not None:
             item["arg"] = arg
         out.append(item)
-    if len(ready) >= 2:
-        out.insert(0, {"title": "Everything that is ready (%d items)" % len(ready),
-                       "subtitle": ", ".join(ready), "arg": ",".join(ready), "valid": True})
+    if len(valid) >= 2:
+        # a current cask is dropped by the front (nothing to do), so iTerm2 quits only if something needs it
+        out.insert(0, {"title": "Everything (%d items)" % len(valid),
+                       "subtitle": ", ".join(valid) + "; quits iTerm2 only if something needs it",
+                       "arg": ",".join(valid), "valid": True})
     print(json.dumps({"skipknowledge": True, "items": out}))
     return 0
 
@@ -812,7 +814,7 @@ cmd_alfred_install() {
   ( cd "$dir" && zip -q -r "$out" . -x '.*' ) || { rm -rf "$tmp"; die "could not build $out"; }
   clean_open "$out" || { rm -rf "$tmp"; die "could not hand $out to Alfred"; }
   say "handed $(basename "$out") to Alfred; confirm the import in its window"
-  say 'then the keyword is "irelaunch"'
+  say 'then the keyword is "iterm"'
 }
 
 # Every refusal after the flag parse is also a `refused:` line of run.log, except

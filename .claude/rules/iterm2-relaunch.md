@@ -289,17 +289,20 @@ that ends before a `launch:` line means the runner did not survive the quit.
 ## The Alfred front
 
 `alfred/iterm2-relaunch/info.plist`, bundle id `local.iterm2-relaunch.alfred`,
-keyword `irelaunch`. The Script Filter runs `"$HOME/bin/iterm2-relaunch" alfred`
+keyword `iterm` (name and keyword row "iTerm Relaunch"; `withspace` on and the argument optional, `argumenttype` 1, so typing `iterm` lists the row beside the iTerm2 app instead of replacing it). The Script Filter runs `"$HOME/bin/iterm2-relaunch" alfred`
 (one line of JSON from the rows of `items`, no `brew update`, so it is quick,
 and exit 0 always); Return runs `"$HOME/bin/iterm2-relaunch" --yes "$1"`. Rows:
 one per item, a `nothing` prefs or `claude-peer` row and any refused row are not
-valid, a current cask stays valid, and with two or more ready rows a first
-"Everything that is ready (<n> items)" row carries their comma list. The
+valid, a current cask stays valid, and with two or more valid rows (ready ones
+plus current casks) a first "Everything (<n> items)" row carries their comma list
+through the same `--yes "$1"` path; its subtitle names them and says iTerm2 quits
+only if something needs it, because the front drops a current cask as `nothing`
+and quits for the rest. Exactly one valid row gets no combined row. The
 workflow holds no logic. Like `worktabs.md`'s, it is not a chezmoi target
 (Alfred rewrites `info.plist`), and `iterm2-relaunch alfred-install [<dir>]`
 zips it and hands it to Alfred, whose import sheet the operator confirms:
 `handed iTerm2-Relaunch.alfredworkflow to Alfred; confirm the import in its
-window`, then `then the keyword is "irelaunch"`. With no `Alfred*.app` in
+window`, then `then the keyword is "iterm"`. With no `Alfred*.app` in
 `${ITERM2_RELAUNCH_APPLICATIONS:-/Applications}` or `~/Applications` it stops
 with `Alfred is not installed; nothing built` before it makes a temp directory;
 a zip or an open that fails removes the one it made.
