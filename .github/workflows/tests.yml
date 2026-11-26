@@ -49,6 +49,7 @@ jobs:
         run: |
           brew install bats-core bash tmux parallel
           echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+          getconf _NPROCESSORS_ONLN
       - name: Install chezmoi
         run: |
           sh -c "$(curl -fsLS get.chezmoi.io)" -- -b "$HOME/.local/bin"
@@ -77,17 +78,16 @@ jobs:
         # a tag: a distribution's bats is as old as the distribution, and --jobs
         # hung on WSL with the packaged one. TESTS_WAIT_SCALE=3 triples the
         # polling waits in tests/claude-peer.bats, which a loaded runner outran.
-        # The timeout is what turns a hang into a red job. macOS stays serial
-        # for now: across files it failed every run since TESTS_WAIT_SCALE went
-        # in (3 of 3, 5 of 5 overall), on differing timing waits (claude-peer
-        # wake, remote-mcp's forwarder start), so the scale does not rescue it.
-        # Serial macOS reached 28-30 min on main by 2026-11-17, so 30 min cut
-        # off healthy runs; 45 min still turns a hang into a red job.
-        timeout-minutes: 45
+        # The timeout is what turns a hang into a red job. macOS ran serial
+        # from 2026-11-12 until this change; its parallel failures then were
+        # one racing test (fixed in 3e2c281) and the forwarder's reverse lookup
+        # of its own address, which stalls about 35 s per Python process on the
+        # hosted macOS runner (fixed where the servers are built); serial had
+        # reached 38 minutes.
+        timeout-minutes: 30
         run: |
           # bats refuses --no-parallelize-within-files below --jobs 2
           par="--jobs $(getconf _NPROCESSORS_ONLN) --no-parallelize-within-files"
-          [ "$RUNNER_OS" = macOS ] && par=
           # bats records each result in tests/.bats/run-logs and the re-run step reads
           # it; where the checkout cannot hold bats' file names (spaces, colons) there
           # is no log, the suite runs as before and the re-run declines.
