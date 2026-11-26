@@ -445,6 +445,28 @@ start_forwarder() {
   [ "$(code)" = 502 ]
 }
 
+@test "the forwarder binds without asking for its address's name" {
+  need_python3
+  start_forwarder
+  mkdir -p "$BATS_TEST_TMPDIR/site"
+  cat > "$BATS_TEST_TMPDIR/site/sitecustomize.py" <<'PY'
+import socket
+
+def getfqdn(*args):
+    raise RuntimeError("socket.getfqdn called")
+
+socket.getfqdn = getfqdn
+PY
+  # Vacuous unless the shadow is live in this Python.
+  run env PYTHONPATH="$BATS_TEST_TMPDIR/site" python3 -c 'import socket; socket.getfqdn()'
+  [ "$status" -ne 0 ]
+  PYTHONPATH="$BATS_TEST_TMPDIR/site" CLAUDE_CODE_MCP_SERVER_NAME=web headers
+  [ "$status" -eq 0 ]
+  [ "$output" = '{"Authorization": "Bearer fake-token-0123"}' ]
+  run curl -s --noproxy '*' "http://127.0.0.1:$PORT/.remote-mcp"
+  [ "${lines[0]}" = "web https://mcp.example.test 127.0.0.1:$FAKE_TAILNET_PORT" ]
+}
+
 # --- check ---------------------------------------------------------------------------
 
 @test "check: asks as a profile, keeps the token off curl's argv, and relays health verbatim" {
