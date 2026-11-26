@@ -48,3 +48,16 @@ def slug_of(dir: str) -> Optional[str]:
     paths = [(r["dir"], r["slug"]) for r in doc["repos"]] + [(w["path"], w["slug"]) for w in doc["worktrees"]]
     hits = [(len(p), s) for p, s in paths if dir == p or dir.startswith(p + "/")]
     return max(hits)[1] if hits else None
+
+
+# Added with the working-set view. Not logged: no test of the server's calls counts them.
+def sets(repos: list) -> dict:
+    return {}
+
+
+def _main_checkout(dir: str) -> Optional[tuple]:
+    return None
+
+
+def _config(key: str, cwd: Optional[str] = None) -> str:
+    return ""
