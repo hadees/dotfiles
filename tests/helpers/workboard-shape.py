@@ -160,7 +160,7 @@ CARD = {
     "log": many(LOG_ENTRY),
 }
 
-# "?rev" and "?build" are what the server adds to the board it serves (and the
+# "?rev", "?build" and "?sets" are what the server adds to the board it serves (and the
 # demo board.json carries); a board straight from build_board has neither.
 BOARD = {
     "v": V1, "generated_at": NUM, "scope": maybe(PATH),
@@ -174,7 +174,7 @@ BOARD = {
     "cards": many(CARD),
     "needs": many({"id": STR, "pid": INT, "kind": STR, "reason": STR, "since": INT, "seen": BOOL, "label": STR,
                    "group": STR, "profile": STR, "card": maybe(STR)}),
-    "?rev": INT, "?build": STR,
+    "?rev": INT, "?build": STR, "?sets": table(many(STR)),
 }
 
 SCHEMAS = {"github": GITHUB, "local": LOCAL, "who": WHO, "inbox": INBOX, "board": BOARD}

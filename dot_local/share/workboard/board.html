@@ -174,14 +174,15 @@ function say(text) {
   if (text) msgTimer = setTimeout(function () { say(""); }, 10000);
 }
 
-/* the fragment: #g=<group> or #r=<repo name> */
+/* the fragment: #g=<group>, #r=<repo name> or #s=<working set> */
 function choice() {
   const p = new URLSearchParams(location.hash.slice(1));
-  return { g: p.get("g"), r: p.get("r") };
+  return { g: p.get("g"), r: p.get("r"), s: p.get("s") };
 }
 function visible(c, ch) {
   if (ch.r) return c.repo === ch.r;
   if (ch.g) return c.group === ch.g;
+  if (ch.s) return (doc.sets[ch.s] || []).indexOf(c.slug) >= 0;
   return true;
 }
 
@@ -310,7 +311,7 @@ function renderBoard() {
   doc.cards.forEach(function (c) { byKey[c.key] = c; });
   const needs = doc.needs.filter(function (n) {
     const c = n.card ? byKey[n.card] : null;
-    return c ? visible(c, ch) : !ch.r && (!ch.g || n.group === ch.g);
+    return c ? visible(c, ch) : !ch.r && (ch.g ? n.group === ch.g : !ch.s);
   });
   const seen = new Set(), ne = [];
   needs.forEach(function (n) {
@@ -339,9 +340,10 @@ function link(label, frag, on) {
 function renderBar() {
   const ch = choice();
   const group = ch.r ? (doc.repos.filter(function (r) { return r.name === ch.r; })[0] || {}).group : ch.g;
-  put(document.getElementById("chips"), JSON.stringify([doc.groups, doc.repos, ch]), function (e) {
-    e.append(link("All", "", !ch.g && !ch.r));
+  put(document.getElementById("chips"), JSON.stringify([doc.groups, doc.repos, doc.sets, ch]), function (e) {
+    e.append(link("All", "", !ch.g && !ch.r && !ch.s));
     doc.groups.forEach(function (g) { e.append(link(g, "g=" + encodeURIComponent(g), ch.g === g && !ch.r)); });
+    Object.keys(doc.sets).forEach(function (n) { e.append(link(n, "s=" + encodeURIComponent(n), ch.s === n && !ch.r && !ch.g)); });
     const rs = doc.repos.filter(function (r) { return group && r.group === group; });
     if (rs.length) e.append(h("span", "sep"));
     rs.forEach(function (r) { e.append(link(r.name, "r=" + encodeURIComponent(r.name), ch.r === r.name)); });
