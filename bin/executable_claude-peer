@@ -176,10 +176,12 @@
 #                            and print its id (an idea or plan needs a finished
 #                            idea file, else exit 1); wakes Lead when nothing
 #                            is in flight
-#   queue shape [--session SID] [--as NAME] [--by session|pane] -- <idea file>
+#   queue shape [--session SID] [--as NAME] -- <idea file>
 #                            record the idea's session as a card in state
 #                            shaping, which Lead is never offered, and print
-#                            its id; a later queue add reuses that id
+#                            its id, then (a new idea only) up to three lines
+#                            `similar<TAB>score<TAB>` and the ideas rows below
+#                            that read like it; a later queue add reuses the id
 #   queue list [--all] [<dir>]
 #                            the waiting cards in pull order: order, id, tier,
 #                            score, lo, hi, terms, age, kind, who, cand, text,
@@ -193,6 +195,18 @@
 #   queue hook               a PostToolUse hook on `gh pr merge`: names Lead's
 #                            next card; prints nothing unless it has one
 #   queue settings           the settings.json hook entry to paste
+#   ideas [--all] [--width N] [<dir>]
+#                            one row per idea of the repository of <dir>:
+#                            state<TAB>id<TAB>age<TAB>session<TAB>live<TAB>title<TAB>file
+#                            (--width N, at least 30, adds a display column);
+#                            shaping, waiting, taken and unfinished ideas first,
+#                            then parked ones; --all adds done and dropped
+#   ideas similar (--file <idea file> | -- <words>...)
+#                            up to three ideas that share words with the file's
+#                            title and first Goal sentence, or with the words:
+#                            score<TAB> then the columns above; exit 3 with none
+#                            (git config claude-peer.idea-match, default 3, is
+#                            the words needed; 0 turns it off)
 #   path <branch>            print the worktree path for <branch> (nothing
 #                            is created)
 #   plan <branch>...         branch<TAB>worktree<TAB>create|reuse|conflict:<why>
@@ -2714,9 +2728,10 @@ cmd_jobs() {
 # <UTC time> id event who value text [file]; id is Q<n> (- for a refusal), event
 # shape, add, refused, set, take, done, drop, park, reopen, escalated or link. An add's
 # value is <kind>:w=<0|1>:u=<N>:p=<P>:s=<S|M|L|?>[:session=<SID>]. A shape's is
-# session=<SID or ->:by=<session|pane>:similar=<n or ->, its text the idea's title and its
+# session=<SID or ->:by=session:similar=<n or ->, its text the idea's title and its
 # file the idea file: it makes a card in state shaping, which no reading Lead makes sees,
-# and the add that follows reuses the card's id.
+# and the add that follows reuses the card's id. similar is how many ideas the call named
+# as like this one, - when it did not look.
 
 # [<dir>] -> the queue file of the repository holding dir (default $PWD); status 1 outside one
 queue_file() { qf_c=$(git -C "${1:-$PWD}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && printf '%s/claude-peer.queue\n' "$qf_c"; }
@@ -2739,8 +2754,9 @@ except Exception:
 # would order two scores differently): list [all], next, state <id>, taken, due
 # <minutes>, info <id>, title <idea file>, cardof <idea file> (id, state, session, title of
 # the card whose idea it is), shaped <SID><TAB><idea file> (id of the newest shaping, parked
-# or dropped card with that session or that idea file). The weights are git config
-# claude-peer.queue-weights.
+# or dropped card with that session or that idea file), ideas and similar (the idea rows and
+# the ones that read like a query; their inputs come in IDEAS_* environment variables, see
+# ideas_rows and ideas_similar). The weights are git config claude-peer.queue-weights.
 queue_py() {
   command -v python3 >/dev/null 2>&1 || die "queue needs python3"
   qp_f=$(queue_file) || return 1
@@ -2778,6 +2794,32 @@ def title_of(f):
         b = b[:-3] if b.endswith(".md") else b
         t = (b[5:] if b.startswith("idea-") else b).replace("-", " ")
     return re.sub("[\t\r\n]", " ", t)[:80]
+def goal_sentence(f):
+    try:
+        lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+    except OSError:
+        return ""
+    goal, body = False, []
+    for l in lines:
+        if l.startswith("## "):
+            goal = l[3:].strip() == "Goal"
+        elif goal:
+            body.append(l)
+    g = "\n".join(body).strip()
+    m = re.search(r"[.?!](?=\s|$)", g)
+    return re.sub(r"\s+", " ", g[:m.end()] if m else g.split("\n\n")[0])[:300]
+STOP = set("the and for are but not you all any can had her was one our out has have with this that from they will would there their what when which been were into than then them these those about also its how why who should could just more some such only very use used using get got".split())
+def words(t):
+    out = set()
+    for w in re.findall(r"[^\W_]+", t.lower()):
+        if len(w) < 3 or w in STOP:
+            continue
+        for suf in ("ing", "ed", "es", "s"):
+            if w.endswith(suf) and len(w) - len(suf) >= 4:
+                w = w[:-len(suf)]
+                break
+        out.add(w)
+    return out
 if mode == "title":
     print(title_of(arg))
     sys.exit(0)
@@ -2831,6 +2873,53 @@ for ln in data.split("\n"):
         items[i]["last"] = t
     except Exception:
         continue
+def idea_rows(show_all):
+    E = os.environ.get
+    live = {}
+    for l in E("IDEAS_LIVE", "").split("\n"):
+        k, _, n = l.partition("\t")
+        if k and k not in live:
+            live[k] = n or "open"
+    def readable(f):
+        return f not in ("", "-") and os.path.isfile(f) and os.access(f, os.R_OK)
+    cards, held, named = [], set(), set()
+    for it in items.values():
+        for f in (it["idea"], it["file"]):
+            if f not in ("", "-"):
+                named.add(os.path.realpath(f))
+        f = it["idea"] if it["idea"] not in ("", "-") else (it["file"] if it["kind"] == "idea" else "-")
+        if it["kind"] in ("idea", "plan") or it["idea"] not in ("", "-") or it["sid"]:
+            cards.append((it, f))
+            if it["sid"] and it["kind"] != "unfinished":
+                held.add(it["sid"])
+    rows = []
+    for it, f in cards:
+        if it["kind"] == "unfinished" and it["sid"] in held:
+            continue
+        t = it.get("last", it["since"])
+        if readable(f):
+            t = max(t, int(os.path.getmtime(f)))
+        rows.append({"state": "unfinished" if it["kind"] == "unfinished" and it["state"] == "waiting" else it["state"],
+                     "id": it["id"], "n": it["n"], "t": t, "sid": it["sid"] or "-", "live": live.get(it["sid"], "-"),
+                     "title": title_of(f) if readable(f) else it["text"], "file": f, "readable": readable(f)})
+    d = E("IDEAS_DIR", "")
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        names = []
+    for nm in names:
+        f = os.path.join(d, nm)
+        if nm.startswith("idea-") and nm.endswith(".md") and readable(f) and os.path.realpath(f) not in named:
+            rows.append({"state": "shaping", "id": "-", "n": 0, "t": int(os.path.getmtime(f)), "sid": "-", "live": "-",
+                         "title": title_of(f), "file": f, "readable": True})
+    grp = {"parked": 1, "done": 2, "dropped": 2}
+    rows = [r for r in rows if show_all or grp.get(r["state"], 0) < 2]
+    rows.sort(key=lambda r: (grp.get(r["state"], 0), -r["t"], -r["n"], r["file"]))
+    for r in rows:
+        r["age"] = dur(max(0, now - r["t"]))
+    return rows
+def idea_cols(r):
+    return [r["state"], r["id"], r["age"], r["sid"], r["live"], r["title"], r["file"] or "-"]
 D = {"S": 1, "M": 2, "L": 4}
 def hrs(it): return max(0, (now - it["since"]) // 3600)
 def sc(it, s):
@@ -2901,6 +2990,43 @@ elif mode == "shaped":
             print(it["id"])
             sys.exit(0)
     sys.exit(3)
+elif mode in ("ideas", "similar"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="surrogateescape")
+    E = os.environ.get
+    if mode == "ideas":
+        rows = idea_rows(E("IDEAS_ALL") == "all")
+        wd = E("IDEAS_WIDTH", "")
+        if wd:
+            ws = max([len(("open" if r["live"] != "-" else "with Lead" if r["state"] in ("waiting", "taken") else r["state"])) for r in rows] or [0])
+            wa = max([len(r["age"]) for r in rows] or [0])
+            wt = min(max([len(r["title"]) for r in rows] or [0]), max(1, int(wd) - 6 - ws - wa))
+        for r in rows:
+            out = idea_cols(r)
+            if wd:
+                sw = "open" if r["live"] != "-" else "with Lead" if r["state"] in ("waiting", "taken") else r["state"]
+                tl = r["title"] if len(r["title"]) <= wt else r["title"][:wt - 1] + "\u2026"
+                out.append("%s \u00b7 %s \u00b7 %s" % (tl.ljust(wt), sw.ljust(ws), r["age"].rjust(wa)))
+            print("\t".join(out))
+    else:
+        try:
+            need = int(E("IDEAS_MIN", "3"))
+        except ValueError:
+            need = 3
+        need = 0 if need == 0 else max(3, need)
+        me = E("IDEAS_SELF", "")
+        qw = words(title_of(me) + " " + goal_sentence(me) if me else E("IDEAS_QUERY", ""))
+        found = []
+        for r in idea_rows(True):
+            if me and os.path.realpath(r["file"]) == os.path.realpath(me):
+                continue
+            txt = r["title"] + " " + goal_sentence(r["file"]) if r["readable"] else r["title"]
+            sc_ = len(qw & words(txt))
+            if need and sc_ >= need:
+                found.append((sc_, r))
+        found.sort(key=lambda x: (-x[0], -x[1]["t"], -x[1]["n"], x[1]["file"]))
+        for sc_, r in found[:3]:
+            print("\t".join([str(sc_)] + idea_cols(r)))
+        sys.exit(0 if found else 3)
 ' "$1" "${2-}" "$qp_f" "$qp_w"
 }
 
@@ -2954,22 +3080,20 @@ queue_nextid() {
   printf 'Q%s\n' "${qn_n:-1}"
 }
 
-# [--session SID] [--as NAME] [--by session|pane] -- <idea file>: record the idea's session
-# as a card in state shaping (one card per idea file), and print its id. Never wakes Lead,
-# escalates or logs.
+# [--session SID] [--as NAME] -- <idea file>: record the idea's session as a card in state
+# shaping (one card per idea file), and print its id, then for a new card the ideas that read
+# like it. Never wakes Lead, escalates or logs.
 queue_shape() {
-  qsh_sid= qsh_as= qsh_by=session
+  qsh_sid= qsh_as= qsh_new= qsh_sim=-
   while [ $# -gt 0 ]; do
     case $1 in
       --session) [ $# -ge 2 ] || usage; qsh_sid=$2; shift 2;;
       --as) [ $# -ge 2 ] || usage; qsh_as=$2; shift 2;;
-      --by) [ $# -ge 2 ] || usage; qsh_by=$2; shift 2;;
       --) shift; break;;
       *) usage;;
     esac
   done
   [ $# -eq 1 ] || usage
-  case $qsh_by in session|pane) ;; *) usage;; esac
   case $qsh_sid in *[!A-Za-z0-9._-]*) usage;; esac
   if [ -z "$qsh_sid" ]; then
     qsh_sid=${CLAUDE_CODE_SESSION_ID:--}
@@ -2992,9 +3116,13 @@ queue_shape() {
     fi
   else
     qsh_id=$(queue_nextid)
+    # a new idea: look for one that reads like it before this card is written
+    qsh_new=$(ideas_similar --file "$qsh_f" | awk '{ print "similar\t" $0 }')
+    qsh_sim=$(printf '%s' "$qsh_new" | grep -c .)
   fi
-  queue_append "$qsh_id" shape "${qsh_as:-$(log_who)}" "session=$qsh_sid:by=$qsh_by:similar=-" "$qsh_title" "$qsh_f"
+  queue_append "$qsh_id" shape "${qsh_as:-$(log_who)}" "session=$qsh_sid:by=session:similar=$qsh_sim" "$qsh_title" "$qsh_f"
   printf '%s\n' "$qsh_id"
+  [ -z "$qsh_new" ] || printf '%s\n' "$qsh_new"
 }
 
 queue_add() {
@@ -3180,6 +3308,91 @@ cmd_queue() {
       queue_move "$1" link "$2" -; exit 0;;
     *) usage;;
   esac
+}
+
+# --- the ideas ----------------------------------------------------------------
+# One row per idea of the repository: the queue's cards that are ideas, and the idea files
+# nothing names. The reader is queue_py's `ideas` and `similar` modes; these functions feed
+# it what only the shell knows (the reports directory, the live sessions), print its rows
+# and never exit, so the pane can call them.
+
+# the reports directory of the repository's main checkout; status 1 outside one
+ideas_dir() {
+  idd_r=$(repo_root_q) || return 1
+  printf '%s/claude-reports/%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}" "$(rname_of "$idd_r")"
+}
+
+# <session id><TAB><name> of every live session in the registry of every profile
+ideas_live() {
+  for il_d in $(profile_dirs); do
+    for il_r in "$il_d"/sessions/*.json; do
+      [ -f "$il_r" ] || continue
+      il_p=${il_r##*/}; il_p=${il_p%.json}
+      case $il_p in ''|*[!0-9]*) continue;; esac
+      il_s=$(rec_get "$il_r" sessionId)
+      [ -n "$il_s" ] || continue
+      session_same "$il_p" "$il_r" && printf '%s\t%s\n' "$il_s" "$(rec_get "$il_r" name)"
+    done
+  done
+  return 0
+}
+
+# [all] [<width>]: the ideas of $PWD's repository, one row each (see the usage header)
+ideas_rows() {
+  command -v python3 >/dev/null 2>&1 || { warn "ideas: needs python3, so no rows"; return 0; }
+  ir_d=$(ideas_dir) || return 1
+  ir_l=$(ideas_live)
+  ( IDEAS_DIR=$ir_d IDEAS_LIVE=$ir_l IDEAS_ALL=${1-} IDEAS_WIDTH=${2-}; export IDEAS_DIR IDEAS_LIVE IDEAS_ALL IDEAS_WIDTH
+    queue_py ideas )
+}
+
+# --file <idea file> | -- <words...>: up to three ideas that read like it; status 3 with none
+ideas_similar() {
+  command -v python3 >/dev/null 2>&1 || { warn "ideas: needs python3, so no rows"; return 3; }
+  is_f= is_q=
+  case ${1-} in
+    --file) [ $# -eq 2 ] || return 2; is_f=$2; case $is_f in /*) ;; *) is_f=$PWD/$is_f;; esac;;
+    --) shift; is_q=$*;;
+    *) return 2;;
+  esac
+  is_d=$(ideas_dir) || return 1
+  is_l=$(ideas_live)
+  is_m=$(git config --get claude-peer.idea-match 2>/dev/null) || is_m=
+  ( IDEAS_DIR=$is_d IDEAS_LIVE=$is_l IDEAS_SELF=$is_f IDEAS_QUERY=$is_q IDEAS_MIN=$is_m; export IDEAS_DIR IDEAS_LIVE IDEAS_SELF IDEAS_QUERY IDEAS_MIN
+    queue_py similar )
+}
+
+# <SID> -> 0 when Claude Code still has that session's transcript, in any profile
+idea_transcript() {
+  for it_d in $(profile_dirs); do
+    for it_f in "$it_d"/projects/*/"$1".jsonl; do
+      [ -f "$it_f" ] && return 0
+    done
+  done
+  return 1
+}
+
+# ideas [--all] [--width N] [<dir>] | ideas similar (--file <idea file> | -- <words...>)
+cmd_ideas() {
+  if [ "${1-}" = similar ]; then
+    shift
+    ideas_similar "$@"; ci_s=$?
+    [ "$ci_s" -ne 2 ] || usage
+    exit "$ci_s"
+  fi
+  ci_all= ci_w=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --all) ci_all=all; shift;;
+      --width) [ $# -ge 2 ] || usage; case $2 in ''|*[!0-9]*) usage;; esac; [ "$2" -ge 30 ] || usage; ci_w=$2; shift 2;;
+      *) break;;
+    esac
+  done
+  [ $# -le 1 ] || usage
+  [ $# -eq 0 ] || cd -- "$1" 2>/dev/null || exit 1
+  ideas_dir >/dev/null || exit 1
+  ideas_rows "$ci_all" "$ci_w"
+  exit 0
 }
 
 cmd_path() {
@@ -4276,6 +4489,7 @@ case $cmd in
   job) cmd_job "$@";;
   jobs) cmd_jobs "$@";;
   queue) cmd_queue "$@";;
+  ideas) cmd_ideas "$@";;
   claim) cmd_claim "$@";;
   name) cmd_name "$@";;
   path) cmd_path "$@";;
