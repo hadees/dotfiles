@@ -34,14 +34,12 @@ again, `q` (or end of input) leaves a plain shell, so a failing `claude` never s
 Outside a repository it is one line and a plain shell. Unlike the Ideas pane it
 starts at entry, since there is nothing to wait for.
 
-`install` builds no overlay pair: it passes no overlay names, so a stale `Claude
-Peers + Overlays` pair and the overlays state file are removed (the branch a machine
-with no overlays already took) and `here` answers `base`. The overlay code
-(`build_overlays`, `overlay`, the `overlays:` lines of `status`) stays until the step
-that deletes it, and `status` still says `overlays: not installed` for a machine that
-has overlays. `status` reports `workgroup:` and `hermes:` as `installed, out of date
-(...)` until the next `install` (iTerm2 quit); a tab opened before the relaunch keeps
-its older panes.
+`install` builds no overlay pair and passes no overlay names, so a stale `Claude Peers +
+Overlays` pair and the overlays state file are removed and `here` answers `base`. The overlay
+code (`build_overlays`, `overlay`, the `overlays:` lines of `status`) stays until the step that
+deletes it, and `status` still says `overlays: not installed` for a machine that has overlays.
+`status` reports `workgroup:` and `hermes:` as `installed, out of date (...)` until the next
+`install` (iTerm2 quit); a tab opened before the relaunch keeps its older panes.
 
 ## The jobs record
 
@@ -106,25 +104,9 @@ is its last `add` or `reopen` (waiting), `take` (taken), `done`, `drop` (dropped
   and a non-empty line under `Goal` and under `Next`. Otherwise exit 1, one stderr
   line naming what is missing, and a `refused` line (id `-`, the reason as text). A
   relative file is stored absolute. `who` is `--as`, else `log_who`. A bad option value is
-  exit 2. For an `idea` or `plan`, an `add` that names the card's session (`--session`, else
-  `$CLAUDE_CODE_SESSION_ID`) or its file, where that card is `shaping`, `parked` or
-  `dropped`, **reuses that card's id**: one idea is one card for its whole life, and the
-  `add` promotes it to `waiting`, keeping the earlier idea file and, when the `add` names
-  none, the earlier session. The environment's session id only finds the card; it is not
-  written into the `add` line. Kinds `ask` and `unfinished` never reuse.
-- `queue shape [--session SID] [--as NAME] -- <idea file>` records an idea before it has a
-  verdict: the session runs it once the idea file has its Goal, and it writes a `shape`
-  line, `<value>` being `session=<SID or ->:by=session:similar=<n or ->`, the text the
-  idea's title, the file the idea file (absolute; it must be a readable regular file, else
-  exit 1). The title is the first line of the file that starts `# `, else the first
-  non-empty line under `## Goal`, else the file's name without `idea-` and `.md`, cut to 80
-  characters. The session is `--session`, else `$CLAUDE_CODE_SESSION_ID`, else `-`. A file
-  no card names creates a card (kind `idea`, state `shaping`, the next `Q<n>`); a file a card
-  names writes a line only when the session or title changed, and then with that card's id.
-  It prints the id; on a creation it then prints up to three `similar<TAB>` lines, each an
-  `ideas similar` row (below), and `similar=<n>` counts them. It wakes nobody, escalates
-  nothing and writes nothing to the log. `/clear` inside a session gives it a new id, and
-  the card keeps the old one until `queue shape` is run again.
+  exit 2.
+- `queue shape` (an idea before its verdict, state `shaping`) and the reuse of an idea's card
+  by `add`: `claude-peer-ideas.md`.
 - **The wake.** Only when Lead has nothing in flight (no card `taken` and
   `jobs_running Lead` fails) does `add` write `queue: <id> is waiting and nothing is
   in flight` to the log as a `note` and call `tell_lead`. With work in flight it
@@ -154,12 +136,7 @@ is its last `add` or `reopen` (waiting), `take` (taken), `done`, `drop` (dropped
   or shaping; `reopen` anything but waiting or shaping), is exit 3 with one stderr line; `drop` and `park`
   without a reason, and a bad `set` or `link`, are exit 2. `take` writes `order=<n>`,
   the card's position in `list` at that moment, so the formula's agreement with what
-  was picked can be counted. `reopen` puts a card that was never added (shaped, then parked
-  or dropped) back to `shaping`, any other to `waiting`.
-- **A `shaping` card is no reading of Lead's.** `list`, `next`, `take`, the hook and the
-  wake all start from `waiting` cards, so a `shaping` card appears only in `queue list
-  --all` (`shaping` in the first column), `queue show` and `queue set`. A reader for Lead or
-  the work board uses `queue list`, never `--all`, or it would show `shaping` cards.
+  was picked can be counted.
 - **The pull order.** Tier 1 is `waiting=1`, tier 2 everything else, tier 3 kind
   `unfinished` (listed, never offered). Inside a tier, highest score first, then the
   older card:
@@ -204,8 +181,7 @@ list reach every non-hand-off pane start.
 
 Every session a pane starts that is not a hand-off (`pg_ho` is not 1: Return, a picker
 row, a typed task, `c`, a plain `claude-peer start`) is the operator's secretary: one
-idea per session, researched and shaped in chat, ended with one card in the queue, and
-the pane lists the rest (below). A
+idea per session, researched and shaped in chat, ended with one card in the queue. A
 `start --handoff` is untouched, so the hand-off path (Lead's hand-offs, and the trial's
 control arm) behaves as it did. `pane_go` sets `pg_sec` to 1 for a secretary start.
 
@@ -213,14 +189,12 @@ control arm) behaves as it did. `pane_go` sets `pg_sec` to 1 for a secretary sta
   status --porcelain` and whose `HEAD` is an ancestor of `origin/HEAD` is moved to it
   (`checkout --detach`, no fetch; a slot with no `origin/HEAD`, or commits no branch of
   the remote holds, stays). Anything else is left as it is. `HEAD` and the branch at
-  start are `pg_h0` and `pg_b0`. New idea and an idea started fresh from its file are
-  `fresh` starts, so they get this; a resumed idea is not, and its worktree is left as it is.
+  start are `pg_h0` and `pg_b0`.
 - **The cap.** Before a slot is taken, the live sessions named `*-secretary` are counted
   across the registry of every `profile_dirs` directory (`pane_secretaries`: name and
   pid only, the pid passing `session_same`). With `claude-peer.pane-max` (default 2; 0
   never warns; not a number is 2) or more open, the pane prints `claude-peer: <n>
-  conversations are open (<names>); Return again opens another` (in the Ideas pane
-  `pick again to open another`) and waits; a second
+  conversations are open (<names>); Return again opens another` and waits; a second
   start within 60 seconds goes ahead and logs a `note`, `pane over cap: <n+1>`. The
   stamp is the pane's own `pn_cap_t`, so another pane's Return does not count as the
   second one. The cap sits before the slot because a refusal after it would leave a
@@ -237,21 +211,12 @@ control arm) behaves as it did. `pane_go` sets `pg_sec` to 1 for a secretary sta
   text first, an empty line, then the note.
 - **The seat note** (`secretary_note`) is the text the operator signed, worded in the
   third person as "the operator", "they", "their" and "the operator's"; the operator
-  approved that wording (2026-11-25), and the wording that names `queue shape` and the
-  list with the ideas-picker go (2026-11-26). "The library" is left out of its research
-  sources, a tool only some machines have. Only `<rname>`, the session-name prefix, is
-  replaced. It tells the session to keep one idea file under
-  `${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<rname>/`, whose first line is `# `
-  and the idea in a few words (the name the list shows), to run `claude-peer queue shape
-  <idea file>` once the file has its Goal, and, for a line that starts `similar`, to ask the
-  operator "You had this already: <title> (<state> <age>). Resume it?" (on yes: add what is
-  new under Open in that idea's file, `queue drop` its own card as a duplicate, tell them to
-  type /exit and pick the earlier idea in the list, and stop), to finish with one `claude-peer
-  queue add` (or `park` or `drop`), to write a `once` row to the approvals ledger for a go,
-  and not to edit, commit, merge, dispatch `work-sonnet`, message another session or write
-  `claude-peer log` lines. It says the session is for this one idea and the pane lists the
-  others, each with a session of its own. A session begun before this change keeps the note
-  it started with. The tools
+  approved that wording (2026-11-25). "The library" is left out of its research sources,
+  a tool only some machines have. Only `<rname>`, the session-name prefix, is replaced. It tells the
+  session to keep one idea file under `${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<rname>/`,
+  to finish with one `claude-peer queue add` (or `park` or `drop`), to write a `once`
+  row to the approvals ledger for a go, and not to edit, commit, merge, dispatch
+  `work-sonnet`, message another session or write `claude-peer log` lines. The tools
   that would do those are removed at launch; the note is the part no tool enforces.
 - **Drift.** When the session returns and before the `end` line, a worktree with a
   branch it did not have at start, a `HEAD` other than `pg_h0`, or a non-empty `git
@@ -262,77 +227,6 @@ Tests: `tests/claude-peer.bats` ("secretary seat: ..."). The stub shell leaves t
 seat's three arguments out of what the older tests read, so they keep checking the
 other arguments; `FAKE_SHELL_SEAT=1` keeps them and `FAKE_SHELL_RAW=<file>` logs one
 argument per line. `FAKE_SHELL_DO` runs a command in the worktree, to commit or dirty it.
-
-## The ideas list
-
-The Ideas pane (slot `secretary`) shows its ideas, not the generic picker's contexts. The
-reader is `claude-peer ideas [--all] [--width N] [<dir>]`; the pane is its first user.
-
-- **Rows.** One row per idea of the repository holding `<dir>` (default `$PWD`; from a slot
-  worktree, the main checkout's), seven tab-separated columns: `state<TAB>id<TAB>age<TAB>session<TAB>live<TAB>title<TAB>file`.
-  `state` is `shaping`, `waiting`, `taken`, `unfinished` (a waiting card of kind
-  `unfinished`), `parked`, `done` or `dropped`. `id` is `Q<n>`, or `-` for an idea file no
-  card names; `session` and `file` are `-` for none. `age` is `dur_of` form since the newer
-  of the card's last event and the file's modification time. `live` is the `name` of a live
-  registry record whose `sessionId` is the row's session (the pid passing `session_same`,
-  every `profile_dirs` directory), else `-`. `title` is the title rule of `queue shape` when
-  the row has a readable idea file, else the card's text.
-- **Which are rows.** Every card of kind `idea` or `plan`, or with an idea file or a
-  session, except an `unfinished` card whose session is another row's; and every
-  `idea-*.md` of `${XDG_STATE_HOME:-$HOME/.local/state}/claude-reports/<rname>/` that no
-  card names (state `shaping`). Order: `shaping`, `waiting`, `taken`, `unfinished` together,
-  newest first, then `parked`, newest first; `--all` adds `done` and `dropped`. `--width N`
-  (N at least 30) adds an eighth column, `display`: `<title> · <state word> · <age>`, the
-  title padded and cut with `…` so that no display is wider than N characters. The state word
-  is `open` when `live` is set, `with Lead` for `waiting` and `taken`, else the state. Without
-  python3 it prints no rows, one stderr line, exit 0; outside a repository exit 1.
-- **The match.** `claude-peer ideas similar (--file <idea file> | -- <words...>)` prints up
-  to three rows (`score<TAB>` and the seven columns), most words in common first, then the
-  newer idea, for ideas in every state, and exits 3 with none. A word is a lower-case run of
-  letters and digits of at least three characters, not in a fixed stop list, with one
-  trailing `ing`, `ed`, `es` or `s` removed when four characters remain. Both sides are
-  short: the query is the given words or, for `--file`, that file's title and the first
-  sentence of its Goal; an idea's text is its title and the first sentence of its Goal (up to
-  the first `.`, `?` or `!` that ends a line or is followed by a space, else its first
-  paragraph, at most 300 characters), nothing else. A row needs
-  `git config claude-peer.idea-match` words in common (default 3; not a number is 3; 1 and 2
-  are read as 3; 0 means no row ever). No model judges it, and it never refuses a new idea.
-- **The pane.** Its rows are `New idea`, then the active ideas newest first, then the parked
-  ones; `done` and `dropped` are not listed (they still feed the match). The prompt, the title
-  line and the quiet line read `Ideas`; the slot, the claim, the log's `Secretary` and the
-  session name `<repo>-secretary` keep `secretary`. The hint is `↵ open · ^T new idea from
-  what you typed · esc hide`. Everything else of the pane (the sleeper, Esc and the quiet line,
-  `q`, a `start` request, the cap, the clock, the drift note) is the generic pane's, because the
-  row file keeps its `id<TAB>display` shape. `git config claude-peer.ideas false` gives the
-  Ideas pane the generic picker again, at its next wait; an Ideas pane already open keeps the old
-  picker until it is opened again.
-- **A pick.** A row whose session is live in another pane prints that it is open there and
-  starts nothing (two terminals on one transcript lose messages). A row with a session whose
-  transcript is on disk (`idea_transcript`: `<profile dir>/projects/*/<SID>.jsonl` in some
-  `profile_dirs` directory) starts `claude --resume <id>`, with the seat's arguments and no
-  `--model`; any other row starts a fresh session whose first prompt names the idea file and
-  tells it to run `claude-peer queue shape` on it. A resume that exits non-zero within 15
-  seconds is remembered for that pane (`pn_nores`), says so once, and the next pick of the row
-  starts fresh. Resuming rests on Claude Code keeping the transcript (30 days unless a
-  profile sets `cleanupPeriodDays`) and on its search across the repository's worktrees
-  (2.1.223 or newer). `idea_transcript` looks in every profile directory, so a transcript in a
-  profile the pane will not launch under is a false yes, caught once per pane by the failed
-  resume.
-- **A typed line** (`^T` with a query, Return on no match, the list's `n`) starts a new idea
-  with the line as its first prompt, after the match: when an earlier idea shares enough words
-  with it, the pane prints `You had this already: <title> (<state word> <age>)` (a second and
-  third row numbered) and asks. Return starts the new idea (a reflex key must never resume a
-  long conversation), `1` or `r` resumes the first, a number that row, anything else goes back
-  to the list; a `start` request still cuts in. The new idea's first prompt then ends with one
-  sentence naming the earlier ideas the operator passed over, so the session does not ask again.
-- **Corners.** In a state column `open` hides `shaping` and `with Lead` on purpose: what
-  matters about that row is that it cannot be opened. Alignment counts characters, so a title
-  with double-width characters (CJK, emoji) is out of line.
-
-Tests: `tests/claude-peer.bats` ("queue shape: ...", "ideas: ...", "ideas similar: ...",
-"ideas pane: ...") and `tests/claude-peer-screen.bats` ("ideas: ..."). `ideafile`, `qshape`
-and `idea_live` write the fixtures; `chars` counts characters the way the screen file's `flat`
-does, so a width is measured the same under every locale.
 
 ## The clock: the pane ends what is finished or forgotten
 
@@ -377,9 +271,7 @@ involved: `queue add --kind unfinished --session <id> --as <Label> -- "<task or 
 conversation'> (left unfinished)"`. It is tier 3: `queue list` shows it, Lead is never offered
 it, and (unlike any other card) adding it never wakes Lead, nothing being in flight or not:
 a reminder has nothing for Lead to do. `queue show <id>` prints how to reopen it; `c` at the
-pane continues the last conversation. A session the clock ends is also a row of the Ideas
-list (below), which brings it back; the list shows the reminder once, not beside the idea's
-own row.
+pane continues the last conversation.
 
 The end line of every secretary start, however it ended, gains `<TAB>session=<id>`, the field
 a `stop` line has, or `session=-` when the clock never saw the session (it looks once per
