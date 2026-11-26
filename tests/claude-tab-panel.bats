@@ -796,12 +796,12 @@ life() {
 
 now_s() { date +%s; }
 
-# wait_for <command...>: polls for up to ten seconds.
+# wait_for <command...>: polls for up to ten seconds (times TESTS_WAIT_SCALE).
 wait_for() {
   i=0
   while ! "$@" >/dev/null 2>&1; do
     i=$((i + 1))
-    [ "$i" -lt 100 ] || return 1
+    [ "$i" -lt $((100 * ${TESTS_WAIT_SCALE:-1})) ] || return 1
     sleep 0.1
   done
 }

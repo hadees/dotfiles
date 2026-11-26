@@ -1017,10 +1017,10 @@ quit_fake() {
   mv "$FAKE_PROCS_FILE.n" "$FAKE_PROCS_FILE"
 }
 
-# waitfor <command>: true within 10 seconds
+# waitfor <command>: true within 10 seconds (times TESTS_WAIT_SCALE)
 waitfor() {
   local i
-  for i in $(seq 100); do eval "$1" && return 0; /bin/sleep 0.1; done
+  for i in $(seq $((100 * ${TESTS_WAIT_SCALE:-1}))); do eval "$1" && return 0; /bin/sleep 0.1; done
   return 1
 }
 

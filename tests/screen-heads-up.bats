@@ -57,7 +57,7 @@ start_bg() { # <what> <seconds>
   screen-heads-up "$@" > "$BATS_TEST_TMPDIR/bg.out" 2>&1 3>&- &
   bg=$!
   # `answer` appears once the notice is out, after `asked` is logged.
-  for _ in $(seq 50); do [ -e "$STATE/waiting" ] && [ -e "$STATE/answer" ] && break; sleep 0.1; done
+  for _ in $(seq $(( 50 * ${TESTS_WAIT_SCALE:-1} ))); do [ -e "$STATE/waiting" ] && [ -e "$STATE/answer" ] && break; sleep 0.1; done
   [ -e "$STATE/answer" ]
 }
 
@@ -72,9 +72,10 @@ start_bg() { # <what> <seconds>
 
 @test "not now: the button's answer ends it with exit 1 before the count is over" {
   start=$SECONDS
-  FAKE_TN_AFTER=0.3 FAKE_TN_SAY="Not now" run screen-heads-up "doing x" 100
+  # The count is 100 s long: the bound stays far below it at any scale.
+  FAKE_TN_AFTER=0.3 FAKE_TN_SAY="Not now" run screen-heads-up "doing x" 1000
   [ "$status" -eq 1 ]
-  [ $((SECONDS - start)) -lt 5 ]
+  [ $((SECONDS - start)) -lt $((5 * ${TESTS_WAIT_SCALE:-1})) ]
   [[ "$output" == *"screen-heads-up: not now" ]]
   [ "$(events)" = "asked,not-now:click" ]
   [ ! -e "$STATE/waiting" ]
@@ -139,7 +140,7 @@ start_bg() { # <what> <seconds>
 }
 
 @test "a second heads-up while one waits is exit 4 and the first still ends as go" {
-  FAKE_TN_AFTER=5 start_bg "first" 15
+  FAKE_TN_AFTER=5 start_bg "first" 40
   run screen-heads-up "second" 3
   [ "$status" -eq 4 ]
   st=0; wait "$bg" || st=$?
@@ -148,16 +149,17 @@ start_bg() { # <what> <seconds>
 }
 
 @test "the notice carries the what, the seconds and the Not now action, and is removed on go" {
-  FAKE_TN_AFTER=5 run screen-heads-up "doing x" 3
+  # A count of 30 gives the stub three seconds to start and log; it answers later.
+  FAKE_TN_AFTER=5 run screen-heads-up "doing x" 30
   [ "$status" -eq 0 ]
-  [ "$(sed -n 1p "$TN_LOG")" = "-title Screen needed in 3s -message doing x -action Not now -timeout 3 -group screen-heads-up -sound default" ]
+  [ "$(sed -n 1p "$TN_LOG")" = "-title Screen needed in 30s -message doing x -action Not now -timeout 30 -group screen-heads-up -sound default" ]
   [ "$(sed -n 2p "$TN_LOG")" = "-remove screen-heads-up" ]
 }
 
 @test "the what is cut to 200 characters and loses quotes and control characters" {
   w=$(printf 'q"u\\o\tte\n%0300d' 0)
   # The notifier has to start before the count ends, or it is killed unlogged.
-  run screen-heads-up "$w" 3
+  run screen-heads-up "$w" 30
   [ "$status" -eq 0 ]
   msg=$(sed -n '1s/.*-message \(.*\) -action .*/\1/p' "$TN_LOG")
   [ "${#msg}" -eq 200 ]
