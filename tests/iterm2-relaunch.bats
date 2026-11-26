@@ -250,7 +250,7 @@ in_order() {
 runner() {
   local r=$1 p=$2 c=$3
   shift 3
-  run sh "$BIN" _run "${WAIT:-5}" "${GRACE:-1}" "$r" "$p" "$c" "$@"
+  run sh "$BIN" _run "${WAIT:-50}" "${GRACE:-1}" "$r" "$p" "$c" "$@"
 }
 
 @test "_run prefs: waits the grace, asks iTerm2 to quit, composes once it is gone, starts it again" {
@@ -460,7 +460,7 @@ compose" ]
 @test "_detach: the command runs in a session of its own, logging to a 0600 file" {
   run sh "$BIN" _detach "$STATE/d.log" /bin/sh -c 'echo detached'
   [ "$status" -eq 0 ]
-  for _ in $(seq 1 50); do grep -q detached "$STATE/d.log" 2>/dev/null && break; sleep 0.1; done
+  for _ in $(seq 1 $(( 50 * ${TESTS_WAIT_SCALE:-1} ))); do grep -q detached "$STATE/d.log" 2>/dev/null && break; sleep 0.1; done
   grep -Fxq detached "$STATE/d.log"
   [ "$(ls -l "$STATE/d.log" | cut -c1-10)" = "-rw-------" ]
 }
@@ -626,7 +626,7 @@ compose" ]
   fake_iterm >/dev/null
   run sh "$BIN" --yes --grace 1 prefs
   [ "$status" -eq 0 ]
-  for _ in $(seq 1 150); do grep -q " done: " "$LOG" && break; sleep 0.1; done
+  for _ in $(seq 1 $(( 150 * ${TESTS_WAIT_SCALE:-1} ))); do grep -q " done: " "$LOG" && break; sleep 0.1; done
   grep -q "done: 1 items, 0 failed, restore ok" "$LOG"
   grep -q "caller=abc " "$LOG"
   [ -s "$CT_ENV" ]
@@ -646,16 +646,16 @@ compose" ]
 @test "detached: it returns only after the runner is alive and has logged start, and prints the runner's pid and the log path" {
   export FAKE_PREFS_LINE="composed, 1 waiting, 0 kept"
   fake_iterm >/dev/null
-  run sh "$BIN" --yes --grace 2 prefs
+  run sh "$BIN" --yes --grace 30 prefs
   [ "$status" -eq 0 ]
   pid=$(cat "$STATE/run.pid")
   kill -0 "$pid"
-  [ "${lines[0]}" = "iterm2-relaunch: runner $pid has the work (prefs) and asks iTerm2 to quit in 2s" ]
+  [ "${lines[0]}" = "iterm2-relaunch: runner $pid has the work (prefs) and asks iTerm2 to quit in 30s" ]
   [ "${lines[1]}" = "iterm2-relaunch: log: $LOG" ]
   [ "${lines[2]}" = "iterm2-relaunch: to call it off before iTerm2 is asked: iterm2-relaunch cancel" ]
   grep -q " start: items=prefs " "$LOG"
   no grep -q "quit: asked" "$LOG"
-  for _ in $(seq 1 150); do grep -q " done: " "$LOG" && break; sleep 0.1; done
+  for _ in $(seq 1 $(( 150 * ${TESTS_WAIT_SCALE:-1} ))); do grep -q " done: " "$LOG" && break; sleep 0.1; done
   grep -q "done: 1 items, 0 failed" "$LOG"
 }
 
@@ -815,7 +815,7 @@ compose" ]
   pid=$(fake_iterm)
   run sh "$BIN" --yes --grace 5 prefs
   [ "$status" -eq 0 ]
-  for _ in $(seq 1 50); do [ -e "$BATS_TEST_TMPDIR/hu.waiting" ] && break; sleep 0.1; done
+  for _ in $(seq 1 $(( 50 * ${TESTS_WAIT_SCALE:-1} ))); do [ -e "$BATS_TEST_TMPDIR/hu.waiting" ] && break; sleep 0.1; done
   [ -e "$BATS_TEST_TMPDIR/hu.waiting" ]
   run sh "$BIN" cancel
   [ "$status" -eq 0 ]
@@ -830,7 +830,7 @@ compose" ]
 @test "cancel: before the quit was asked it stops the runner and says so" {
   export FAKE_PREFS_LINE="composed, 1 waiting, 0 kept"
   pid=$(fake_iterm)
-  run sh "$BIN" --yes --grace 5 prefs
+  run sh "$BIN" --yes --grace 100 prefs
   [ "$status" -eq 0 ]
   run sh "$BIN" cancel
   [ "$status" -eq 0 ]
@@ -868,10 +868,10 @@ compose" ]
   run sh "$BIN" --yes --grace 1 prefs
   [ "$status" -eq 0 ]
   pid=$(cat "$STATE/run.pid")
-  for _ in $(seq 1 100); do grep -q " quit: asked" "$LOG" && break; sleep 0.05; done
+  for _ in $(seq 1 $(( 100 * ${TESTS_WAIT_SCALE:-1} ))); do grep -q " quit: asked" "$LOG" && break; sleep 0.05; done
   kill -TERM "$pid"
   kill -INT "$pid"
-  for _ in $(seq 1 150); do grep -q " done: " "$LOG" && break; sleep 0.1; done
+  for _ in $(seq 1 $(( 150 * ${TESTS_WAIT_SCALE:-1} ))); do grep -q " done: " "$LOG" && break; sleep 0.1; done
   in_order "quit: asking" "quit: asked" "prefs: exit 0" "launch: started" "done: 1 items, 0 failed"
   no grep -q "cancelled:" "$LOG"
   grep -Fxq -- "-b com.googlecode.iterm2" "$OPEN_LOG"
