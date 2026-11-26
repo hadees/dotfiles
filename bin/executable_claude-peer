@@ -176,6 +176,10 @@
 #                            and print its id (an idea or plan needs a finished
 #                            idea file, else exit 1); wakes Lead when nothing
 #                            is in flight
+#   queue shape [--session SID] [--as NAME] [--by session|pane] -- <idea file>
+#                            record the idea's session as a card in state
+#                            shaping, which Lead is never offered, and print
+#                            its id; a later queue add reuses that id
 #   queue list [--all] [<dir>]
 #                            the waiting cards in pull order: order, id, tier,
 #                            score, lo, hi, terms, age, kind, who, cand, text,
@@ -2708,8 +2712,11 @@ cmd_jobs() {
 # <git common dir>/claude-peer.queue and pulled by Lead when a card is done
 # (`gh pr merge` returning), never pushed on a clock. Append-only, tab-separated:
 # <UTC time> id event who value text [file]; id is Q<n> (- for a refusal), event
-# add, refused, set, take, done, drop, park, reopen, escalated or link. An add's
-# value is <kind>:w=<0|1>:u=<N>:p=<P>:s=<S|M|L|?>[:session=<SID>].
+# shape, add, refused, set, take, done, drop, park, reopen, escalated or link. An add's
+# value is <kind>:w=<0|1>:u=<N>:p=<P>:s=<S|M|L|?>[:session=<SID>]. A shape's is
+# session=<SID or ->:by=<session|pane>:similar=<n or ->, its text the idea's title and its
+# file the idea file: it makes a card in state shaping, which no reading Lead makes sees,
+# and the add that follows reuses the card's id.
 
 # [<dir>] -> the queue file of the repository holding dir (default $PWD); status 1 outside one
 queue_file() { qf_c=$(git -C "${1:-$PWD}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && printf '%s/claude-peer.queue\n' "$qf_c"; }
@@ -2730,13 +2737,16 @@ except Exception:
 
 # <mode> [<arg>]: the queue read in python, in integers (an awk's floating point
 # would order two scores differently): list [all], next, state <id>, taken, due
-# <minutes>, info <id>. The weights are git config claude-peer.queue-weights.
+# <minutes>, info <id>, title <idea file>, cardof <idea file> (id, state, session, title of
+# the card whose idea it is), shaped <SID><TAB><idea file> (id of the newest shaping, parked
+# or dropped card with that session or that idea file). The weights are git config
+# claude-peer.queue-weights.
 queue_py() {
   command -v python3 >/dev/null 2>&1 || die "queue needs python3"
   qp_f=$(queue_file) || return 1
   qp_w=$(git config --get claude-peer.queue-weights 2>/dev/null)
   python3 -I -c '
-import calendar, re, sys, time
+import calendar, os, re, sys, time
 mode, arg, path, wspec = sys.argv[1:5]
 W = {"unblocks": 20, "prio": 10, "hour": 1, "hourcap": 24, "margin": 15}
 for w in wspec.split():
@@ -2745,6 +2755,32 @@ for w in wspec.split():
         W[k] = int(v)
     elif mode in ("list", "next"):
         sys.stderr.write("claude-peer: queue-weights: ignored \"%s\"\n" % w)
+def title_of(f):
+    try:
+        lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+    except OSError:
+        lines = []
+    t = ""
+    for l in lines:
+        if l.startswith("# ") and l[2:].strip():
+            t = l[2:].strip()
+            break
+    if not t:
+        goal = False
+        for l in lines:
+            if l.startswith("## "):
+                goal = l[3:].strip() == "Goal"
+            elif goal and l.strip():
+                t = l.strip()
+                break
+    if not t:
+        b = os.path.basename(f)
+        b = b[:-3] if b.endswith(".md") else b
+        t = (b[5:] if b.startswith("idea-") else b).replace("-", " ")
+    return re.sub("[\t\r\n]", " ", t)[:80]
+if mode == "title":
+    print(title_of(arg))
+    sys.exit(0)
 now = int(time.time())
 items = {}
 try:
@@ -2758,12 +2794,26 @@ for ln in data.split("\n"):
         i, ev, who, val = f[1:5]
         text = f[5] if len(f) > 5 else ""
         it = items.get(i)
-        if ev == "add":
+        if ev == "shape":
+            d = dict(x.split("=", 1) for x in val.split(":") if "=" in x)
+            sid = d.get("session", "")
+            sid = "" if sid == "-" else sid
+            fl = (f[6] if len(f) > 6 else "") or "-"
+            if it is None:
+                items[i] = {"id": i, "n": int(i[1:]), "kind": "idea", "who": who, "w": 0, "u": 0, "p": 0, "s": "?",
+                            "sid": sid, "text": text, "stitle": text, "file": fl, "idea": fl, "added": False, "state": "shaping",
+                            "since": t, "esc": False}
+            else:
+                it["sid"], it["who"], it["idea"], it["stitle"] = sid or it["sid"], who, fl, text
+                if it["state"] == "shaping":
+                    it["text"], it["file"] = text, fl
+        elif ev == "add":
             kind, *rest = val.split(":")
             d = dict(x.split("=", 1) for x in rest if "=" in x)
             items[i] = {"id": i, "n": int(i[1:]), "kind": kind, "who": who, "w": int(d["w"]), "u": int(d["u"]),
-                        "p": int(d["p"]), "s": d["s"], "sid": d.get("session", ""), "text": text,
-                        "file": (f[6] if len(f) > 6 else "") or "-", "state": "waiting", "since": t, "esc": False}
+                        "p": int(d["p"]), "s": d["s"], "sid": d.get("session", "") or (it or {}).get("sid", ""),
+                        "text": text, "file": (f[6] if len(f) > 6 else "") or "-", "state": "waiting", "since": t,
+                        "esc": False, "idea": (it or {}).get("idea", ""), "stitle": (it or {}).get("stitle", ""), "added": True}
         elif it is None:
             continue
         elif ev == "set":
@@ -2775,9 +2825,10 @@ for ln in data.split("\n"):
         elif ev in ("done", "drop", "park"):
             it["state"] = {"done": "done", "drop": "dropped", "park": "parked"}[ev]
         elif ev == "reopen":
-            it["state"], it["since"] = "waiting", t
+            it["state"], it["since"] = "waiting" if it["added"] else "shaping", t
         elif ev == "escalated":
             it["esc"] = True
+        items[i]["last"] = t
     except Exception:
         continue
 D = {"S": 1, "M": 2, "L": 4}
@@ -2837,6 +2888,19 @@ elif mode == "info":
     if arg not in items:
         sys.exit(3)
     print("%s\t%s" % (items[arg]["sid"] or "-", items[arg]["who"]))
+elif mode == "cardof":
+    for it in sorted(items.values(), key=lambda x: -x["n"]):
+        if it["idea"] == arg:
+            print("\t".join([it["id"], it["state"], it["sid"] or "-", it["stitle"]]))
+            sys.exit(0)
+    sys.exit(3)
+elif mode == "shaped":
+    sid, _, idea = arg.partition("\t")
+    for it in sorted(items.values(), key=lambda x: -x["n"]):
+        if it["state"] in ("shaping", "parked", "dropped") and ((sid and it["sid"] == sid) or (idea and it["idea"] == idea)):
+            print(it["id"])
+            sys.exit(0)
+    sys.exit(3)
 ' "$1" "${2-}" "$qp_f" "$qp_w"
 }
 
@@ -2882,6 +2946,57 @@ queue_escalate() {
   return 0
 }
 
+# the next card id, from the highest id in the queue file
+# ponytail: the id is read, then written, with no lock; two adds in one instant can share
+# an id. Take the slot lock if that is ever seen.
+queue_nextid() {
+  qn_n=$(awk -F'\t' '$2 ~ /^Q[0-9]+$/ { n = substr($2, 2) + 0; if (n > m) m = n } END { print m + 1 }' "$(queue_file)" 2>/dev/null)
+  printf 'Q%s\n' "${qn_n:-1}"
+}
+
+# [--session SID] [--as NAME] [--by session|pane] -- <idea file>: record the idea's session
+# as a card in state shaping (one card per idea file), and print its id. Never wakes Lead,
+# escalates or logs.
+queue_shape() {
+  qsh_sid= qsh_as= qsh_by=session
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --session) [ $# -ge 2 ] || usage; qsh_sid=$2; shift 2;;
+      --as) [ $# -ge 2 ] || usage; qsh_as=$2; shift 2;;
+      --by) [ $# -ge 2 ] || usage; qsh_by=$2; shift 2;;
+      --) shift; break;;
+      *) usage;;
+    esac
+  done
+  [ $# -eq 1 ] || usage
+  case $qsh_by in session|pane) ;; *) usage;; esac
+  case $qsh_sid in *[!A-Za-z0-9._-]*) usage;; esac
+  if [ -z "$qsh_sid" ]; then
+    qsh_sid=${CLAUDE_CODE_SESSION_ID:--}
+    case $qsh_sid in *[!A-Za-z0-9._-]*) qsh_sid=-;; esac
+  fi
+  qsh_f=$1
+  case $qsh_f in /*) ;; *) qsh_f=$PWD/$qsh_f;; esac
+  queue_file >/dev/null || die "not inside a git repository"
+  [ -f "$qsh_f" ] && [ -r "$qsh_f" ] || die "queue shape: no such file: $qsh_f"
+  qsh_title=$(log_clean "$(queue_py title "$qsh_f")")
+  qsh_tab=$(printf '\t')
+  qsh_c=$(queue_py cardof "$qsh_f") || qsh_c=
+  if [ -n "$qsh_c" ]; then
+    qsh_id=${qsh_c%%"$qsh_tab"*}; qsh_c=${qsh_c#*"$qsh_tab"}; qsh_c=${qsh_c#*"$qsh_tab"}
+    qsh_csid=${qsh_c%%"$qsh_tab"*}; qsh_ctitle=${qsh_c#*"$qsh_tab"}
+    # a session of - leaves the card's as it is, so it is equal to any
+    if { [ "$qsh_sid" = - ] || [ "$qsh_sid" = "$qsh_csid" ]; } && [ "$qsh_title" = "$qsh_ctitle" ]; then
+      printf '%s\n' "$qsh_id"
+      return 0
+    fi
+  else
+    qsh_id=$(queue_nextid)
+  fi
+  queue_append "$qsh_id" shape "${qsh_as:-$(log_who)}" "session=$qsh_sid:by=$qsh_by:similar=-" "$qsh_title" "$qsh_f"
+  printf '%s\n' "$qsh_id"
+}
+
 queue_add() {
   qa_kind=idea qa_w=0 qa_u=0 qa_p=0 qa_s='?' qa_sid= qa_as=
   while [ $# -gt 0 ]; do
@@ -2918,10 +3033,16 @@ queue_add() {
         exit 1
       fi;;
   esac
-  # ponytail: the id is read, then written, with no lock; two adds in one instant can share
-  # an id. Take the slot lock if that is ever seen.
-  qa_n=$(awk -F'\t' '$2 ~ /^Q[0-9]+$/ { n = substr($2, 2) + 0; if (n > m) m = n } END { print m + 1 }' "$qa_q" 2>/dev/null)
-  qa_id=Q${qa_n:-1}
+  # an idea or plan from the session of a card that is shaping (or was parked or dropped), or
+  # for its idea file, is that card; anything else is a new one
+  qa_id=
+  case $qa_kind in
+    idea|plan)
+      qa_ses=${qa_sid:-${CLAUDE_CODE_SESSION_ID-}}
+      case $qa_ses in *[!A-Za-z0-9._-]*) qa_ses=;; esac
+      qa_id=$(queue_py shaped "$qa_ses$(printf '\t')$qa_file") || qa_id=;;
+  esac
+  [ -n "$qa_id" ] || qa_id=$(queue_nextid)
   queue_append "$qa_id" add "$qa_who" "$qa_kind:w=$qa_w:u=$qa_u:p=$qa_p:s=$qa_s${qa_sid:+:session=$qa_sid}" "$qa_text" "${qa_file:--}"
   printf '%s\n' "$qa_id"
   queue_escalate
@@ -2941,8 +3062,9 @@ queue_move() {
   qm_st=$(queue_py state "$qm_id") || true
   [ -n "$qm_st" ] || { warn "queue: unknown card '$qm_id'"; exit 3; }
   case $qm_ev:$qm_st in
-    take:waiting|done:taken|drop:waiting|drop:taken|park:waiting|park:taken|link:*) ;;
+    take:waiting|done:taken|drop:waiting|drop:taken|drop:shaping|park:waiting|park:taken|park:shaping|link:*) ;;
     reopen:waiting) qm_bad=1;;
+    reopen:shaping) qm_bad=1;;
     reopen:*) ;;
     *) qm_bad=1;;
   esac
@@ -3026,7 +3148,7 @@ context after a merge and nothing otherwise, and always exits 0.
 JSON
 }
 
-# queue add|list|next|show|set|take|done|reopen|drop|park|link|hook|settings
+# queue add|shape|list|next|show|set|take|done|reopen|drop|park|link|hook|settings
 cmd_queue() {
   [ $# -ge 1 ] || usage
   cq_v=$1; shift
@@ -3034,6 +3156,7 @@ cmd_queue() {
     hook) ( queue_hook ) 2>/dev/null; exit 0;;
     settings) queue_settings; exit 0;;
     add) queue_add "$@"; exit 0;;
+    shape) queue_shape "$@"; exit 0;;
     list|next)
       cq_all=
       if [ "$cq_v" = list ] && [ "${1-}" = --all ]; then cq_all=all; shift; fi

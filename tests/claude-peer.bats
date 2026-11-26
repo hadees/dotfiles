@@ -5651,3 +5651,167 @@ CNT
   run sh "$BIN" queue next
   [ "$status" -eq 3 ]
 }
+
+# --- a card at birth: queue shape and the shaping state ------------------------------
+# Idea files and fixture shape lines for the cards that exist before an idea has a verdict.
+
+# ideafile <slug> <title> [<goal line>]: a complete idea file under the reports directory
+# of the fixture repository, on stdout its path
+ideafile() {
+  local f="$XDG_STATE_HOME/claude-reports/proj/idea-$1.md" h
+  mkdir -p "${f%/*}"
+  : >"$f"
+  [ -z "$2" ] || printf '# %s\n\n' "$2" >>"$f"
+  for h in Goal Matters Constraints Decided Open Next; do
+    if [ "$h" = Goal ]; then printf '## Goal\n%s\n\n' "${3:-the goal of $1}" >>"$f"
+    else printf '## %s\nsomething under %s\n\n' "$h" "$h" >>"$f"; fi
+  done
+  printf '%s\n' "$f"
+}
+
+# qshape <hours ago> <id> <who> <SID or -> <title> <file>: a shape line written that long ago
+qshape() {
+  printf '%s\t%s\tshape\t%s\tsession=%s:by=session:similar=-\t%s\t%s\n' "$(ago $(( $1 * 3600 + 600 )))" "$2" "$3" "$4" "$5" "$6" >>"$REPO/$Q"
+}
+
+@test "queue shape: a first call prints Q1 and writes one line with the title from the # line; the same call again writes nothing; another session writes a second line with the same id; a missing file is exit 1" {
+  f=$(ideafile one "A first idea")
+  run sh "$BIN" queue shape --session s-1 --as Ideas -- "$f"
+  [ "$status" -eq 0 ]; [ "$output" = Q1 ]
+  [ "$(wc -l <"$REPO/$Q" | tr -d ' ')" -eq 1 ]
+  [ "$(cut -f2-7 "$REPO/$Q" | tr '\t' ' ')" = "Q1 shape Ideas session=s-1:by=session:similar=- A first idea $f" ]
+  run sh "$BIN" queue shape --session s-1 --as Ideas -- "$f"
+  [ "$output" = Q1 ]
+  [ "$(wc -l <"$REPO/$Q" | tr -d ' ')" -eq 1 ]
+  run sh "$BIN" queue shape --session s-2 -- "$f"
+  [ "$output" = Q1 ]
+  [ "$(wc -l <"$REPO/$Q" | tr -d ' ')" -eq 2 ]
+  [ "$(tail -n 1 "$REPO/$Q" | cut -f2-3,5 | tr '\t' ' ')" = "Q1 shape session=s-2:by=session:similar=-" ]
+  # a changed title is a new line; another file is another card
+  sed -i.bak 's/^# A first idea/# A first idea, renamed/' "$f"
+  run sh "$BIN" queue shape --session s-2 -- "$f"
+  [ "$output" = Q1 ]
+  [ "$(wc -l <"$REPO/$Q" | tr -d ' ')" -eq 3 ]
+  run sh "$BIN" queue shape --session s-3 -- "$(ideafile two "Another")"
+  [ "$output" = Q2 ]
+  # the session comes from the environment when --session is not given
+  CLAUDE_CODE_SESSION_ID=env-1 run sh "$BIN" queue shape -- "$(ideafile three "Third")"
+  [ "$output" = Q3 ]
+  [[ "$(tail -n 1 "$REPO/$Q" | cut -f5)" == session=env-1:* ]]
+  n=$(wc -l <"$REPO/$Q" | tr -d ' ')
+  run --separate-stderr sh "$BIN" queue shape --session s-1 -- "$BATS_TEST_TMPDIR/nothing.md"
+  [ "$status" -eq 1 ]; [ -z "$output" ]
+  [ "$stderr" = "claude-peer: queue shape: no such file: $BATS_TEST_TMPDIR/nothing.md" ]
+  [ "$(wc -l <"$REPO/$Q" | tr -d ' ')" -eq "$n" ]
+  run sh "$BIN" queue shape --by nobody -- "$f"
+  [ "$status" -eq 2 ]
+}
+
+@test "queue shape: the title is the # line, else the first line under ## Goal, else the file name" {
+  d="$XDG_STATE_HOME/claude-reports/proj"
+  mkdir -p "$d"
+  printf '## Goal\n\nthe goal line\nmore\n\n## Next\nx\n' >"$d/idea-no-heading.md"
+  run sh "$BIN" queue shape -- "$d/idea-no-heading.md"
+  [ "$(tail -n 1 "$REPO/$Q" | cut -f6)" = "the goal line" ]
+  printf 'nothing of use\n' >"$d/idea-plain-file-name.md"
+  run sh "$BIN" queue shape -- "$d/idea-plain-file-name.md"
+  [ "$(tail -n 1 "$REPO/$Q" | cut -f6)" = "plain file name" ]
+  # a long title is cut to 80 characters
+  long=$(printf 'x%.0s' $(seq 1 100))
+  run sh "$BIN" queue shape -- "$(ideafile long "$long")"
+  [ "$(tail -n 1 "$REPO/$Q" | cut -f6 | tr -d '\n' | wc -c | tr -d ' ')" -eq 80 ]
+}
+
+@test "queue shape: a shaping card is in no reading Lead makes, wakes nobody and writes no log line" {
+  qpb
+  qshape 3 Q1 Ideas s-1 "First" "$(ideafile one First)"
+  run sh "$BIN" queue shape --session s-2 -- "$(ideafile two Second)"
+  [ "$output" = Q2 ]
+  run sh "$BIN" queue list
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  run sh "$BIN" queue next
+  [ "$status" -eq 3 ]
+  run sh "$BIN" queue list --all
+  [ "$(printf '%s\n' "$output" | cut -f1,2 | tr '\t' ' ' | tr '\n' ',')" = "shaping Q2,shaping Q1," ]
+  run qhook "$(qhook_payload 'gh pr merge 3')"
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  sleep 0.3
+  [ ! -e "$BATS_TEST_TMPDIR/pb.log" ]
+  [ ! -e .git/claude-peer.log ]
+  # show and set work on it
+  run sh "$BIN" queue show Q1
+  [ "$status" -eq 0 ]
+  run sh "$BIN" queue set Q1 prio=2
+  [ "$status" -eq 0 ]
+  run sh "$BIN" queue list
+  [ -z "$output" ]
+}
+
+@test "queue shape: take, done and reopen on a shaping card are exit 3 and write nothing; park then reopen is shaping again; drop works" {
+  qshape 3 Q1 Ideas s-1 "First" "$(ideafile one First)"
+  n=$(wc -l <"$REPO/$Q" | tr -d ' ')
+  for v in take done reopen; do
+    run sh "$BIN" queue "$v" Q1
+    [ "$status" -eq 3 ]
+    [ "$(wc -l <"$REPO/$Q" | tr -d ' ')" -eq "$n" ]
+  done
+  run sh "$BIN" queue park Q1 later
+  [ "$status" -eq 0 ]
+  run sh "$BIN" queue list --all
+  [ "$(printf '%s\n' "$output" | cut -f1 | head -n 1)" = parked ]
+  run sh "$BIN" queue reopen Q1
+  [ "$status" -eq 0 ]
+  run sh "$BIN" queue list --all
+  [ "$(printf '%s\n' "$output" | cut -f1 | head -n 1)" = shaping ]
+  run sh "$BIN" queue list
+  [ -z "$output" ]
+  run sh "$BIN" queue drop Q1 not wanted
+  [ "$status" -eq 0 ]
+  run sh "$BIN" queue list --all
+  [ "$(printf '%s\n' "$output" | cut -f1 | head -n 1)" = dropped ]
+}
+
+@test "queue add: from the session of a shaping card it is that card's id and the card is waiting; another file or no session is a new id; a second add after the promotion is a new id; an ask never reuses" {
+  qpb
+  f=$(ideafile one First)
+  qshape 3 Q1 Ideas s-1 "First" "$f"
+  qshape 2 Q2 Ideas s-2 "Second" "$(ideafile two Second)"
+  CLAUDE_CODE_SESSION_ID=s-1 run sh "$BIN" queue add -- "Do the first thing" "$(qidea other)"
+  [ "$status" -eq 0 ]; [ "$output" = Q1 ]
+  run sh "$BIN" queue list
+  [ "$(qids)" = "Q1 " ]
+  [ "$(printf '%s\n' "$output" | cut -f12)" = "Do the first thing" ]
+  run sh "$BIN" queue show Q1
+  [ "$(printf '%s\n' "$output" | grep -c 'Q1')" -eq 2 ]
+  # the same session again: the card is waiting now, so a new id
+  CLAUDE_CODE_SESSION_ID=s-1 run sh "$BIN" queue add -- "Another from the same session" "$(qidea other2)"
+  [ "$output" = Q3 ]
+  # --session names it too, for a plan whose file is another path
+  run sh "$BIN" queue add --kind plan --session s-2 -- "A plan" "$(qidea plan1)"
+  [ "$output" = Q2 ]
+  # no session, another file: new
+  run sh "$BIN" queue add -- "Unrelated" "$(qidea other3)"
+  [ "$output" = Q4 ]
+  # the idea file names it as well
+  qshape 1 Q5 Ideas - "Fifth" "$(ideafile five Fifth)"
+  run sh "$BIN" queue add -- "Fifth, done" "$XDG_STATE_HOME/claude-reports/proj/idea-five.md"
+  [ "$output" = Q5 ]
+  # an ask and an unfinished card never reuse
+  qshape 1 Q6 Ideas s-6 "Sixth" "$(ideafile six Sixth)"
+  CLAUDE_CODE_SESSION_ID=s-6 run sh "$BIN" queue add --kind ask --session s-6 -- "A question"
+  [ "$output" = Q7 ]
+  run sh "$BIN" queue add --kind unfinished --session s-6 -- "left unfinished"
+  [ "$output" = Q8 ]
+  # a promoted card is written as the caller passed it: no session= the caller did not pass
+  [ "$(awk -F'\t' '$2 == "Q1" && $3 == "add" { print $5 }' "$REPO/$Q")" = "idea:w=0:u=0:p=0:s=?" ]
+}
+
+@test "verdict_since: false after a shape line, true after the promotion" {
+  eval "$(sed -n '/^queue_file() /p;/^verdict_since() {/,/^}/p' "$BIN")"
+  cd "$REPO"
+  start=$(( $(date +%s) - 60 ))
+  qshape 0 Q1 Ideas s-1 "First" "$(ideafile one First)"
+  no verdict_since Ideas "$start"
+  CLAUDE_CODE_SESSION_ID=s-1 sh "$BIN" queue add --as Ideas -- "Do it" "$(qidea other)"
+  verdict_since Ideas "$start"
+}
