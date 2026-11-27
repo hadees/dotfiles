@@ -12,8 +12,7 @@ state of every session; the list holds what is in the operator's court and may
 not be known to them yet, in one flat list across every tab and profile, and
 leaves everything else to a count. Every rule below is decided from the
 registry record (`<profile dir>/sessions/<pid>.json`: `status`, `waitingFor`,
-`statusUpdatedAt`), never from a Session Status row, which is the source that
-lies. The registry is an observed layout, not an interface.
+`statusUpdatedAt`), never from a Session Status row. The registry is an observed layout, not an interface.
 
 `claude-tab panel tick [--state <file>] [--now <epoch>] [--focus <tty>|-|?]`
 is the model: one pass over the registry, a state file, and the snapshot as
@@ -24,8 +23,7 @@ with the mode word as its first argument; the shell passes each profile as
 `--profile <dir>=<label>` and the thresholds as `--quiet <seconds>`
 (`git config tabstatus.quiet-minutes` times 60, default 900) and `--finished
 <seconds>` (`git config claude-tab.finished-seconds`, default 60); anything
-that is not a positive integer is the default. `--life <pid>=<epoch>` is a test
-handle for the sign of life of a busy session. `--focus` says which tty is in
+that is not a positive integer is the default. `--focus` names the tty in
 front: a tty, `-` for no iTerm2 session, `?` for could not be asked (default).
 
 **The registry is read a fourth time**, beside `registry_rows`,
@@ -82,7 +80,7 @@ from then on. A `blocked` instance that ends before it was ever listed is
 mode 0600 in a 0700 directory, written through a temporary file and a rename)
 holds `v`, `saved_at`, `sessions` keyed `<profile dir>|<pid>|<sessionId>` and the
 tally. It is written only when something besides the tick counter changed or
-`saved_at` is a minute old, so a calm list does not write every two seconds. A
+`saved_at` is a minute old. A
 write that fails is one line on stderr, and the snapshot is still printed.
 
 **The snapshot** is `{v, generated_at, build, health, needs, others, tally}`.
@@ -106,11 +104,9 @@ base name of the directory holding `git rev-parse --path-format=absolute
 base name of the directory. `handoff` is true only for a `peer` whose own git
 directory's `claude-peer.claim` has `handoff` as its line 8; any failure is
 false, because a wrong false adds a row and a wrong true hides one. A peer's
-`label` always carries its slot (line 3 of the same claim): `tabname.peer-format`
-is the operator's to set and `{repo}` alone makes every peer of a repository read
-like the repository, so a label that lacks the slot gets ` · <slot>` added. The answer
-is kept per directory for 60 seconds (roles move with claims, and `tabname` per
-session per tick would be a process tree each), the two `rev-parse` answers for
+`label` always carries its slot (line 3 of the same claim): a
+`tabname.peer-format` of `{repo}` alone reads every peer like the repository, so a label that lacks the slot gets ` · <slot>` added. The answer
+is kept per directory for 60 seconds (roles move with claims), the two `rev-parse` answers for
 the life of the process. `guid` is the `ITERM_SESSION_ID` of the process's
 start-up environment as `guid_of` reads it (`ps eww`), read once per session and
 kept in the state; `null` without one. A busy session's sign of life is the newest
@@ -131,8 +127,7 @@ is the transcript's own: the last `type: user` entry that is not a tool result a
 not a sidechain's and that carries `origin.kind` (else `turnOrigin`), read from
 the last 4 MiB of `<sessionId>.jsonl` and kept per file stamp, so an idle session
 costs one `stat` a tick. `origin.kind` of `peer` is the cross-session case (every
-`SendMessage` and the postbox courier's wake arrive as one; observed on
-1,800 entries of one profile); `human` is the operator typing; `task-notification`
+`SendMessage` and the postbox courier's wake arrive as one); `human` is the operator typing; `task-notification`
 (a background task finishing) and anything unknown stay listed, because a wrong
 hide costs a missed turn. Only the one word is kept, never a line. The ceiling: the
 last such entry decides, so mail landing in the middle of a turn the operator
@@ -155,15 +150,12 @@ moving, which is what the page's stale banner reads.
 **Endpoints.** `GET /snapshot.json` (503 before the first tick), `GET /health`
 (`{ok, pid, build, script, polled}`: `script` is the script the server follows,
 `polled` the epoch second of the last `GET /snapshot.json` that carried
-`X-Claude-Tab: 1`, which only the page sends, so `snapshot`, `status` and the work
-board never move it; `null` before the first), `GET /` (the file `$CLAUDE_TAB_PANEL_HTML`, else
+`X-Claude-Tab: 1`, which only the page sends; `null` before the first), `GET /` (the file `$CLAUDE_TAB_PANEL_HTML`, else
 `~/.local/share/claude-tab/panel.html`, read on each request, with a CSP that
 allows only inline script and style and fetches to itself; a missing file is
 500 naming the path), `POST /seen` and `POST /go` with the body `pid=<digits>`.
 Everything else is 404 and nothing is read from a path in the request. Every
-request whose `Host` is not `127.0.0.1:<port>` or `localhost:<port>` is 403
-(DNS rebinding: a page on another name resolving to loopback still sends its
-own `Host`). A POST needs the header `X-Claude-Tab: 1`, which a cross-site
+request whose `Host` is not `127.0.0.1:<port>` or `localhost:<port>` is 403. A POST needs the header `X-Claude-Tab: 1`, which a cross-site
 form cannot send and a cross-origin `fetch` may not add without a preflight
 the server never answers; and a pid that is in the current snapshot, else 404.
 Both POSTs call `mark_seen`; `/go` then runs `focus <pid>` through
@@ -205,18 +197,14 @@ and the real state directory and serves that checkout's code. It says so in one
 line on stderr after `panel started` (`following <script>, not <deployed>; it
 leaves at the next deploy`), it hands over at the next deploy or when the
 checkout is removed, and the tidy end is `claude-tab panel stop` then
-`~/bin/claude-tab panel start`. On 2026-11-22 such a server was left running,
-ignored every deploy, and died five days later with its worktree, leaving the
-view blank.
+`~/bin/claude-tab panel start`.
 
 **`start`, `stop`, `snapshot`, `status`.** `start` does nothing when `/health`
 already answers on the port; else it runs `serve` detached (a double fork and a
-session of its own, HUP ignored, ported from `iterm2-prefs`), appends its output
+session of its own, HUP ignored), appends its output
 to `<state dir>/panel.log` (rotated to `.prev` past 262144 bytes), waits up to
 five seconds for `/health`, writes `<pid> <port>` to `panel.pid` from the answer
-and prints `claude-tab: panel started on http://127.0.0.1:<port>/`; when this call
-started it from a script that is not the deployed copy, a second line on stderr says
-which it follows. `stop`
+and prints `claude-tab: panel started on http://127.0.0.1:<port>/`. `stop`
 sends TERM to the pid of `panel.pid` when `ps` shows `serve` and `claude-tab`
 in its command, removes the file, exit 3 when nothing runs. `snapshot` prints
 the running server's `/snapshot.json` (python `urllib` without proxies, exit 3
@@ -224,9 +212,8 @@ when nothing answers). `status` prints `server:`, `data:`, `focus:`, `needs:`
 and `tally:` lines, then `page: polled <n>s ago` or `page: never polled`, then `tool:` (`installed`, `installed, reload pending` with `panel.reload` beside the marker, else `not installed`); exit 3
 and `server: not running` when nothing answers. The `server:` line ends
 `, following <script> (not <deployed>)` when the server follows another script than
-the deployed copy (`following an older build` for a server that predates the field):
-a checkout's copy holds the real port, and `stop` then `start` from the deployed
-copy ends it. `page: never polled` with a server up, the Toolbelt visible and the
+the deployed copy (`following an older build` for a server that predates the field).
+`page: never polled` with a server up, the Toolbelt visible and the
 tool ticked means the view loaded while nothing listened: `claude-tab panel register`
 reloads it. With the Toolbelt hidden or the tool unticked there is no view, or a
 paused one, and the same line means only that.
@@ -243,8 +230,8 @@ line naming Scripts > Manage > Install Python Runtime, exit 1):
 True, "http://127.0.0.1:<port>/")` under a ten-second alarm. The name is `git
 config claude-tab.panel-name`, else `Needs You`; a name equal to a built-in
 tool's is refused by iTerm2 and shows as the interpreter's last line. It needs a
-fresh API cookie as `api_cookie_env` judges it (the same clause `it2_focus` uses:
-one in the environment, else the cookie file newer than iTerm2's socket) and
+fresh API cookie as `api_cookie_env` judges it (as `it2_focus` does: one in the
+environment, else the cookie file newer than iTerm2's socket) and
 never starts the library without one, because the library would then ask iTerm2
 through AppleScript and a stale cookie leaves no tool and no message. It needs no
 terminal and no Claude session: the interpreter runs with stdin from
@@ -256,8 +243,8 @@ so a registration is needed once, and again only when the view loaded while
 nothing listened.
 
 `install` is `start`, `register --quiet`, then the marker `panel.installed` in
-the state directory (one line, the port) and two lines saying where the tool is
-and that the Toolbelt must be showing; a failure before the marker leaves none.
+the state directory (one line, the port) and two lines on where the tool is
+and that the Toolbelt must be showing; a failure leaves no marker.
 `uninstall` is `stop` and removing the marker (iTerm2 has no call that removes a
 registration, so the tool is unticked by hand; it removes `panel.reload` too).
 `ensure` is silent and runs one at a time: nothing without the marker; nothing
@@ -266,20 +253,15 @@ a minute old, an older one being taken over; nothing while `/health` answers and
 no reload is owed; else `start`. **A registration is owed exactly when `ensure`
 had to start the server**: that call creates the empty `panel.reload`, waits up
 to ten seconds for a fresh cookie (an iTerm2 restart has the wrapper minting one
-at the same moment; `CLAUDE_TAB_PANEL_COOKIE_WAIT` is the test handle for the
-step), then `register --quiet`. Every successful `register` (this one, a typed
+at the same moment), then `register --quiet`. Every successful `register` (this one, a typed
 one, `install`) removes the flag. When the cookie never came, the flag stays and
 `status` ends `tool: installed, reload pending`; every later `ensure` finds it
 and tries `register --quiet` once, without waiting and without a log line, when
 a fresh cookie is there. Each failed start or registration is one line in
-`panel.log`. `ensure` is started by `claude_tab_panel_ensure` in `.functions`,
-which `claude()` calls on an attended launch and `.zshrc` calls once per
-interactive shell, in an iTerm2 session (`ITERM_SESSION_ID`) when the marker
-exists and `~/bin/claude-tab` is executable, with all three streams off the
-terminal as the cookie mint; a machine that never installed the panel pays one
-file test. **The first install is one line the operator types in an iTerm2
-shell: `claude-tab panel install`**; after that the first shell of an iTerm2
-run, and every attended `claude` launch, keeps it up.
+`panel.log`. `claude_tab_panel_ensure` in `.functions` starts `ensure`, from `claude()` and once
+per interactive shell in an iTerm2 session; who calls it and the gates are in
+`claude-profiles.md`. **The first install is one line the operator types in an iTerm2
+shell: `claude-tab panel install`**.
 
 **The page** is `dot_local/share/claude-tab/panel.html`, one file with no
 external resource and no framework, deployed to
@@ -291,11 +273,11 @@ others` disclosure over the sessions by group; a click on a row posts `/go`
 `✓` posts `/seen`, a 409's `error` shows in the status line for ten seconds.
 A row's reason is shortened (`permission prompt` reads `prompt`) so the name
 keeps the width; the tooltip holds the whole word. Text reaches the page only
-through `textContent` (a label is a directory's name), and the test refuses `innerHTML`, `document.write`, `eval`, any
+through `textContent`, and the test refuses `innerHTML`, `document.write`, `eval`, any
 `http:`, `https:` or `//` address and any private-use glyph. Rows are updated in
 place by pid and kind, so a poll neither resets a hover nor re-fades a row. It
 looks like the Toolbelt's neighbours: Base16 Eighties on `#282828` (a step
-lighter than the terminal, to sit level with the Toolbelt's grey panels) in a
+lighter than the terminal) in a
 monospace face by default, a light variant under `prefers-color-scheme: light`,
 and the kind colours of Session Status (`blocked` blue, `asked` yellow,
 `failed` red, `quiet` amber, `finished` green, everything else grey). The
@@ -303,11 +285,8 @@ list greys after 6 seconds without an answer (`no data for <N>s`) and is
 replaced after 30 by `Not updating since <HH:MM>.` and the command that
 starts the server; a failed snapshot is followed by a `/health` probe so a
 server that is starting says so. A changed `build` reloads the page. Open
-groups and the `others` disclosure are kept in `localStorage`. The test names
-every kind of the snapshot, so a renamed kind fails there and not on the screen.
+groups and the `others` disclosure are kept in `localStorage`.
 
 **The tell.** A snapshot whose `health.sessions` is 0 while `claude-tab list`
 prints rows, or a row of kind `unknown`, means the registry's words moved.
-Tests: `tests/claude-tab-panel.bats` (fixture registries, `--now`, `--focus`,
-state under `BATS_TEST_TMPDIR`; the server tests start it on a free port with a stub
-`osascript`, `ps` and `uname`).
+Tests: `tests/claude-tab-panel.bats`.
