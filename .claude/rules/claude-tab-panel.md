@@ -178,19 +178,42 @@ iTerm2 nothing. The tell: `focus unknown` with failures climbing in `status`
 means macOS is asking for a grant, and rows then clear by click and by
 typing only.
 
-**It follows its own code and ends with iTerm2.** When the script's mtime
+**It follows its own code and outlives iTerm2.** When the script's mtime
 differs from the one read at start it saves its state and `exec`s `/bin/sh
 <script> panel serve --port <port>`; `build` is that mtime, so the page can
 reload itself. The server is the process that was started (`panel_py` execs
-python), so the pid in `panel.pid` survives the replacement. After iTerm2 has
-been absent from `ps` for 15 ticks (30 s at the default) it exits 0.
+python), so the pid in `panel.pid` survives the replacement. A server started
+from a script that is not the deployed copy (`--deployed`, default
+`$CLAUDE_TAB_DEPLOYED`, else `~/bin/claude-tab`; "not" means `realpath`
+differs, and with no deployed file nothing is compared) hands itself to the
+deployed copy, tested again on every tick, and logs one line in `panel.log`:
+`<script> is gone; continuing as <deployed>`, or `<deployed> changed; leaving
+<script> for it` (the deployed mtime differs from the one read at start: a
+deploy landed, or the copy appeared later). With the script gone and no
+deployed copy it logs `<script> is gone; serving on with the code already
+loaded` once and ticks on. It ends only on `stop`, `uninstall`, a signal or
+logout, not with iTerm2: iTerm2 loads the Toolbelt tool's view once, at
+creation (`ToolWebView.m:124-128`), with no retry, so the server has to be
+listening already when iTerm2 starts. The focus read still runs only while
+iTerm2 is in `ps`.
+
+**A live look at a branch.** `panel start` from a checkout takes the real port
+and the real state directory and serves that checkout's code. It says so in one
+line on stderr after `panel started` (`following <script>, not <deployed>; it
+leaves at the next deploy`), it hands over at the next deploy or when the
+checkout is removed, and the tidy end is `claude-tab panel stop` then
+`~/bin/claude-tab panel start`. On 2026-11-22 such a server was left running,
+ignored every deploy, and died five days later with its worktree, leaving the
+view blank.
 
 **`start`, `stop`, `snapshot`, `status`.** `start` does nothing when `/health`
 already answers on the port; else it runs `serve` detached (a double fork and a
 session of its own, HUP ignored, ported from `iterm2-prefs`), appends its output
 to `<state dir>/panel.log` (rotated to `.prev` past 262144 bytes), waits up to
 five seconds for `/health`, writes `<pid> <port>` to `panel.pid` from the answer
-and prints `claude-tab: panel started on http://127.0.0.1:<port>/`. `stop`
+and prints `claude-tab: panel started on http://127.0.0.1:<port>/`; when this call
+started it from a script that is not the deployed copy, a second line on stderr says
+which it follows. `stop`
 sends TERM to the pid of `panel.pid` when `ps` shows `serve` and `claude-tab`
 in its command, removes the file, exit 3 when nothing runs. `snapshot` prints
 the running server's `/snapshot.json` (python `urllib` without proxies, exit 3

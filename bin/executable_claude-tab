@@ -1009,13 +1009,13 @@ def posint(v, default):
 def parse(argv):
     o = {"state": None, "now": None, "focus": "?", "profiles": [], "quiet": 900,
          "finished": 60, "life": {}, "build": "-", "tabname": "", "port": 0, "script": "",
-         "self": "", "focus-script": ""}
+         "self": "", "focus-script": "", "deployed": ""}
     i = 0
     while i < len(argv):
         k = argv[i]
         if k not in ("--state", "--now", "--focus", "--profile", "--quiet",
                      "--finished", "--life", "--build", "--tabname", "--port", "--script",
-                     "--self", "--focus-script") or i + 1 >= len(argv):
+                     "--self", "--focus-script", "--deployed") or i + 1 >= len(argv):
             die("bad argument '%s'" % k)
         v = argv[i + 1]
         i += 2
@@ -1506,6 +1506,14 @@ def serve(o):
             return "-"
     build = mtime()
     o["build"] = build
+    deployed = o["deployed"]
+
+    def deployed_mtime():
+        try:
+            return str(os.stat(deployed).st_mtime_ns) if os.path.isfile(deployed) else "-"
+        except OSError:
+            return "-"
+    deployed_at = deployed_mtime() if deployed else "-"
     lock = threading.Lock()
     box = {"state": load_state(path), "snap": None, "pids": set()}
     box["written"] = copy.deepcopy(box["state"])
@@ -1594,26 +1602,39 @@ def serve(o):
         sys.stderr.write("claude-tab: panel: port %d: %s\n" % (port, err.strerror or err))
         sys.exit(1)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    gone_limit, gone, listening = 15 * tick_s, None, False  # 30 s at the default tick
+    listening, orphan_said = False, False
+
+    def hand_over(why):
+        sys.stderr.write("claude-tab: panel: %s\n" % why)
+        sys.stderr.flush()
+        with lock:
+            if box["state"] is not None:
+                save_state(path, box["state"], None, time.time())
+        httpd.server_close()
+        os.execv("/bin/sh", ["/bin/sh", deployed, "panel", "serve", "--port", str(port)])
 
     while True:
         now = time.time()
         up = iterm_running()
-        if mtime() != build:
+        # Not the deployed copy: a deploy or the loss of this script hands the port to it.
+        other = bool(deployed) and os.path.isfile(deployed) and \
+            os.path.realpath(deployed) != os.path.realpath(script)
+        m = mtime()
+        if other and m == "-":
+            hand_over("%s is gone; continuing as %s" % (script, deployed))
+        if other and m != "-" and deployed_mtime() != deployed_at:
+            hand_over("%s changed; leaving %s for it" % (deployed, script))
+        if m == "-" and build != "-" and not other:
+            if not orphan_said:
+                orphan_said = True
+                sys.stderr.write("claude-tab: panel: %s is gone; serving on with the code already loaded\n" % script)
+                sys.stderr.flush()
+        elif m != build:
             with lock:
                 if box["state"] is not None:
                     save_state(path, box["state"], None, now)
             httpd.server_close()
             os.execv("/bin/sh", ["/bin/sh", script, "panel", "serve", "--port", str(port)])
-        if up:
-            gone = None
-        else:
-            gone = now if gone is None else gone
-            if now - gone >= gone_limit:
-                with lock:
-                    if box["state"] is not None:
-                        save_state(path, box["state"], None, now)
-                sys.exit(0)
         try:
             focus = "?"
             snap = box["snap"]
@@ -1774,7 +1795,7 @@ cmd_panel_serve() {
   [ "$port" -le 65535 ] || usage
   PANEL_EXEC=exec
   panel_run serve --port "$port" --script "$(self_path)" --self "${CLAUDE_TAB_SELF-}" \
-    --focus-script "$(front_tty_script)"
+    --focus-script "$(front_tty_script)" --deployed "${CLAUDE_TAB_DEPLOYED:-$HOME/bin/claude-tab}"
 }
 
 cmd_panel_start() {
@@ -1792,6 +1813,11 @@ cmd_panel_start() {
     if h=$(panel_py fetch "$port" /health 2>/dev/null); then
       printf '%s %s\n' "$(printf '%s\n' "$h" | sed -n 's/.*"pid": \([0-9]*\).*/\1/p')" "$port" > "$dir/panel.pid"
       printf 'claude-tab: panel started on http://127.0.0.1:%s/\n' "$port"
+      dep=${CLAUDE_TAB_DEPLOYED:-$HOME/bin/claude-tab}
+      if [ -f "$dep" ] && [ ! "$dep" -ef "$(self_path)" ]; then
+        printf 'claude-tab: panel: following %s, not %s; it leaves at the next deploy (sooner: claude-tab panel stop, then %s panel start)\n' \
+          "$(self_path)" "$dep" "$dep" >&2
+      fi
       return 0
     fi
     sleep 0.2

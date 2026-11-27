@@ -25,6 +25,8 @@ setup() {
 
   CT="$BATS_TEST_DIRNAME/../bin/executable_claude-tab"
   STATE="$BATS_TEST_TMPDIR/panel-state.json"
+  # The real script counts as the deployed copy, so a server started from it neither warns nor hands over.
+  export CLAUDE_TAB_DEPLOYED="$CT"
 
   BIN="$BATS_TEST_TMPDIR/bin"
   mkdir -p "$BIN"
@@ -1007,11 +1009,83 @@ STUB
     "$(printf '%s' "$after" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["pid"])')" ]
 }
 
-@test "the server exits once iTerm2 has been gone for the (scaled) 30 seconds" {
+@test "the server outlives iTerm2" {
   serve
   : > "$PROCS_FILE"
-  gone() { ! kill -0 "$SERVER" 2>/dev/null; }
-  wait_for gone
+  sleep 3
+  kill -0 "$SERVER"
+  run curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/health"
+  [ "$output" = 200 ]
+}
+
+# two_copies: COPY_A and COPY_B, two copies of the script under BATS_TEST_TMPDIR.
+two_copies() {
+  mkdir -p "$BATS_TEST_TMPDIR/ca" "$BATS_TEST_TMPDIR/cb"
+  COPY_A=$BATS_TEST_TMPDIR/ca/claude-tab
+  COPY_B=$BATS_TEST_TMPDIR/cb/claude-tab
+  cp "$CT" "$COPY_A"
+  cp "$CT" "$COPY_B"
+}
+
+# count_out <fixed string> <n>: serve.out holds the string exactly n times.
+count_out() { [ "$(grep -cF -- "$1" "$BATS_TEST_TMPDIR/serve.out")" = "$2" ]; }
+
+health_pid() { curl -s --noproxy '*' "http://127.0.0.1:$PORT/health" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["pid"])'; }
+
+@test "a server whose script vanishes serves on, then continues as the deployed copy when one appears" {
+  two_copies
+  export CLAUDE_TAB_DEPLOYED=$BATS_TEST_TMPDIR/cb/absent
+  serve "$COPY_A"
+  rm "$COPY_A"
+  sleep 1
+  [ "$(health_pid)" = "$SERVER" ]
+  count_out "ca/claude-tab is gone; serving on with the code already loaded" 1
+  cp "$CT" "$CLAUDE_TAB_DEPLOYED"
+  wait_for count_out "is gone; continuing as $CLAUDE_TAB_DEPLOYED" 1
+  wait_for count_out "panel on" 2
+  [ "$(health_pid)" = "$SERVER" ]
+}
+
+@test "a server whose script vanishes continues as the deployed copy" {
+  two_copies
+  export CLAUDE_TAB_DEPLOYED=$COPY_B
+  serve "$COPY_A"
+  rm "$COPY_A"
+  wait_for count_out "is gone; continuing as $COPY_B" 1
+  wait_for count_out "panel on" 2
+  [ "$(health_pid)" = "$SERVER" ]
+}
+
+@test "a server from a copy leaves for the deployed copy when that changes, and not before" {
+  two_copies
+  export CLAUDE_TAB_DEPLOYED=$COPY_B
+  serve "$COPY_A"
+  sleep 2
+  count_out "panel on" 1
+  touch "$COPY_B"
+  wait_for count_out "$COPY_B changed; leaving $COPY_A for it" 1
+  wait_for count_out "panel on" 2
+  [ "$(health_pid)" = "$SERVER" ]
+}
+
+@test "start from a copy says it is not the deployed copy, from the deployed one it says nothing more" {
+  two_copies
+  export CLAUDE_TAB_PANEL_TICK=0.1
+  git config --file "$GIT_CONFIG_GLOBAL" claude-tab.panel-port "$(free_port)"
+  CLAUDE_TAB_DEPLOYED=$COPY_B run --separate-stderr sh "$COPY_A" panel start
+  [ "$status" -eq 0 ]
+  [[ "$output" == "claude-tab: panel started on "* ]]
+  [ "$stderr" = "claude-tab: panel: following $COPY_A, not $COPY_B; it leaves at the next deploy (sooner: claude-tab panel stop, then $COPY_B panel start)" ]
+  sh "$COPY_A" panel stop
+  sleep 0.5
+  CLAUDE_TAB_DEPLOYED=$COPY_A run --separate-stderr sh "$COPY_A" panel start
+  [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
+  sh "$COPY_A" panel stop
+  sleep 0.5
+  CLAUDE_TAB_DEPLOYED=$BATS_TEST_TMPDIR/absent run --separate-stderr sh "$COPY_A" panel start
+  [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
 }
 
 @test "start twice starts one process, stop ends it, a second stop is exit 3" {
