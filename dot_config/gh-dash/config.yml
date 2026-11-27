@@ -1,0 +1,26 @@
+# My open pull requests in every repo: is CI red, is anything stuck?
+prSections:
+  - title: My PRs
+    filters: is:open author:@me sort:updated-desc
+defaults:
+  view: prs
+  preview:
+    open: false
+    width: 0.45
+  prsLimit: 30
+  layout:
+    prs:
+      author:     {hidden: true}
+      authorIcon: {hidden: true}
+      assignees:  {hidden: true}
+      base:       {hidden: true}
+      labels:     {hidden: true}
+      lines:      {hidden: true}
+      createdAt:  {hidden: true}
+repo:
+  prsRefetchIntervalSeconds: 60
+theme:
+  ui:
+    table:
+      compact: true
+      showSeparator: false
