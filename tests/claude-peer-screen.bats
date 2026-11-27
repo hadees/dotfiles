@@ -74,6 +74,7 @@ setup() {
     export PATH="$BATS_TEST_TMPDIR/pybin:$PATH"
   fi
   export HOME="$BATS_TEST_TMPDIR/home"
+  unset CLAUDE_CONFIG_DIR  # a profile's would show the live sessions' registry
   export XDG_STATE_HOME="$HOME/.local/state"
   mkdir -p "$HOME" "$BATS_TEST_TMPDIR/bin"
   export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig"
