@@ -1848,7 +1848,9 @@ cmd_panel_status() {
   need_python
   panel_py status --port "$(panel_port)"
   ps_rc=$?
-  if [ -e "$(panel_dir)/panel.installed" ]; then echo "tool: installed"; else echo "tool: not installed"; fi
+  if [ ! -e "$(panel_dir)/panel.installed" ]; then echo "tool: not installed"
+  elif [ -e "$(panel_dir)/panel.reload" ]; then echo "tool: installed, reload pending"
+  else echo "tool: installed"; fi
   return "$ps_rc"
 }
 
@@ -1899,6 +1901,7 @@ cmd_panel_register() {
     [ "$?" -ne 7 ] || die "no fresh iTerm2 API cookie (run iterm2-cookie); the panel is not registered"
     die "could not register the panel: $(printf '%s\n' "$rg_out" | tail -n 1)"
   }
+  rm -f "$(panel_dir)/panel.reload"
   [ -n "$rg_quiet" ] || printf 'claude-tab: Toolbelt tool "%s" registered (View > Toolbelt)\n' "$rg_name"
 }
 
@@ -1914,28 +1917,54 @@ cmd_panel_install() {
 
 cmd_panel_uninstall() {
   ( cmd_panel_stop ) || :
-  rm -f "$(panel_dir)/panel.installed"
+  rm -f "$(panel_dir)/panel.installed" "$(panel_dir)/panel.reload"
   printf 'claude-tab: untick the tool in View > Toolbelt (iTerm2 has no call that removes a registration)\n'
 }
 
-# Silent, for the `claude` wrapper: nothing without the marker, nothing while the
-# server answers, else start it and register (a view that loaded while nothing
-# listened stays blank until it is reloaded). A fresh launch after an iTerm2
-# restart may find its cookie still being minted, so the cookie is waited for
-# (this runs detached). Failures are one line each in panel.log.
+# Silent, for the `claude` wrapper and every interactive shell: nothing without
+# the marker, nothing while another ensure runs (a lock directory, stale after a
+# minute), nothing while the server answers and no reload is owed, else start the
+# server and register (a view that loaded while nothing listened stays blank
+# until it is reloaded). The reload is owed from the moment this call had to
+# start the server, in panel.reload, until a registration succeeds: a call that
+# starts it waits for a cookie (an iTerm2 restart has the wrapper minting one at
+# the same moment), a later call that finds the flag tries once with no wait.
+# Failures are one line each in panel.log.
 cmd_panel_ensure() {
   en_dir=$(panel_dir)
   [ -e "$en_dir/panel.installed" ] || return 0
   [ "$(os)" = Darwin ] || return 0
-  panel_py fetch "$(panel_port)" /health >/dev/null 2>&1 && return 0
   mkdir -p "$en_dir" && chmod 700 "$en_dir"
-  ( cmd_panel_start ) >/dev/null 2>>"$en_dir/panel.log" || return 0
-  en_i=0
-  while [ "$en_i" -lt 20 ] && ! ( api_cookie_env ); do
-    sleep "${CLAUDE_TAB_PANEL_COOKIE_WAIT:-0.5}"
-    en_i=$((en_i + 1))
-  done
-  ( cmd_panel_register --quiet ) >/dev/null 2>>"$en_dir/panel.log" || :
+  en_lock=$en_dir/panel.ensure.lock
+  if ! mkdir "$en_lock" 2>/dev/null; then
+    [ -n "$(find "$en_lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] || return 0
+    rmdir "$en_lock" 2>/dev/null
+    mkdir "$en_lock" 2>/dev/null || return 0
+  fi
+  ( ensure_body "$en_dir" ) || :
+  rmdir "$en_lock" 2>/dev/null
+  return 0
+}
+
+ensure_body() {
+  eb_dir=$1
+  eb_started=''
+  if ! panel_py fetch "$(panel_port)" /health >/dev/null 2>&1; then
+    ( cmd_panel_start ) >/dev/null 2>>"$eb_dir/panel.log" || return 0
+    : > "$eb_dir/panel.reload"
+    eb_started=1
+  fi
+  [ -e "$eb_dir/panel.reload" ] || return 0
+  if [ -n "$eb_started" ]; then
+    eb_i=0
+    while [ "$eb_i" -lt 20 ] && ! ( api_cookie_env ); do
+      sleep "${CLAUDE_TAB_PANEL_COOKIE_WAIT:-0.5}"
+      eb_i=$((eb_i + 1))
+    done
+  else
+    ( api_cookie_env ) || return 0
+  fi
+  ( cmd_panel_register --quiet ) >/dev/null 2>>"$eb_dir/panel.log" || :
 }
 
 cmd_panel() {

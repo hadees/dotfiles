@@ -218,7 +218,7 @@ sends TERM to the pid of `panel.pid` when `ps` shows `serve` and `claude-tab`
 in its command, removes the file, exit 3 when nothing runs. `snapshot` prints
 the running server's `/snapshot.json` (python `urllib` without proxies, exit 3
 when nothing answers). `status` prints `server:`, `data:`, `focus:`, `needs:`
-and `tally:` lines, then `tool:` (`installed` with the marker, else `not installed`); exit 3
+and `tally:` lines, then `tool:` (`installed`, `installed, reload pending` with `panel.reload` beside the marker, else `not installed`); exit 3
 and `server: not running` when nothing answers.
 The invariant anyone can check while a prompt is open: the pids of
 `claude-tab attention` rows waiting four seconds or more are exactly the
@@ -249,17 +249,27 @@ nothing listened.
 the state directory (one line, the port) and two lines saying where the tool is
 and that the Toolbelt must be showing; a failure before the marker leaves none.
 `uninstall` is `stop` and removing the marker (iTerm2 has no call that removes a
-registration, so the tool is unticked by hand). `ensure` is silent: nothing
-without the marker, nothing while `/health` answers, else `start`, wait up to ten
-seconds for a fresh cookie (an iTerm2 restart has the wrapper minting one at the
-same moment; `CLAUDE_TAB_PANEL_COOKIE_WAIT` is the test handle for the step),
-then `register --quiet`; each failure is one line in `panel.log`. `claude()`
-(`.functions`) starts it on an attended launch in an iTerm2 session
-(`ITERM_SESSION_ID`) when the marker exists and `~/bin/claude-tab` is
-executable, with all three streams off the terminal as the cookie mint; a machine
-that never installed the panel pays one file test. **The first install is one
-line the operator types in an iTerm2 shell: `claude-tab panel install`**; after
-that every attended `claude` launch keeps it up.
+registration, so the tool is unticked by hand; it removes `panel.reload` too).
+`ensure` is silent and runs one at a time: nothing without the marker; nothing
+when `panel.ensure.lock` (a directory in the state directory) exists and is under
+a minute old, an older one being taken over; nothing while `/health` answers and
+no reload is owed; else `start`. **A registration is owed exactly when `ensure`
+had to start the server**: that call creates the empty `panel.reload`, waits up
+to ten seconds for a fresh cookie (an iTerm2 restart has the wrapper minting one
+at the same moment; `CLAUDE_TAB_PANEL_COOKIE_WAIT` is the test handle for the
+step), then `register --quiet`. Every successful `register` (this one, a typed
+one, `install`) removes the flag. When the cookie never came, the flag stays and
+`status` ends `tool: installed, reload pending`; every later `ensure` finds it
+and tries `register --quiet` once, without waiting and without a log line, when
+a fresh cookie is there. Each failed start or registration is one line in
+`panel.log`. `ensure` is started by `claude_tab_panel_ensure` in `.functions`,
+which `claude()` calls on an attended launch and `.zshrc` calls once per
+interactive shell, in an iTerm2 session (`ITERM_SESSION_ID`) when the marker
+exists and `~/bin/claude-tab` is executable, with all three streams off the
+terminal as the cookie mint; a machine that never installed the panel pays one
+file test. **The first install is one line the operator types in an iTerm2
+shell: `claude-tab panel install`**; after that the first shell of an iTerm2
+run, and every attended `claude` launch, keeps it up.
 
 **The page** is `dot_local/share/claude-tab/panel.html`, one file with no
 external resource and no framework, deployed to

@@ -1294,6 +1294,8 @@ lines_of() { wc -l < "$1" | tr -d ' '; }
   run sh "$CT" panel ensure
   [ "$status" -eq 0 ]
   [ "$(lines_of "$REG_LOG")" = 1 ]
+  [ ! -e "$HOME/.local/state/claude-tab/panel.reload" ]
+  [ ! -e "$HOME/.local/state/claude-tab/panel.ensure.lock" ]
 }
 
 @test "ensure that cannot register waits for the cookie, then leaves one line in the log" {
@@ -1308,4 +1310,81 @@ lines_of() { wc -l < "$1" | tr -d ' '; }
   [ -z "$output" ]
   [ ! -e "$REG_LOG" ]
   grep -Fq "claude-tab: no fresh iTerm2 API cookie" "$HOME/.local/state/claude-tab/panel.log"
+  sd=$HOME/.local/state/claude-tab
+  [ -e "$sd/panel.reload" ]
+  [ ! -e "$sd/panel.ensure.lock" ]
+  run sh "$CT" panel status
+  [ "${lines[${#lines[@]}-1]}" = "tool: installed, reload pending" ]
+  pid1=$(cut -d' ' -f1 "$sd/panel.pid")
+  log1=$(cat "$sd/panel.log")
+  # a later ensure finds the flag, waits for nothing and says nothing
+  run sh "$CT" panel ensure
+  [ "$status" -eq 0 ]
+  [ "$(cat "$sd/panel.log")" = "$log1" ]
+  [ ! -e "$REG_LOG" ]
+  [ -e "$sd/panel.reload" ]
+  cookie fresh
+  run sh "$CT" panel ensure
+  [ "$status" -eq 0 ]
+  [ "$(lines_of "$REG_LOG")" = 1 ]
+  [ ! -e "$sd/panel.reload" ]
+  [ "$(cut -d' ' -f1 "$sd/panel.pid")" = "$pid1" ]
+}
+
+# ensure_ready: marker for a free port, stub interpreter, fresh cookie.
+ensure_ready() {
+  reg_stub
+  cookie fresh
+  port=$(free_port)
+  git config --file "$GIT_CONFIG_GLOBAL" claude-tab.panel-port "$port"
+  export CLAUDE_TAB_PANEL_TICK=0.1
+  SD=$HOME/.local/state/claude-tab
+  mkdir -p "$SD"
+  echo "$port" > "$SD/panel.installed"
+}
+
+@test "two ensure started together leave one server and one registration" {
+  ensure_ready
+  sh "$CT" panel ensure 3>&- &
+  e1=$!
+  sh "$CT" panel ensure 3>&- &
+  e2=$!
+  wait "$e1" "$e2"
+  [ "$(lines_of "$REG_LOG")" = 1 ]
+  ! grep -q "Address already in use" "$SD/panel.log"
+  [ ! -e "$SD/panel.ensure.lock" ]
+  [ "$(grep -c "panel on" "$SD/panel.log")" = 1 ]
+}
+
+@test "ensure that finds a fresh lock returns at once and starts nothing" {
+  ensure_ready
+  mkdir "$SD/panel.ensure.lock"
+  run sh "$CT" panel ensure
+  [ "$status" -eq 0 ]
+  [ ! -e "$SD/panel.pid" ]
+  [ ! -e "$REG_LOG" ]
+  [ -d "$SD/panel.ensure.lock" ]
+}
+
+@test "ensure that finds a lock over a minute old takes it and works" {
+  ensure_ready
+  mkdir "$SD/panel.ensure.lock"
+  python3 -I -c 'import os,sys; os.utime(sys.argv[1], (1000,) * 2)' "$SD/panel.ensure.lock"
+  run sh "$CT" panel ensure
+  [ "$status" -eq 0 ]
+  [ "$(lines_of "$REG_LOG")" = 1 ]
+  [ ! -e "$SD/panel.ensure.lock" ]
+}
+
+@test "a typed register removes panel.reload, and so does uninstall" {
+  ensure_ready
+  : > "$SD/panel.reload"
+  run sh "$CT" panel register --quiet
+  [ "$status" -eq 0 ]
+  [ ! -e "$SD/panel.reload" ]
+  : > "$SD/panel.reload"
+  run sh "$CT" panel uninstall
+  [ "$status" -eq 0 ]
+  [ ! -e "$SD/panel.reload" ]
+  [ ! -e "$SD/panel.installed" ]
 }
