@@ -635,6 +635,9 @@ PY
 }
 
 @test "statuses: origins counts the cards by origin and copies stamps_ignored, marks copies health with defaults, shows tallies" {
+  # the demo board carries origins and marks now; blank them so the first reads are the defaults
+  edit board 'for c in d["cards"]: c.pop("origin", None)
+for k in ("stamps_ignored", "blocked", "blocked_linked", "blocked_clear", "needs_human"): d["health"].pop(k, None)'
   run py <<'PY'
 print(sorted(dict(a.statuses)["origins"]().items()))
 print(sorted(dict(a.statuses)["marks"]().items()))
