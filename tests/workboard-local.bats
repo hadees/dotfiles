@@ -237,11 +237,11 @@ claim_file() {
   printf '2027-01-01T00:05:00Z%sAlpha%sclaim%sFixture third claim\n' "$t" "$t" "$t" >> "$S/log"
   readdoc
   [ "$(field 'd["worktrees"][1]["open_claim"]')" = "Fixture third claim" ]
-  printf '2027-01-01T00:06:00Z%sSecretary%send%sAlpha ended after 3h\n' "$t" "$t" "$t" >> "$S/log"
+  printf '2027-01-01T00:06:00Z%sIdeas%send%sAlpha ended after 3h\n' "$t" "$t" "$t" >> "$S/log"
   readdoc
   [ "$(field 'd["worktrees"][1]["open_claim"]')" = None ]
   # a label that merely begins with the claim's label is someone else
-  printf '2027-01-01T00:07:00Z%sAlpha%sclaim%sFixture fourth claim\n2027-01-01T00:08:00Z%sSecretary%send%sAlphabet ended after 3h\n' \
+  printf '2027-01-01T00:07:00Z%sAlpha%sclaim%sFixture fourth claim\n2027-01-01T00:08:00Z%sIdeas%send%sAlphabet ended after 3h\n' \
     "$t" "$t" "$t" "$t" "$t" "$t" >> "$S/log"
   readdoc
   [ "$(field 'd["worktrees"][1]["open_claim"]')" = "Fixture fourth claim" ]

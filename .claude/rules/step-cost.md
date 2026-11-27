@@ -31,7 +31,7 @@ makes a column print zeros, not fail.
   session shows what it did in the window. A transcript with no record in it
   has no row.
 - The name is the last `agent-name` record, else the last `custom-title`,
-  else `-`. `role`: `lead` and `secretary` by the name's suffix, `slot` when
+  else `-`. `role`: `lead` and `ideas` by the name's suffix (`-secretary`, its old name, counts as `ideas`), `slot` when
   the project directory name holds `-claude-worktrees-`, else `other`.
 - A request is written once per content block with its usage repeated, so
   usage is kept once per `requestId` (the last record). `<synthetic>` records
