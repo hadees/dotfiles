@@ -29,7 +29,7 @@ run live. `notice` and `pane` do not exist.
 ## What a card is
 
 **A card is one deliverable: a thing that ends in a merged pull request or a
-closed issue.** It is not a session, a claim or a job. Four forms:
+closed issue.** It is not a session, a claim or a job. Five forms:
 
 | Form | Key | Exists because |
 | --- | --- | --- |
@@ -37,6 +37,7 @@ closed issue.** It is not a session, a claim or a job. Four forms:
 | `pr` | `<owner>/<repo>#<n>` | the account's own open pull request, or one merged inside the trial window, closes no issue on the board |
 | `local` | `<owner>/<repo>@<worktree name>` | a worktree holds a session and is on a task, and nothing else claims it |
 | `queue` | `<owner>/<repo>~<id>` | an inbox row in state `waiting` or `taken` is linked to no issue card |
+| `bot` | `<owner>/<repo>+<login>` | a listed bot has open work there (`workboard-bots.md`) |
 
 Folding, in this order: an own pull request whose `closes` names an issue card
 is drawn inside it; an inbox row linked to an issue card sets that card's
@@ -128,9 +129,7 @@ the default branch and the issues its `intake` selects (`mine` is two lists,
 assigned and created, `all` and `label:<name>` one, `none` none);
 `github.build_query` has the field lists. Owner, name and label reach it only as
 JSON string literals. Over 50 open pull requests puts `more than 50 open pull
-requests; some are not shown` on the account. The real repository
-list's cost is unrecorded (one repository plus the
-account: 2 points).
+requests; some are not shown` on the account. The real list's cost is unrecorded (one repository and the account: 2 points).
 
 **The budget rule.** `next_interval(cost, remaining, budget)` is `max(60,
 ceil(3600 * cost / budget))` seconds, doubled under 1,000 points remaining and
@@ -155,7 +154,7 @@ never a second repository, and the first group seen wins. The slug is the
 lowercased origin remote (`git_origin_slug`'s rule); one with no usable origin
 is counted in `skipped`. Per repository, git config
 `workboard.<owner/repo>.intake` (`mine` default, `all`, `label:<name>`, `none`),
-`.write`, `.take` (`ask` default, `auto`, `auto:<label>`) and `.notify-lead`;
+`.write`, `.take` (`ask` default, `auto`, `auto:<label>`), `.notify-lead` and `.bots`;
 any other value is the default.
 
 **What it reads is git metadata, claim files through `claude-peer`, and the
@@ -213,8 +212,7 @@ that the caller's scope holds, and appends `#r=<repo>`. Git config
 `workboard.<owner/repo>.view` changes that: `repo` (default), `set:<name>`
 (that set's `#s=`, when the scope's board names the set) or `all`; any other
 value is the default. A cwd the scope's board does not know gives the whole
-board. Only the page's starting filter moves: no token or access changes, and
-the page's chips can widen the view. A nonce is single-use, held in memory with its scope for
+board. Only the page's starting filter moves: no token or access changes, and the chips can widen it. A nonce is single-use, held in memory with its scope for
 60 s, 64 at most. Scope is the full one for a valid `X-Workboard-Ask`, else the
 profile `X-Workboard-Profile` names, else code 2. With `CLAUDECODE` unset,
 `workboard url` sends the proof, read from the secret; inside a session it opens
@@ -268,8 +266,7 @@ session is a filled dot, a job a ring (grey when stale); a click on a dot posts
 `go`. It polls `board.json` every 2 s with `If-None-Match`; after 6 s of silence
 the board dims, after 30 s it says "not updating since", and a changed `build`
 reloads it. Needs you draws a card only through a `needs` entry and counts
-`needs.length`. The trial length is **a constant of 7 in the page**: the board
-document has no such field, so it is wrong when `workboard.trial-days` is set
+`needs.length`. The trial length is **a constant of 7 in the page**: the board has no such field, so it is wrong when `workboard.trial-days` is set
 otherwise. Looked at by hand in headless Chrome on the fixture board; not
 looked at: the light scheme, a click, the silent states.
 
@@ -298,8 +295,7 @@ run in the client), `route(method, path, fn, open=False)` (gated by a tool key u
 `req.profile` is its profile, none when open), `after_github(fn)`, `status(name,
 fn)` (numbers and fixed words, merged into `/status.json`) and `ctx`, whose
 `ask(name, body, profile=None)` posts `/api/<name>` on the socket, returning
-`(code, text)`. A later part is a
-new file.
+`(code, text)`. A later part is a new file.
 
 ## Counts by hand, and fixture mode
 
@@ -316,20 +312,18 @@ reads the four input documents from the directory on every request, runs no
 pass, relays no click (`/go` is 409) and says `"fixture": true` on `/health`.
 **It is the only thing a session points a browser or a screenshot at**: no live
 title, body or label goes into a session's context or onto a disk, so a live
-check reads counts. `open --fixture` starts a fixture server on the configured port unless
-something already answers there, so beside a real server the port must differ.
+check reads counts. `open --fixture` serves a fixture on the configured port unless one answers there; beside a real server use another port.
 
 ## The tests
 
 `tests/fixtures/workboard/demo/` holds one scenario's five documents and the
-board they make. Names are invented; no real
+board they make. No real
 account, organisation, repository or session name belongs in a test, fixture or
 commit message. `tests/workboard-stubs/` has a stand-in for every module, each
 headed `# TEST STAND-IN`. **A part is tested alone**: `wb_modules <real module
 names>` builds a directory of symlinks to the
 real files named and to the stubs for the rest. A test that finds the helper, a
-stub or a fixture wrong says so and does not patch it. The serve tests set `WORKBOARD_LAUNCHCTL=false` so a Mac with the agent loaded
-cannot be kicked by a run.
+stub or a fixture wrong says so and does not patch it. The serve tests set `WORKBOARD_LAUNCHCTL=false`, so no run kicks a loaded agent.
 
 **`-I`, `-B` and the `sys.path` line.** `-I` leaves the script's directory off
 `sys.path`, so a file that imports a sibling first runs

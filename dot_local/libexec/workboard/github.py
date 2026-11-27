@@ -24,6 +24,7 @@ import origin
 DEFAULT_BUDGET = 1200
 TIMEOUT = 20
 OPEN_LIMIT = 50
+BOT_PR_LIMIT = 30
 TOO_MANY = "more than %d open pull requests; some are not shown" % OPEN_LIMIT
 LOW = "rate budget low"
 KEYS = ["v", "accounts", "repos", "issues", "prs"]
@@ -86,7 +87,7 @@ def tally() -> dict:
 
 
 def build_query(repos: list) -> str:
-    """Owner, name and label reach the document only as JSON string literals (json.dumps)."""
+    """Owner, name, label and bot login reach the document only as JSON string literals (json.dumps)."""
     order = "orderBy: {field: UPDATED_AT, direction: DESC}"
     closing = ("closingIssuesReferences(first: 5) { nodes { number title url state "
                "repository { nameWithOwner } } }")
@@ -120,6 +121,15 @@ def build_query(repos: list) -> str:
         elif intake.startswith("label:"):
             body.append("issues(first: 50, labels: [%s], states: OPEN, %s) { nodes { %s } }"
                         % (json.dumps(intake[6:]), order, issue))
+        bots = r.get("bots") or []
+        if bots:
+            body.append("bot_prs: pullRequests(first: %d, states: OPEN, %s) { totalCount nodes { number url isDraft "
+                        "headRefName updatedAt reviewDecision mergeStateStatus author { login __typename } "
+                        "commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } } }"
+                        % (BOT_PR_LIMIT, order))
+            for k, bot in enumerate(bots):
+                body.append("bot_issues_%d: issues(first: 3, filterBy: {createdBy: %s, states: OPEN}, %s) { nodes { %s } }"
+                            % (k, json.dumps(bot + "[bot]"), order, issue))
         parts.append("r%d: repository(owner: %s, name: %s) { %s }"
                      % (i, json.dumps(owner), json.dumps(name), " ".join(body)))
     parts.append("}")
@@ -171,7 +181,7 @@ def normalize(account: str, login: str, response: dict, repos: list) -> dict:
                 "draft": bool(p.get("isDraft")), "branch": p["headRefName"],
                 "updated_at": _epoch(p.get("updatedAt")) or merged_at, "merged_at": merged_at,
                 "review": p.get("reviewDecision") or "NONE", "merge": p.get("mergeStateStatus") or "UNKNOWN",
-                "checks": _checks(p) if state == "OPEN" else "NONE",
+                "checks": _checks(p) if state == "OPEN" else "NONE", "bot": None,
                 "closes": [{"slug": by_lower.get(c["repository"]["nameWithOwner"].lower(),
                                                  c["repository"]["nameWithOwner"]),
                             "number": c["number"], "title": c["title"], "url": c["url"], "state": c["state"]}
@@ -187,8 +197,23 @@ def normalize(account: str, login: str, response: dict, repos: list) -> dict:
             continue
         out["repos"][r["slug"]] = {"account": account, "error": None,
                                    "default_branch": (node.get("defaultBranchRef") or {}).get("name")}
+        bots = r.get("bots") or []
+        if bots:
+            out["repos"][r["slug"]]["bot_prs_cut"] = (node.get("bot_prs") or {}).get("totalCount", 0) > BOT_PR_LIMIT
+            for p in _nodes(node.get("bot_prs")):
+                who = p.get("author") or {}
+                login_l = (who.get("login") or "").lower()
+                if who.get("__typename") != "Bot" or login_l not in bots or (r["slug"], p["number"]) in seen:
+                    continue
+                seen.add((r["slug"], p["number"]))
+                out["prs"].append({
+                    "slug": r["slug"], "number": p["number"], "title": "", "url": p["url"], "state": "OPEN",
+                    "draft": bool(p.get("isDraft")), "branch": p["headRefName"],
+                    "updated_at": _epoch(p.get("updatedAt")), "merged_at": None,
+                    "review": p.get("reviewDecision") or "NONE", "merge": p.get("mergeStateStatus") or "UNKNOWN",
+                    "checks": _checks(p), "bot": login_l, "closes": []})
         found = {}
-        for key in ("assigned", "created", "issues"):
+        for key in ["assigned", "created", "issues"] + ["bot_issues_%d" % k for k in range(len(bots))]:
             for n in _nodes(node.get(key)):
                 found[n["number"]] = n
         for n in found.values():

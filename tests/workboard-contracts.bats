@@ -119,7 +119,7 @@ board|d["cards"][1]["queue"]["surplus"] = 1|surplus
 board|d["cards"][4]["prs"][0]["surplus"] = 1|surplus
 board|d["cards"][4]["holders"][0]["surplus"] = 1|surplus
 board|d["cards"][4]["sessions"][0]["surplus"] = 1|surplus
-board|d["cards"][8]["log"][0]["surplus"] = 1|surplus
+board|d["cards"][9]["log"][0]["surplus"] = 1|surplus
 board|d["needs"][0]["surplus"] = 1|surplus
 EOF
 }
@@ -149,7 +149,7 @@ EOF
   rejects board 'd["health"]["blocked"] = "1"' blocked
 }
 
-@test "board.json: the scenario's twelve cards, with their forms, stages, order and marks" {
+@test "board.json: the scenario's thirteen cards, with their forms, stages, order and marks" {
   run $WB_PY - "$WB_FIXTURES/demo/board.json" <<'PY'
 import json, sys
 b = json.load(open(sys.argv[1]))
@@ -157,10 +157,10 @@ P1, P2 = "octo-work-org/proj-one", "octo-personal/proj-two"
 want = {
     P1 + "~Q1": ("queue", "inbox"), P1 + "#12": ("issue", "inbox"), P1 + "~Q3": ("queue", "inbox"),
     P1 + "#11": ("issue", "inbox"), P1 + "#13": ("issue", "building"), P1 + "@agent-1": ("local", "building"),
-    P1 + "@agent-2": ("local", "building"), P1 + "#14": ("issue", "review"), P2 + "#25": ("issue", "building"),
+    P1 + "@agent-2": ("local", "building"), P1 + "+renovate": ("bot", "review"), P1 + "#14": ("issue", "review"), P2 + "#25": ("issue", "building"),
     P2 + "#21": ("pr", "review"), P2 + "#22": ("issue", "landed"), P2 + "#24": ("pr", "landed")}
 cards = b["cards"]
-assert {c["key"]: (c["form"], c["stage"]) for c in cards} == want and len(cards) == 12
+assert {c["key"]: (c["form"], c["stage"]) for c in cards} == want and len(cards) == 13
 assert [c["key"] for c in cards if c["in_needs"]] == [P1 + "#14"]
 assert [c["key"] for c in cards if c["unattended"]] == [P1 + "#13"]
 assert [n["id"] for n in b["needs"]] == ["s:default:4102", "s:personal:4202"]
@@ -171,7 +171,7 @@ queued = {c["key"]: c["queue"]["id"] for c in cards if c["queue"]}
 assert queued == {P1 + "~Q1": "Q1", P1 + "#12": "Q2", P1 + "~Q3": "Q3"}
 assert [c["queue"]["score"] for c in cards[:3]] == ["9.5", "12.0", "3.0"]
 h = b["health"]
-assert (h["cards"], h["unattended"], h["unjoined"], h["unjoined_jobs"], h["stale_jobs"]) == (12, 1, 1, 0, 1)
+assert (h["cards"], h["unattended"], h["unjoined"], h["unjoined_jobs"], h["stale_jobs"]) == (13, 1, 1, 0, 1)
 assert h["accounts"][0]["error"] == "more than 50 open pull requests; some are not shown" and h["accounts"][1]["error"] is None
 assert (b["v"], b["rev"], b["build"], b["scope"], b["generated_at"]) == (1, 1, "fixture", None, 1800000000.0)
 PY
@@ -311,7 +311,7 @@ assert scoped["scope"] == personal and [r["slug"] for r in scoped["repos"]] == [
 assert scoped["cards"] and all(c["slug"] == P2 for c in scoped["cards"])
 assert [n["id"] for n in scoped["needs"]] == ["s:personal:4202"]
 work = model.build_board({}, {}, {}, {}, 7, 1800000000.0, os.path.expanduser("~/.claude"))
-assert [n["id"] for n in work["needs"]] == ["s:default:4102"] and len(work["cards"]) + len(scoped["cards"]) == 12
+assert [n["id"] for n in work["needs"]] == ["s:default:4102"] and len(work["cards"]) + len(scoped["cards"]) == 13
 
 lines = open(os.path.join(demo, "calls.log")).read().splitlines()
 assert "github.poll local budget now" in lines, lines
@@ -472,7 +472,7 @@ import glob, json, os, re, sys
 owners, repos = {"octo-work-org", "octo-personal"}, {"proj-one", "proj-two"}
 slugs = {"octo-work-org/proj-one", "octo-personal/proj-two"}
 accounts = {"work-acct", "personal-acct", "-"}
-people = accounts | {"colleague-a", "colleague-b", "Lead", "Ideas"}
+people = accounts | {"colleague-a", "colleague-b", "renovate", "Lead", "Ideas"}
 bad = []
 
 def walk(v, key, where):

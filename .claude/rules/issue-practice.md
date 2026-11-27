@@ -192,6 +192,10 @@ card's `blockers`, the `blocked`, `blocked_linked`, `blocked_clear` and
 issue whose blockers are named in a comment has no count: nothing can check
 it.
 
+## The bots on the board
+
+The `bot` card, the `bots` key and the bots' counts are in `workboard-bots.md`.
+
 ## The tells
 
 - **An `origins:` line with `stamps ignored` above zero.** Somebody else's
@@ -208,3 +212,5 @@ it.
   outlived its blockers and may be removed. **`blocked` well above
   `blocked_linked`**: blockers are being named in comments.
 - **`bypassed` rising beside `asked`**, above.
+- **`bot_prs_cut` above zero.** A repository has more than 30 open pull
+  requests, and a bot's may be missing from its card.

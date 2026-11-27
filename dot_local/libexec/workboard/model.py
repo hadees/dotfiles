@@ -133,9 +133,13 @@ def build_board(github: dict, local: dict, who: dict, inbox: dict, trial_days: i
             add(i["slug"], "issue", key, i["number"], i["title"], i["url"], i["author"], list(i["labels"]),
                 i["body"], i["updated_at"], [_pr(p) for p in i["prs"]], kind, i.get("blockers"))
             assignees[key] = i["assignees"]
+    bot_prs = {}  # (slug, login) -> a bot's pull request rows, kept out of the pr cards
     for p in github["prs"]:
         slug = p["slug"]
         if slug not in repo_of:
+            continue
+        if p.get("bot"):
+            bot_prs.setdefault((slug, p["bot"]), []).append(p)
             continue
         pr = _pr(p)
         attached = [cards["%s#%d" % (slug, c["number"])] for c in p["closes"]
@@ -156,6 +160,27 @@ def build_board(github: dict, local: dict, who: dict, inbox: dict, trial_days: i
             else:
                 add(slug, "pr", "%s#%d" % (slug, p["number"]), p["number"], p["title"], p["url"], login, [], "",
                     p["updated_at"], [pr])
+
+    # The bots' roll-ups: one card per repository and bot, its dashboard issue folded in.
+    for slug, r in repo_of.items():
+        for login in r.get("bots", []):
+            theirs = bot_prs.get((slug, login), [])
+            dash = sorted((c for c in cards.values() if c["slug"] == slug and c["form"] == "issue"
+                           and c["origin"] == "bot" and c["author"] == login),
+                          key=lambda c: -c["updated_at"])
+            if not theirs and not dash:
+                continue
+            n = len(theirs)
+            head = dash[0] if dash else None
+            if head:
+                del cards[head["key"]], assignees[head["key"]]
+            card = add(slug, "bot", "%s+%s" % (slug, login), head["number"] if head else None,
+                       "%s: %s open pull request%s" % (login, n or "no", "" if n == 1 else "s"),
+                       head["url"] if head else "https://github.com/%s/pulls?q=is%%3Apr+is%%3Aopen+author%%3Aapp%%2F%s"
+                       % (slug, login),
+                       login, [], "", max([p["updated_at"] for p in theirs] + ([head["updated_at"]] if head else [])),
+                       [_pr(p) for p in theirs], "bot")
+            card["mine"] = False
 
     # Rule 2: queue rows.
     for row in inbox["rows"]:
@@ -248,7 +273,7 @@ def build_board(github: dict, local: dict, who: dict, inbox: dict, trial_days: i
                               and not (card["queue"] and card["queue"]["state"] == "taken"))
         card["in_needs"] = key in named  # the page draws a card in Needs you only through a `needs` entry
         take = repo_of[card["slug"]]["take"]
-        if card["stage"] != "inbox" or queued:
+        if card["stage"] != "inbox" or queued or card["form"] == "bot":
             card["takeable"] = "no"
         elif (card["assigned"] or card["mine"] or take == "auto"
               or (take.startswith("auto:") and take[5:] in card["labels"])):
@@ -261,6 +286,7 @@ def build_board(github: dict, local: dict, who: dict, inbox: dict, trial_days: i
     ordered = sorted(cards.values(), key=_sort_key)  # rule 9
     blocked = [c for c in ordered if c["form"] == "issue" and "blocked" in c["labels"]]
     errors = sum(1 for s in repo_of if github["repos"].get(s, {}).get("error"))
+    cut = sum(1 for s in repo_of if github["repos"].get(s, {}).get("bot_prs_cut"))
     used = {r["account"] for r in repos}
     panel_at = who["fetched_at"]
     groups = []
@@ -282,7 +308,8 @@ def build_board(github: dict, local: dict, who: dict, inbox: dict, trial_days: i
             "blocked_linked": sum(1 for c in blocked if c["blockers"] and c["blockers"]["total"] > 0),
             "blocked_clear": sum(1 for c in blocked if c["blockers"] and c["blockers"]["total"] > 0
                                  and c["blockers"]["open"] == 0),
-            "needs_human": sum(1 for c in ordered if c["form"] == "issue" and "needs-human" in c["labels"])},
+            "needs_human": sum(1 for c in ordered if c["form"] == "issue" and "needs-human" in c["labels"]),
+            "bot_cards": sum(1 for c in ordered if c["form"] == "bot"), "bot_prs_cut": cut},
         "groups": groups,
         "repos": [{"slug": r["slug"], "name": r["name"], "group": r["group"], "intake": r["intake"],
                    "write": r["write"]} for r in repos],

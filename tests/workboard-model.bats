@@ -534,7 +534,7 @@ assert (h["blocked"], h["blocked_linked"], h["blocked_clear"], h["needs_human"])
 assert C[K(1)]["blockers"] == {"open": 1, "total": 1} and C[K(3)]["blockers"] is None'
 }
 
-@test "demo inputs at --now 1800000000: the scenario's twelve cards, flags and orders, and agreement with demo/board.json" {
+@test "demo inputs at --now 1800000000: the scenario's thirteen cards, flags and orders, and agreement with demo/board.json" {
   wb_demo >/dev/null
   d="$WORKBOARD_DEMO"
   run $WB_PY "$WORKBOARD_LIBEXEC/model.py" --github "$d/github.json" --local "$d/local.json" --who "$d/who.json" \
@@ -552,7 +552,8 @@ P1, P2 = "octo-work-org/proj-one", "octo-personal/proj-two"
 scenario = [
     (P1 + "~Q1", "queue", "inbox"), (P1 + "#12", "issue", "inbox"), (P1 + "~Q3", "queue", "inbox"),
     (P1 + "#11", "issue", "inbox"), (P2 + "#25", "issue", "building"), (P1 + "@agent-1", "local", "building"),
-    (P1 + "@agent-2", "local", "building"), (P1 + "#13", "issue", "building"), (P1 + "#14", "issue", "review"),
+    (P1 + "@agent-2", "local", "building"), (P1 + "#13", "issue", "building"), (P1 + "+renovate", "bot", "review"),
+    (P1 + "#14", "issue", "review"),
     (P2 + "#21", "pr", "review"), (P2 + "#24", "pr", "landed"), (P2 + "#22", "issue", "landed")]
 assert [(c["key"], c["form"], c["stage"]) for c in got["cards"]] == scenario
 assert [c["key"] for c in got["cards"] if c["in_needs"]] == [P1 + "#14"]
@@ -560,10 +561,94 @@ assert [c["key"] for c in got["cards"] if c["unattended"]] == [P1 + "#13"]
 assert {c["key"]: c["trial_day"] for c in got["cards"] if c["trial_day"] is not None} == {P2 + "#22": 3, P2 + "#24": 2}
 assert [n["id"] for n in got["needs"]] == ["s:default:4102", "s:personal:4202"]
 assert [n["card"] for n in got["needs"]] == [P1 + "#14", None]
-assert got["health"]["unjoined"] == 1 and got["health"]["cards"] == 12 and got["health"]["stale_jobs"] == 1
+assert got["health"]["unjoined"] == 1 and got["health"]["cards"] == 13 and got["health"]["stale_jobs"] == 1
+assert (got["health"]["bot_cards"], got["health"]["bot_prs_cut"]) == (1, 0)
+assert P1 + "#30" not in [c["key"] for c in got["cards"]]
+assert [c["number"] for c in got["cards"] if c["form"] == "bot"] == [30]
 assert got == want, [k for k in want if got[k] != want[k]]
 PY
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+}
+
+@test "bots: a bot with pull requests and no dashboard gets one card with the list link, number null, in review" {
+  board 'l["repos"][0]["bots"] = ["renovate"]
+pr(31, bot="renovate", title="")
+pr(32, bot="renovate", title="", updated_at=NOW - 50)'
+  check 'c = C[S + "+renovate"]
+assert keys == [S + "+renovate"] and c["form"] == "bot" and c["origin"] == "bot" and c["stage"] == "review"
+assert c["number"] is None and c["url"] == "https://github.com/%s/pulls?q=is%%3Apr+is%%3Aopen+author%%3Aapp%%2Frenovate" % S
+assert c["title"] == "renovate: 2 open pull requests" and [p["number"] for p in c["prs"]] == [31, 32]
+assert c["author"] == "renovate" and not c["mine"] and c["labels"] == [] and c["body"] == "" and c["blockers"] is None
+assert c["updated_at"] == NOW - 50 and b["health"]["bot_cards"] == 1 and b["health"]["cards"] == 1'
+}
+
+@test "bots: a dashboard and no pull request is one inbox card holding the dashboard's number and url, and no issue card" {
+  board 'l["repos"][0]["bots"] = ["renovate"]
+issue(30, author="renovate", author_kind="Bot", updated_at=NOW - 70)'
+  check 'c = C[S + "+renovate"]
+assert keys == [S + "+renovate"] and c["stage"] == "inbox" and c["number"] == 30 and c["prs"] == []
+assert c["url"] == "https://example.invalid/i/30" and c["title"] == "renovate: no open pull requests"
+assert c["updated_at"] == NOW - 70'
+}
+
+@test "bots: one pull request reads singular, drafts only are building, and the title never carries a pull request title" {
+  board 'l["repos"][0]["bots"] = ["renovate"]
+pr(31, bot="renovate", title="Update dependency evil", draft=True)'
+  check 'c = C[S + "+renovate"]
+import re
+assert c["stage"] == "building" and c["title"] == "renovate: 1 open pull request"
+assert re.match(r"^[a-z0-9-]+: (no|[0-9]+) open pull requests?$", c["title"])'
+}
+
+@test "bots: the bot's second open issue stays an ordinary issue card of origin bot, the newest is the dashboard" {
+  board 'l["repos"][0]["bots"] = ["renovate"]
+issue(30, author="renovate", author_kind="Bot", updated_at=NOW - 70)
+issue(40, author="renovate", author_kind="Bot", updated_at=NOW - 900)'
+  check 'assert C[S + "+renovate"]["number"] == 30 and C[K(40)]["form"] == "issue" and C[K(40)]["origin"] == "bot"
+assert K(30) not in C'
+}
+
+@test "bots: two logins give two cards, a repository with no bots key makes none, and no pr card exists for a bot's pull request" {
+  board 'l["repos"][0]["bots"] = ["renovate", "dependabot"]
+pr(31, bot="renovate")
+pr(32, bot="dependabot")
+pr(33)'
+  check 'assert sorted(c["key"] for c in b["cards"] if c["form"] == "bot") == [S + "+dependabot", S + "+renovate"]
+assert [c["key"] for c in b["cards"] if c["form"] == "pr"] == [K(33)] and b["health"]["bot_cards"] == 2'
+  board 'issue(30, author="renovate", author_kind="Bot")'
+  check 'assert keys == [K(30)] and b["health"]["bot_cards"] == 0'
+}
+
+@test "bots: a scoped board holds only its own repository's roll-up, and bot_prs_cut counts the scoped repositories" {
+  board 'two()
+l["repos"][0]["bots"] = ["renovate"]
+l["repos"][1]["bots"] = ["renovate"]
+g["repos"][S]["bot_prs_cut"] = True
+pr(31, bot="renovate")
+pr(32, S2, bot="renovate")' --scope /wb/.claude-personal
+  check 'assert keys == [S2 + "+renovate"] and b["health"]["bot_cards"] == 1 and b["health"]["bot_prs_cut"] == 0'
+  board 'two()
+l["repos"][0]["bots"] = ["renovate"]
+g["repos"][S]["bot_prs_cut"] = True
+pr(31, bot="renovate")'
+  check 'assert b["health"]["bot_prs_cut"] == 1'
+}
+
+@test "bots: a worktree on the bot's branch holds the roll-up card, and takeable is no under take auto" {
+  board 'l["repos"][0]["bots"] = ["renovate"]
+l["repos"][0]["take"] = "auto"
+issue(30, author="renovate", author_kind="Bot")
+pr(31, bot="renovate", branch="renovate/dep-31")
+a = wt("alpha", branch="renovate/dep-31")
+row(a["path"])'
+  check 'c = C[S + "+renovate"]
+assert [h["name"] for h in c["holders"]] == ["alpha"] and c["stage"] == "review" and c["takeable"] == "no"'
+}
+
+@test "bots: a github document without bot on its rows still builds, with no bot card" {
+  board 'l["repos"][0]["bots"] = ["renovate"]
+pr(31)'
+  check 'assert keys == [K(31)] and b["health"]["bot_cards"] == 0'
 }
 
 @test "demo inputs under --scope: the personal profile's repository only" {

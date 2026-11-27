@@ -201,15 +201,16 @@ function sessionMark(s) {
   }
   return m;
 }
-function prMarks(prs) {
-  const out = [];
-  prs.filter(function (p) { return p.state === "OPEN"; }).forEach(function (p) {
+function prMarks(prs, cap) {
+  const out = [], open = prs.filter(function (p) { return p.state === "OPEN"; });
+  open.slice(0, cap || open.length).forEach(function (p) {
     const m = h("span", null, "PR #" + p.number + " ");
     m.append(h("span", p.checks === "SUCCESS" ? "good" : p.checks === "FAILURE" ? "bad" : "", CHECK[p.checks] || "○"));
     out.push(m);
     if (p.review === "CHANGES_REQUESTED") out.push(h("span", "warn", "changes requested"));
     if (p.draft) out.push(h("span", null, "draft"));
   });
+  if (cap && open.length > cap) out.push(h("span", null, "+" + (open.length - cap) + " more"));
   return out;
 }
 const ORIGIN_MARK = { session: ["filed by a session", ""], teammate: ["a colleague's", ""], outside: ["from outside", "warn"], bot: ["from a bot", "warn"] };
@@ -225,8 +226,8 @@ function waitMarks(c) {
 function marks(c, reason) {
   const row = h("div", "marks");
   c.sessions.forEach(function (s) { row.append(sessionMark(s)); });
-  prMarks(c.prs).forEach(function (m) { row.append(m); });
-  if (c.trial_day != null) {
+  prMarks(c.prs, c.form === "bot" ? 3 : 0).forEach(function (m) { row.append(m); });
+  if (c.trial_day != null && c.form !== "bot") {
     row.append(h("span", null, c.form === "issue" ? "trial " + c.trial_day + "d" : "trial " + c.trial_day + "/" + TRIAL_DAYS));
   }
   if (c.queue) {
@@ -450,7 +451,7 @@ function renderDrawer() {
       c.log.forEach(function (x) { e.append(h("div", "line mono", x.at + " · " + x.who + " · " + x.kind + " · " + x.text)); });
     }
     if (c.url) {
-      const o = h("button", null, "Open on GitHub");
+      const o = h("button", null, c.form === "bot" ? (c.number != null ? "dashboard" : "open pull requests") : "Open on GitHub");
       o.dataset.open = c.key;
       const l = h("div", "line");
       l.append(o);

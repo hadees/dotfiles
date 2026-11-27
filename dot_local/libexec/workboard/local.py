@@ -7,6 +7,7 @@ nothing live. Standard library, clean on 3.9.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -33,6 +34,17 @@ def _git(*args: str, cwd: Optional[str] = None) -> Optional[str]:
 
 def _config(key: str, cwd: Optional[str] = None) -> str:
     return (_git("config", "--get", key, cwd=cwd) or "").strip()
+
+
+def _bots(slug: str, cwd: str) -> list:
+    """The bot logins for slug: its own key, else its owner's; `none` is empty."""
+    value = _config("workboard.%s.bots" % slug, cwd=cwd) or _config("workboard.%s.bots" % slug.split("/")[0], cwd=cwd)
+    bots = []
+    for name in re.split(r"[ ,]+", value.lower()):
+        name = name[:-5] if name.endswith("[bot]") else name
+        if re.match(r"^[a-z0-9][a-z0-9-]*$", name) and name != "none" and name not in bots:
+            bots.append(name)
+    return bots[:4]
 
 
 def _tool(env: str, default: str) -> Optional[str]:
@@ -133,7 +145,8 @@ def _repos(also: list) -> tuple:
             "intake": intake if intake in ("all", "none") or intake.startswith("label:") else "mine",
             "write": _config(key + "write", cwd=dir) == "true",
             "take": take if take == "auto" or take.startswith("auto:") else "ask",
-            "notify_lead": _config(key + "notify-lead", cwd=dir) == "true"})
+            "notify_lead": _config(key + "notify-lead", cwd=dir) == "true",
+            "bots": _bots(slug, dir)})
     return repos, skipped
 
 
