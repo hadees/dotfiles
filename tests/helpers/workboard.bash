@@ -80,15 +80,17 @@ PY
 
 # wb_modules <name>...: a module directory of symlinks, each to the real file
 # for a name given (failing when there is none) and to step 1's stub for every
-# other module that has one; exports WORKBOARD_LIBEXEC and prints it.
+# other module that has one, and always to the real origin.py (pure, no stub);
+# exports WORKBOARD_LIBEXEC and prints it.
 wb_modules() {
-  local all="board model github local who inbox verbs mcp_endpoint service notice pane" n d
+  local all="board model github local who inbox verbs mcp_endpoint service notice pane origin" n d
   for n in "$@"; do
     case " $all " in *" $n "*) ;; *) echo "wb_modules: no such module $n" >&2; return 1 ;; esac
     [ -f "$WB_SRC/$n.py" ] || { echo "wb_modules: $WB_SRC/$n.py does not exist" >&2; return 1; }
   done
   d="$(mktemp -d "$BATS_TEST_TMPDIR/modules.XXXXXX")" || return 1
-  for n in $all; do
+  ln -s "$WB_SRC/origin.py" "$d/origin.py"
+  for n in ${all/origin/}; do
     case " $* " in
       *" $n "*) ln -s "$WB_SRC/$n.py" "$d/$n.py" ;;
       *) if [ -f "$WB_STUBS/$n.py" ]; then ln -s "$WB_STUBS/$n.py" "$d/$n.py"; fi ;;

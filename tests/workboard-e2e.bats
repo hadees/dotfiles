@@ -19,7 +19,7 @@ load helpers/workboard
 setup() {
   wb_setup
   unset GH_TOKEN GITHUB_TOKEN GH_NO_TOKEN
-  wb_modules board model github local who inbox >/dev/null
+  wb_modules board model github local who inbox verbs >/dev/null
   WB="$WB_ROOT/bin/executable_workboard"
   PORT="$(wb_free_port)"
   PANEL_PORT="$(wb_free_port)"
@@ -240,6 +240,35 @@ boot() {
   [ "$(bget 'd["health"]["panel"]')" = ok ]
 }
 
+@test "the real reader and model give each issue card its origin, count the marks, and a scoped board counts only its own" {
+  boot
+  fetch_board
+  wb_shape board "$BATS_TEST_TMPDIR/resp.body"
+  [ "$(bget 'sorted((c["number"], c["origin"]) for c in d["cards"] if c["form"] == "issue")')" = "[(11, 'teammate'), (14, 'hand'), (25, 'hand'), (30, 'outside'), (31, 'hand')]" ]
+  [ "$(bget '{k: d["health"][k] for k in ("stamps_ignored", "blocked", "blocked_linked", "blocked_clear", "needs_human")}')" = "{'stamps_ignored': 0, 'blocked': 1, 'blocked_linked': 1, 'blocked_clear': 1, 'needs_human': 1}" ]
+  [ "$(bget 'next(c["blockers"] for c in d["cards"] if c["number"] == 14)')" = "{'open': 0, 'total': 2}" ]
+  # the profile's own board: the personal repository has no mark, the work one has all of them
+  scoped() {
+    hreq --local POST /api/url -H "X-Workboard: 1" -H "X-Workboard-Profile: $1" -d '{}' || return 1
+    TOK="$(link_token "$(bget 'd["text"]')")"
+    fetch_board
+  }
+  scoped "$HOME/.claude-personal"
+  [ "$(bget 'sorted({c["origin"] for c in d["cards"] if c["form"] == "issue"})')" = "['hand', 'outside']" ]
+  [ "$(bget '[d["health"][k] for k in ("blocked", "needs_human")]')" = "[0, 0]" ]
+  scoped "$HOME/.claude"
+  [ "$(bget '[d["health"][k] for k in ("blocked", "needs_human")]')" = "[1, 1]" ]
+}
+
+@test "status prints the origins and marks counts and no title, label or repository name" {
+  boot
+  run -0 "$WB" status
+  [[ "$output" == *$'\norigins: bot 0 · hand 3 · outside 1 · session 0 · stamps ignored 0 · teammate 1\n'* ]]
+  [[ "$output" == *$'\nmarks: blocked 1 · blocked clear 1 · blocked linked 1 · needs human 1\n'* ]]
+  counts="$(grep -E '^(origins|marks):' <<< "$output")"
+  [[ "$counts" != *Fixture* && "$counts" != *proj-* && "$counts" != *bug* ]]
+}
+
 @test "a needs row whose registry cwd is in the pull request's worktree carries that card's key, and the card is in_needs" {
   boot
   fetch_board
@@ -342,6 +371,10 @@ PY
   got="$(bget 'sorted((c["key"], c["stage"]) for c in d["cards"])')"
   want="$(jget "$WORKBOARD_DEMO/board.json" 'sorted((c["key"], c["stage"]) for c in d["cards"])')"
   [ "$got" = "$want" ]
+  # every origin and mark the real model gives the demo's issues
+  [ "$(bget 'sorted((c["number"], c["origin"]) for c in d["cards"] if c["form"] == "issue")')" = "[(11, 'teammate'), (12, 'outside'), (13, 'teammate'), (14, 'hand'), (22, 'session'), (25, 'hand')]" ]
+  [ "$(bget '{k: d["health"][k] for k in ("stamps_ignored", "blocked", "blocked_linked", "blocked_clear", "needs_human")}')" = "{'stamps_ignored': 1, 'blocked': 2, 'blocked_linked': 2, 'blocked_clear': 1, 'needs_human': 1}" ]
+  [ "$(bget '{c["number"]: c["blockers"] for c in d["cards"] if c["number"] in (13, 14)}')" = "{13: {'open': 1, 'total': 1}, 14: {'open': 0, 'total': 2}}" ]
   # the real model's board is the fixture board, whatever the clock
   [ "$(bget '[c["key"] for c in d["cards"]]')" = "$(jget "$WORKBOARD_DEMO/board.json" '[c["key"] for c in d["cards"]]')" ]
   run ! grep -q '^api graphql' "$GH_LOG"

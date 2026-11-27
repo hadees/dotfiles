@@ -33,7 +33,7 @@ closed issue.** It is not a session, a claim or a job. Four forms:
 
 | Form | Key | Exists because |
 | --- | --- | --- |
-| `issue` | `<owner>/<repo>#<n>` | an open issue passes the repository's `intake` |
+| `issue` | `<owner>/<repo>#<n>` | an open issue passes the repository's `intake` (`issue-practice.md`) |
 | `pr` | `<owner>/<repo>#<n>` | the account's own open pull request, or one merged inside the trial window, closes no issue on the board |
 | `local` | `<owner>/<repo>@<worktree name>` | a worktree holds a session and is on a task, and nothing else claims it |
 | `queue` | `<owner>/<repo>~<id>` | an inbox row in state `waiting` or `taken` is linked to no issue card |
@@ -128,9 +128,9 @@ the default branch and the issues its `intake` selects (`mine` is two lists,
 assigned and created, `all` and `label:<name>` one, `none` none);
 `github.build_query` has the field lists. Owner, name and label reach it only as
 JSON string literals. Over 50 open pull requests puts `more than 50 open pull
-requests; some are not shown` on the account. The cost over the real
-repository list has not been recorded (one repository plus the account part
-measured 2 points).
+requests; some are not shown` on the account. The real repository
+list's cost is unrecorded (one repository plus the
+account: 2 points).
 
 **The budget rule.** `next_interval(cost, remaining, budget)` is `max(60,
 ceil(3600 * cost / budget))` seconds, doubled under 1,000 points remaining and

@@ -15,7 +15,8 @@ setup() {
   export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig"
   export GIT_CONFIG_SYSTEM=/dev/null
   export GIT_CONFIG_NOSYSTEM=1
-  unset GH_TOKEN GH_REPO GH_STUB_NO_TOKEN_FOR
+  unset GH_TOKEN GH_REPO GH_STUB_NO_TOKEN_FOR CLAUDECODE GH_ISSUE_STAMP GH_PRIVATE_CHECK CLAUDE_CODE_SESSION_ID
+  export XDG_STATE_HOME="$BATS_TEST_TMPDIR/state"
 
   # Fixture pins: one "work" org and one "personal" owner, each mapped to a
   # gh account name.
@@ -196,7 +197,7 @@ EOF
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; gh-doctor"
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: gh: function"* ]]
-  [[ "$output" == *"defined: ok (3 helpers)"* ]]
+  [[ "$output" == *"defined: ok (8 helpers)"* ]]
   [[ "$output" == *"binary:  $BATS_TEST_TMPDIR/bin/gh"* ]]
   [[ "$output" == *"account: personal-acct"* ]]
   [[ "$output" == *"pins:    octo-work-org -> work-acct, octo-personal -> personal-acct"* ]]

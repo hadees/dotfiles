@@ -451,6 +451,89 @@ issue(7)'
   check 'assert b["health"]["unjoined"] == 0 and b["health"]["unjoined_jobs"] == 1 and b["needs"] == []'
 }
 
+@test "origin: the account's own issue is hand, or session when stamped; another's is teammate when tied, else outside" {
+  board 'STAMP = "<!-- workboard:filed-by-session v1 -->"
+issue(1, author="work-acct")
+issue(2, author="work-acct", body="Fixture body\n\n" + STAMP)
+issue(3, association="MEMBER")
+issue(4, association="NONE")
+issue(5, author=None)
+issue(6, author_kind="Bot", association="NONE")'
+  check 'assert [C[K(n)]["origin"] for n in (1, 2, 3, 4, 5, 6)] == ["hand", "session", "teammate", "outside", "outside", "bot"]
+assert all(C[K(n)]["blockers"] is None for n in range(1, 7))'
+}
+
+@test "origin: a stamp past character 4,000 still makes a session issue, because the whole body is classified" {
+  board 'issue(1, author="work-acct", body="x" * 5000 + "\n<!-- workboard:filed-by-session v1 -->")'
+  check 'assert len(C[K(1)]["body"]) == 4000 and C[K(1)]["origin"] == "session"'
+}
+
+@test "origin: an issue of the account that somebody else edited is teammate, and mine and takeable do not move" {
+  board 'issue(1, author="work-acct", editor="colleague-b")
+issue(2, author="work-acct")'
+  check 'assert C[K(1)]["origin"] == "teammate" and C[K(2)]["origin"] == "hand"
+assert C[K(1)]["mine"] is True and C[K(1)]["takeable"] == C[K(2)]["takeable"] == "yes"'
+}
+
+@test "origin: an account whose login is unknown owns no issue, so none is hand or session" {
+  board 'g["accounts"]["work-acct"]["login"] = None
+issue(1, author="work-acct", association="OWNER", body="Fixture\n<!-- workboard:filed-by-session v1 -->")
+issue(2, author="work-acct")'
+  check 'assert C[K(1)]["origin"] == "teammate" and C[K(2)]["origin"] == "outside"'
+}
+
+@test "origin: a github document without the new fields still builds, every issue not the account's is outside" {
+  board 'issue(1)
+issue(2, author="work-acct")'
+  check 'assert C[K(1)]["origin"] == "outside" and C[K(2)]["origin"] == "hand" and C[K(1)]["blockers"] is None'
+}
+
+@test "origin: a card that is not an issue has origin and blockers null, a merged pull request's issue included" {
+  board 'issue(1)
+pr(12)
+pr(13, state="MERGED", merged_at=NOW - DAY, closes=closes(3))
+qrow("Q1")'
+  check 'assert C[K(1)]["origin"] == "outside"
+assert {c["form"]: (c["origin"], c["blockers"]) for k, c in C.items() if k != K(1)} == {
+    "pr": (None, None), "issue": (None, None), "queue": (None, None)}'
+}
+
+@test "health.stamps_ignored counts a stamp on an issue that is not the account's, and none on its own" {
+  board 'S_ = "\n<!-- workboard:filed-by-session v1 -->"
+issue(1, author="work-acct", body="a" + S_)
+issue(2, association="NONE", body="b" + S_)
+issue(3, association="MEMBER", body="c" + S_)
+issue(4, association="MEMBER", body="d")
+issue(5, author="work-acct", editor="colleague-b", body="e" + S_)'
+  check 'assert b["health"]["stamps_ignored"] == 2'
+}
+
+@test "health.stamps_ignored under --scope counts only the scoped cards" {
+  board 'two()
+issue(1, association="NONE", body="a\n<!-- workboard:filed-by-session v1 -->")
+issue(2, slug=S2, association="NONE", body="b")'
+  check 'assert b["health"]["stamps_ignored"] == 1'
+  board 'two()
+issue(1, association="NONE", body="a\n<!-- workboard:filed-by-session v1 -->")
+issue(2, slug=S2, association="NONE", body="b")' --scope /wb/.claude-personal
+  check 'assert b["health"]["stamps_ignored"] == 0'
+}
+
+@test "health: blocked, blocked_linked, blocked_clear and needs_human count issue cards by exact label, and the card carries the blockers" {
+  board 'issue(1, labels=["blocked"], blockers={"open": 1, "total": 1})
+issue(2, labels=["blocked"], blockers={"open": 0, "total": 2})
+issue(3, labels=["blocked"])
+issue(4, labels=["blocked"], blockers={"open": 0, "total": 0})
+issue(5, labels=["Blocked", "Needs-Human"], blockers={"open": 2, "total": 2})
+issue(6, labels=["needs-human", "blocked"], blockers={"open": 0, "total": 1})
+issue(7, labels=["needs-human"])
+pr(12)
+qrow("Q1")'
+  check 'h = b["health"]
+assert (h["blocked"], h["blocked_linked"], h["blocked_clear"], h["needs_human"]) == (5, 3, 2, 2)
+assert C[K(1)]["blockers"] == {"open": 1, "total": 1} and C[K(3)]["blockers"] is None'
+}
+
 @test "demo inputs at --now 1800000000: the scenario's twelve cards, flags and orders, and agreement with demo/board.json" {
   wb_demo >/dev/null
   d="$WORKBOARD_DEMO"

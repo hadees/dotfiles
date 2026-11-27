@@ -43,6 +43,15 @@ the caller, and the calling shell's non-default pattern/glob options —
 read before any `emulate`, so a pasted transcript says which shell it
 came from.
 
+`gh-doctor` prints two more lines after its account lines. `issues:` says
+`stamp guard on`, `stamp guard off (this owner has not opted in:
+gh.<owner>.issue-stamp)` or `stamp guard not here (no pinned owner)` for the
+cwd's origin owner, then the tally (`stamped`, `refused`, `unchecked`,
+`bypassed`). `private:` appears only where the owner has
+`gh.<owner>.private-issues`, and shows where private details go and the
+counts `asked`, `passed`, `unkeyed`, `unknown` and `bypassed`
+(`issue-practice.md`).
+
 `workboard-doctor` prints `wrapper:` and `defined:` as `<none>` (the work board
 is a script that calls no helpers), `script:` (the path, `WARNING` when it is
 not `~/bin/workboard`, `NOT FOUND (chezmoi apply; macOS only)` when nothing is on `PATH`), `agent:` (`no

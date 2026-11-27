@@ -106,6 +106,8 @@ GITHUB = {
     "issues": many({
         "slug": STR, "number": INT, "title": STR, "url": STR, "body": STR, "updated_at": INT,
         "author": maybe(STR), "assignees": many(STR), "labels": many(STR),
+        "author_kind": maybe(STR), "association": STR, "editor": maybe(STR),
+        "blockers": maybe({"open": INT, "total": INT}),
         "prs": many({"number": INT, "url": STR, "state": PR_STATE, "draft": BOOL, "merged_at": maybe(INT),
                      "branch": STR, "author": maybe(STR)})}),
     "prs": many({
@@ -148,6 +150,8 @@ CARD = {
     "key": STR, "form": enum("local", "pr", "issue", "queue"), "slug": STR, "repo": STR, "group": STR,
     "number": maybe(INT), "title": STR, "url": maybe(STR), "stage": enum("inbox", "building", "review", "landed"),
     "in_needs": BOOL, "author": maybe(STR), "mine": BOOL, "assigned": BOOL, "labels": many(STR), "body": STR,
+    "origin": maybe(enum("hand", "session", "teammate", "outside", "bot")),
+    "blockers": maybe({"open": INT, "total": INT}),
     "updated_at": INT, "trial_day": maybe(INT), "unattended": BOOL, "takeable": enum("yes", "ask", "no"),
     "queue": maybe({"id": STR, "state": STATE, "kind": STR, "order": maybe(INT), "tier": maybe(INT),
                     "score": maybe(STR), "terms": maybe(STR), "cand": BOOL, "file": maybe(STR)}),
@@ -168,7 +172,8 @@ BOARD = {
         "accounts": many({"account": STR, "fetched_at": NUM, "interval": INT, "remaining": INT, "error": maybe(STR)}),
         "panel": enum("ok", "down"), "panel_age": maybe(NUM), "jobs": enum("off", "ok", "error"),
         "inbox": enum("none", "queue"), "inbox_errors": INT, "repos": INT, "repo_errors": INT, "cards": INT,
-        "unattended": INT, "unjoined": INT, "unjoined_jobs": INT, "stale_jobs": INT},
+        "unattended": INT, "unjoined": INT, "unjoined_jobs": INT, "stale_jobs": INT,
+        "stamps_ignored": INT, "blocked": INT, "blocked_linked": INT, "blocked_clear": INT, "needs_human": INT},
     "groups": many(STR),
     "repos": many({"slug": STR, "name": STR, "group": STR, "intake": STR, "write": BOOL}),
     "cards": many(CARD),
