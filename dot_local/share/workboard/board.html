@@ -212,6 +212,16 @@ function prMarks(prs) {
   });
   return out;
 }
+const ORIGIN_MARK = { session: ["filed by a session", ""], teammate: ["a colleague's", ""], outside: ["from outside", "warn"], bot: ["from a bot", "warn"] };
+const ORIGIN_HEAD = { hand: "written by hand", session: "filed by a session", teammate: "a colleague's", outside: "from outside", bot: "from a bot" };
+function waitMarks(c) {
+  const labels = c.labels || [], b = c.blockers, out = [];
+  if (labels.indexOf("needs-human") >= 0) out.push("needs the operator");
+  if (labels.indexOf("blocked") >= 0) {
+    out.push(b && b.total > 0 ? (b.open > 0 ? "blocked · " + b.open + " open" : "blocked · blockers closed") : "blocked");
+  }
+  return out;
+}
 function marks(c, reason) {
   const row = h("div", "marks");
   c.sessions.forEach(function (s) { row.append(sessionMark(s)); });
@@ -225,6 +235,9 @@ function marks(c, reason) {
     if (c.queue.kind === "unfinished") row.append(h("span", null, "unfinished"));
   }
   if (c.unattended) row.append(h("span", "warn", "nobody on it"));
+  const om = ORIGIN_MARK[c.origin];
+  if (om) row.append(h("span", om[1], om[0]));
+  waitMarks(c).forEach(function (w) { row.append(h("span", "warn", w)); });
   if (reason) row.append(h("span", null, reason));
   row.append(h("span", "age", age(c.updated_at)));
   return row;
@@ -424,6 +437,7 @@ function renderDrawer() {
         e.append(h("div", "line mono", x.name + (x.branch ? " · " + x.branch : "") + (x.task ? " · " + x.task : "")));
       });
     }
+    if (ORIGIN_HEAD[c.origin]) { head("Origin"); e.append(h("div", "line mono", ORIGIN_HEAD[c.origin])); }
     if (c.labels.length) { head("Labels"); e.append(h("div", "line mono", c.labels.join(" · "))); }
     if (c.queue) {
       head("Queue");
