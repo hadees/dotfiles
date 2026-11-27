@@ -294,6 +294,7 @@ boot() {
   run -0 "$WB" status
   counts="$(grep -E '^origins:' <<< "$output")"
   [[ "$counts" == *"bot 1"* && "$counts" != *renovate* && "$counts" != *Dependency* ]]
+  [[ "$output" == *$'\nbots: cards 1 · prs cut 0\n'* ]]
 }
 
 @test "with no bots key the same fixtures make no bot card, and no card for issue 30 or pull requests 31 to 34" {

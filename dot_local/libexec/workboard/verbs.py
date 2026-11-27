@@ -340,6 +340,11 @@ def _marks(ctx):
     return {k: health.get(k, 0) for k in ("blocked", "blocked_linked", "blocked_clear", "needs_human")}
 
 
+def _bots(ctx):
+    health = (ctx.board() or {}).get("health") or {}
+    return {"cards": health.get("bot_cards", 0), "prs_cut": health.get("bot_prs_cut", 0)}
+
+
 def _parser(positional=(), options=(), flags=()):
     def parse(argv):
         body, rest, it = {"dir": os.getcwd()}, [], iter(argv)
@@ -374,4 +379,5 @@ def register(app):
     app.status("writes", lambda: dict(_counts))
     app.status("origins", lambda: _origins(app.ctx))
     app.status("marks", lambda: _marks(app.ctx))
+    app.status("bots", lambda: _bots(app.ctx))
     app.status("shows", lambda: dict(_shows))

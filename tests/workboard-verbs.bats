@@ -78,13 +78,13 @@ PRE
   } | wb_driver "$WORKBOARD_LIBEXEC"
 }
 
-@test "register: five api, five cli and the writes, origins, marks and shows statuses, no command or route" {
+@test "register: five api, five cli and the writes, origins, marks, bots and shows statuses, no command or route" {
   run py <<'PY'
 print([n for n, _ in a.apis], [n for n, _ in a.clis], [n for n, _ in a.statuses])
 print(len(a.commands), len(a.routes), len(a.after_githubs))
 PY
   [ "$status" -eq 0 ]
-  [ "${lines[0]}" = "['list', 'take', 'add', 'move', 'show'] ['list', 'take', 'add', 'move', 'show'] ['writes', 'origins', 'marks', 'shows']" ]
+  [ "${lines[0]}" = "['list', 'take', 'add', 'move', 'show'] ['list', 'take', 'add', 'move', 'show'] ['writes', 'origins', 'marks', 'bots', 'shows']" ]
   [ "${lines[1]}" = "0 0 0" ]
 }
 
