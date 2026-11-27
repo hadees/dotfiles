@@ -1,0 +1,8 @@
+name: ideas-go
+role: peer
+fail: work-sonnet
+fail: (I'll|I will) (build|implement)
+pass: approvals-ledger
+pass: queue
+
+You were started at a pane with the Ideas seat note. The plan you had written is at /tmp/plan.md. The operator says: go, build it.

@@ -91,9 +91,15 @@ write(proj + "aaaa/subagents/agent-x.jsonl", [
     user(200, tool_result, side=True),
 ])
 write(proj + "bbbb.jsonl", [
-    {"type": "custom-title", "customTitle": "bravo-secretary", "sessionId": "bbbb"},
-    user(20, "FX-SECRETARY"),
+    {"type": "custom-title", "customTitle": "bravo-ideas", "sessionId": "bbbb"},
+    user(20, "FX-IDEAS"),
     asst(30, "b1", (1, 0, 10, 1)),
+])
+# a transcript named for the Ideas seat's old name still reads as ideas
+write(proj + "ffff.jsonl", [
+    {"type": "custom-title", "customTitle": "foxtrot-secretary", "sessionId": "ffff"},
+    user(25, "FX-OLD-NAME"),
+    asst(35, "f1", (1, 0, 10, 1)),
 ])
 write(root + "/projects/-fx-proj-claude-worktrees-gamma/cccc.jsonl", [
     user(40, "FX-SLOT"),
@@ -129,7 +135,8 @@ col() { printf '%s\n' "$output" | awk -F'\t' -v n="$1" -v c="$2" '$2 == n { prin
   run "$SC" sessions
   [ "$status" -eq 0 ]
   [ "$(col alpha-lead 1)" = lead ]
-  [ "$(col bravo-secretary 1)" = secretary ]
+  [ "$(col bravo-ideas 1)" = ideas ]
+  [ "$(col foxtrot-secretary 1)" = ideas ]
   [ "$(col delta-plain 1)" = other ]
   [ "$(printf '%s\n' "$output" | awk -F'\t' '$2 == "-" { print $1 }')" = slot ]
 }
@@ -144,7 +151,7 @@ col() { printf '%s\n' "$output" | awk -F'\t' -v n="$1" -v c="$2" '$2 == n { prin
   run "$SC" sessions
   # alpha-lead holds seven user records and only two are prompts a person typed
   [ "$(col alpha-lead 6)" = 2 ]
-  [ "$(col bravo-secretary 6)" = 1 ]
+  [ "$(col bravo-ideas 6)" = 1 ]
 }
 
 @test "sessions: only records inside the window count, and a transcript with none has no row" {
@@ -152,9 +159,9 @@ col() { printf '%s\n' "$output" | awk -F'\t' -v n="$1" -v c="$2" '$2 == n { prin
   [ "$(col delta-plain 6)" = 1 ]
   run "$SC" sessions --since 40
   [ "$(col delta-plain 6)" = 2 ]
-  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" = 4 ]
-  run "$SC" sessions --since 1000
   [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" = 5 ]
+  run "$SC" sessions --since 1000
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" = 6 ]
 }
 
 @test "sessions: --dir names the profile, else CLAUDE_CONFIG_DIR, else ~/.claude" {
