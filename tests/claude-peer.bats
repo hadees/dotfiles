@@ -1876,41 +1876,41 @@ groups() {
 # pyget <json> <python expression over g>
 pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(eval(sys.argv[2]))' "$1" "$2"; }
 
-@test "workgroup: Claude Peers is three sessions, Lead the root, Ideas and Agents, no Diff, no Hermes" {
+@test "workgroup: Claude Peers is four sessions, Lead the root, Ideas, Agents and PRs, no Diff, no Hermes" {
   mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist" run sh "$BIN" workgroup
   [ "$status" -eq 0 ]
   [ "$(pyget "$output" '[g["uniqueIdentifier"], g["name"]]')" = "['claudePeer.workgroup', 'Claude Peers']" ]
-  [ "$(pyget "$output" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.main', 'claudePeer.ideas', 'claudePeer.agents']" ]
-  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Ideas', 'Agents']" ]
+  [ "$(pyget "$output" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.main', 'claudePeer.ideas', 'claudePeer.agents', 'claudePeer.prs']" ]
+  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Ideas', 'Agents', 'PRs']" ]
   [ "$(pyget "$output" 'g["sessions"][0]["kind"]')" = "{'kind': 'root'}" ]
-  [ "$(pyget "$output" '[s["command"] for s in g["sessions"]]')" = "['', 'claude-peer run --as ideas --wait', 'claude-peer agents']" ]
+  [ "$(pyget "$output" '[s["command"] for s in g["sessions"]]')" = "['', 'claude-peer run --as ideas --wait', 'claude-peer agents', 'claude-peer prs']" ]
   # the fixture builtin's root has a third item; nothing is copied from it
   [ "$(pyget "$output" '[i["kind"] for i in g["sessions"][0]["toolbarItems"]]')" = "['modeSwitcher', 'gitStatus']" ]
-  [ "$(pyget "$output" '[s["toolbarItems"] for s in g["sessions"][1:]]')" = "[[{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}]]" ]
-  [ "$(pyget "$output" '[s["kind"]["kind"] for s in g["sessions"][1:]]')" = "['peer', 'peer']" ]
-  [ "$(pyget "$output" '[s["parentID"] for s in g["sessions"][1:]]')" = "['claudePeer.main', 'claudePeer.main']" ]
+  [ "$(pyget "$output" '[s["toolbarItems"] for s in g["sessions"][1:]]')" = "[[{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}], [{'kind': 'modeSwitcher'}]]" ]
+  [ "$(pyget "$output" '[s["kind"]["kind"] for s in g["sessions"][1:]]')" = "['peer', 'peer', 'peer']" ]
+  [ "$(pyget "$output" '[s["parentID"] for s in g["sessions"][1:]]')" = "['claudePeer.main', 'claudePeer.main', 'claudePeer.main']" ]
   [ "$(pyget "$output" 'any(s["mode"] != "regular" or "profileGUID" in s or s["urlString"] or s["perFileCommand"] or "hermes" in s["command"] for s in g["sessions"])')" = False ]
 }
 
 @test "workgroup: reads no store, so none needs to exist" {
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/absent.plist" run sh "$BIN" workgroup
   [ "$status" -eq 0 ]
-  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Ideas', 'Agents']" ]
+  [ "$(pyget "$output" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Ideas', 'Agents', 'PRs']" ]
 }
 
-@test "install: Claude Peers + Hermes is the same three under claudePeer.h plus Hermes last" {
+@test "install: Claude Peers + Hermes is the same four under claudePeer.h plus Hermes last" {
   stubs
   mkprefs "$BATS_TEST_TMPDIR/prefs.plist"
   CLAUDE_PEER_PREFS="$BATS_TEST_TMPDIR/prefs.plist" sh "$BIN" install >/dev/null
   g=$(groups "$BATS_TEST_TMPDIR/prefs.plist")
   h=$(python3 -I -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1])[2]))' "$g")
   [ "$(pyget "$h" '[g["uniqueIdentifier"], g["name"]]')" = "['claudePeer.h', 'Claude Peers + Hermes']" ]
-  [ "$(pyget "$h" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.h.main', 'claudePeer.h.ideas', 'claudePeer.h.agents', 'claudePeer.h.hermes']" ]
-  [ "$(pyget "$h" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Ideas', 'Agents', 'Hermes']" ]
+  [ "$(pyget "$h" '[s["uniqueIdentifier"] for s in g["sessions"]]')" = "['claudePeer.h.main', 'claudePeer.h.ideas', 'claudePeer.h.agents', 'claudePeer.h.prs', 'claudePeer.h.hermes']" ]
+  [ "$(pyget "$h" '[s["displayName"] for s in g["sessions"]]')" = "['Lead', 'Ideas', 'Agents', 'PRs', 'Hermes']" ]
   [ "$(pyget "$h" 'set(s["parentID"] for s in g["sessions"][1:])')" = "{'claudePeer.h.main'}" ]
   [ "$(pyget "$h" 'g["sessions"][-1]["command"]')" = "claude-peer hermes --wait" ]
-  [ "$(pyget "$h" '[s["command"] for s in g["sessions"][1:3]]')" = "['claude-peer run --as ideas --wait', 'claude-peer agents']" ]
+  [ "$(pyget "$h" '[s["command"] for s in g["sessions"][1:4]]')" = "['claude-peer run --as ideas --wait', 'claude-peer agents', 'claude-peer prs']" ]
   [ "$(pyget "$h" 'g["sessions"][0]["kind"]')" = "{'kind': 'root'}" ]
 }
 
@@ -1985,8 +1985,8 @@ pyget() { python3 -I -c 'import json, sys; g = json.loads(sys.argv[1]); print(ev
   [[ "$output" == *"iterm2: running"* ]]
   sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (3 sessions: Lead, Ideas, Agents)"* ]]
-  [[ "$output" == *"hermes: installed (4 sessions: Lead, Ideas, Agents, Hermes)"* ]]
+  [[ "$output" == *"workgroup: installed (4 sessions: Lead, Ideas, Agents, PRs)"* ]]
+  [[ "$output" == *"hermes: installed (5 sessions: Lead, Ideas, Agents, PRs, Hermes)"* ]]
   FAKE_OS=Linux run sh "$BIN" status
   [[ "$output" == *"status needs macOS"* ]]
   FAKE_OS=Linux run sh "$BIN" install
@@ -2011,10 +2011,10 @@ pl["Workgroups"] = json.dumps(groups).encode()
 plistlib.dump(pl, open(sys.argv[1], "wb"))
 PY
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed, out of date (5 sessions: Lead, Alpha, Beta, Gamma, Delta); this version defines 3 (Lead, Ideas, Agents)"* ]]
+  [[ "$output" == *"workgroup: installed, out of date (5 sessions: Lead, Alpha, Beta, Gamma, Delta); this version defines 4 (Lead, Ideas, Agents, PRs)"* ]]
   CLAUDE_PEER_PREFS="$FAKE_DOMAIN" sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (3 sessions: Lead, Ideas, Agents)"* ]]
+  [[ "$output" == *"workgroup: installed (4 sessions: Lead, Ideas, Agents, PRs)"* ]]
   [[ "$output" != *"out of date"* ]]
 }
 
@@ -2034,12 +2034,12 @@ pl["Workgroups"] = json.dumps(groups).encode()
 plistlib.dump(pl, open(sys.argv[1], "wb"))
 PY
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed, out of date (6 sessions: Chat, Diff, Chat 2, Chat 3, Chat 4, Hermes); this version defines 3 (Lead, Ideas, Agents)"* ]]
+  [[ "$output" == *"workgroup: installed, out of date (6 sessions: Chat, Diff, Chat 2, Chat 3, Chat 4, Hermes); this version defines 4 (Lead, Ideas, Agents, PRs)"* ]]
   [[ "$output" == *"hermes: not installed"* ]]
   CLAUDE_PEER_PREFS="$FAKE_DOMAIN" sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (3 sessions: "* ]]
-  [[ "$output" == *"hermes: installed (4 sessions: "* ]]
+  [[ "$output" == *"workgroup: installed (4 sessions: "* ]]
+  [[ "$output" == *"hermes: installed (5 sessions: "* ]]
   [[ "$output" != *"out of date"* ]]
 }
 
@@ -2052,7 +2052,7 @@ PY
   # install into the folder with iTerm2 quit; the domain stays as it was
   sh "$BIN" install >/dev/null
   run sh "$BIN" status
-  [[ "$output" == *"workgroup: installed (3 sessions: Lead, Ideas, Agents)"* ]]
+  [[ "$output" == *"workgroup: installed (4 sessions: Lead, Ideas, Agents, PRs)"* ]]
   FAKE_PROCS=iTerm2 run sh "$BIN" status
   [[ "$output" == *"workgroup: not installed"* ]]
   [[ "$output" == *"hermes: not installed"* ]]
@@ -2163,6 +2163,58 @@ STUB
   # end of input leaves too
   : | PATH="$np" sh "$BIN" agents >"$BATS_TEST_TMPDIR/out2.txt" 2>&1
   grep -q "plain shell" "$BATS_TEST_TMPDIR/out2.txt"
+}
+
+@test "prs: gh dash through an interactive shell in the main checkout, even from a linked worktree; no claim, slot or worktree" {
+  git -C "$REPO" worktree add -q --detach "$BATS_TEST_TMPDIR/linked"
+  cd "$BATS_TEST_TMPDIR/linked"
+  run sh "$BIN" prs
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pwd=$REPO"$'\n'* ]]
+  [[ "$output" == *'args=-i -c '*'gh dash'*'exec "${SHELL:-/bin/sh}" -i'*' claude-peer' ]]
+  [ -z "$(find "$REPO/.git" -name 'claude-peer.*' -not -name claude-peer.base)" ]
+  [ "$(git -C "$REPO" worktree list | wc -l)" -eq 2 ]
+  run sh "$BIN" prs --foo
+  [ "$status" -eq 2 ]
+}
+
+@test "prs: outside a repository it is one line and a plain shell" {
+  mkdir "$BATS_TEST_TMPDIR/norepo"
+  cd "$BATS_TEST_TMPDIR/norepo"
+  run sh "$BIN" prs
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"claude-peer: prs: not inside a git repository; plain shell"* ]]
+  [[ "$output" == *"args=-i"* ]]
+  [[ "$output" != *"gh dash"* ]]
+}
+
+# gh_stub <extension list output>: a gh that logs its calls and answers `extension list`
+gh_stub() {
+  cat >"$BATS_TEST_TMPDIR/bin/gh" <<STUB
+#!/bin/sh
+echo "gh \$* in \$PWD" >>"\$GH_LOG"
+[ "\$1 \$2" = "extension list" ] && printf '%s\n' '$1'
+exit 0
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/gh"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH" GH_LOG="$BATS_TEST_TMPDIR/gh.log"
+}
+
+@test "prs: gh dash runs in the main checkout, then a shell" {
+  agents_snippet
+  gh_stub $'gh dash\tdlvhdr/gh-dash\tv4.26.3'
+  sh "$BIN" prs >"$BATS_TEST_TMPDIR/out.txt"
+  [ "$(cat "$GH_LOG")" = "gh extension list in $REPO"$'\n'"gh dash in $REPO" ]
+  grep -q "plain shell" "$BATS_TEST_TMPDIR/out.txt"
+}
+
+@test "prs: without the gh dash extension it says so in one line, runs nothing, and leaves a shell" {
+  agents_snippet
+  gh_stub $'gh other\tsomeone/gh-other\tv1'
+  sh "$BIN" prs >"$BATS_TEST_TMPDIR/out.txt" 2>&1
+  [ "$(cat "$GH_LOG")" = "gh extension list in $REPO" ]
+  [ "$(grep -c 'gh dash extension is not installed' "$BATS_TEST_TMPDIR/out.txt")" = 1 ]
+  grep -q "plain shell" "$BATS_TEST_TMPDIR/out.txt"
 }
 
 # --- default --------------------------------------------------------------------
