@@ -122,6 +122,13 @@ PY
   [ "$status" -eq 1 ]
 }
 
+@test "the page caps a bot card's pull request marks and words its link" {
+  has '" more"'
+  has '"dashboard"'
+  has '"open pull requests"'
+  has 'c.form === "bot"'
+}
+
 @test "the page has a light scheme and keeps the look's base colours" {
   has 'prefers-color-scheme: light'
   has 'prefers-reduced-motion'
