@@ -205,8 +205,16 @@ answer and an `Authorization` header. `workboard connect` stores the tool key
 (`workboard-verbs.md`).
 
 **The link: `workboard url` and `/api/url`.** `POST /api/url` (body `{"group"?,
-"repo"?}`) answers `http://127.0.0.1:<port>/enter/<nonce>`, with `#g=<group>` or
-`#r=<repo>` appended. A nonce is single-use, held in memory with its scope for
+"repo"?, "set"?, "cwd"?}`) answers `http://127.0.0.1:<port>/enter/<nonce>`, with
+`#g=<group>`, `#r=<repo>` or `#s=<set>` appended. **With none of the three the
+link opens on one repository:** `workboard url` sends its cwd (not with
+`--all`), and the server resolves it to a main checkout (a worktree is its repo)
+that the caller's scope holds, and appends `#r=<repo>`. Git config
+`workboard.<owner/repo>.view` changes that: `repo` (default), `set:<name>`
+(that set's `#s=`, when the scope's board names the set) or `all`; any other
+value is the default. A cwd the scope's board does not know gives the whole
+board. Only the page's starting filter moves: no token or access changes, and
+the page's chips can widen the view. A nonce is single-use, held in memory with its scope for
 60 s, 64 at most. Scope is the full one for a valid `X-Workboard-Ask`, else the
 profile `X-Workboard-Profile` names, else code 2. With `CLAUDECODE` unset,
 `workboard url` sends the proof, read from the secret; inside a session it opens
@@ -244,8 +252,18 @@ ages, the pinned account names). Not a sandbox: the strength of `denyguard`.
 **The page.** One file, no external resource. Text reaches the DOM only through
 `textContent`; a test greps for `innerHTML` and its kin. Five columns (Needs
 you, Inbox, Building, In review / CI, Merged · trial), an accordion under
-720 px; chips for All, each group and each repository, the choice in the URL
-fragment (`#g=<group>` or `#r=<repo name>`) so a filtered view is a link. A
+720 px; chips for All, each group, each working set and each repository of the
+chosen group, the choice in the URL fragment (`#g=<group>`, `#r=<repo name>` or
+`#s=<set>`) so a filtered view is a link. **A set view** shows the cards of the
+repositories in `board.json`'s `sets` (set name to slugs; added to the served
+board like `rev` and `build`, so `board_for`, the MCP `list` and the scoped
+documents are untouched). Membership is `workset members <name>` rows in state
+`ok`, matched by real path to the board's repository dirs, read with each local
+pass (`local.sets`; the tool is `$WORKBOARD_WORKSET`, else `~/bin/workset`; a
+change of membership raises `rev`). The slugs are only those of the board the
+caller is served, so a scoped key sees a set filtered to its profile's
+repositories, and a set with none of them is not named. A session in Needs you
+that joins no card is hidden by a set view, as by a repository view. A
 session is a filled dot, a job a ring (grey when stale); a click on a dot posts
 `go`. It polls `board.json` every 2 s with `If-None-Match`; after 6 s of silence
 the board dims, after 30 s it says "not updating since", and a changed `build`

@@ -17,14 +17,14 @@ LOG_LINES = 200
 DOC_KEYS = ["v", "generated_at", "skipped", "repos", "worktrees", "links", "log"]
 
 
-def _run(argv: list, cwd: Optional[str] = None) -> Optional[str]:
-    """Stdout of a command, or None when it is missing, slow or exits non-zero."""
+def _run(argv: list, cwd: Optional[str] = None, codes: tuple = (0,)) -> Optional[str]:
+    """Stdout of a command, or None when it is missing, slow or exits with a code not in `codes`."""
     try:
         p = subprocess.run(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                            stderr=subprocess.DEVNULL, timeout=TIMEOUT)
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
-    return p.stdout.decode("utf-8", "replace") if p.returncode == 0 else None
+    return p.stdout.decode("utf-8", "replace") if p.returncode in codes else None
 
 
 def _git(*args: str, cwd: Optional[str] = None) -> Optional[str]:
@@ -196,6 +196,25 @@ def _open_claim(label: str, entries: list) -> Optional[str]:
         elif e["kind"] in ("stop", "end", "gone") and (e["text"] == label or e["text"].startswith(label + " ")):
             text = None
     return text
+
+
+def sets(repos: list) -> dict:
+    """Working set name -> slugs of the board's repositories that are its `ok` members, empty sets left out.
+
+    `workset members` exits 2 when any row is not ok but still prints them, so that code is read too.
+    """
+    tool = _tool("WORKBOARD_WORKSET", "~/bin/workset")
+    if not tool:
+        return {}
+    slug_of_dir = dict((os.path.realpath(r["dir"]), r["slug"]) for r in repos)
+    found = {}
+    for name in (_run([tool, "list"]) or "").split():
+        rows = (_run([tool, "members", name], codes=(0, 2)) or "").splitlines()
+        members = [slug_of_dir.get(os.path.realpath(f[1])) for f in (l.split("\t") for l in rows)
+                   if len(f) >= 3 and f[2] == "ok"]
+        if any(members):
+            found[name] = sorted(set(m for m in members if m))
+    return found
 
 
 def read(links: list, also: list, now: float) -> dict:
