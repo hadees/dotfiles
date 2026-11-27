@@ -33,7 +33,7 @@ closed issue.** It is not a session, a claim or a job. Four forms:
 
 | Form | Key | Exists because |
 | --- | --- | --- |
-| `issue` | `<owner>/<repo>#<n>` | an open issue passes the repository's `intake` |
+| `issue` | `<owner>/<repo>#<n>` | an open issue passes the repository's `intake` (`issue-practice.md`) |
 | `pr` | `<owner>/<repo>#<n>` | the account's own open pull request, or one merged inside the trial window, closes no issue on the board |
 | `local` | `<owner>/<repo>@<worktree name>` | a worktree holds a session and is on a task, and nothing else claims it |
 | `queue` | `<owner>/<repo>~<id>` | an inbox row in state `waiting` or `taken` is linked to no issue card |
@@ -46,12 +46,6 @@ request holds that card; a worktree a `links.tsv` line ties to an issue holds it
 worktree qualifies when a who row stands in it and it has a claim task, an open
 `log claim`, or a branch other than the repository's default. A merged pull
 request that closed an issue not on the board takes that issue's key and title.
-
-An `issue` card also carries `origin` (`hand`, `session`, `teammate`, `outside` or
-`bot`, from `origin.classify`; null on every other form) and `blockers` (GitHub's
-open and total blocker counts, or null), and `health` gains `stamps_ignored`,
-`blocked`, `blocked_linked`, `blocked_clear` and `needs_human`. What they mean
-is `issue-practice.md`'s.
 
 **Stage, flags and order** are `_stage`, `_sort_key` and the `takeable` branch of
 `build_board` in `dot_local/libexec/workboard/model.py`; read them there.
@@ -133,13 +127,10 @@ and merged ones (first 30), then one aliased `repository` per repository with
 the default branch and the issues its `intake` selects (`mine` is two lists,
 assigned and created, `all` and `label:<name>` one, `none` none);
 `github.build_query` has the field lists. Owner, name and label reach it only as
-JSON string literals. Each issue is asked for its author (login and type), its
-`authorAssociation`, its last `editor` and its two blocker counts
-(`origin.ISSUE_FIELDS`, `origin.WAIT_FIELDS`), and nothing of its comments.
-Over 50 open pull requests puts `more than 50 open pull
-requests; some are not shown` on the account. The cost over the real
-repository list has not been recorded (one repository plus the account part
-measured 2 points).
+JSON string literals. Over 50 open pull requests puts `more than 50 open pull
+requests; some are not shown` on the account. The real repository
+list's cost is unrecorded (one repository plus the
+account: 2 points).
 
 **The budget rule.** `next_interval(cost, remaining, budget)` is `max(60,
 ceil(3600 * cost / budget))` seconds, doubled under 1,000 points remaining and
@@ -272,9 +263,7 @@ pass (`local.sets`; the tool is `$WORKBOARD_WORKSET`, else `~/bin/workset`; a
 change of membership raises `rev`). The slugs are only those of the board the
 caller is served, so a scoped key sees a set filtered to its profile's
 repositories, and a set with none of them is not named. A session in Needs you
-that joins no card is hidden by a set view, as by a repository view. A card whose origin is `session`, `teammate`, `outside` or `bot` carries
-a mark saying so (`outside` and `bot` in the warning colour; `hand` none), and
-the labels `needs-human` and `blocked` have one each. A
+that joins no card is hidden by a set view, as by a repository view. A
 session is a filled dot, a job a ring (grey when stale); a click on a dot posts
 `go`. It polls `board.json` every 2 s with `If-None-Match`; after 6 s of silence
 the board dims, after 30 s it says "not updating since", and a changed `build`

@@ -115,7 +115,8 @@ and repository pair is asked once, whichever of issue and pull request
 comes first.
 
 Five counts, in the same directory: `asked`, `passed`, `unkeyed`, `unknown`
-and `private-bypassed`. `GH_PRIVATE_CHECK=0` runs one call unasked. **It
+and `bypassed` (the file is `private-bypassed.count`; the stamp's own is
+`bypassed.count`). `GH_PRIVATE_CHECK=0` runs one call unasked. **It
 never reads the title or the body, and it never refuses when it has no
 `$CLAUDE_CODE_SESSION_ID` or cannot write its marker** (a retry could never
 pass); a visibility answer that is not `public`, or a failed call, runs gh
