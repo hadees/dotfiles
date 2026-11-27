@@ -33,4 +33,5 @@ requests (any author, no title; a row is kept only for a `Bot` author in
 title is never asked for.
 
 **The counts.** `health.bot_cards` and `health.bot_prs_cut`, the latter
-being the repositories with more than 30 open pull requests.
+being the repositories with more than 30 open pull requests. `workboard status`
+prints both on its `bots:` line.
