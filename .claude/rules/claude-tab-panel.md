@@ -148,14 +148,13 @@ raises is one line on stderr and the loop goes on; `generated_at` then stops
 moving, which is what the page's stale banner reads.
 
 **Endpoints.** `GET /snapshot.json` (503 before the first tick), `GET /health`
-(`{ok, pid, build, script, polled}`: `script` is the script the server follows,
-`polled` the epoch second of the last `GET /snapshot.json` that carried
-`X-Claude-Tab: 1`, which only the page sends; `null` before the first), `GET /` (the file `$CLAUDE_TAB_PANEL_HTML`, else
+(`{ok, pid, build, script, polled}`: the script it follows, and when the page
+last fetched the snapshot with `X-Claude-Tab: 1`, else `null`), `GET /` (the file `$CLAUDE_TAB_PANEL_HTML`, else
 `~/.local/share/claude-tab/panel.html`, read on each request, with a CSP that
 allows only inline script and style and fetches to itself; a missing file is
 500 naming the path), `POST /seen` and `POST /go` with the body `pid=<digits>`.
 Everything else is 404 and nothing is read from a path in the request. Every
-request whose `Host` is not `127.0.0.1:<port>` or `localhost:<port>` is 403. A POST needs the header `X-Claude-Tab: 1`, which a cross-site
+request whose `Host` is not `127.0.0.1:<port>` or `localhost:<port>` is 403 (DNS rebinding: a page on a name resolving to loopback still sends its own `Host`). A POST needs the header `X-Claude-Tab: 1`, which a cross-site
 form cannot send and a cross-origin `fetch` may not add without a preflight
 the server never answers; and a pid that is in the current snapshot, else 404.
 Both POSTs call `mark_seen`; `/go` then runs `focus <pid>` through
