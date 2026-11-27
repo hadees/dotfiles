@@ -517,3 +517,99 @@ PY
 @test "nothing in this file wrote a __pycache__ into the module directory" {
   wb_no_pycache
 }
+
+# The copies of the issue practice agree: the closing lines, the origins, the
+# form headings and the labels each live in more than one file, and these tests
+# fail when two of them drift. The topics land by a pull request of their own,
+# so a test that reads one skips (and is counted) while it is not on the branch.
+
+NOTE_LINE='_Filed by a Claude session._'
+STAMP_LINE='<!-- workboard:filed-by-session v1 -->'
+IP_SHARE="$BATS_TEST_DIRNAME/../dot_local/share/issue-practice"
+TOPICS_DIR="$BATS_TEST_DIRNAME/../dot_claude-shared/topics"
+
+# need_topic <name>...: skips the test unless every topic is on this branch.
+# Called in the test body, not in $( ), or the skip is lost with the subshell.
+need_topic() {
+  local t
+  for t in "$@"; do
+    [ -f "$TOPICS_DIR/$t.md" ] || skip "the $t topic is not on this branch yet"
+  done
+}
+
+# topic_flat <name>: the topic with newlines as spaces and runs of spaces
+# squeezed, as role_topic_checks reads one: a phrase wrapped across lines still matches.
+topic_flat() {
+  tr '\n' ' ' < "$TOPICS_DIR/$1.md" | tr -s ' '
+}
+
+# form_headings: the label of every field of the three forms, one per line, sorted.
+form_headings() {
+  grep -hE '^[[:space:]]+label: ' "$IP_SHARE"/forms/{task,feature,bug}.yml | sed -E 's/^[[:space:]]+label: //' | sort -u
+}
+
+# label_names: the first field of every line of labels.tsv that is not a comment.
+label_names() {
+  grep -v '^#' "$IP_SHARE/labels.tsv" | cut -f1
+}
+
+# origin_value <NAME>: origin.<NAME>, a tuple one item per line.
+origin_value() {
+  wb_modules >/dev/null
+  wb_driver "$WORKBOARD_LIBEXEC" <<PY
+import origin
+v = origin.$1
+print("\n".join(v) if isinstance(v, tuple) else v)
+PY
+}
+
+@test "the closing lines are the same in every copy" {
+  local fn
+  run origin_value NOTE
+  [ "$output" = "$NOTE_LINE" ] || { echo "$output"; return 1; }
+  run origin_value STAMP
+  [ "$output" = "$STAMP_LINE" ] || { echo "$output"; return 1; }
+  fn="$(sed -E 's/^[[:space:]]*//' "$BATS_TEST_DIRNAME/../dot_functions")"
+  grep -qxF "print -ru2 -- \"$NOTE_LINE\";" <<< "$fn"
+  grep -qxF "print -ru2 -- \"$STAMP_LINE\";" <<< "$fn"
+}
+
+@test "the writing topic carries the same closing lines" {
+  need_topic issues
+  [[ "$(topic_flat issues)" == *"$NOTE_LINE"* ]]
+  [[ "$(topic_flat issues)" == *"$STAMP_LINE"* ]]
+}
+
+@test "the reading topic names the same origins" {
+  need_topic issue-reading
+  run origin_value ORIGINS
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [ "$(sed -nE 's/^\| `([^`]*)` \|.*/\1/p' "$TOPICS_DIR/issue-reading.md")" = "$output" ]
+}
+
+@test "the issue forms' fields are the eight headings" {
+  [ "$(form_headings)" = "$(printf '%s\n' 'Done when' 'How to see it' 'Not in scope' 'Source material' 'What and why' 'What happens' 'What should happen' 'Where')" ]
+}
+
+@test "the writing topic names the forms' headings" {
+  need_topic issues
+  [ "$(topic_flat issues | grep -oE '`### [^`]*`' | sed -E 's/^`### //; s/`$//' | sort -u)" = "$(form_headings)" ]
+}
+
+@test "the marks are labels of the scheme" {
+  local m
+  run origin_value MARKS
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  for m in $output; do
+    label_names | grep -qxF -- "$m" || { echo "not a label: $m"; return 1; }
+  done
+}
+
+@test "every label of the scheme is named in a topic" {
+  local flat l
+  need_topic issues issue-reading
+  flat="$(topic_flat issues) $(topic_flat issue-reading)"
+  for l in $(label_names); do
+    [[ "$flat" == *"\`$l\`"* ]] || { echo "no topic names \`$l\`"; return 1; }
+  done
+}
