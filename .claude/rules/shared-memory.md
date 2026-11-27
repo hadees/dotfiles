@@ -157,8 +157,15 @@ summarised away.
   (`GH_COMMAND`), so a session's first `gh` command brings the wrapper rules;
   `cd x && gh ...` and `sudo gh ...` do not match. It was imported until 2026-11-22,
   when always-loaded memory had to fit its 16,200 ceiling.
+- `issues` when the Bash command runs `gh issue create`, `new`, `edit` or
+  `comment`, or `workboard add` (`ISSUE_WRITE`);
+- `issue-reading` when it runs `gh issue view`, `list`, `status` or `develop`,
+  or `workboard take`, `show` or `list` (`ISSUE_READ`). Both match anywhere in
+  the command line, so `cd x && gh issue view 3` matches where
+  `github-accounts` does not; a session's first `gh issue` command adds
+  `github-accounts` and one of them in one output.
 
-Those two read the command text only, never its output.
+Those four read the command text only, never its output.
 
 The result is one `additionalContext` JSON object. The payload carries the
 topic text and nothing else: no `decision`, no `permissionDecision`.
@@ -213,7 +220,7 @@ none may be added (the same stance as `memoryguard hook`, and the reverse of
 
 `hook tool` runs on every Bash call, so `sh` checks the payload against the
 `SIGNING` and `CONNECT` strings, the Claude in Chrome name, `claude-peer start`,
-`stop` and `log`, `am mail`, a command starting `gh `, `SendMessage`, `WebFetch` and `mcp__postbox__` before starting
+`stop` and `log`, `am mail`, a command starting `gh `, `gh issue `, `workboard add`, `take`, `show` and `list`, `SendMessage`, `WebFetch` and `mcp__postbox__` before starting
 python. The strings in the `case` in the script and the constants in the
 python must be edited together.
 

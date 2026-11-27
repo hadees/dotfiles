@@ -46,6 +46,7 @@ Topics this file does not import:
 - `claude-peers.md` and `lead.md`: a repo with peers.
 - `peer-seat.md`, `approvals.md`, `peer-lifetime.md` and `session-mail.md`: a role, a peer, mail.
 - `github-accounts.md`: a first gh command.
+- `issues.md`, `issue-reading.md`: writing or working an issue.
 - `commit-signing.md`: a commit that fails to sign.
 - `claude-in-chrome.md`: the browser.
 - `web-fetching.md`: a fetched page.
@@ -54,7 +55,7 @@ Topics this file does not import:
 @topics/always-here.md
 EOF
   local t
-  for t in always-here talking-to-sessions claude-peers peer-seat lead approvals peer-lifetime session-mail github-accounts commit-signing tailnet-routed-ssh claude-in-chrome web-fetching delegation-and-model-routing; do
+  for t in always-here talking-to-sessions claude-peers peer-seat lead approvals peer-lifetime session-mail github-accounts issues issue-reading commit-signing tailnet-routed-ssh claude-in-chrome web-fetching delegation-and-model-routing; do
     printf '## Fixture %s\n\nBODY-%s\n' "$t" "$t" > "$SHARED_MEMORY_DIR/topics/$t.md"
   done
 
@@ -151,8 +152,8 @@ its overlay. Add these to that file's "hooks" (merging with what is there):
 SessionStart adds the messaging, Claude Peers, peer and Lead topics to a
 session they apply to and, through `hook main`, the delegation rules to every
 session (a subagent runs neither); the two tool events add the commit-signing,
-tailnet, Claude in Chrome, peer lifetime, session mail, GitHub accounts and web
-fetching topics once per session when their trigger appears. Every entry fails open, and
+tailnet, Claude in Chrome, peer lifetime, session mail, GitHub accounts, web
+fetching and issues topics once per session when their trigger appears. Every entry fails open, and
 a topic the shared index still imports is never added.
 EOF
 )"
@@ -592,6 +593,56 @@ bash_payload() {
 @test "hook tool: gh mentioned but not run adds nothing" {
   local c
   for c in 'git ghost' 'echo gh pr list' 'ls ~/.config/gh/' 'cd x && gh pr list' 'ghx pr' 'sudo gh pr list'; do
+    run tool "$(bash_payload "$c" s1)"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ] || { echo "added for: $c"; false; }
+  done
+}
+
+@test "hook tool: gh issue create, edit, comment and workboard add add issues and not issue-reading, once per session, on both events" {
+  local n=0 c
+  for c in 'gh issue create --title t --body b' 'cd x && gh issue edit 3 --add-label blocked' 'command gh issue comment 3 --body b' '~/bin/workboard add t'; do
+    n=$((n + 1))
+    run tool "$(bash_payload "$c" "w$n")"
+    [ "$status" -eq 0 ]
+    [[ "$(context)" == *BODY-issues ]] || { echo "no match: $c"; false; }
+    [[ "$(context)" != *BODY-issue-reading* ]] || { echo "reading added for: $c"; false; }
+  done
+  run tool "$(bash_payload 'gh issue create --title u' w3)"
+  [ -z "$output" ]
+  run tool '{"hook_event_name":"PostToolUseFailure","session_id":"w9","tool_name":"Bash","tool_input":{"command":"cd x && gh issue new"},"error":"Exit code 1\nboom"}'
+  [[ "$(context)" == *BODY-issues ]]
+  run tool '{"hook_event_name":"PostToolUseFailure","session_id":"w9","tool_name":"Bash","tool_input":{"command":"cd x && gh issue new"},"error":"Exit code 1\nboom"}'
+  [ -z "$output" ]
+}
+
+@test "hook tool: gh issue view, list and workboard show, take and list add issue-reading and not issues, once per session, on both events" {
+  local n=0 c
+  for c in 'cd x && gh issue view 3' 'command gh issue list' 'workboard show 12' 'workboard take 12'; do
+    n=$((n + 1))
+    run tool "$(bash_payload "$c" "r$n")"
+    [ "$status" -eq 0 ]
+    [[ "$(context)" == *BODY-issue-reading ]] || { echo "no match: $c"; false; }
+    [[ "$(context)" != *BODY-issues* ]] || { echo "writing added for: $c"; false; }
+  done
+  run tool "$(bash_payload 'cd x && gh issue view 4' r1)"
+  [ -z "$output" ]
+  run tool '{"hook_event_name":"PostToolUseFailure","session_id":"r9","tool_name":"Bash","tool_input":{"command":"workboard list"},"error":"Exit code 1\nboom"}'
+  [[ "$(context)" == *BODY-issue-reading ]]
+  run tool '{"hook_event_name":"PostToolUseFailure","session_id":"r9","tool_name":"Bash","tool_input":{"command":"workboard list"},"error":"Exit code 1\nboom"}'
+  [ -z "$output" ]
+}
+
+@test "hook tool: a session's first gh issue command adds github-accounts then the issue topic, in one output" {
+  run tool "$(bash_payload 'gh issue list' i1)"
+  [[ "$(context)" == *BODY-github-accounts*BODY-issue-reading ]]
+  run tool "$(bash_payload 'gh issue view 3 && gh issue create --title t --body b' i2)"
+  [[ "$(context)" == *BODY-github-accounts*BODY-issues*BODY-issue-reading || "$(context)" == *BODY-github-accounts*BODY-issue-reading*BODY-issues ]]
+}
+
+@test "hook tool: gh pr list and create, gh issue close, workboard status and a grep for gh issue add no issue topic" {
+  local c
+  for c in 'cd x && gh pr list' 'cd x && gh pr create --title t' 'cd x && gh issue close 3' 'workboard status' 'grep "gh issue " notes.md'; do
     run tool "$(bash_payload "$c" s1)"
     [ "$status" -eq 0 ]
     [ -z "$output" ] || { echo "added for: $c"; false; }

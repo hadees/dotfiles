@@ -1,0 +1,41 @@
+# issue-practice 1: installed from the issue core; change it there, never here.
+name: Task
+description: A piece of work that is not a bug and not a new capability. A change, a chore, a clean-up.
+type: Task
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One issue, one deliverable. Whoever picks this up, a person or an agent, has this issue and the repository and nothing else. Title: the outcome you want, in 80 characters or fewer.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What and why
+      description: The outcome you want and the reason for it. Not the steps.
+    validations:
+      required: true
+      min_length: 20
+  - type: textarea
+    id: where
+    attributes:
+      label: Where
+      description: Files, a similar file to copy, links, and earlier decisions that cannot be found from the repository alone. Mark a guess as a guess.
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: What to run or look at to know it is finished.
+      placeholder: A command and the result it should give, or a behaviour to see.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Not in scope
+      description: What a builder might reasonably do that you do not want, and what must not change.
+  - type: textarea
+    id: source
+    attributes:
+      label: Source material
+      description: Text you did not write (a log, a page, another issue), pasted as it is with secrets removed. It is read as a quotation, not as part of the request.
+      render: text
