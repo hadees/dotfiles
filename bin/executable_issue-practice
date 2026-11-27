@@ -1,0 +1,205 @@
+#!/bin/sh
+# issue-practice — the issue core: the form files and the label list that every repository's issue scheme shares.
+#
+#   issue-practice version                       issue-practice <N>
+#   issue-practice forms                         the core's form file names, one per line, sorted
+#   issue-practice check <tree>                  forms: none | own | ahead | behind | current | edited, with a detail
+#   issue-practice install <tree> [--dry-run]    write the core's forms under <tree>/.github/ISSUE_TEMPLATE/
+#   issue-practice labels                        the core's labels, one per line: name, colour, description (tabs)
+#   issue-practice labels check                  compare a repository's labels, read on standard input, with the core's
+#   issue-practice help | -h | --help            this text
+#
+# Exit codes: 0 done; 1 check found drift (the answer is the line on standard
+# output); 2 usage; 3 install declined (an unmarked, edited or newer template is
+# somebody's decision; nothing is changed); 4 no usable core.
+#
+# The core is the directory $ISSUE_PRACTICE_HOME, else ~/.local/share/issue-practice:
+# `version` (one positive integer), `forms/` and `labels.tsv`. A form's first
+# line is its marker. The caller owns every network call and every commit; this
+# script reads the core, reads and writes files under one tree, reads standard
+# input for one call, and does nothing else.
+#
+# No account, organisation or repository name belongs in this file.
+
+CORE="${ISSUE_PRACTICE_HOME:-$HOME/.local/share/issue-practice}"
+US=$(printf '\037')
+NL='
+'
+
+die() { printf 'issue-practice: %s\n' "$1" >&2; exit "${2:-1}"; }
+
+usage() { sed -n '4,10p' "$0" | sed 's/^# \{0,1\}//'; }
+
+usage_die() { usage >&2; exit 2; }
+
+# A core that cannot be used is exit 4 for every call but help.
+bad_core() { die "no usable core at $CORE" 4; }
+
+# core_labels: the label lines, comments and blanks skipped, fields split by $US.
+core_labels() { sed -e '/^#/d' -e '/^$/d' "$CORE/labels.tsv" | tr '\t' "$US"; }
+
+validate_core() {
+  [ -f "$CORE/version" ] && [ -f "$CORE/labels.tsv" ] && [ -d "$CORE/forms" ] || bad_core
+  N=$(sed -n 1p "$CORE/version")
+  case "$N" in '' | 0* | *[!0-9]*) bad_core ;; esac
+  MARK="# issue-practice $N: installed from the issue core; change it there, never here."
+  for f in "$CORE"/forms/*; do
+    [ -f "$f" ] || continue
+    [ "$(sed -n 1p "$f")" = "$MARK" ] || bad_core
+  done
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in *"$US"*"$US"*) ;; *) bad_core ;; esac
+    colour=${line#*"$US"}
+    colour=${colour%%"$US"*}
+    case "$colour" in [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;; *) bad_core ;; esac
+  done <<EOF
+$(core_labels)
+EOF
+}
+
+core_forms() {
+  for f in "$CORE"/forms/*; do [ -f "$f" ] && printf '%s\n' "${f##*/}"; done | LC_ALL=C sort
+}
+
+# tree_templates <tree>: what GitHub reads in <tree>/.github/ISSUE_TEMPLATE.
+tree_templates() {
+  for f in "$1"/.github/ISSUE_TEMPLATE/*; do
+    [ -f "$f" ] || continue
+    case "$f" in *.yml | *.yaml | *.md) printf '%s\n' "${f##*/}" ;; esac
+  done | LC_ALL=C sort
+}
+
+# has <newline list> <word>
+has() { case "$NL$1$NL" in *"$NL$2$NL"*) return 0 ;; esac; return 1; }
+
+# words: a newline list on standard input as one space-separated line.
+words() { tr '\n' ' ' | sed 's/ $//'; }
+
+# marked_version <file>: the number in a file's marker, empty when the first line is not one.
+marked_version() { sed -n '1s/^# issue-practice \([0-9][0-9]*\):.*/\1/p' "$1"; }
+
+# check_tree <tree>: sets STATE and LINE.
+check_tree() {
+  dir="$1/.github/ISSUE_TEMPLATE"
+  templates=$(tree_templates "$1")
+  if [ -z "$templates" ]; then STATE=none; LINE="forms: none"; return; fi
+
+  own= high= low=
+  for t in $templates; do
+    v=$(marked_version "$dir/$t")
+    if [ -z "$v" ]; then own="$own$t$NL"; continue; fi
+    if [ -z "$high" ] || [ "$v" -gt "$high" ]; then high=$v; fi
+    if [ -z "$low" ] || [ "$v" -lt "$low" ]; then low=$v; fi
+  done
+  if [ -n "$own" ]; then STATE=own; LINE="forms: own $(printf '%s' "$own" | words)"; return; fi
+  if [ "$high" -gt "$N" ]; then STATE=ahead; LINE="forms: ahead issue-practice $high here, $N in the core"; return; fi
+  if [ "$low" -lt "$N" ]; then STATE=behind; LINE="forms: behind issue-practice $low here, $N in the core"; return; fi
+
+  edited=
+  forms=$(core_forms)
+  for f in $forms; do
+    if ! has "$templates" "$f" || ! cmp -s "$CORE/forms/$f" "$dir/$f"; then edited="$edited$f$NL"; fi
+  done
+  for t in $templates; do has "$forms" "$t" || edited="$edited$t$NL"; done
+  if [ -n "$edited" ]; then
+    STATE=edited; LINE="forms: edited $(printf '%s' "$edited" | LC_ALL=C sort -u | words)"
+  else
+    STATE=current; LINE="forms: current issue-practice $N"
+  fi
+}
+
+cmd_check() {
+  [ $# -eq 1 ] || usage_die
+  validate_core
+  [ -d "$1" ] || die "not a directory: $1" 2
+  check_tree "$1"
+  printf '%s\n' "$LINE"
+  case "$STATE" in none | current) exit 0 ;; esac
+  exit 1
+}
+
+cmd_install() {
+  tree= dry=
+  for a in "$@"; do
+    case "$a" in
+      --dry-run) dry=1 ;;
+      *) [ -z "$tree" ] || usage_die; tree=$a ;;
+    esac
+  done
+  [ -n "$tree" ] || usage_die
+  validate_core
+  [ -d "$tree" ] || die "not a directory: $tree" 2
+  check_tree "$tree"
+  case "$STATE" in
+    current) printf 'nothing to do: %s\n' "$LINE"; exit 0 ;;
+    none | behind) ;;
+    *) die "not installed: $LINE" 3 ;;
+  esac
+  forms=$(core_forms)
+  count=0
+  for f in $forms; do count=$((count + 1)); done
+  if [ -n "$dry" ]; then printf 'would install: issue-practice %s, %s files\n' "$N" "$count"; exit 0; fi
+  dir="$tree/.github/ISSUE_TEMPLATE"
+  mkdir -p "$dir" || die "cannot create $dir" 1
+  for f in $forms; do
+    tmp="$dir/.$f.$$"
+    if ! { cp "$CORE/forms/$f" "$tmp" && mv -f "$tmp" "$dir/$f"; }; then rm -f "$tmp"; die "cannot write $dir/$f" 1; fi
+  done
+  for t in $(tree_templates "$tree"); do
+    has "$forms" "$t" || [ -z "$(marked_version "$dir/$t")" ] || rm -f "$dir/$t"
+  done
+  printf 'installed: issue-practice %s, %s files\n' "$N" "$count"
+}
+
+lower() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
+
+cmd_labels_check() {
+  [ -t 0 ] && usage_die
+  validate_core
+  norm=
+  while IFS="$US" read -r name colour desc _; do
+    [ -n "$name$colour$desc" ] || continue
+    colour=${colour#\#}
+    norm="$norm$(lower "$name")$US$(lower "$colour")$US$desc$NL"
+  done <<EOF
+$(tr '\t' "$US")
+EOF
+  missing= differ=
+  while IFS="$US" read -r name colour desc _; do
+    [ -n "$name" ] || continue
+    cname=$(lower "$name"); ccolour=$(lower "$colour"); found=
+    while IFS="$US" read -r n c d; do
+      [ "$n" = "$cname" ] || continue
+      found=1
+      [ "$c" = "$ccolour" ] && [ "$d" = "$desc" ] || differ="$differ $name"
+      break
+    done <<EOF
+$norm
+EOF
+    [ -n "$found" ] || missing="$missing $name"
+  done <<EOF
+$(core_labels)
+EOF
+  if [ -n "$missing" ]; then printf 'labels: missing%s\n' "$missing"; exit 1; fi
+  if [ -n "$differ" ]; then printf 'labels: differ%s\n' "$differ"; exit 1; fi
+  printf 'labels: current\n'
+}
+
+case "${1-}" in
+  help | -h | --help) usage; exit 0 ;;
+esac
+
+case "${1-}" in
+  version) [ $# -eq 1 ] || usage_die; validate_core; printf 'issue-practice %s\n' "$N" ;;
+  forms) [ $# -eq 1 ] || usage_die; validate_core; core_forms ;;
+  check) shift; cmd_check "$@" ;;
+  install) shift; cmd_install "$@" ;;
+  labels)
+    case "$#${2-}" in
+      1) validate_core; core_labels | tr "$US" '\t' ;;
+      2check) cmd_labels_check ;;
+      *) usage_die ;;
+    esac ;;
+  *) usage_die ;;
+esac

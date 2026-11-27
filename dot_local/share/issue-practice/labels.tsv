@@ -1,0 +1,8 @@
+# The labels of the issue scheme: name, colour, description. No form sets one.
+agent-ready	0e8a16	Shaped: an agent may build this without further design
+needs-human	d93f0b	Waits on a decision, login, secret or approval only a person can give
+blocked	b60205	Waits on something else: another issue, a release, a date, another party
+idea	fbca04	Shaped in chat, not planned or scheduled yet
+ai:claude	bfd4f2	A Claude agent worked on this: a record, never removed
+ai:gpt	bfd4f2	A GPT agent worked on this: a record, never removed
+ai:gemini	bfd4f2	A Gemini agent worked on this: a record, never removed
