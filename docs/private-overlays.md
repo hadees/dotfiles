@@ -197,6 +197,22 @@ owner). These pins are the **single source of truth for owner → account**:
 public files name no accounts. Personal
 owners go in the personal overlay, work orgs in the work overlay.
 
+An overlay may opt an owner it pins in to the `gh` issue stamp guard (a
+session's `gh issue create` must end with the two lines the board's `add`
+writes), and may name the private repository that takes what cannot go on that
+owner's public repositories, in the same section, outside any machine-class
+guard, with the owner in lower case as in the pin:
+
+```gitconfig
+[gh "<owner>"]
+	issue-stamp = true
+	private-issues = <owner>/<repo>
+```
+
+Unset, the wrapper refuses nothing and checks nothing, so a public-only clone
+is unchanged. The tally is in `~/.local/state/gh-issue-stamp/`; `gh-doctor`'s
+`issues:` and `private:` lines show the state.
+
 ### Claude Code profile per account
 
 ```gitconfig
