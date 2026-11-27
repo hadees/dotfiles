@@ -1374,7 +1374,7 @@ ensure_ready() {
   e2=$!
   wait "$e1" "$e2"
   [ "$(lines_of "$REG_LOG")" = 1 ]
-  ! grep -q "Address already in use" "$SD/panel.log"
+  ! grep -q "Address already in use" "$SD/panel.log" || false
   [ ! -e "$SD/panel.ensure.lock" ]
   [ "$(grep -c "panel on" "$SD/panel.log")" = 1 ]
 }
