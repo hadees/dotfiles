@@ -463,7 +463,7 @@ slot_pick() {
       done
     else
       warn "ideas: git did not move the secretary worktree; using it where it is. To move it: git -C $1 worktree move $sm_old $wt"
-      wt=$sm_old
+      wt=$(slot_wt "$1" "$2")
     fi
   fi
   if git -C "$1" worktree list --porcelain | grep -qx "worktree $wt"; then
@@ -515,6 +515,13 @@ slot_ok() { case $1 in next|lead|claude|hermes) return 1;; esac; printf '%s\n' "
 session_name() { printf '%s-%s\n' "$rname" "$1"; }
 # The Ideas slot was called `secretary`; panes and habits still pass it. Can go once nothing does.
 slot_alias() { if [ "$1" = secretary ]; then echo ideas; else echo "$1"; fi; }
+# repo slot -> the slot's worktree: the Ideas slot's is still `secretary` when git refused to
+# move it. Everything that looks for a slot's claim asks here. Can go with slot_alias.
+slot_wt() {
+  if [ "$2" = ideas ] && [ ! -e "$1/.claude/worktrees/ideas" ] && [ -e "$1/.claude/worktrees/secretary" ]; then
+    printf '%s/.claude/worktrees/secretary\n' "$1"
+  else printf '%s/.claude/worktrees/%s\n' "$1" "$2"; fi
+}
 label_of() { printf '%s%s' "$(printf '%s' "$1" | cut -c1 | tr a-z A-Z)" "$(printf '%s' "$1" | cut -c2-)"; }
 rname_of() { printf '%s' "${1##*/}" | tr -c 'A-Za-z0-9._-' '-'; }
 settle() { st=${CLAUDE_PEER_SETTLE:-2}; [ "$st" -gt 0 ] && sleep "$st"; return 0; }
@@ -550,7 +557,7 @@ pool_pick() {
   done
   for s in $pk_first; do [ "$s" = "$pk_own" ] || pk_order="$pk_order $s"; done
   for s in $pk_order; do
-    claim_live "$pk_repo/.claude/worktrees/$s" && continue
+    claim_live "$(slot_wt "$pk_repo" "$s")" && continue
     pk_line=$(slot_pick "$pk_repo" "$s" "$(label_of "$s")") || continue
     printf '%s\n' "$pk_line"
     return 0
@@ -859,8 +866,8 @@ pane_go() {
   pg_taken=$(printf '%s\n' "$out" | cut -f1)
   pg_wt=$(printf '%s\n' "$out" | cut -f2)
   pg_msg=$(label_of "$pg_taken")
-  if [ "$pg_taken" != "$slot" ] && [ "$pg_req" = - ] && claim_live "$repo/.claude/worktrees/$slot"; then
-    pg_msg="$pg_msg (this pane's $label is in use by the peers of $(sed -n 2p "$(claim_file "$repo/.claude/worktrees/$slot")"))"
+  if [ "$pg_taken" != "$slot" ] && [ "$pg_req" = - ] && claim_live "$(slot_wt "$repo" "$slot")"; then
+    pg_msg="$pg_msg (this pane's $label is in use by the peers of $(sed -n 2p "$(claim_file "$(slot_wt "$repo" "$slot")")"))"
   fi
   case $pg_by in ''|pane) ;; *) pg_msg="$pg_msg · started by $pg_by";; esac
   [ -z "$pg_task" ] || pg_msg="$pg_msg · $pg_task"
@@ -2252,7 +2259,7 @@ cmd_start() {
   repo=$(repo_root) || exit 1
   rname=$(rname_of "$repo")
   if [ "$st_req" != next ]; then
-    st_wt=$repo/.claude/worktrees/$st_req
+    st_wt=$(slot_wt "$repo" "$st_req")
     if claim_live "$st_wt"; then
       printf '%s\t%s\trunning\t%s\n' "$st_req" "$st_wt" "$(session_name "$st_req")"
       exit 3
@@ -2299,7 +2306,7 @@ cmd_start() {
     st_n=0 st_free=0
     for s in $st_pool; do
       st_n=$((st_n + 1))
-      claim_live "$repo/.claude/worktrees/$s" || st_free=1
+      claim_live "$(slot_wt "$repo" "$s")" || st_free=1
     done
     [ "$st_free" = 1 ] || { warn "all $st_n slots are in use in $repo"; exit 3; }
   fi
@@ -2441,7 +2448,7 @@ cmd_stop() {
   slot_ok "$sp_slot" || die "'$sp_slot' is not a slot name (lowercase letters, digits, - and _)"
   repo=$(repo_root) || exit 1
   rname=$(rname_of "$repo")
-  sp_wt=$repo/.claude/worktrees/$sp_slot
+  sp_wt=$(slot_wt "$repo" "$sp_slot")
   sp_tab=$(printf '\t')
   sp_orph=0 sp_cf= sp_claim= sp_ho= sp_by= sp_l9= # sp_orph: the worktree is gone, and the claim with it
   if claim_live "$sp_wt"; then
@@ -2536,10 +2543,10 @@ cmd_slots() {
   repo=$(repo_root_q) || exit 0
   rname=$(rname_of "$repo")
   { cmd_peers "$repo" | while IFS='	' read -r w p l _; do
-      printf '%s\trunning\t%s\t%s\t%s\t%s\n' "${w##*/}" "$w" "$p" "$l" "$(session_name "${w##*/}")"
+      printf '%s\trunning\t%s\t%s\t%s\t%s\n' "$(slot_alias "${w##*/}")" "$w" "$p" "$l" "$(session_name "$(slot_alias "${w##*/}")")"
     done
     waiters "$repo" | while IFS='	' read -r sl p l; do
-      printf '%s\twaiting\t%s\t%s\t%s\t%s\n' "$sl" "$repo/.claude/worktrees/$sl" "$p" "$l" "$(session_name "$sl")"
+      printf '%s\twaiting\t%s\t%s\t%s\t%s\n' "$sl" "$(slot_wt "$repo" "$sl")" "$p" "$l" "$(session_name "$sl")"
     done
   } | LC_ALL=C sort
 }
@@ -2552,10 +2559,10 @@ cmd_panes() {
   repo=$(repo_root_q) || exit 0
   wd=$(wait_dir "$repo")
   { cmd_peers "$repo" | while IFS='	' read -r w p l _; do
-      printf '%s\trunning\t%s\t%s\t%s\n' "${w##*/}" "$p" "$l" "$w"
+      printf '%s\trunning\t%s\t%s\t%s\n' "$(slot_alias "${w##*/}")" "$p" "$l" "$w"
     done
     waiters "$repo" | while IFS='	' read -r sl p l; do
-      printf '%s\twaiting\t%s\t%s\t%s\n' "$sl" "$p" "$l" "$repo/.claude/worktrees/$sl"
+      printf '%s\twaiting\t%s\t%s\t%s\n' "$sl" "$p" "$l" "$(slot_wt "$repo" "$sl")"
     done
   } | while IFS='	' read -r sl st p l w; do
     tf=
@@ -3381,7 +3388,7 @@ queue_show() {
   [ "$qs_sid" != - ] || return 0
   qs_root=$(root_of .) || return 0
   qs_slot=$(slot_alias "$(printf '%s' "$qs_who" | tr 'A-Z' 'a-z')")
-  qs_wt=$qs_root/.claude/worktrees/$qs_slot
+  qs_wt=$(slot_wt "$qs_root" "$qs_slot")
   if slot_ok "$qs_slot" && [ -d "$qs_wt" ]; then
     # the slot's latest session is the newest transcript of its worktree (Claude Code's
     # projects/<path with every non-alphanumeric as ->/ layout, observed, not an interface)

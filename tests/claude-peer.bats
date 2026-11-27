@@ -309,6 +309,35 @@ remote_head() {
   [ ! -e "$REPO/.claude/worktrees/ideas" ]
 }
 
+@test "run --as ideas: a refused move leaves the claim in the old worktree, where start, stop, slots and panes find it under either name" {
+  remote_head
+  git worktree add -q --detach "$REPO/.claude/worktrees/secretary" HEAD
+  git worktree lock "$REPO/.claude/worktrees/secretary"
+  mkdir -p "$BATS_TEST_TMPDIR/cfg/sessions"
+  export CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/cfg
+  old=$REPO/.claude/worktrees/secretary
+  FAKE_SHELL_SLEEP=30 sh "$BIN" run --as ideas >/dev/null 2>&1 &
+  rpid=$!
+  wait_claim "$old"
+  [ ! -e "$REPO/.claude/worktrees/ideas" ]
+  for name in ideas secretary; do
+    run sh "$BIN" start "$name"
+    [ "$status" -eq 3 ]
+    [ "$output" = "ideas"$'\t'"$old"$'\trunning\tproj-ideas' ]
+    run sh "$BIN" stop "$name"
+    [ "$status" -eq 5 ]
+    [[ "$output" == *"unknown; stop --force to stop it anyway"* ]]
+  done
+  run sh "$BIN" slots
+  [ "$(printf '%s\n' "$output" | cut -f1-3,6)" = "ideas"$'\t'running$'\t'"$old"$'\t'proj-ideas ]
+  run sh "$BIN" panes
+  [ "$(printf '%s\n' "$output" | cut -f1,2,5)" = "ideas"$'\t'running$'\t'"$old" ]
+  run sh "$BIN" stop secretary --force
+  [ "$status" -eq 0 ]
+  [ "$output" = "ideas"$'\t'"$old"$'\tstopped' ]
+  wait "$rpid" || :
+}
+
 @test "run --as ideas: both names present leaves the old worktree alone" {
   remote_head
   git worktree add -q --detach "$REPO/.claude/worktrees/secretary" HEAD
