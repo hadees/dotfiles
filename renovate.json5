@@ -1,0 +1,53 @@
+// Standalone: this repo is public, so it cannot extend a private preset.
+// Settings mirror the personal dependency policy using public presets only.
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    ":semanticCommitsDisabled",
+  ],
+  timezone: "America/Chicago",
+  schedule: ["* 0-11 * * 1"],
+  minimumReleaseAge: "3 days",
+  internalChecksFilter: "strict",
+  prConcurrentLimit: 10,
+  prHourlyLimit: 2,
+  automerge: false,
+  labels: ["dependencies"],
+  commitMessagePrefix: "🧰 chore:",
+  commitMessageAction: "⬆️ update",
+  rangeStrategy: "update-lockfile",
+  lockFileMaintenance: {
+    enabled: true,
+    schedule: ["* 0-11 * * 1"],
+    commitMessageAction: "⬆️ lock file maintenance",
+  },
+  osvVulnerabilityAlerts: true,
+  vulnerabilityAlerts: {
+    description: "security fixes skip the Monday schedule and the release-age wait",
+    schedule: ["at any time"],
+    minimumReleaseAge: null,
+    prCreation: "immediate",
+    addLabels: ["security"],
+  },
+  packageRules: [
+    {
+      description: "CI tooling waits 7 days after a release (the 2025-03 tj-actions compromise)",
+      matchManagers: ["github-actions"],
+      minimumReleaseAge: "7 days",
+      commitMessagePrefix: "👷 ci:",
+      addLabels: ["ci-tooling"],
+    },
+    {
+      description: "majors wait 14 days and arrive alone",
+      matchUpdateTypes: ["major"],
+      minimumReleaseAge: "14 days",
+    },
+    {
+      matchManagers: ["github-actions"],
+      matchUpdateTypes: ["minor", "patch", "pin", "digest"],
+      groupName: "github actions",
+    },
+  ],
+}
