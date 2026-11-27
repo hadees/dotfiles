@@ -179,6 +179,7 @@ cask 'font-source-code-pro-for-powerline'
 cask 'forklift'
 cask 'gcloud-cli' # Google Cloud SDK and CLI tools
 cask 'ghostty' # GPU-accelerated terminal emulator with platform-native UI
+cask 'hadees/tap/gita' # Native Git client built around repository history
 cask 'github' # GitHub Desktop
 cask 'finicky' # URL router set as the default browser: routes links to the right browser / Chrome profile (rules: ~/.finicky.ts + overlay fragments)
 cask 'google-chrome'
