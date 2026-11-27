@@ -95,12 +95,6 @@ write(proj + "bbbb.jsonl", [
     user(20, "FX-IDEAS"),
     asst(30, "b1", (1, 0, 10, 1)),
 ])
-# a transcript named for the Ideas seat's old name still reads as ideas
-write(proj + "ffff.jsonl", [
-    {"type": "custom-title", "customTitle": "foxtrot-secretary", "sessionId": "ffff"},
-    user(25, "FX-OLD-NAME"),
-    asst(35, "f1", (1, 0, 10, 1)),
-])
 write(root + "/projects/-fx-proj-claude-worktrees-gamma/cccc.jsonl", [
     user(40, "FX-SLOT"),
     asst(50, "c1", (1, 0, 10, 1)),
@@ -136,7 +130,6 @@ col() { printf '%s\n' "$output" | awk -F'\t' -v n="$1" -v c="$2" '$2 == n { prin
   [ "$status" -eq 0 ]
   [ "$(col alpha-lead 1)" = lead ]
   [ "$(col bravo-ideas 1)" = ideas ]
-  [ "$(col foxtrot-secretary 1)" = ideas ]
   [ "$(col delta-plain 1)" = other ]
   [ "$(printf '%s\n' "$output" | awk -F'\t' '$2 == "-" { print $1 }')" = slot ]
 }
@@ -159,9 +152,9 @@ col() { printf '%s\n' "$output" | awk -F'\t' -v n="$1" -v c="$2" '$2 == n { prin
   [ "$(col delta-plain 6)" = 1 ]
   run "$SC" sessions --since 40
   [ "$(col delta-plain 6)" = 2 ]
-  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" = 5 ]
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" = 4 ]
   run "$SC" sessions --since 1000
-  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" = 6 ]
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" = 5 ]
 }
 
 @test "sessions: --dir names the profile, else CLAUDE_CONFIG_DIR, else ~/.claude" {

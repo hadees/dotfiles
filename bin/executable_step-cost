@@ -177,7 +177,7 @@ def cmd_sessions(args):
             continue
         project = os.path.basename(os.path.dirname(path))
         name = session_name(path)
-        role = ("lead" if name.endswith("-lead") else "ideas" if name.endswith(("-ideas", "-secretary"))
+        role = ("lead" if name.endswith("-lead") else "ideas" if name.endswith("-ideas")
                 else "slot" if "-claude-worktrees-" in project else "other")
         spans, agents, atok = [], 0, 0
         for sub in glob.glob(os.path.join(path[:-len(".jsonl")], "subagents", "*.jsonl")):
