@@ -374,3 +374,68 @@ rust_path() {
     [[ "$output" == *'"a"'* ]] || { echo "$d: $output"; false; }
   done
 }
+
+teardown() {
+  [ ! -e "$BATS_TEST_TMPDIR/holder.pid" ] || kill "$(cat "$BATS_TEST_TMPDIR/holder.pid")" 2>/dev/null || true
+}
+
+# The first shell of an iTerm2 run starts the Needs You panel (dot_zshrc calls
+# claude_tab_panel_ensure): never from a non-interactive shell, once from an
+# interactive one, and without waiting on the panel's port. HOME is a sandbox
+# holding the marker (a port this test holds, kind as given: closed, listening
+# or full, see tests/helpers/port-holder.py), a stub claude-tab that logs its
+# calls, and a copy of dot_functions as .functions.
+panel_shell_setup() {
+  local out="$BATS_TEST_TMPDIR/holder.port" i
+  PANEL_HOME="$BATS_TEST_TMPDIR/panelhome"
+  mkdir -p "$PANEL_HOME/bin" "$PANEL_HOME/.local/state/claude-tab"
+  python3 "$BATS_TEST_DIRNAME/helpers/port-holder.py" "${1:-closed}" "$out" >/dev/null 2>&1 </dev/null &
+  echo $! > "$BATS_TEST_TMPDIR/holder.pid"
+  for i in $(seq 150); do [ -s "$out" ] && break; sleep 0.1; done
+  [ "$(cat "$out")" != 0 ] || skip "no port with a full backlog on this kernel"
+  cp "$out" "$PANEL_HOME/.local/state/claude-tab/panel.installed"
+  printf '#!/bin/sh\necho "$*" >> "%s/panel.calls"\n' "$BATS_TEST_TMPDIR" > "$PANEL_HOME/bin/claude-tab"
+  chmod +x "$PANEL_HOME/bin/claude-tab"
+  cp "$BATS_TEST_DIRNAME/../dot_functions" "$PANEL_HOME/.functions"
+  PANEL_CALLS="$BATS_TEST_TMPDIR/panel.calls"
+}
+panel_call_count() { cat "$PANEL_CALLS" 2>/dev/null | grep -c '^panel ensure$' || true; }
+panel_called_once() { [ "$(panel_call_count)" -eq 1 ]; }
+
+@test "dot_zshrc starts the panel from an interactive iTerm2 shell once, and from no other shell" {
+  cd "$BATS_TEST_DIRNAME/.."
+  panel_shell_setup
+  run env -u XDG_STATE_HOME HOME="$PANEL_HOME" ITERM_SESSION_ID=w0t0p0:FIXTURE zsh -c 'source ./dot_zshrc'
+  sleep 1
+  [ "$(panel_call_count)" -eq 0 ]
+  run env -u XDG_STATE_HOME HOME="$PANEL_HOME" ITERM_SESSION_ID=w0t0p0:FIXTURE zsh -i -c 'source ./dot_zshrc'
+  local i
+  for i in $(seq 50); do panel_called_once && break; sleep 0.1; done
+  panel_called_once
+  sleep 1
+  [ "$(panel_call_count)" -eq 1 ]
+  # An interactive shell outside iTerm2 starts nothing.
+  rm "$PANEL_CALLS"
+  run env -u XDG_STATE_HOME -u ITERM_SESSION_ID HOME="$PANEL_HOME" zsh -i -c 'source ./dot_zshrc'
+  sleep 1
+  [ "$(panel_call_count)" -eq 0 ]
+}
+
+# The promise itself: a shell start does not wait on the panel's port. Timed
+# around the shell by python3's clock and compared with a baseline run in the
+# same test, so a slow runner does not fail it.
+@test "dot_zshrc: an interactive shell does not wait on a port whose backlog is full" {
+  cd "$BATS_TEST_DIRNAME/.."
+  panel_shell_setup full
+  local t0 t1 t2 base held
+  t0=$(python3 -c 'import time; print(time.time())')
+  run env -u XDG_STATE_HOME -u ITERM_SESSION_ID HOME="$PANEL_HOME" zsh -i -c 'source ./dot_zshrc'
+  t1=$(python3 -c 'import time; print(time.time())')
+  run env -u XDG_STATE_HOME HOME="$PANEL_HOME" ITERM_SESSION_ID=w0t0p0:FIXTURE zsh -i -c 'source ./dot_zshrc'
+  t2=$(python3 -c 'import time; print(time.time())')
+  base=$(python3 -c "print($t1 - $t0)")
+  held=$(python3 -c "print($t2 - $t1)")
+  python3 -c "import sys; sys.exit(0 if $held < $base + 2 else 1)" || { echo "baseline $base s, with a full backlog $held s"; false; }
+  # The probe is still waiting on the connect, so it has started nothing yet.
+  [ "$(panel_call_count)" -eq 0 ]
+}
