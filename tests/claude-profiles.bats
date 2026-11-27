@@ -189,7 +189,7 @@ claude_in() {
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; claude-doctor"
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: claude: function"* ]]
-  [[ "$output" == *"defined: ok (21 helpers)"* ]]
+  [[ "$output" == *"defined: ok (22 helpers)"* ]]
   [[ "$output" == *"binary:  $BATS_TEST_TMPDIR/bin/claude"* ]]
   [[ "$output" == *"account: personal-account"* ]]
   [[ "$output" == *"launch:  $HOME/.claude-personal"* ]]
