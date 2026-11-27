@@ -61,15 +61,13 @@ what this version builds and say `installed, out of date (...); this version
 defines N (...)` when they differ (the script changed since `install` last
 ran), or `not installed`.
 
-**The PRs pane** (`claude-peer prs`, `build_base`'s `<prefix>.prs`, label `PRs`, the
-fourth pane, before Hermes) is a viewer like Agents: no slot, claim or worktree. It goes
-to the repository's main checkout and runs `gh dash` through an interactive shell, so
-the `gh()` wrapper picks the account and its `GH_REPO` makes the dashboard read this
-repository; the config is `dot_config/gh-dash/config.yml`. It is on in every repository
-(no `git config` knob, as for Agents). Without the `gh dash` extension (`gh extension
-list` has no `gh dash` row) it says so in one line, with the install command, and runs
-nothing. Either way, and when `gh dash` exits, it ends in a plain shell. Outside a
-repository it is one line and a plain shell. Tests: `tests/claude-peer.bats` ("prs: ...").
+**The PRs pane** (`claude-peer prs`, `<prefix>.prs`, the fourth pane, before Hermes) is a
+viewer like Agents: no slot, claim or worktree. In the main checkout it runs `gh dash`
+(config `dot_config/gh-dash/config.yml`) through an interactive shell, so the `gh()`
+wrapper's `GH_REPO` scopes it to this repository. On in every repository. Without the
+`gh dash` extension, or outside a repository, it prints one line (the install command,
+for the extension) and runs nothing; every path ends in a plain shell. Tests: "prs: ..."
+in `tests/claude-peer.bats`.
 
 `iterm2-relaunch claude-peer` runs `install` with iTerm2 quit and starts it
 again (`iterm2-relaunch.md`); the keys it builds are reserved in `iterm2-prefs.md`.
