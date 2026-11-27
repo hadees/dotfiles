@@ -16,8 +16,9 @@ setup() {
     mkdir -p "$BATS_TEST_TMPDIR/pybin" && ln -s "$py" "$BATS_TEST_TMPDIR/pybin/python3"
     export PATH="$BATS_TEST_TMPDIR/pybin:$PATH"
   fi
-  # Run inside a peer slot or a Claude session, the suite must not inherit either.
-  unset CLAUDE_PEER_WORKTREE CLAUDE_PEER_SELF CLAUDE_PID CLAUDE_CODE_SESSION_ID
+  # Run inside a peer slot or a Claude session, the suite must not inherit either
+  # (a profile's CLAUDE_CONFIG_DIR would show the live sessions' registry).
+  unset CLAUDE_PEER_WORKTREE CLAUDE_PEER_SELF CLAUDE_PID CLAUDE_CODE_SESSION_ID CLAUDE_CONFIG_DIR
   # Run from an iTerm2 tab, a real session id would put sockets under the real look
   # directory.
   unset ITERM_SESSION_ID CLAUDE_PEER_LOOK
