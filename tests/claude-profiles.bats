@@ -1771,7 +1771,8 @@ panel_no_call() { sleep 1; [ "$(panel_ensure_calls)" -eq 0 ]; }
   panel_no_call
 }
 
-# The cookie mint (Sign-off row 3): a stub iterm2_cookie_auto counts its calls.
+# The cookie mint (decided: the shell check may mint the iTerm2 API cookie
+# quietly when it is about to start ensure): a stub iterm2_cookie_auto counts its calls.
 # It runs before the background `panel ensure`, so the n-th ensure call means
 # the n-th run has finished deciding.
 panel_mint_run() {

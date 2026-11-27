@@ -13,6 +13,15 @@ running side by side cannot take it:
              kernels get there without this file knowing their backlog
              arithmetic. Writes 0 when twenty connects all complete.
 
+Why these kinds: `ztcp` has no connect timeout, so a port whose listener never
+accepts and whose backlog is full held a shell for about 8 seconds when the
+connect ran in the shell (measured 2026-11-27); claude_tab_panel_ensure
+therefore connects in a background subshell. On macOS a socket that is bound
+and never listened on hangs the same way instead of being refused, so the
+tests' closed port is one with nothing on it. A wedged or squatted port costs
+each new shell one background process that waits for the kernel and then runs
+`claude-tab panel ensure`.
+
 Standard library, clean on 3.9.
 """
 import socket
