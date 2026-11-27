@@ -25,6 +25,7 @@ in the conversation, read its file before the work it covers:
   `~/.claude-shared/approvals-ledger.md`).
 - `github-accounts.md`: your first `gh` command in a session, which the
   shared-memory hook adds; read it first if the hook is not wired.
+- `issues.md`, `issue-reading.md`: before you write or work an issue.
 - `commit-signing.md`: a commit or tag that fails, including `failed to fill
   whole buffer` or `failed to write commit object`.
 - `tailnet-routed-ssh.md`: an ssh, scp, sftp or curl that cannot connect.
