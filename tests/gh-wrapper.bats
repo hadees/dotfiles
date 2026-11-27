@@ -38,6 +38,18 @@ fi
 echo "GH_TOKEN=${GH_TOKEN-UNSET} args: $*${GH_REPO:+ GH_REPO=$GH_REPO}"
 EOF
   chmod +x "$BATS_TEST_TMPDIR/bin/gh"
+
+  # Stub ssh: `ssh -G <host>` resolves the alias github-alias to github.com
+  # and any other name to itself, as ssh does with no config for it.
+  cat > "$BATS_TEST_TMPDIR/bin/ssh" <<'EOF'
+#!/bin/sh
+[ "$1" = -G ] || exit 1
+case $2 in
+  github-alias) echo "hostname github.com" ;;
+  *) echo "hostname $2" ;;
+esac
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/ssh"
   export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
 
   DOTFUNCTIONS="$BATS_TEST_DIRNAME/../dot_functions"
@@ -270,6 +282,20 @@ EOF
 @test "gh dash: outside a repo leaves GH_REPO unset" {
   mkdir -p "$BATS_TEST_TMPDIR/plain"
   gh_in "$BATS_TEST_TMPDIR/plain" dash
+  [ "$status" -eq 0 ]
+  [ "$output" = "GH_TOKEN=UNSET args: dash" ]
+}
+
+@test "gh dash: a non-GitHub https origin leaves GH_REPO unset" {
+  repo=$(make_repo 'https://gitlab.example/octo-other/some-repo.git')
+  gh_in "$repo" dash
+  [ "$status" -eq 0 ]
+  [ "$output" = "GH_TOKEN=UNSET args: dash" ]
+}
+
+@test "gh dash: an ssh alias resolving to a non-GitHub host leaves GH_REPO unset" {
+  repo=$(make_repo 'git@other-alias:octo-other/some-repo.git')
+  gh_in "$repo" dash
   [ "$status" -eq 0 ]
   [ "$output" = "GH_TOKEN=UNSET args: dash" ]
 }

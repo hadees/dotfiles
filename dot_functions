@@ -2817,14 +2817,24 @@ function gh() {
 	emulate -L zsh;
 	[[ $1 == auth ]] && { command gh "$@"; return; };
 	local -A gh_owners;
-	local key val owner acct arg seg dash_repo;
+	local key val owner acct arg seg dash_repo dash_host;
 
 	# `gh dash` (the gh-dash extension) finds its repo through go-gh, which
 	# skips an origin whose host is an ssh alias rather than github.com and
 	# falls back to another remote. Hand it the origin's slug as GH_REPO for
 	# this call only; an explicit GH_REPO wins, and no origin leaves it unset.
+	# git_origin_slug drops the host, so only an origin that is github.com, or
+	# an ssh alias `ssh -G` resolves to it, qualifies: GH_REPO is read against
+	# github.com, and a GitLab or Enterprise origin would aim at the wrong repo.
 	if [[ $1 == dash && -z $GH_REPO ]] && dash_repo="$(git_origin_slug)"; then
-		local -x GH_REPO=$dash_repo;
+		dash_host="$(command git config --get remote.origin.url)";
+		dash_host=${dash_host#*://};
+		dash_host=${dash_host#*@};
+		dash_host=${dash_host%%[:/]*};
+		[[ $dash_host == github.com ]] || dash_host="$(command ssh -G "$dash_host" 2>/dev/null | command sed -n 's/^hostname //p' | command head -n1)";
+		if [[ $dash_host == github.com ]]; then
+			local -x GH_REPO=$dash_repo;
+		fi;
 	fi;
 
 	# Unscoped `git config` is required here: --global does not traverse the
