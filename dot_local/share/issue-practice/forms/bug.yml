@@ -1,0 +1,52 @@
+# issue-practice 1: installed from the issue core; change it there, never here.
+name: Bug
+description: Something that does not work as it should.
+type: Bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One bug per issue. Title: the symptom, in 80 characters or fewer. Run your steps once more before you file, and write what you saw. A guess at the cause is welcome under Where, marked as a guess.
+  - type: textarea
+    id: happens
+    attributes:
+      label: What happens
+      description: What you saw, with the exact message. No theory of the cause here.
+    validations:
+      required: true
+      min_length: 20
+  - type: textarea
+    id: should
+    attributes:
+      label: What should happen
+    validations:
+      required: true
+  - type: textarea
+    id: see
+    attributes:
+      label: How to see it
+      description: Numbered steps from a place anyone can reach, with the failing step marked, the version or commit, and how often it happens.
+    validations:
+      required: true
+  - type: textarea
+    id: where
+    attributes:
+      label: Where
+      description: Files you suspect, links, and earlier decisions that cannot be found from the repository alone. Mark a guess as a guess.
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: Leave it empty when the answer is that the steps above no longer show the bug.
+      placeholder: The steps above no longer show it.
+  - type: textarea
+    id: scope
+    attributes:
+      label: Not in scope
+      description: What a fix must not change.
+  - type: textarea
+    id: source
+    attributes:
+      label: Source material
+      description: Logs and other text you did not write, pasted as they are with tokens and addresses removed.
+      render: text
