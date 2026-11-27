@@ -165,6 +165,7 @@ cask 'daisydisk'
 cask 'hadees/tap/deluge' # BitTorrent client
 cask 'displaylink' # DisplayLink USB graphics driver
 cask 'docker-desktop' # Docker Desktop
+cask 'mstormer/tap/docuria' # Document reader with read-aloud, speed reading, semantic search and compare (needs one-time: brew trust mstormer/tap)
 cask 'dropbox'
 cask 'espanso' # Cross-platform text expander written in Rust
 cask 'fantastical'
@@ -178,6 +179,7 @@ cask 'font-source-code-pro-for-powerline'
 cask 'forklift'
 cask 'gcloud-cli' # Google Cloud SDK and CLI tools
 cask 'ghostty' # GPU-accelerated terminal emulator with platform-native UI
+cask 'hadees/tap/gita' # Native Git client built around repository history
 cask 'github' # GitHub Desktop
 cask 'finicky' # URL router set as the default browser: routes links to the right browser / Chrome profile (rules: ~/.finicky.ts + overlay fragments)
 cask 'google-chrome'
