@@ -15,6 +15,10 @@ for file in ~/.{path,zsh_prompt,exports,aliases,functions,extra}; do
 done
 unset file
 
+# Start the Needs You panel from the first shell of an iTerm2 run. One file
+# test where the panel was never installed or off iTerm2.
+[[ -o interactive ]] && (( $+functions[claude_tab_panel_ensure] )) && claude_tab_panel_ensure
+
 # History configuration geared for interactive shells.
 HISTFILE="${HOME}/.zsh_history"
 HISTSIZE=32768

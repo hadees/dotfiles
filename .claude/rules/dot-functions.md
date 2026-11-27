@@ -21,6 +21,7 @@ the rule before changing them:
 - `workset()`, `workset_profile()`, `workset-doctor`: `workset.md`
 - `update()`: `packages.md`
 - `tabstatus`, `tabstatus_wiring`, `iterm2-cookie`, `iterm2_cookie_state`, `iterm2_cookie_auto`, `iterm2_allows_all_apps`, and the terminal-title export in `claude()`: `cc-status-shim.md`
+- `claude_tab_panel_ensure`: `claude-tab-panel.md`
 - the `BROWSER` pair in `claude()`, `claude_browser_alias`: `browser-routing.md`
 - `onepassword-doctor`: `onepassword.md`
 - `iterm2-doctor` and its `stamp`: `iterm2-skill.md`

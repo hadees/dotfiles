@@ -1649,9 +1649,15 @@ args_sent() { printf '%s' "$output" | tr -d '\r' | sed -n 's/^.*args=/args=/p'; 
   [ "$(args_sent)" = "args=" ]
 }
 
-# The Needs You panel: an attended launch in an iTerm2 session starts
-# `claude-tab panel ensure` when `panel install` left its marker, and never
-# otherwise. The stub claude-tab logs its arguments.
+
+# The Needs You panel: claude_tab_panel_ensure starts `claude-tab panel ensure`
+# only where `panel install` left its marker, in an iTerm2 session, and only
+# when nothing listens on the marker's port or a reload is owed. `claude()`
+# calls it on an attended launch. The stub claude-tab logs its arguments.
+teardown() {
+  [ ! -e "$BATS_TEST_TMPDIR/holder.pid" ] || kill "$(cat "$BATS_TEST_TMPDIR/holder.pid")" 2>/dev/null || true
+}
+
 panel_setup() {
   cookie_line_setup
   mkdir -p "$HOME/bin" "$HOME/.local/state/claude-tab"
@@ -1659,13 +1665,36 @@ panel_setup() {
   printf '#!/bin/sh\necho "$*" >> "%s/panel.calls"\n' "$BATS_TEST_TMPDIR" > "$HOME/bin/claude-tab"
   chmod +x "$HOME/bin/claude-tab"
   PANEL_CALLS="$BATS_TEST_TMPDIR/panel.calls"
+  PANEL_DIR="$HOME/.local/state/claude-tab"
   repo=$(make_repo 'git@github.com:octo-personal/some-repo.git')
 }
 panel_called() { [ "$(cat "$PANEL_CALLS" 2>/dev/null)" = "panel ensure" ]; }
 
+# panel_port closed|listening|full: print a loopback port that this test holds
+# for its whole run (killed in teardown); tests/helpers/port-holder.py says what
+# each kind is. A full port that this kernel will not produce skips the test.
+panel_port() {
+  local out="$BATS_TEST_TMPDIR/holder.port" i
+  rm -f "$out"
+  "$REAL_PYTHON3" "$BATS_TEST_DIRNAME/helpers/port-holder.py" "$1" "$out" >/dev/null 2>&1 </dev/null &
+  echo $! > "$BATS_TEST_TMPDIR/holder.pid"
+  for i in $(seq 150); do [ -s "$out" ] && break; sleep 0.1; done
+  [ "$(cat "$out")" != 0 ] || skip "no port with a full backlog on this kernel"
+  cat "$out"
+}
+
+# Run the function the way an interactive shell would meet it.
+panel_ensure_run() {
+  zsh -c 'source "$1"; claude_tab_panel_ensure' _ "$DOTFUNCTIONS"
+}
+
+panel_tcp_or_skip() {
+  zsh -c 'zmodload zsh/net/tcp' 2>/dev/null || skip "zsh/net/tcp is not available"
+}
+
 @test "claude: an attended launch with the panel marker runs panel ensure" {
   panel_setup
-  echo 47600 > "$HOME/.local/state/claude-tab/panel.installed"
+  panel_port closed > "$PANEL_DIR/panel.installed"
   PTY_DIR=$repo PTY_ANSWER=n pty_claude
   [[ "$output" == *"rc=0"* ]]
   cookie_wait panel_called
@@ -1674,9 +1703,112 @@ panel_called() { [ "$(cat "$PANEL_CALLS" 2>/dev/null)" = "panel ensure" ]; }
 @test "claude: no marker, no iTerm2 session, or print mode runs no panel ensure" {
   panel_setup
   PTY_DIR=$repo PTY_ANSWER=n pty_claude
-  echo 47600 > "$HOME/.local/state/claude-tab/panel.installed"
+  panel_port closed > "$PANEL_DIR/panel.installed"
   (unset ITERM_SESSION_ID; PTY_DIR=$repo PTY_ANSWER=n pty_claude)
   PTY_DIR=$repo PTY_ANSWER=n pty_claude -p hi
   sleep 1
   [ ! -e "$PANEL_CALLS" ]
+}
+
+@test "panel ensure function: a closed port starts one panel ensure and prints nothing" {
+  panel_setup
+  panel_port closed > "$PANEL_DIR/panel.installed"
+  run panel_ensure_run
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  cookie_wait panel_called
+}
+
+# The probe runs in a background subshell, so a test that expects no call waits
+# for the probe to be over before it looks.
+panel_ensure_calls() { cat "$PANEL_CALLS" 2>/dev/null | grep -c '^panel ensure$' || true; }
+panel_calls_are() { [ "$(panel_ensure_calls)" -eq "$1" ]; }
+panel_no_call() { sleep 1; [ "$(panel_ensure_calls)" -eq 0 ]; }
+
+@test "panel ensure function: a listening port starts nothing" {
+  panel_setup
+  panel_tcp_or_skip
+  panel_port listening > "$PANEL_DIR/panel.installed"
+  run panel_ensure_run
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  panel_no_call
+}
+
+# The promise itself: the shell never waits on the panel's port. A listener
+# whose backlog is full leaves a connect neither completed nor refused, and
+# ztcp has no timeout, so the connect must not be made in the shell.
+@test "panel ensure function: a full backlog does not hold the shell, and the probe waits in the background" {
+  panel_setup
+  panel_tcp_or_skip
+  panel_port full > "$PANEL_DIR/panel.installed"
+  run zsh -c 'zmodload zsh/datetime; s=$EPOCHREALTIME; source "$1"; claude_tab_panel_ensure; print -r -- $(( EPOCHREALTIME - s ))' _ "$DOTFUNCTIONS"
+  [ "$status" -eq 0 ]
+  awk -v t="$output" 'BEGIN { exit !(t + 0 < 1) }' || { echo "took $output s"; false; }
+  # Still waiting on the connect, so nothing was started and nothing was skipped.
+  panel_no_call
+}
+
+@test "panel ensure function: a listening port with panel.reload present starts one panel ensure" {
+  panel_setup
+  panel_tcp_or_skip
+  panel_port listening > "$PANEL_DIR/panel.installed"
+  : > "$PANEL_DIR/panel.reload"
+  run panel_ensure_run
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  cookie_wait panel_called
+}
+
+@test "panel ensure function: no marker, or a shell without an iTerm2 session, starts nothing" {
+  panel_setup
+  run panel_ensure_run
+  [ -z "$output" ]
+  panel_port closed > "$PANEL_DIR/panel.installed"
+  run env -u ITERM_SESSION_ID zsh -c 'source "$1"; claude_tab_panel_ensure' _ "$DOTFUNCTIONS"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  panel_no_call
+}
+
+# The cookie mint (Sign-off row 3): a stub iterm2_cookie_auto counts its calls.
+# It runs before the background `panel ensure`, so the n-th ensure call means
+# the n-th run has finished deciding.
+panel_mint_run() {
+  zsh -c 'source "$1"; iterm2_cookie_auto() { echo mint >> "$BATS_TEST_TMPDIR/mint.calls"; }; claude_tab_panel_ensure' _ "$DOTFUNCTIONS"
+}
+mint_count() { cat "$BATS_TEST_TMPDIR/mint.calls" 2>/dev/null | grep -c mint || true; }
+
+@test "panel ensure function: a closed port with a cookie that is not fresh mints once, a fresh one does not" {
+  panel_setup
+  panel_port closed > "$PANEL_DIR/panel.installed"
+  run panel_mint_run
+  cookie_wait panel_calls_are 1
+  [ "$(mint_count)" -eq 0 ]
+  rm "$HOME/.local/state/iterm2/api-cookie"
+  run panel_mint_run
+  [ -z "$output" ] || { echo "out: $output"; false; }
+  cookie_wait panel_calls_are 2
+  [ "$(mint_count)" -eq 1 ]
+  # A failed mint in this iTerm2 run is not retried from here.
+  : > "$HOME/.local/state/iterm2/api-cookie.failed"
+  run panel_mint_run
+  cookie_wait panel_calls_are 3
+  [ "$(mint_count)" -eq 1 ]
+  rm "$HOME/.local/state/iterm2/api-cookie.failed"
+  # Nor where claude.iterm2-check is off.
+  git config --file "$GIT_CONFIG_GLOBAL" claude.iterm2-check false
+  run panel_mint_run
+  cookie_wait panel_calls_are 4
+  [ "$(mint_count)" -eq 1 ]
+}
+
+@test "panel ensure function: a listening port mints nothing" {
+  panel_setup
+  panel_tcp_or_skip
+  panel_port listening > "$PANEL_DIR/panel.installed"
+  rm "$HOME/.local/state/iterm2/api-cookie"
+  run panel_mint_run
+  panel_no_call
+  [ "$(mint_count)" -eq 0 ]
 }

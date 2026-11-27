@@ -428,13 +428,9 @@ function claude() {
 			for line in $notes; do print -ru2 -- "claude: $line"; done;
 		fi;
 	fi;
-	# Keep the Needs You panel up (claude-tab-panel.md): `panel ensure` is
-	# started only where `claude-tab panel install` left its marker, in an
-	# iTerm2 session, with all three streams off the terminal as the mint
-	# above. One file test is all a machine that never installed it pays.
-	if [[ -n $attended && -n $ITERM_SESSION_ID && -e ${XDG_STATE_HOME:-$HOME/.local/state}/claude-tab/panel.installed && -x $HOME/bin/claude-tab ]]; then
-		( "$HOME/bin/claude-tab" panel ensure </dev/null >/dev/null 2>&1 & );
-	fi;
+	# Keep the Needs You panel up: one call of claude_tab_panel_ensure, which
+	# .zshrc also makes (claude-tab-panel.md).
+	[[ -n $attended ]] && claude_tab_panel_ensure;
 	# Choose the iTerm2 Workgroup this tab enters, now that the launch is going
 	# ahead (an `n` above returned already) and only for the launches that were
 	# asked: a variable-changed trigger per workgroup enters it. The nonce
@@ -3293,6 +3289,45 @@ function iterm2_cookie_auto() {
 	fi;
 	# ponytail: no lock. Launches in the same second each mint; iTerm2 accepts every cookie in this mode and the last rename wins. Add a noclobber lock only if the extra osascripts ever show in iterm2-doctor.
 	( iterm2-cookie quiet </dev/null >/dev/null 2>&1 & );
+}
+
+# Start the Needs You panel's server when it is not listening. Called by
+# `claude` and once by every interactive shell (.zshrc); prints nothing and
+# returns 0 always. In the calling shell it is three file tests, so a machine
+# that never ran `claude-tab panel install` (or off iTerm2) pays one and forks
+# nothing. With the marker everything else runs in one forked background
+# subshell: ztcp has no connect timeout, and a port whose backlog is full held
+# a shell for about 8 seconds (claude-tab-panel.md).
+function claude_tab_panel_ensure() {
+	emulate -L zsh;
+	local d="${XDG_STATE_HOME:-$HOME/.local/state}/claude-tab";
+	[[ -n $ITERM_SESSION_ID && -e $d/panel.installed && -x $HOME/bin/claude-tab ]] || return 0;
+	(
+		{
+			local port=47600;
+			if [[ ! -e $d/panel.reload ]]; then
+				port="$(<$d/panel.installed)" 2>/dev/null;
+				[[ $port == <1-65535> ]] || port=47600;
+				# Something listens and nothing is owed. A connect that hangs hangs
+				# here, in a process nobody waits for.
+				if zmodload zsh/net/tcp 2>/dev/null && ztcp 127.0.0.1 $port 2>/dev/null; then
+					ztcp -c $REPLY;
+					exit 0;
+				fi;
+			fi;
+			# There is work, and the view it registers needs an API cookie: mint one
+			# where iTerm2 allows all apps, not again in an iTerm2 run whose mint failed.
+			local f="$HOME/.local/state/iterm2/api-cookie.failed" s="$HOME/Library/Application Support/iTerm2/private/socket";
+			if [[ -e $HOME/.config/iterm2/it2 ]] && ! [[ -e $f && ( ! -e $s || $f -nt $s ) ]]; then
+				iterm2_cookie_state;
+				if [[ $REPLY != fresh && "$(command git config --get claude.iterm2-check 2>/dev/null)" != false ]]; then
+					iterm2_cookie_auto;
+				fi;
+			fi;
+			exec "$HOME/bin/claude-tab" panel ensure;
+		} </dev/null >/dev/null 2>&1 &
+	);
+	return 0;
 }
 
 # Where iTerm2 is installed, or nothing. $ITERM2_APP names a non-standard
