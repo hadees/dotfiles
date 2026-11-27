@@ -137,6 +137,18 @@ EOF
   [ "$status" -eq 2 ]
 }
 
+@test "checker: the origin and waiting keys are optional, and each is checked when present" {
+  mutate github 'd["issues"][0].update(author_kind="User", association="MEMBER", editor=None, blockers={"open": 1, "total": 2})'
+  run wb_shape github "$BATS_TEST_TMPDIR/mut.json"
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  mutate board 'd["cards"][0].update(origin="session", blockers=None); d["health"].update(stamps_ignored=0, blocked=1, blocked_linked=1, blocked_clear=0, needs_human=2)'
+  run wb_shape board "$BATS_TEST_TMPDIR/mut.json"
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  rejects github 'd["issues"][0]["blockers"] = {"open": "1", "total": 2}' blockers
+  rejects board 'd["cards"][0]["origin"] = "stranger"' origin
+  rejects board 'd["health"]["blocked"] = "1"' blocked
+}
+
 @test "board.json: the scenario's twelve cards, with their forms, stages, order and marks" {
   run $WB_PY - "$WB_FIXTURES/demo/board.json" <<'PY'
 import json, sys
@@ -221,12 +233,14 @@ PY
   [ ! -e "$output/mcp_endpoint.py" ]
   [ ! -e "$output/pane.py" ]
   [ ! -e "$output/app.py" ]
+  [ "$(readlink "$output/origin.py")" = "$WB_SRC/origin.py" ]
 }
 
 @test "wb_modules: with no name it is a directory of stubs that imports under -I" {
   local dir
   dir="$(wb_modules)"
-  [ "$(ls "$dir" | tr '\n' ' ')" = "github.py inbox.py local.py model.py verbs.py who.py " ]
+  [ "$(readlink "$dir/origin.py")" = "$WB_SRC/origin.py" ]
+  [ "$(ls "$dir" | tr '\n' ' ')" = "github.py inbox.py local.py model.py origin.py verbs.py who.py " ]
   run wb_driver "$dir" <<'PY'
 import model, github, local, who, inbox, verbs
 assert model.__file__.endswith("model.py")
@@ -248,7 +262,8 @@ frozen = {
     who: {"read": "panel_url profiles local now cache", "profile_dirs": ""},
     inbox: {"read": "local now cache", "changed": "local cache"},
     verbs: {"list_cards": "ctx dir stage profile", "take": "ctx dir ref force profile",
-            "add": "ctx dir title body take profile", "move": "ctx dir ref to force profile"}}
+            "add": "ctx dir title body take profile", "move": "ctx dir ref to force profile",
+            "show": "ctx dir ref profile"}}
 for mod, fns in frozen.items():
     for name, params in fns.items():
         got = " ".join(inspect.signature(getattr(mod, name)).parameters)
@@ -403,7 +418,7 @@ PY
   [ ! -e "$d" ]
 }
 
-@test "stub verbs: register records four api, four cli and one status, and each verb answers <name> ok" {
+@test "stub verbs: register records five api, five cli and one status, and each verb answers <name> ok" {
   local dir
   wb_demo >/dev/null
   dir="$(wb_modules)"
@@ -411,17 +426,19 @@ PY
 import os, app, verbs
 a = app.App()
 verbs.register(a)
-assert [n for n, _ in a.apis] == ["list", "take", "add", "move"] and [n for n, _ in a.clis] == ["list", "take", "add", "move"]
+assert [n for n, _ in a.apis] == ["list", "take", "add", "move", "show"] and [n for n, _ in a.clis] == ["list", "take", "add", "move", "show"]
 assert [n for n, _ in a.statuses] == ["writes"] and not a.routes and not a.commands
 assert dict(a.apis)["list"](a.ctx, "/d") == (0, "list ok")
 assert verbs.take(a.ctx, "/d", "11") == (0, "take ok") and verbs.add(a.ctx, "/d", "t") == (0, "add ok")
 assert verbs.move(a.ctx, "/d", "11", "inbox", profile="p") == (0, "move ok")
+assert verbs.show(a.ctx, "/d", "11") == (0, "show ok") and dict(a.apis)["show"](a.ctx, "/d", "11") == (0, "show ok")
 cli = dict(a.clis)
 assert cli["take"](["25", "--force"]) == {"dir": os.getcwd(), "ref": "25", "force": True}
 assert cli["add"](["a title", "--body", "b", "--take", "--dir", "/x"]) == {"dir": "/x", "title": "a title", "body": "b", "take": True}
+assert cli["show"](["25"]) == {"dir": os.getcwd(), "ref": "25"}
 assert cli["list"]([]) == {"dir": os.getcwd()} and cli["list"](["--stage", "inbox"])["stage"] == "inbox"
 assert cli["move"](["11", "done"]) == {"dir": os.getcwd(), "ref": "11", "to": "done"}
-for name, argv in (("take", []), ("move", ["11"]), ("add", []), ("list", ["--stage"])):
+for name, argv in (("take", []), ("move", ["11"]), ("show", []), ("add", []), ("list", ["--stage"])):
     try:
         cli[name](argv)
     except ValueError:
