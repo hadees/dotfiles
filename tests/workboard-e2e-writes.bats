@@ -36,16 +36,23 @@ setup() {
   STATE="$HOME/.local/state/workboard"
   LINKS="$STATE/links.tsv"
   P1="$D/code/proj-one"
+  P2="$D/code/proj-two"
   BETA="$D/code/proj-two/.claude/worktrees/beta"
   export GH_LOG="$BATS_TEST_TMPDIR/gh.log"
   LAUNCHCTL_LOG="$BATS_TEST_TMPDIR/launchctl.log"
   CLAUDE_LOG="$BATS_TEST_TMPDIR/claude.log"
+  export GH_STDIN="$BATS_TEST_TMPDIR/gh.stdin" GH_GRAPHQL="$BATS_TEST_TMPDIR/graphql.json"
   : > "$GH_LOG"
+  : > "$GH_STDIN"
+  # the one issue `show` reads: an own issue carrying the session's line, with words to look for on disk
+  printf '%s\n' '{"data": {"viewer": {"login": "personal-acct"}, "repository": {"issue": {"number": 22, "title": "Fixture title", "state": "OPEN", "body": "Fixture body\n\n_Filed by a Claude session._\n<!-- workboard:filed-by-session v1 -->", "comments": {"totalCount": 0}, "labels": {"nodes": [{"name": "agent-ready"}]}, "author": {"login": "personal-acct", "__typename": "User"}, "authorAssociation": "OWNER", "editor": null, "issueDependenciesSummary": null}}}}' > "$GH_GRAPHQL"
   : > "$LAUNCHCTL_LOG"
   : > "$CLAUDE_LOG"
   cat > "$BATS_TEST_TMPDIR/bin/gh" <<'SH'
 #!/bin/sh
 printf '%s | token=%s\n' "$*" "${GH_TOKEN-unset}" >> "$GH_LOG"
+case " $* " in *" --input - "*) cat >> "$GH_STDIN"; echo >> "$GH_STDIN" ;; esac
+if [ "$1 $2" = "api graphql" ]; then cat "$GH_GRAPHQL"; fi
 SH
   # never the real agent: it logs and says "not loaded", so the entry script
   # starts a detached server of its own
@@ -222,7 +229,7 @@ writes() {
   [ "$(writes 'sum(d["writes"].values())')" = 0 ]
 }
 
-@test "over HTTP, /mcp answers initialize and tools/list with the four tools, and tools/call list returns the real list" {
+@test "over HTTP, /mcp answers initialize and tools/list with the five tools, and tools/call list returns the real list" {
   boot
   key="$(tool_key "$HOME/.claude")"
   [[ "$key" =~ ^[0-9a-f]{32}$ ]]
@@ -231,7 +238,7 @@ writes() {
   [ "$(bget 'd["result"]["serverInfo"]["name"]')" = board ]
   mcp "$key" '{"jsonrpc": "2.0", "id": 2, "method": "tools/list"}'
   [ "$STATUS" = 200 ]
-  [ "$(bget '[t["name"] for t in d["result"]["tools"]]')" = "['list', 'take', 'add', 'move']" ]
+  [ "$(bget '[t["name"] for t in d["result"]["tools"]]')" = "['list', 'take', 'add', 'move', 'show']" ]
   mcp "$key" "{\"jsonrpc\": \"2.0\", \"id\": 3, \"method\": \"tools/call\", \"params\": {\"name\": \"list\", \"arguments\": {\"dir\": \"$P1\"}}}"
   [ "$STATUS" = 200 ]
   [ "$(bget 'd["result"]["isError"]')" = False ]
@@ -253,6 +260,48 @@ writes() {
   [ "$STATUS" = 403 ]
   mcp "$(printf '0%.0s' $(seq 32))" '{"jsonrpc": "2.0", "id": 5, "method": "ping"}'
   [ "$STATUS" = 403 ]
+}
+
+@test "add over MCP posts a body ending in the note and the stamp; the same add from a shell posts none" {
+  boot
+  key="$(tool_key "$HOME/.claude-personal")"
+  mcp "$key" "{\"jsonrpc\": \"2.0\", \"id\": 7, \"method\": \"tools/call\", \"params\": {\"name\": \"add\", \"arguments\": {\"dir\": \"$P2\", \"title\": \"Fixture added\", \"body\": \"Fixture words\"}}}"
+  [ "$(bget 'd["result"]["isError"]')" = False ]
+  [ "$(sed -n 1p "$GH_STDIN")" = '{"title": "Fixture added", "body": "Fixture words\n\n_Filed by a Claude session._\n<!-- workboard:filed-by-session v1 -->"}' ]
+  run -0 "$WB" add "Fixture typed" --body "Fixture words" --dir "$P2"
+  [ "$(sed -n 2p "$GH_STDIN")" = '{"title": "Fixture typed", "body": "Fixture words"}' ]
+  [ "$(wc -l < "$GH_STDIN" | tr -d ' ')" = 2 ]
+}
+
+@test "tools/call show and workboard show return the same frame for a canned issue" {
+  boot
+  key="$(tool_key "$HOME/.claude-personal")"
+  mcp "$key" "{\"jsonrpc\": \"2.0\", \"id\": 8, \"method\": \"tools/call\", \"params\": {\"name\": \"show\", \"arguments\": {\"dir\": \"$P2\", \"ref\": \"22\"}}}"
+  [ "$(bget 'd["result"]["isError"]')" = False ]
+  over_mcp="$(bget 'd["result"]["content"][0]["text"]')"
+  run -0 "$WB" show 22 --dir "$P2"
+  [ "$output" = "$over_mcp" ]
+  [ "${lines[1]}" = "origin: session" ]
+  [ "${lines[-1]}" = "end of issue octo-personal/proj-two#22" ]
+}
+
+@test "show in a repository with writing off is 0, and status prints shows: and counts it" {
+  boot
+  run -0 "$WB" show 22 --dir "$P1"
+  [[ "${lines[0]}" == "issue: octo-work-org/proj-one#22 · open"* ]]
+  [ "$(writes 'd["writes"]["refused_write_off"]')" = 0 ]
+  run -0 "$WB" status
+  [[ "$output" == *$'\nshows: '* ]]
+  [ "$(writes 'd["shows"]["shown"]')" = 1 ]
+}
+
+@test "after an add and a show the state directory and the home hold no title or body" {
+  boot
+  run -0 "$WB" add "Fixture added" --body "Fixture words" --dir "$P2"
+  run -0 "$WB" show 22 --dir "$P2"
+  "$WB" stop >/dev/null
+  run grep -rlE 'Fixture (title|body|added|words)' "$HOME" "$STATE"
+  [ "$status" -eq 1 ] || { echo "$output"; false; }
 }
 
 @test "status prints the writes and mcp lines and no scenario title" {
