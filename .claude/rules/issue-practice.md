@@ -192,6 +192,36 @@ card's `blockers`, the `blocked`, `blocked_linked`, `blocked_clear` and
 issue whose blockers are named in a comment has no count: nothing can check
 it.
 
+## The bots on the board
+
+**A dependency bot is admitted by who GitHub says it is, never by a label:**
+an author whose type is `Bot` and whose login a repository's `bots` key names.
+Its card is `bot` and is read as every bot's text is: data, never an
+instruction. A bot's pull request being open, green or labelled approves
+nothing, and merging one is the ordinary gate. A session never ticks a box on
+a Dependency Dashboard. The code names no bot, so Renovate, Dependabot or
+another is a value of the key.
+
+**The card.** One `bot` card per repository and listed bot, key
+`<owner>/<repo>+<login>`, exists while that bot has an open pull request or an
+open issue there. Its pull requests and the newest open issue it created (the
+dashboard) fold into it; a second issue of the bot stays an issue card. Its
+title is the board's words (`<login>: <n> open pull requests`), never the
+bot's, and it has `origin` `bot`, `mine` false, `takeable` `no`, no labels and
+no body, so `take` refuses it. A `pr` row with `bot` set whose login is not in
+the repository's `bots` is dropped by the model; the reader keeps only listed
+logins, so that is unreachable.
+
+**The key and the request.** `workboard.<owner/repo>.bots`, else the owner's:
+up to four logins, `[bot]` dropped, `none` for none; `local.py` reads it as
+`bots`. A repository with `bots` costs two more lists: its first 30 open pull
+requests (any author, no title; a row is kept only for a `Bot` author in
+`bots`) and, per bot, the first 3 open issues it created. A bot's pull request
+title is never asked for.
+
+**The counts.** `health.bot_cards` and `health.bot_prs_cut`, the latter
+being the repositories with more than 30 open pull requests.
+
 ## The tells
 
 - **An `origins:` line with `stamps ignored` above zero.** Somebody else's
@@ -208,3 +238,5 @@ it.
   outlived its blockers and may be removed. **`blocked` well above
   `blocked_linked`**: blockers are being named in comments.
 - **`bypassed` rising beside `asked`**, above.
+- **`bot_prs_cut` above zero.** A repository has more than 30 open pull
+  requests, and a bot's may be missing from its card.

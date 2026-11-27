@@ -99,6 +99,7 @@ REVIEW = enum("APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED", "NONE")
 CHECKS = enum("SUCCESS", "FAILURE", "PENDING", "NONE")
 LOG_ENTRY = {"at": STR, "who": STR, "kind": STR, "text": STR}
 
+# "?bot_prs_cut" is only on a repository whose `bots` is not empty.
 GITHUB = {
     "v": V1,
     "accounts": table({"login": STR, "fetched_at": NUM, "cost": INT, "remaining": INT, "interval": INT, "error": maybe(STR)}),
@@ -113,14 +114,14 @@ GITHUB = {
     "prs": many({
         "slug": STR, "number": INT, "title": STR, "url": STR, "state": enum("OPEN", "MERGED"), "draft": BOOL,
         "branch": STR, "updated_at": INT, "merged_at": maybe(INT), "review": REVIEW, "merge": STR, "checks": CHECKS,
-        "?bot": maybe(STR),
+        "bot": maybe(STR),
         "closes": many({"slug": STR, "number": INT, "title": STR, "url": STR, "state": enum("OPEN", "CLOSED")})}),
 }
 
 LOCAL = {
     "v": V1, "generated_at": NUM, "skipped": INT,
     "repos": many({"slug": STR, "name": STR, "dir": PATH, "common": PATH, "group": STR, "account": STR, "profile": PATH,
-                   "intake": STR, "write": BOOL, "take": STR, "notify_lead": BOOL, "?bots": many(STR)}),
+                   "intake": STR, "write": BOOL, "take": STR, "notify_lead": BOOL, "bots": many(STR)}),
     "worktrees": many({
         "slug": STR, "path": PATH, "name": STR, "branch": maybe(STR), "main": BOOL,
         "claim": maybe({"label": STR, "by": STR, "task": maybe(STR), "handoff": BOOL, "started": maybe(INT)}),
@@ -175,7 +176,7 @@ BOARD = {
         "inbox": enum("none", "queue"), "inbox_errors": INT, "repos": INT, "repo_errors": INT, "cards": INT,
         "unattended": INT, "unjoined": INT, "unjoined_jobs": INT, "stale_jobs": INT,
         "stamps_ignored": INT, "blocked": INT, "blocked_linked": INT, "blocked_clear": INT, "needs_human": INT,
-        "?bot_cards": INT, "?bot_prs_cut": INT},
+        "bot_cards": INT, "bot_prs_cut": INT},
     "groups": many(STR),
     "repos": many({"slug": STR, "name": STR, "group": STR, "intake": STR, "write": BOOL}),
     "cards": many(CARD),
