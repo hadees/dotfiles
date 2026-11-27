@@ -8,10 +8,10 @@ paths:
 
 # Claude peers: the ideas list, the idea cards and the Ideas pane
 
-What the Ideas pane (slot `secretary`) shows and what a pick starts. The reader is
+What the Ideas pane (slot `ideas`) shows and what a pick starts. The reader is
 `claude-peer ideas [--all] [--width N] [<dir>]`, `queue shape` links a session to an idea
 file, and `ideas similar` finds an earlier idea. The pane's launch, cap, seat note and clock
-are in `claude-peer-secretary.md`, the generic pane in `claude-peer.md`.
+are in `claude-peer-bar.md`, the generic pane in `claude-peer.md`.
 
 ## The idea cards
 
@@ -87,8 +87,7 @@ The Ideas pane shows its ideas, not the generic picker's contexts.
 
 Its rows are `New idea`, then the active ideas newest first, then the parked ones; `done` and
 `dropped` are not listed (they still feed the match). The prompt, the title line and the
-quiet line read `Ideas`; the slot, the claim, the log's `Secretary` and the session name
-`<repo>-secretary` keep `secretary`. The hint is `↵ open · ^T new idea from what you typed ·
+quiet line read `Ideas`, as do the slot, the log's label and the session name `<repo>-ideas`. The hint is `↵ open · ^T new idea from what you typed ·
 esc hide`. The sleeper, Esc, `q`, a `start` request, the cap, the clock and the drift note
 are the generic pane's, because the row file keeps its `id<TAB>display` shape. It differs
 from the generic pane in four places:
@@ -123,7 +122,7 @@ cannot be picked there, and `n new idea, typed · q shell`. Return in it is `New
   newer). `idea_transcript` looks in every profile directory, so a transcript in a profile
   the pane will not launch under is a false yes, caught once per pane by the failed resume.
   New idea and a fresh start from a file or a card are `fresh` starts, which get the fresh-tree
-  move of `claude-peer-secretary.md`; a resume does not, and its worktree is left as it is.
+  move of `claude-peer-bar.md`; a resume does not, and its worktree is left as it is.
   At the cap the pane says `pick again to open another`.
 - **A typed line** (`^T` with a query, Return on no match, the list's `n`) starts a new idea
   with the line as its first prompt, after the match: when an earlier idea shares enough words
@@ -139,7 +138,7 @@ cannot be picked there, and `n new idea, typed · q shell`. Return in it is `New
 ## The seat note's idea part
 
 The operator signed this wording with the ideas-picker go (2026-11-26); it is in
-`secretary_note` (`claude-peer-secretary.md`). It tells the session that its idea file's first
+`ideas_note` (`claude-peer-bar.md`). It tells the session that its idea file's first
 line is `# ` and the idea in a few words (the name the list shows), to run `claude-peer queue
 shape <idea file>` once the file has its Goal, and, for a line that starts `similar`, to ask
 the operator "You had this already: <title> (<state> <age>). Resume it?" (on yes: add what is

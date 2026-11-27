@@ -111,7 +111,7 @@ STUB
   STUB_REPLY=nothing run "$RUN" --runs 1 "$SCENARIOS"/*.txt
   [ "$status" -eq 0 ]
   [ "$(grep -c . <<< "$output")" -eq 5 ]
-  [[ "$output" == *$'secretary-go\t1\t0\t'* ]]
+  [[ "$output" == *$'ideas-go\t1\t0\t'* ]]
   [[ "$output" == *$'handback-stop\t1\t0\t'* ]]
   [[ "$output" == *$'relayed-go\t1\t0\t'* ]]
   [[ "$output" == *$'four-kinds\t1\t0\t'* ]]
