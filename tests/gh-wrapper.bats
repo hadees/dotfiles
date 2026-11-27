@@ -15,7 +15,8 @@ setup() {
   export GIT_CONFIG_GLOBAL="$BATS_TEST_TMPDIR/gitconfig"
   export GIT_CONFIG_SYSTEM=/dev/null
   export GIT_CONFIG_NOSYSTEM=1
-  unset GH_TOKEN GH_STUB_NO_TOKEN_FOR
+  unset GH_TOKEN GH_REPO GH_STUB_NO_TOKEN_FOR CLAUDECODE GH_ISSUE_STAMP GH_PRIVATE_CHECK CLAUDE_CODE_SESSION_ID
+  export XDG_STATE_HOME="$BATS_TEST_TMPDIR/state"
 
   # Fixture pins: one "work" org and one "personal" owner, each mapped to a
   # gh account name.
@@ -35,9 +36,21 @@ if [ "$1" = auth ] && [ "$2" = token ] && [ "$3" = --user ]; then
   echo "tok-$4"
   exit 0
 fi
-echo "GH_TOKEN=${GH_TOKEN-UNSET} args: $*"
+echo "GH_TOKEN=${GH_TOKEN-UNSET} args: $*${GH_REPO:+ GH_REPO=$GH_REPO}"
 EOF
   chmod +x "$BATS_TEST_TMPDIR/bin/gh"
+
+  # Stub ssh: `ssh -G <host>` resolves the alias github-alias to github.com
+  # and any other name to itself, as ssh does with no config for it.
+  cat > "$BATS_TEST_TMPDIR/bin/ssh" <<'EOF'
+#!/bin/sh
+[ "$1" = -G ] || exit 1
+case $2 in
+  github-alias) echo "hostname github.com" ;;
+  *) echo "hostname $2" ;;
+esac
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/ssh"
   export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
 
   DOTFUNCTIONS="$BATS_TEST_DIRNAME/../dot_functions"
@@ -184,7 +197,7 @@ EOF
   run zsh -c "source '$DOTFUNCTIONS'; cd '$repo'; gh-doctor"
   [ "$status" -eq 0 ]
   [[ "$output" == *"wrapper: gh: function"* ]]
-  [[ "$output" == *"defined: ok (3 helpers)"* ]]
+  [[ "$output" == *"defined: ok (8 helpers)"* ]]
   [[ "$output" == *"binary:  $BATS_TEST_TMPDIR/bin/gh"* ]]
   [[ "$output" == *"account: personal-acct"* ]]
   [[ "$output" == *"pins:    octo-work-org -> work-acct, octo-personal -> personal-acct"* ]]
@@ -227,4 +240,63 @@ EOF
   [[ "$output" == *"Octo-Mixed -> mixed-acct MIXED CASE: the wrappers look up the lowercase owner so add a pin for that spelling too"* ]]
   [[ "$output" == *"octo-work-org -> work-acct, octo-personal -> personal-acct, Octo-Mixed"* ]] || { echo "lowercase pins gained a suffix: $output"; false; }
   [[ "$output" != *"octo-work-org -> work-acct MIXED"* ]] || { echo "lowercase pin flagged: $output"; false; }
+}
+
+@test "gh dash: an ssh-alias origin sets GH_REPO to its slug for that call" {
+  repo=$(make_repo 'git@github-alias:octo-personal/Some-Repo.git')
+  gh_in "$repo" dash
+  [ "$status" -eq 0 ]
+  [ "$output" = "GH_TOKEN=tok-personal-acct args: dash GH_REPO=octo-personal/some-repo" ]
+}
+
+@test "gh dash: an https origin sets GH_REPO even with no pins" {
+  git config --file "$GIT_CONFIG_GLOBAL" --remove-section credential.https://github.com/octo-work-org
+  git config --file "$GIT_CONFIG_GLOBAL" --remove-section credential.https://github.com/octo-personal
+  repo=$(make_repo 'https://github.com/octo-other/some-repo.git')
+  gh_in "$repo" dash
+  [ "$status" -eq 0 ]
+  [ "$output" = "GH_TOKEN=UNSET args: dash GH_REPO=octo-other/some-repo" ]
+}
+
+@test "gh dash: an explicit GH_REPO is kept" {
+  repo=$(make_repo 'git@github-alias:octo-personal/some-repo.git')
+  GH_REPO=octo-work-org/chosen gh_in "$repo" dash
+  [ "$status" -eq 0 ]
+  [ "$output" = "GH_TOKEN=tok-personal-acct args: dash GH_REPO=octo-work-org/chosen" ]
+}
+
+@test "gh: another subcommand gets no GH_REPO" {
+  repo=$(make_repo 'git@github-alias:octo-personal/some-repo.git')
+  gh_in "$repo" pr list
+  [ "$status" -eq 0 ]
+  [ "$output" = "GH_TOKEN=tok-personal-acct args: pr list" ]
+}
+
+@test "gh dash: no origin leaves GH_REPO unset" {
+  repo="$BATS_TEST_TMPDIR/norepo"
+  git init -q "$repo"
+  gh_in "$repo" dash
+  [ "$status" -eq 0 ]
+  [ "$output" = "GH_TOKEN=UNSET args: dash" ]
+}
+
+@test "gh dash: outside a repo leaves GH_REPO unset" {
+  mkdir -p "$BATS_TEST_TMPDIR/plain"
+  gh_in "$BATS_TEST_TMPDIR/plain" dash
+  [ "$status" -eq 0 ]
+  [ "$output" = "GH_TOKEN=UNSET args: dash" ]
+}
+
+@test "gh dash: a non-GitHub https origin leaves GH_REPO unset" {
+  repo=$(make_repo 'https://gitlab.example/octo-other/some-repo.git')
+  gh_in "$repo" dash
+  [ "$status" -eq 0 ]
+  [ "$output" = "GH_TOKEN=UNSET args: dash" ]
+}
+
+@test "gh dash: an ssh alias resolving to a non-GitHub host leaves GH_REPO unset" {
+  repo=$(make_repo 'git@other-alias:octo-other/some-repo.git')
+  gh_in "$repo" dash
+  [ "$status" -eq 0 ]
+  [ "$output" = "GH_TOKEN=UNSET args: dash" ]
 }

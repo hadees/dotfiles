@@ -427,7 +427,7 @@ assert h["accounts"] == [{"account": "work-acct", "fetched_at": NOW - 10.0, "int
   check 'assert len(C[K(11)]["body"]) == 4000'
   board 'issue(11); pr(15, branch="br-w1", closes=closes(11))
 wt("w1", claim={"label": "Alpha", "by": "Lead", "task": None, "handoff": False, "started": None})
-l["log"][S] = [{"at": "t%02d" % n, "who": "Alpha" if n % 5 else "Secretary", "kind": "note", "text": "Fixture %d" % n}
+l["log"][S] = [{"at": "t%02d" % n, "who": "Alpha" if n % 5 else "Ideas", "kind": "note", "text": "Fixture %d" % n}
                for n in range(40)]'
   check 'log = C[K(11)]["log"]; assert len(log) == 20 and all(e["who"] == "Alpha" for e in log)
 assert log[-1]["at"] == "t39" and log[0]["at"] == "t16"'

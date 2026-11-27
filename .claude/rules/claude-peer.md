@@ -38,7 +38,7 @@ peers spawn at entry and the builtin is entered on every `claude` job.
 `Claude Peers` (`claudePeer.workgroup`) is Lead, Ideas and Agents, and `Claude Peers + Hermes`
 (`claudePeer.h`) adds a Hermes pane (`claude-peer hermes --wait`): the pane cannot remove
 itself, so a repo where no Hermes profile routes gets the definition without it, chosen
-before entry. The bar and the retired overlay pair are in `claude-peer-secretary.md`. There is no Diff peer, and
+before entry. The bar and the retired overlay pair are in `claude-peer-bar.md`. There is no Diff peer, and
 nothing is copied from `builtin.claudeCode`. `build_base` returns the sessions
 for an id prefix and `with_hermes` the twin of a definition. `install` no longer builds the overlay pair
 (**Overlay peers**). `claude-peer install` writes both into the `Workgroups` key (JSON
@@ -188,7 +188,7 @@ a terminal state that has to be restored on every exit path. The pane ignores
 stopping and the pane falls back to request-only waiting; its claude gets them
 back. TERM and HUP kill the reader and delete the wait file.
 
-**The pool.** A pane's slot is a preference (the Ideas pane's is `secretary`). The pool is
+**The pool.** A pane's slot is a preference (the Ideas pane's is `ideas`). The pool is
 the words of `git config claude-peer.slots` (default the 24 Greek letters, `alpha` to
 `omega`); no bar pane is one of them now, but the order holds. A pane takes its own slot
 when no Claude runs in it, else the first free name from the pool's fifth on, and only then
@@ -414,7 +414,7 @@ checkout the leader stands in, once, if that line is missing (Hermes 0.19.0
 Code hooks) and is not part of the leader's roll-call.
 
 **Overlay peers (retired: `install` builds no pair and the bar is Lead, Ideas, Agents[, Hermes];
-see `claude-peer-secretary.md`; the code below stays until the step that deletes it).** A tab of
+see `claude-peer-bar.md`; the code below stays until the step that deletes it).** A tab of
 the public chezmoi source got one extra pane per private
 overlay of the machine, each a waiting pane of that overlay's own repository. Discovery is
 `dotfiles()`'s rule, by chezmoi's own answer: every `~/.config/chezmoi/*.toml` but
