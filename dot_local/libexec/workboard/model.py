@@ -17,6 +17,9 @@ import sys
 import time
 from typing import Optional
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import origin
+
 STAGES = ("inbox", "building", "review", "landed")
 NO_WHO = {"v": 1, "fetched_at": None, "sources": {"panel": "down", "jobs": "off"}, "rows": []}
 NO_INBOX = {"v": 1, "fetched_at": None, "source": "none", "errors": {}, "rows": []}
@@ -108,7 +111,7 @@ def build_board(github: dict, local: dict, who: dict, inbox: dict, trial_days: i
     cards = {}      # key -> card, in creation order
     assignees = {}  # key -> logins, kept out of the card
 
-    def add(slug, form, key, number, title, url, author, labels, body, updated_at, prs):
+    def add(slug, form, key, number, title, url, author, labels, body, updated_at, prs, kind=None, blockers=None):
         r = repo_of[slug]
         cards[key] = {
             "key": key, "form": form, "slug": slug, "repo": r["name"], "group": r["group"],
@@ -116,16 +119,19 @@ def build_board(github: dict, local: dict, who: dict, inbox: dict, trial_days: i
             "author": author, "mine": bool(author) and author == login_of(slug), "assigned": False,
             "labels": labels, "body": body[:4000], "updated_at": updated_at, "trial_day": None,
             "unattended": False, "takeable": "no", "queue": None, "prs": prs, "holders": [],
-            "sessions": [], "log": []}
+            "sessions": [], "log": [], "origin": kind, "blockers": blockers}
         assignees[key] = []
         return cards[key]
 
     # Rule 1: cards from GitHub.
+    ignored = 0
     for i in github["issues"]:
         if i["slug"] in repo_of:
             key = "%s#%d" % (i["slug"], i["number"])
+            kind, skipped = origin.classify(i, login_of(i["slug"]))  # the whole body, before the card cuts it
+            ignored += skipped
             add(i["slug"], "issue", key, i["number"], i["title"], i["url"], i["author"], list(i["labels"]),
-                i["body"], i["updated_at"], [_pr(p) for p in i["prs"]])
+                i["body"], i["updated_at"], [_pr(p) for p in i["prs"]], kind, i.get("blockers"))
             assignees[key] = i["assignees"]
     for p in github["prs"]:
         slug = p["slug"]
@@ -253,6 +259,7 @@ def build_board(github: dict, local: dict, who: dict, inbox: dict, trial_days: i
         card["log"] = [e for e in local["log"].get(card["slug"], []) if e["who"] in labels][-20:]
 
     ordered = sorted(cards.values(), key=_sort_key)  # rule 9
+    blocked = [c for c in ordered if c["form"] == "issue" and "blocked" in c["labels"]]
     errors = sum(1 for s in repo_of if github["repos"].get(s, {}).get("error"))
     used = {r["account"] for r in repos}
     panel_at = who["fetched_at"]
@@ -270,7 +277,12 @@ def build_board(github: dict, local: dict, who: dict, inbox: dict, trial_days: i
             "jobs": who["sources"]["jobs"], "inbox": inbox["source"], "inbox_errors": len(inbox["errors"]),
             "repos": len(repos), "repo_errors": errors, "cards": len(ordered),
             "unattended": sum(1 for c in ordered if c["unattended"]), "unjoined": unjoined,
-            "unjoined_jobs": unjoined_jobs, "stale_jobs": stale_jobs},
+            "unjoined_jobs": unjoined_jobs, "stale_jobs": stale_jobs,
+            "stamps_ignored": ignored, "blocked": len(blocked),
+            "blocked_linked": sum(1 for c in blocked if c["blockers"] and c["blockers"]["total"] > 0),
+            "blocked_clear": sum(1 for c in blocked if c["blockers"] and c["blockers"]["total"] > 0
+                                 and c["blockers"]["open"] == 0),
+            "needs_human": sum(1 for c in ordered if c["form"] == "issue" and "needs-human" in c["labels"])},
         "groups": groups,
         "repos": [{"slug": r["slug"], "name": r["name"], "group": r["group"], "intake": r["intake"],
                    "write": r["write"]} for r in repos],

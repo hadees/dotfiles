@@ -18,6 +18,9 @@ import sys
 import time
 from typing import Optional
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import origin
+
 DEFAULT_BUDGET = 1200
 TIMEOUT = 20
 OPEN_LIMIT = 50
@@ -87,7 +90,8 @@ def build_query(repos: list) -> str:
     order = "orderBy: {field: UPDATED_AT, direction: DESC}"
     closing = ("closingIssuesReferences(first: 5) { nodes { number title url state "
                "repository { nameWithOwner } } }")
-    issue = ("number title url updatedAt body author { login } assignees(first: 5) { nodes { login } } "
+    issue = ("number title url updatedAt body " + origin.ISSUE_FIELDS + " " + origin.WAIT_FIELDS +
+             " assignees(first: 5) { nodes { login } } "
              "labels(first: 10) { nodes { name } } "
              "closedByPullRequestsReferences(first: 5, includeClosedPrs: true) { nodes { number url state "
              "isDraft merged mergedAt headRefName author { login } } }")
@@ -188,11 +192,15 @@ def normalize(account: str, login: str, response: dict, repos: list) -> dict:
             for n in _nodes(node.get(key)):
                 found[n["number"]] = n
         for n in found.values():
+            who = origin.facts(n)
             out["issues"].append({
                 "slug": r["slug"], "number": n["number"], "title": n["title"], "url": n["url"],
                 "body": n.get("body") or "", "updated_at": _epoch(n.get("updatedAt")),
-                "author": _login(n.get("author")), "assignees": [a["login"] for a in _nodes(n.get("assignees"))],
+                "author": who["author"], "author_kind": who["author_kind"],
+                "association": who["association"], "editor": who["editor"],
+                "assignees": [a["login"] for a in _nodes(n.get("assignees"))],
                 "labels": [l["name"] for l in _nodes(n.get("labels"))],
+                "blockers": origin.blockers(n),
                 "prs": [{"number": p["number"], "url": p["url"], "state": p["state"], "draft": bool(p.get("isDraft")),
                          "merged_at": _epoch(p.get("mergedAt")), "branch": p["headRefName"],
                          "author": _login(p.get("author"))}
