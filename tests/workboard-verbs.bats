@@ -357,13 +357,13 @@ PY
   local first row
   first="$(printf '%s\n' "${lines[@]:3}" | head -1)"
   [[ "$first" == "$P1~Q1"$'\tinbox\tno\t-\t9.5\t'* ]]
-  # 8 proj-one cards (queue, issue, local, review), none of proj-two's
-  [ "$(printf '%s\n' "${lines[@]:3:8}" | grep -c "^$P1")" = 8 ]
-  [ "${lines[11]}" = -- ]
+  # 9 proj-one cards (queue, issue, local, bot, review), none of proj-two's
+  [ "$(printf '%s\n' "${lines[@]:3:9}" | grep -c "^$P1")" = 9 ]
+  [ "${lines[12]}" = -- ]
   # the landed list holds proj-two's two landed cards and the verb refuses an unknown stage
-  [[ "${lines[14]}" == "$P2#24"$'\tlanded\t'* ]]
-  [[ "${lines[15]}" == "$P2#22"$'\tlanded\t'* ]]
-  [ "${lines[17]}" = "2 stage is one of inbox, building, review, landed" ]
+  [[ "${lines[15]}" == "$P2#24"$'\tlanded\t'* ]]
+  [[ "${lines[16]}" == "$P2#22"$'\tlanded\t'* ]]
+  [ "${lines[18]}" = "2 stage is one of inbox, building, review, landed" ]
 }
 
 @test "list_cards: a title cannot forge a column or a row" {

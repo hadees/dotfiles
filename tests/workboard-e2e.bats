@@ -358,7 +358,7 @@ PY
   [ "$status" -eq 0 ] || { echo "$output"; false; }
 }
 
-@test "serve --fixture on the demo directory, through the real model, serves the scenario's twelve keys and stages" {
+@test "serve --fixture on the demo directory, through the real model, serves the scenario's thirteen keys and stages" {
   wb_demo >/dev/null
   $WB serve --port "$PORT" --fixture "$WORKBOARD_DEMO" > "$BATS_TEST_TMPDIR/serve.out" 2> "$BATS_TEST_TMPDIR/serve.err" 3>&- &
   SERVE_PID=$!
@@ -367,7 +367,7 @@ PY
   TOK="$(link_token "$("$WB" url)")"
   fetch_board
   wb_shape board "$BATS_TEST_TMPDIR/resp.body"
-  [ "$(bget 'len(d["cards"])')" = 12 ]
+  [ "$(bget 'len(d["cards"])')" = 13 ]
   got="$(bget 'sorted((c["key"], c["stage"]) for c in d["cards"])')"
   want="$(jget "$WORKBOARD_DEMO/board.json" 'sorted((c["key"], c["stage"]) for c in d["cards"])')"
   [ "$got" = "$want" ]

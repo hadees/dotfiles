@@ -483,7 +483,7 @@ PY
   tok="$(full_token)"
   hreq GET /b/board.json -H "Authorization: Bearer $tok"
   [ "$STATUS" = 200 ]
-  [ "$(jget "$BATS_TEST_TMPDIR/resp.body" 'len(d["cards"])')" = 12 ]
+  [ "$(jget "$BATS_TEST_TMPDIR/resp.body" 'len(d["cards"])')" = 13 ]
   hreq POST /b/go -H "Authorization: Bearer $tok" -H "X-Workboard: 1" -d pid=4102
   [ "$STATUS" = 409 ]
   [[ "$HEADERS" == *"content-type: text/plain"* ]]
@@ -830,7 +830,7 @@ PY
   start_board
   hreq GET /pane
   [ "$STATUS" = 200 ] && [ "$BODY" = "pane GET" ]
-  after_ran() { grep -qx 'after 12' "$PANE_LOG"; }
+  after_ran() { grep -qx 'after 13' "$PANE_LOG"; }
   wait_for after_ran
   hreq --local GET /status.json
   [ "$(jget "$BATS_TEST_TMPDIR/resp.body" 'd["pane"]["hits"]')" = 1 ]
