@@ -455,22 +455,6 @@ slot_checkout() {
 
 slot_pick() {
   wt=$1/.claude/worktrees/$2
-  # The Ideas slot's worktree was `secretary`: moved once, with its transcripts (Claude Code
-  # keys them by directory). If git refuses, this start uses the old path. Can go once no repo has one.
-  if [ "$2" = ideas ] && [ ! -e "$wt" ] && git -C "$1" worktree list --porcelain | grep -qx "worktree $1/.claude/worktrees/secretary" &&
-    ! claim_live "$1/.claude/worktrees/secretary"; then
-    sm_old=$1/.claude/worktrees/secretary
-    sm_from=$(cd -- "$sm_old" && pwd -P | tr -c 'A-Za-z0-9\n' -)
-    if git_immune -C "$1" worktree move "$sm_old" "$wt"; then
-      sm_to=$(cd -- "$wt" && pwd -P | tr -c 'A-Za-z0-9\n' -)
-      for sm_d in $(profile_dirs); do
-        if [ -d "$sm_d/projects/$sm_from" ] && [ ! -e "$sm_d/projects/$sm_to" ]; then mv "$sm_d/projects/$sm_from" "$sm_d/projects/$sm_to" || :; fi
-      done
-    else
-      warn "ideas: git did not move the secretary worktree; using it where it is. To move it: git -C $1 worktree move $sm_old $wt"
-      wt=$(slot_wt "$1" "$2")
-    fi
-  fi
   if git -C "$1" worktree list --porcelain | grep -qx "worktree $wt"; then
     [ -d "$wt" ] || die "$2: $wt is registered but missing; git worktree prune (from $1), then start it again"
     if claim_live "$wt"; then
@@ -518,15 +502,8 @@ POOL_DEFAULT='alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu
 slot_ok() { case $1 in next|lead|claude|hermes) return 1;; esac; printf '%s\n' "$1" | LC_ALL=C grep -Eq '^[a-z][a-z0-9_-]*$'; }
 # The one place a session name is composed: <repo>-<slot>. Needs rname.
 session_name() { printf '%s-%s\n' "$rname" "$1"; }
-# The Ideas slot was called `secretary`; panes and habits still pass it. Can go once nothing does.
-slot_alias() { if [ "$1" = secretary ]; then echo ideas; else echo "$1"; fi; }
-# repo slot -> the slot's worktree: the Ideas slot's is still `secretary` when git refused to
-# move it. Everything that looks for a slot's claim asks here. Can go with slot_alias.
-slot_wt() {
-  if [ "$2" = ideas ] && [ ! -e "$1/.claude/worktrees/ideas" ] && [ -e "$1/.claude/worktrees/secretary" ]; then
-    printf '%s/.claude/worktrees/secretary\n' "$1"
-  else printf '%s/.claude/worktrees/%s\n' "$1" "$2"; fi
-}
+# repo slot -> the slot's worktree. Everything that looks for a slot's claim asks here.
+slot_wt() { printf '%s/.claude/worktrees/%s\n' "$1" "$2"; }
 label_of() { printf '%s%s' "$(printf '%s' "$1" | cut -c1 | tr a-z A-Z)" "$(printf '%s' "$1" | cut -c2-)"; }
 rname_of() { printf '%s' "${1##*/}" | tr -c 'A-Za-z0-9._-' '-'; }
 settle() { st=${CLAUDE_PEER_SETTLE:-2}; [ "$st" -gt 0 ] && sleep "$st"; return 0; }
@@ -1201,8 +1178,6 @@ art_awk() {
 # (Base16 Eighties hues; the second is the approved blue).
 art_cap() {
   ac_h=$(git config --get "claude-peer.$1.cap" 2>/dev/null) || ac_h=
-  # the old name's key, read as a fallback; can go with slot_alias
-  [ -n "$ac_h" ] || [ "$1" != ideas ] || ac_h=$(git config --get claude-peer.secretary.cap 2>/dev/null) || ac_h=
   ac_h=${ac_h#\#}
   if ! printf '%s\n' "$ac_h" | LC_ALL=C grep -Eq '^[0-9A-Fa-f]{6}$'; then
     ac_i=0 ac_pos=${cap_index:-0}
@@ -2117,7 +2092,7 @@ cmd_run() {
   slot= b= wait=0
   if [ "${1-}" = --as ]; then
     [ $# -ge 2 ] || usage
-    slot=$(slot_alias "$2"); shift 2
+    slot=$2; shift 2
     if [ "${1-}" = --wait ]; then wait=1; shift; fi
   elif [ $# -gt 0 ] && [ "$1" != -- ]; then b=$1; shift; fi
   if [ $# -gt 0 ]; then
@@ -2241,7 +2216,7 @@ cmd_peers() {
 # <slot|next> [--continue] [--leader <dir>] [--context <name>] [--] [words...]
 cmd_start() {
   [ $# -ge 1 ] || usage
-  st_req=$(slot_alias "$1"); shift
+  st_req=$1; shift
   [ "$st_req" = next ] || slot_ok "$st_req" || die "'$st_req' is not a slot name (lowercase letters, digits, - and _)"
   st_mode=fresh st_leader= st_cont=0 st_cx= st_ho=0
   while [ $# -gt 0 ]; do
@@ -2461,7 +2436,7 @@ stop_refuse() {
 # <slot> [--force]
 cmd_stop() {
   [ $# -ge 1 ] && [ $# -le 2 ] || usage
-  sp_slot=$(slot_alias "$1") sp_force=0
+  sp_slot=$1 sp_force=0
   if [ $# -eq 2 ]; then [ "$2" = --force ] || usage; sp_force=1; fi
   slot_ok "$sp_slot" || die "'$sp_slot' is not a slot name (lowercase letters, digits, - and _)"
   repo=$(repo_root) || exit 1
@@ -2561,7 +2536,7 @@ cmd_slots() {
   repo=$(repo_root_q) || exit 0
   rname=$(rname_of "$repo")
   { cmd_peers "$repo" | while IFS='	' read -r w p l _; do
-      printf '%s\trunning\t%s\t%s\t%s\t%s\n' "$(slot_alias "${w##*/}")" "$w" "$p" "$l" "$(session_name "$(slot_alias "${w##*/}")")"
+      printf '%s\trunning\t%s\t%s\t%s\t%s\n' "${w##*/}" "$w" "$p" "$l" "$(session_name "${w##*/}")"
     done
     waiters "$repo" | while IFS='	' read -r sl p l; do
       printf '%s\twaiting\t%s\t%s\t%s\t%s\n' "$sl" "$(slot_wt "$repo" "$sl")" "$p" "$l" "$(session_name "$sl")"
@@ -2577,7 +2552,7 @@ cmd_panes() {
   repo=$(repo_root_q) || exit 0
   wd=$(wait_dir "$repo")
   { cmd_peers "$repo" | while IFS='	' read -r w p l _; do
-      printf '%s\trunning\t%s\t%s\t%s\n' "$(slot_alias "${w##*/}")" "$p" "$l" "$w"
+      printf '%s\trunning\t%s\t%s\t%s\n' "${w##*/}" "$p" "$l" "$w"
     done
     waiters "$repo" | while IFS='	' read -r sl p l; do
       printf '%s\twaiting\t%s\t%s\t%s\n' "$sl" "$p" "$l" "$(slot_wt "$repo" "$sl")"
@@ -2682,7 +2657,7 @@ tell_lead() {
 # so two leaders of one repository never share a name.
 cmd_name() {
   [ $# -ge 1 ] && [ $# -le 2 ] || usage
-  nm_role=$(slot_alias "$1")
+  nm_role=$1
   cd -- "${2:-$PWD}" 2>/dev/null || exit 1
   repo=$(repo_root_q) || exit 1
   rname=$(rname_of "$repo")
@@ -3405,7 +3380,7 @@ queue_show() {
   qs_sid=${qs_i%%"$qs_tab"*} qs_who=${qs_i#*"$qs_tab"}
   [ "$qs_sid" != - ] || return 0
   qs_root=$(root_of .) || return 0
-  qs_slot=$(slot_alias "$(printf '%s' "$qs_who" | tr 'A-Z' 'a-z')")
+  qs_slot=$(printf '%s' "$qs_who" | tr 'A-Z' 'a-z')
   qs_wt=$(slot_wt "$qs_root" "$qs_slot")
   if slot_ok "$qs_slot" && [ -d "$qs_wt" ]; then
     # the slot's latest session is the newest transcript of its worktree (Claude Code's
@@ -4545,7 +4520,7 @@ cmd_art() {
       --at) [ $# -ge 2 ] || usage; case $2 in ''|*[!0-9]*) usage;; esac; ar_at=$2; shift;;
       --wait) ar_w=1;;
       --pick) ar_p=1;;
-      --slot) [ $# -ge 2 ] || usage; slot=$(slot_alias "$2"); shift;;
+      --slot) [ $# -ge 2 ] || usage; slot=$2; shift;;
       --frame) [ $# -ge 2 ] || usage; ar_f=$2; shift;;
       --z) [ $# -ge 2 ] || usage; case $2 in all|near|near-mid|none) ar_z=$2;; *) usage;; esac; shift;;
       --truecolor) ar_m=truecolor;;

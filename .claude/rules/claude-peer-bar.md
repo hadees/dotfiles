@@ -14,9 +14,7 @@ the operator thought up, and runs the pane to think in. The rest of the script i
 
 ## The bar
 
-The bar is `Lead, Ideas, Agents, PRs[, Hermes]`. **Ideas is the slot `ideas`** (session `<repo>-ideas`). Old
-name `secretary` works in `run --as`, `start`, `stop` and `name` (`slot_alias`), its
-worktree and transcripts move once (`slot_pick`; refused: warn, keep the old one: `slot_wt`) and `claude-peer.secretary.cap` falls back; all can go.
+The bar is `Lead, Ideas, Agents, PRs[, Hermes]`. **Ideas is the slot `ideas`** (session `<repo>-ideas`).
 `build_base` returns the root and three peers under an id prefix: `<prefix>.ideas` (command `claude-peer
 run --as ideas --wait`) and `<prefix>.agents` (label `Agents`, command `claude-peer
 agents`). `Claude Peers` (`claudePeer.workgroup`) has four sessions and `Claude

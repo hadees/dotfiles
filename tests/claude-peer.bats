@@ -242,122 +242,6 @@ remote_head() {
   [ "$(grep -cxF '**/.claude/worktrees/' "$REPO/.git/info/exclude")" -eq 1 ]
 }
 
-@test "run --as secretary: the old name is the ideas slot" {
-  remote_head
-  run sh "$BIN" run --as secretary </dev/null
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"ideas"$'\t'"$REPO/.claude/worktrees/ideas"$'\t'"created"* ]]
-  [[ "$output" == *'claude -n "$n" "$@" claude-peer proj-ideas' ]]
-  [ ! -e "$REPO/.claude/worktrees/secretary" ]
-  [ "$(sh "$BIN" name secretary)" = proj-ideas ]
-}
-
-@test "run --as ideas: a worktree left under the old name is moved once" {
-  remote_head
-  mkdir -p "$REPO/.claude/worktrees"
-  git worktree add -q --detach "$REPO/.claude/worktrees/secretary" HEAD
-  echo kept >"$REPO/.claude/worktrees/secretary/note.txt"
-  run sh "$BIN" run --as ideas </dev/null
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"ideas"$'\t'"$REPO/.claude/worktrees/ideas"$'\t'"reused"* ]]
-  [ ! -e "$REPO/.claude/worktrees/secretary" ]
-  [ "$(cat "$REPO/.claude/worktrees/ideas/note.txt")" = kept ]
-  git worktree list --porcelain | grep -qx "worktree $REPO/.claude/worktrees/ideas"
-  # a second launch finds it where it is
-  run sh "$BIN" run --as ideas </dev/null
-  [ "$status" -eq 0 ]
-  [ "$(git worktree list | grep -c worktrees/)" -eq 1 ]
-}
-
-@test "run --as ideas: the move carries each profile's transcript dir to the new path, and never over one that is there" {
-  remote_head
-  git worktree add -q --detach "$REPO/.claude/worktrees/secretary" HEAD
-  enc() { printf '%s' "$1" | tr -c 'A-Za-z0-9' -; }
-  old=$(cd "$REPO/.claude/worktrees/secretary" && pwd -P)
-  new=${old%/secretary}/ideas
-  export CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/cfg
-  mkdir -p "$CLAUDE_CONFIG_DIR/projects/$(enc "$old")" "$CLAUDE_CONFIG_DIR/projects/-other-dir" \
-    "$HOME/.claude/projects/$(enc "$old")" "$HOME/.claude/projects/$(enc "$new")"
-  echo moved >"$CLAUDE_CONFIG_DIR/projects/$(enc "$old")/s.jsonl"
-  echo mine >"$HOME/.claude/projects/$(enc "$old")/s.jsonl"
-  echo there >"$HOME/.claude/projects/$(enc "$new")/t.jsonl"
-  run sh "$BIN" run --as ideas </dev/null
-  [ "$status" -eq 0 ]
-  [ "$(cat "$CLAUDE_CONFIG_DIR/projects/$(enc "$new")/s.jsonl")" = moved ]
-  [ ! -e "$CLAUDE_CONFIG_DIR/projects/$(enc "$old")" ]
-  [ -d "$CLAUDE_CONFIG_DIR/projects/-other-dir" ]
-  # a target already there is left as it is, and so is the source beside it
-  [ "$(cat "$HOME/.claude/projects/$(enc "$new")/t.jsonl")" = there ]
-  [ ! -e "$HOME/.claude/projects/$(enc "$new")/s.jsonl" ]
-  [ "$(cat "$HOME/.claude/projects/$(enc "$old")/s.jsonl")" = mine ]
-}
-
-@test "run --as ideas: when git refuses the move, one warning names the command and the old worktree is used, start after start" {
-  remote_head
-  git worktree add -q --detach "$REPO/.claude/worktrees/secretary" HEAD
-  git worktree lock "$REPO/.claude/worktrees/secretary"
-  run sh "$BIN" run --as ideas </dev/null
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"claude-peer: ideas: git did not move the secretary worktree"* ]]
-  [[ "$output" == *"git -C $REPO worktree move $REPO/.claude/worktrees/secretary $REPO/.claude/worktrees/ideas"* ]]
-  [[ "$output" == *"ideas"$'\t'"$REPO/.claude/worktrees/secretary"$'\t'"reused"* ]]
-  [[ "$output" == *"pwd=$REPO/.claude/worktrees/secretary"* ]]
-  [ ! -e "$REPO/.claude/worktrees/ideas" ]
-  run sh "$BIN" run --as ideas </dev/null
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"pwd=$REPO/.claude/worktrees/secretary"* ]]
-  [ ! -e "$REPO/.claude/worktrees/ideas" ]
-}
-
-@test "run --as ideas: a refused move leaves the claim in the old worktree, where start, stop, slots and panes find it under either name" {
-  remote_head
-  git worktree add -q --detach "$REPO/.claude/worktrees/secretary" HEAD
-  git worktree lock "$REPO/.claude/worktrees/secretary"
-  mkdir -p "$BATS_TEST_TMPDIR/cfg/sessions"
-  export CLAUDE_CONFIG_DIR=$BATS_TEST_TMPDIR/cfg
-  old=$REPO/.claude/worktrees/secretary
-  FAKE_SHELL_SLEEP=30 sh "$BIN" run --as ideas >/dev/null 2>&1 &
-  rpid=$!
-  wait_claim "$old"
-  [ ! -e "$REPO/.claude/worktrees/ideas" ]
-  for name in ideas secretary; do
-    run sh "$BIN" start "$name"
-    [ "$status" -eq 3 ]
-    [ "$output" = "ideas"$'\t'"$old"$'\trunning\tproj-ideas' ]
-    run sh "$BIN" stop "$name"
-    [ "$status" -eq 5 ]
-    [[ "$output" == *"unknown; stop --force to stop it anyway"* ]]
-  done
-  run sh "$BIN" slots
-  [ "$(printf '%s\n' "$output" | cut -f1-3,6)" = "ideas"$'\t'running$'\t'"$old"$'\t'proj-ideas ]
-  run sh "$BIN" panes
-  [ "$(printf '%s\n' "$output" | cut -f1,2,5)" = "ideas"$'\t'running$'\t'"$old" ]
-  run sh "$BIN" stop secretary --force
-  [ "$status" -eq 0 ]
-  [ "$output" = "ideas"$'\t'"$old"$'\tstopped' ]
-  wait "$rpid" || :
-}
-
-@test "run --as ideas: both names present leaves the old worktree alone" {
-  remote_head
-  git worktree add -q --detach "$REPO/.claude/worktrees/secretary" HEAD
-  git worktree add -q --detach "$REPO/.claude/worktrees/ideas" HEAD
-  run sh "$BIN" run --as ideas </dev/null
-  [ "$status" -eq 0 ]
-  [ -d "$REPO/.claude/worktrees/secretary" ]
-  [ "$(git worktree list | grep -c worktrees/)" -eq 2 ]
-}
-
-@test "start secretary: the old name asks for the ideas slot" {
-  FAKE_SHELL_SLEEP=2 sh "$BIN" run --as ideas >/dev/null &
-  rpid=$!
-  wait_claim "$REPO/.claude/worktrees/ideas"
-  run sh "$BIN" start secretary
-  [ "$status" -eq 3 ]
-  [[ "$output" == "ideas"$'\t'"$REPO/.claude/worktrees/ideas"$'\trunning\tproj-ideas' ]]
-  wait "$rpid"
-}
-
 @test "run --as: a new slot records its base beside the claim, outside the tree" {
   remote_head
   run --separate-stderr sh "$BIN" run --as alpha </dev/null
@@ -3194,10 +3078,6 @@ fzf_header() { sed -n '/^--header=/,/^--print-query$/p' "$FAKE_FZF_LOG" | sed '$
   git config --global claude-peer.beta.cap '#102030'
   run sh "$BIN" art --slot beta --truecolor
   [[ "$output" == *'48;2;16;32;48'* && "$output" == *'11;22;33'* && "$output" != *'90;120;200'* ]]
-  # the Ideas slot reads its old name's key when it has none of its own
-  git config --global claude-peer.secretary.cap '#102030'
-  run sh "$BIN" art --slot ideas --truecolor
-  [[ "$output" == *'48;2;16;32;48'* ]]
 }
 
 @test "art: claude-peer.art-file replaces the figure; one that does not parse says why and the built-in is drawn" {
