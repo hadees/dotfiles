@@ -165,6 +165,7 @@ cask 'daisydisk'
 cask 'hadees/tap/deluge' # BitTorrent client
 cask 'displaylink' # DisplayLink USB graphics driver
 cask 'docker-desktop' # Docker Desktop
+cask 'hadees/tap/docuria' # Document reader with read-aloud, speed reading, semantic search and compare
 cask 'dropbox'
 cask 'espanso' # Cross-platform text expander written in Rust
 cask 'fantastical'
