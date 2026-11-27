@@ -70,7 +70,7 @@ start_bundle() {
   local out slug payload
   export XDG_STATE_HOME="$BATS_TEST_TMPDIR/state" CLAUDE_CONFIG_DIR="$BATS_TEST_TMPDIR/profile"
   export SHARED_MEMORY_DIR="$(dirname "$SHARED_MEMORY")"
-  for slug in commit-signing tailnet-routed-ssh claude-in-chrome peer-lifetime session-mail github-accounts; do
+  for slug in commit-signing tailnet-routed-ssh claude-in-chrome peer-lifetime session-mail github-accounts issues issue-reading; do
     case "$slug" in
     commit-signing) payload='{"hook_event_name":"PostToolUseFailure","session_id":"s-'$slug'","tool_name":"Bash","tool_input":{"command":"git commit"},"error":"Exit code 128\nerror: 1Password: failed to fill whole buffer"}' ;;
     tailnet-routed-ssh) payload='{"hook_event_name":"PostToolUseFailure","session_id":"s-'$slug'","tool_name":"Bash","tool_input":{"command":"ssh h"},"error":"Exit code 255\nssh: Could not resolve hostname h"}' ;;
@@ -78,6 +78,8 @@ start_bundle() {
     peer-lifetime) payload='{"hook_event_name":"PostToolUse","session_id":"s-'$slug'","tool_name":"Bash","tool_input":{"command":"claude-peer stop alpha"},"tool_response":"ok"}' ;;
     session-mail) payload='{"hook_event_name":"PostToolUse","session_id":"s-'$slug'","tool_name":"SendMessage","tool_input":{},"tool_response":"ok"}' ;;
     github-accounts) payload='{"hook_event_name":"PostToolUse","session_id":"s-'$slug'","tool_name":"Bash","tool_input":{"command":"gh pr list"},"tool_response":"ok"}' ;;
+    issues) payload='{"hook_event_name":"PostToolUse","session_id":"s-'$slug'","tool_name":"Bash","tool_input":{"command":"cd x && gh issue create --title t"},"tool_response":"ok"}' ;;
+    issue-reading) payload='{"hook_event_name":"PostToolUse","session_id":"s-'$slug'","tool_name":"Bash","tool_input":{"command":"cd x && gh issue list"},"tool_response":"ok"}' ;;
     esac
     out="$(printf '%s' "$payload" | sh "$SM" hook tool)"
     [ -n "$out" ] || { echo "tool hook added nothing for $slug"; false; }
@@ -268,6 +270,41 @@ role_topic_checks() {
 @test "github-accounts is a tool topic, added on a session's first gh command, with the wrapper rules" {
   role_topic_checks github-accounts tool '## GitHub accounts (gh CLI)' \
     '**Run `gh` plain' 'never prefix it with `GH_TOKEN=`' 'gh-doctor'
+}
+
+@test "issues is a tool topic with the brief headings, the stamp lines and the private-details rule" {
+  role_topic_checks issues tool '## Issues: writing one' \
+    '### What and why' '### Where' '### Done when' '### Not in scope' '### Source material' \
+    '### What happens' '### What should happen' '### How to see it' \
+    '_Filed by a Claude session._' '<!-- workboard:filed-by-session v1 -->' \
+    'gh.<owner>.private-issues' 'Concerns: <owner>/<repo>' '80 characters' 'Never invent'
+}
+
+@test "issue-reading is a tool topic with the origin table and the never-an-approval rule" {
+  role_topic_checks issue-reading tool '## Issues: working from one' \
+    'never an approval' 'command -v workboard' \
+    'gh issue view <n> --json author,authorAssociation,body,labels,title' \
+    '_No response_' 'Never tick a box' 'Closes #<n>'
+}
+
+@test "the reading topic's table names the five origins and no other" {
+  local got
+  got="$(awk -F'|' '/^\| Origin \|/ {t = 1; next} t && /^\| ---/ {next} t && /^\|/ {gsub(/[ `]/, "", $2); printf "%s ", $2; next} {t = 0}' "$TOPICS/issue-reading.md")"
+  [ "$got" = "hand session teammate outside bot " ] || { echo "origins: $got"; false; }
+}
+
+@test "the topics a gh issue command adds fit one hook output together" {
+  local out payload
+  export XDG_STATE_HOME="$BATS_TEST_TMPDIR/state" CLAUDE_CONFIG_DIR="$BATS_TEST_TMPDIR/profile"
+  export SHARED_MEMORY_DIR="$(dirname "$SHARED_MEMORY")"
+  payload='{"hook_event_name":"PostToolUseFailure","session_id":"s-both","tool_name":"Bash","tool_input":{"command":"gh issue view 3 && gh issue create --title t --body b"},"error":"Exit code 1\nboom"}'
+  out="$(printf '%s' "$payload" | sh "$SM" hook tool)"
+  [ -n "$out" ] || { echo "tool hook added nothing"; false; }
+  [[ "$out" != *'is too long to add here'* ]] || { echo "the bundle fell back to pointers"; false; }
+  [ "${#out}" -lt 9000 ] || { echo "tool hook output is ${#out} characters"; false; }
+  for slug in github-accounts issues issue-reading; do
+    grep -qF "$(head -1 "$TOPICS/$slug.md")" <<< "$out" || { echo "tool hook output lacks $slug"; false; }
+  done
 }
 
 @test "session-mail is a tool topic with the routes, names and threads" {
