@@ -73,7 +73,8 @@ the line and carries on; it is not an error to work around.
 `workboard status` has a `writes:` line: done, forced, refused rule, refused
 write off, refused profile, counted since the server started and never stored.
 It also has `origins:` (the cards by origin and `stamps_ignored`), `marks:`
-(`blocked`, `blocked_linked`, `blocked_clear`, `needs_human`) and `shows:`
+(`blocked`, `blocked_linked`, `blocked_clear`, `needs_human`), `bots:`
+(`bot_cards` and `bot_prs_cut`, as `cards` and `prs cut`) and `shows:`
 (`shown`, `failed`, and the hidden comments and invisible characters removed),
 counts only.
 
