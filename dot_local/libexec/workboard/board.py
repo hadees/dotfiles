@@ -96,12 +96,14 @@ def token(secret, what):
     return hmac.new(secret.encode("ascii"), what.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
 
 
-def url_text(port, nonce, group=None, repo=None):
+def url_text(port, nonce, group=None, repo=None, set_=None):
     frag = ""
     if group:
         frag = "#g=" + quote(group, safe="")
     elif repo:
         frag = "#r=" + quote(repo, safe="")
+    elif set_:
+        frag = "#s=" + quote(set_, safe="")
     return "http://127.0.0.1:%d/enter/%s%s" % (port, nonce, frag)
 
 
@@ -286,6 +288,7 @@ class Core:
         self.nonces, self.listeners, self.sock_file = collections.OrderedDict(), [], None
         self.docs = dict((k, dict(v)) for k, v in EMPTY.items())
         self.board, self.board_key, self.rev, self.scoped = None, None, 0, {}
+        self.sets = {}  # working set name -> slugs of its member repositories, read with the local pass
         self.tally = self.load_tally()
         self.start = time.time()
         self.last_page, self.last_any, self.paused = 0.0, self.start, False
@@ -464,6 +467,29 @@ class Core:
             self.board, self.scoped = board, {}
         return previous, board
 
+    def sets_in(self, board):
+        """The working sets as a board's own repositories see them: a scope never widens a set."""
+        slugs = set(r["slug"] for r in board["repos"])
+        with self.lock:
+            named = dict(self.sets)
+        out = dict((n, [s for s in m if s in slugs]) for n, m in named.items())
+        return dict((n, m) for n, m in out.items() if m)
+
+    def default_view(self, scope, cwd):
+        """The link's selector for a checkout the scope's board knows: its repository, or the set its `view` names."""
+        main = local._main_checkout(cwd) if cwd and os.path.isdir(cwd) else None
+        if main is None:
+            return {}
+        for r in self.docs["local"].get("repos", []):
+            if os.path.realpath(r["dir"]) == os.path.realpath(main[0]) and (scope is None or r["profile"] == scope):
+                view = local._config("workboard.%s.view" % r["slug"], cwd=r["dir"])
+                if view == "all":
+                    return {}
+                if view.startswith("set:") and view[4:] in self.sets_in(self.board_for(scope)):
+                    return {"set_": view[4:]}
+                return {"repo": r["name"]}
+        return {}
+
     def board_for(self, scope):
         if self.fixture:
             self.load_fixture()
@@ -494,6 +520,10 @@ class Core:
         def go():
             also = sorted(set(r["dir"] for r in self.docs["who"].get("rows", []) if r.get("dir")))
             self.docs["local"] = local.read(read_links(), also, now)
+            found = local.sets(self.docs["local"]["repos"])
+            with self.lock:
+                if found != self.sets:
+                    self.sets, self.rev = found, self.rev + 1  # a new rev, so a page's 304 cannot hide it
             self.count("local_passes")
             return True
         if not self.guard("local", go):
@@ -622,9 +652,9 @@ class Core:
 
     # /api/url and /api/bearer
     def api_url(self, profile, ask, data):
-        group, repo = data.get("group"), data.get("repo")
-        if not all(v is None or isinstance(v, str) for v in (group, repo)) or (group and repo):
-            return 2, "workboard: want one of group, repo, as text"
+        group, repo, set_, cwd = data.get("group"), data.get("repo"), data.get("set"), data.get("cwd")
+        if not all(v is None or isinstance(v, str) for v in (group, repo, set_, cwd)) or sum(map(bool, (group, repo, set_))) > 1:
+            return 2, "workboard: want one of group, repo, set, as text"
         if ask and hmac.compare_digest(ask.encode("utf-8"), self.ask_token().encode()):
             scope = None
         elif not profile:
@@ -633,7 +663,10 @@ class Core:
             scope = self.profile_dir(profile)
             if scope is None:
                 return 2, "workboard: that is not a profile directory"
-        return 0, url_text(self.port, self.mint(scope), group, repo)
+        sel = {"group": group, "repo": repo, "set_": set_}
+        if not (group or repo or set_):
+            sel = self.default_view(scope, cwd)  # no selector: the link opens on the checkout's own repository
+        return 0, url_text(self.port, self.mint(scope), **sel)
 
     def api_bearer(self, profile):
         if not profile:
@@ -856,6 +889,7 @@ def make_handler(core, is_local):
                     log("board failed: %s" % err.__class__.__name__)
                     core.count("pass_errors")
                     return self.reply(500, '{"error": "board build failed"}')
+                doc["sets"] = core.sets_in(doc)
                 doc["rev"], doc["build"] = core.rev, core.build
                 etag = '"%d"' % core.rev
                 if self.headers.get("If-None-Match") == etag:
@@ -1028,17 +1062,20 @@ def api_call(name, body, extra=None):
 
 
 def cli_url(argv):
-    group = repo = None
+    sel, everything = {}, False
     it = iter(argv)
     for a in it:
+        if a == "--all" and not sel and not everything:
+            everything = True
+            continue
         val = next(it, None)
-        if a == "--group" and val and not repo:
-            group = val
-        elif a == "--repo" and val and not group:
-            repo = val
+        if a in ("--group", "--repo", "--set") and val and not sel and not everything:
+            sel[a[2:]] = val
         else:
-            sys.stderr.write("usage: workboard url [--group <g>|--repo <r>]\n")
+            sys.stderr.write("usage: workboard url [--group <g>|--repo <r>|--set <s>|--all]\n")
             return 2
+    if not sel and not everything:
+        sel["cwd"] = os.getcwd()  # the server scopes the link to the repository this directory is in
     proof = {}
     if not os.environ.get("CLAUDECODE"):
         try:
@@ -1046,7 +1083,7 @@ def cli_url(argv):
         except OSError:
             sys.stderr.write("workboard: cannot read the secret\n")
             return 1
-    return api_call("url", dict((k, v) for k, v in (("group", group), ("repo", repo)) if v), proof)
+    return api_call("url", sel, proof)
 
 
 def cli_status():

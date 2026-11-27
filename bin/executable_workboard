@@ -3,8 +3,9 @@
 #
 #   workboard serve [--port <n>] [--fixture <dir>]   the server, in the foreground
 #   workboard start | stop | restart                 the server, detached (or the launchd agent)
-#   workboard open [--group <g>|--repo <r>] [--fixture <dir>]   the board in iTerm2's browser (macOS)
-#   workboard url [--group <g>|--repo <r>]           a single-use link to the board; the page's key is never in an address
+#   workboard open [--group <g>|--repo <r>|--set <s>|--all] [--fixture <dir>]   the board in iTerm2's browser (macOS)
+#   workboard url [--group <g>|--repo <r>|--set <s>|--all]   a single-use link to the board; the page's key is never in an address
+#                                                    (no flag: opens on the repository of the current directory, if the board knows it)
 #   workboard status                                 counts, ages and fixed words
 #   workboard <verb> ...                             a verb a plug-in registered
 #
@@ -127,14 +128,15 @@ cmd_open() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --fixture) [ $# -ge 2 ] || die "--fixture wants a directory" 2; fixture="$2"; shift 2 ;;
-      --group | --repo) [ $# -ge 2 ] || die "$1 wants a name" 2; sel="$1 $2"; shift 2 ;;
-      *) die "usage: workboard open [--group <g>|--repo <r>] [--fixture <dir>]" 2 ;;
+      --group | --repo | --set) [ $# -ge 2 ] || die "$1 wants a name" 2; sel="$1 $2"; shift 2 ;;
+      --all) sel="--all"; shift ;;
+      *) die "usage: workboard open [--group <g>|--repo <r>|--set <s>|--all] [--fixture <dir>]" 2 ;;
     esac
   done
   if [ -z "$(alive)" ] && ! loaded; then
     if [ -n "$fixture" ]; then start_detached --fixture "$fixture" >/dev/null; else start_detached >/dev/null; fi
   fi
-  # shellcheck disable=SC2086  # $sel is "--group <g>" or "--repo <r>", split on purpose
+  # shellcheck disable=SC2086  # $sel is "--group <g>", "--repo <r>", "--set <s>" or "--all", split on purpose
   url="$(WORKBOARD_PORT="$PORT" pyboard cli url $sel)" || exit $?
   exec "${WORKBOARD_OPEN_AS:-$HOME/bin/open-as}" iterm2 "$url"
 }
