@@ -102,7 +102,7 @@ LOG_ENTRY = {"at": STR, "who": STR, "kind": STR, "text": STR}
 GITHUB = {
     "v": V1,
     "accounts": table({"login": STR, "fetched_at": NUM, "cost": INT, "remaining": INT, "interval": INT, "error": maybe(STR)}),
-    "repos": table({"account": STR, "default_branch": maybe(STR), "error": maybe(STR)}),
+    "repos": table({"account": STR, "default_branch": maybe(STR), "error": maybe(STR), "?bot_prs_cut": BOOL}),
     "issues": many({
         "slug": STR, "number": INT, "title": STR, "url": STR, "body": STR, "updated_at": INT,
         "author": maybe(STR), "assignees": many(STR), "labels": many(STR),
@@ -113,13 +113,14 @@ GITHUB = {
     "prs": many({
         "slug": STR, "number": INT, "title": STR, "url": STR, "state": enum("OPEN", "MERGED"), "draft": BOOL,
         "branch": STR, "updated_at": INT, "merged_at": maybe(INT), "review": REVIEW, "merge": STR, "checks": CHECKS,
+        "?bot": maybe(STR),
         "closes": many({"slug": STR, "number": INT, "title": STR, "url": STR, "state": enum("OPEN", "CLOSED")})}),
 }
 
 LOCAL = {
     "v": V1, "generated_at": NUM, "skipped": INT,
     "repos": many({"slug": STR, "name": STR, "dir": PATH, "common": PATH, "group": STR, "account": STR, "profile": PATH,
-                   "intake": STR, "write": BOOL, "take": STR, "notify_lead": BOOL}),
+                   "intake": STR, "write": BOOL, "take": STR, "notify_lead": BOOL, "?bots": many(STR)}),
     "worktrees": many({
         "slug": STR, "path": PATH, "name": STR, "branch": maybe(STR), "main": BOOL,
         "claim": maybe({"label": STR, "by": STR, "task": maybe(STR), "handoff": BOOL, "started": maybe(INT)}),
@@ -147,7 +148,7 @@ INBOX = {
 }
 
 CARD = {
-    "key": STR, "form": enum("local", "pr", "issue", "queue"), "slug": STR, "repo": STR, "group": STR,
+    "key": STR, "form": enum("local", "pr", "issue", "queue", "bot"), "slug": STR, "repo": STR, "group": STR,
     "number": maybe(INT), "title": STR, "url": maybe(STR), "stage": enum("inbox", "building", "review", "landed"),
     "in_needs": BOOL, "author": maybe(STR), "mine": BOOL, "assigned": BOOL, "labels": many(STR), "body": STR,
     "origin": maybe(enum("hand", "session", "teammate", "outside", "bot")),
@@ -173,7 +174,8 @@ BOARD = {
         "panel": enum("ok", "down"), "panel_age": maybe(NUM), "jobs": enum("off", "ok", "error"),
         "inbox": enum("none", "queue"), "inbox_errors": INT, "repos": INT, "repo_errors": INT, "cards": INT,
         "unattended": INT, "unjoined": INT, "unjoined_jobs": INT, "stale_jobs": INT,
-        "stamps_ignored": INT, "blocked": INT, "blocked_linked": INT, "blocked_clear": INT, "needs_human": INT},
+        "stamps_ignored": INT, "blocked": INT, "blocked_linked": INT, "blocked_clear": INT, "needs_human": INT,
+        "?bot_cards": INT, "?bot_prs_cut": INT},
     "groups": many(STR),
     "repos": many({"slug": STR, "name": STR, "group": STR, "intake": STR, "write": BOOL}),
     "cards": many(CARD),

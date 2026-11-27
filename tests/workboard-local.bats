@@ -175,6 +175,53 @@ claim_file() {
   wb_no_pycache
 }
 
+@test "bots: unset is empty, an owner key reaches its repositories, the repository key wins and none empties it" {
+  mkrepo alpha https://github.com/octo-personal/proj-one
+  mkrepo beta https://github.com/octo-personal/proj-two
+  mkrepo gamma https://github.com/octo-work-org/proj-three
+  plan home alpha ok "$CODE/alpha"
+  plan home beta ok "$CODE/beta"
+  plan work gamma ok "$CODE/gamma"
+  export WB_LINKS='[]' WB_ALSO='[]'
+  readdoc
+  [ "$(field '[r["bots"] for r in d["repos"]]')" = "[[], [], []]" ]
+  git config --file "$GIT_CONFIG_GLOBAL" workboard.octo-personal.bots "renovate dependabot"
+  readdoc
+  [ "$(field '[r["bots"] for r in d["repos"]]')" = "[['renovate', 'dependabot'], ['renovate', 'dependabot'], []]" ]
+  git -C "$CODE/alpha" config workboard.octo-personal/proj-one.bots other
+  git -C "$CODE/beta" config workboard.octo-personal/proj-two.bots none
+  readdoc
+  [ "$(field '[r["bots"] for r in d["repos"]]')" = "[['other'], [], []]" ]
+  wb_no_pycache
+}
+
+@test "bots: names are lower-cased, lose [bot], repeats, bad patterns and all past the fourth" {
+  mkrepo alpha https://github.com/octo-personal/proj-one
+  plan home alpha ok "$CODE/alpha"
+  export WB_LINKS='[]' WB_ALSO='[]'
+  git -C "$CODE/alpha" config workboard.octo-personal/proj-one.bots 'Renovate[bot], dependabot renovate'
+  readdoc
+  [ "$(field 'd["repos"][0]["bots"]')" = "['renovate', 'dependabot']" ]
+  git -C "$CODE/alpha" config workboard.octo-personal/proj-one.bots '"a/b" "two words" -x ok'
+  readdoc
+  [ "$(field 'd["repos"][0]["bots"]')" = "['ok']" ]
+  git -C "$CODE/alpha" config workboard.octo-personal/proj-one.bots 'b1 b2 b3 b4 b5'
+  readdoc
+  [ "$(field 'd["repos"][0]["bots"]')" = "['b1', 'b2', 'b3', 'b4']" ]
+  wb_no_pycache
+}
+
+@test "bots: a value with shell syntax is never run" {
+  mkrepo alpha https://github.com/octo-personal/proj-one
+  plan home alpha ok "$CODE/alpha"
+  export WB_LINKS='[]' WB_ALSO='[]'
+  git -C "$CODE/alpha" config workboard.octo-personal/proj-one.bots "\$(touch $BATS_TEST_TMPDIR/ran); \`touch $BATS_TEST_TMPDIR/ran\` ok"
+  readdoc
+  [ "$(field 'd["repos"][0]["bots"]')" = "['ok']" ]
+  [ ! -e "$BATS_TEST_TMPDIR/ran" ]
+  wb_no_pycache
+}
+
 @test "worktrees list the main checkout and a linked one with their branches, a detached one with null" {
   mkrepo alpha https://github.com/octo-work-org/proj-one
   git -C "$CODE/alpha" worktree add -q -b feat/x "$CODE/alpha-x"
