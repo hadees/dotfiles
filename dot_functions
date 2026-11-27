@@ -2789,6 +2789,140 @@ function tailnet-doctor() {
 	fi;
 }
 
+# The tally of gh()'s issue guards (issue-practice.md): one byte appended to
+# `<name>.count` under ${XDG_STATE_HOME:-~/.local/state}/gh-issue-stamp/ (mode
+# 0700). Holds no title, body or repository name; a failed write is silent and
+# never changes a verdict.
+function gh_stamp_count() {
+	emulate -L zsh;
+	local dir=${XDG_STATE_HOME:-$HOME/.local/state}/gh-issue-stamp;
+	{ command mkdir -p -m 700 "$dir" && print -rn -- x >>"$dir/$1.count"; } 2>/dev/null;
+	return 0;
+}
+
+# What gh_stamp_count has counted for `$1`, for gh-doctor.
+function gh_stamp_total() {
+	emulate -L zsh;
+	local f=${XDG_STATE_HOME:-$HOME/.local/state}/gh-issue-stamp/$1.count;
+	[[ -f $f ]] && print -r -- $(( $(command wc -c <"$f" 2>/dev/null) )) || print -r -- 0;
+}
+
+# The `owner/repo` (lowercase) a `gh issue|pr create` aims at: -R, --repo,
+# --repo=, else $GH_REPO, else the cwd's origin; a leading HOST/ is dropped.
+function gh_issue_target() {
+	emulate -L zsh;
+	local arg t='' next=0;
+	for arg in "$@"; do
+		if (( next )); then t=$arg; next=0; continue; fi;
+		case $arg in
+			(-R|--repo) next=1;;
+			(--repo=*) t=${arg#--repo=};;
+			(-R?*) t=${arg#-R};;
+		esac;
+	done;
+	[[ -n $t ]] || t=$GH_REPO;
+	[[ -n $t ]] || t="$(git_origin_slug)";
+	t=${(L)t};
+	[[ $t == */*/* ]] && t=${t#*/};
+	print -r -- "$t";
+}
+
+# The check for private details (issue-practice.md, "The check for private
+# details"). $1 is the create's target. Returns 1 only when it refuses, once per
+# session and public repository: the marker is written first, so the retry
+# passes. A session with no $CLAUDE_CODE_SESSION_ID, or a marker that cannot be
+# written, is told and never refused: a retry could not pass. Never reads the
+# title, the body or standard input.
+function gh_private_check() {
+	emulate -L zsh;
+	local target=$1 owner=${1%%/*} private vis dir marker line1;
+	private="$(command git config --get "gh.$owner.private-issues" 2>/dev/null)";
+	[[ -n $private && ${(L)private} != $target ]] || return 0;
+	if [[ $GH_PRIVATE_CHECK == 0 ]]; then gh_stamp_count private-bypassed; return 0; fi;
+	vis="$(gh api "repos/$target" --jq .visibility 2>/dev/null </dev/null)";
+	case $vis in
+		(private|internal) return 0;;
+		(public) ;;
+		(*) gh_stamp_count unknown; return 0;;
+	esac;
+	line1="$target is public. Spend, payment, identity, home-network and private-repository details do not go there: file them in $private with a \"Concerns: $target\" line, and leave no stub.";
+	dir=${XDG_STATE_HOME:-$HOME/.local/state}/gh-issue-stamp/asked;
+	marker=${CLAUDE_CODE_SESSION_ID//[^A-Za-z0-9._-]/_}__${owner//[^A-Za-z0-9._-]/_}__${${target#*/}//[^A-Za-z0-9._-]/_};
+	if [[ -z $CLAUDE_CODE_SESSION_ID ]]; then
+		gh_stamp_count unkeyed; print -ru2 -- "gh: $line1"; return 0;
+	fi;
+	if [[ -e $dir/$marker ]]; then gh_stamp_count passed; return 0; fi;
+	if ! { command mkdir -p -m 700 "${dir%/*}" && command mkdir -p "$dir" && : >"$dir/$marker"; } 2>/dev/null; then
+		gh_stamp_count unkeyed; print -ru2 -- "gh: $line1"; return 0;
+	fi;
+	command find "$dir" -type f -mtime +14 -delete 2>/dev/null;
+	gh_stamp_count asked;
+	print -ru2 -- "gh: not run yet. $line1";
+	print -ru2 -- "gh: if this text holds none of that, run the same command again and it will go through.";
+	return 1;
+}
+
+# The stamp guard (issue-practice.md, "The `gh` guard"). $1 is the target's
+# owner, the rest gh's arguments. Returns 0 to let gh() run the call. Returns 1
+# when the call is dealt with, leaving its status in gh_stamp_status (a local
+# of gh(): 64 for a refusal, or gh's own after feeding it standard input back).
+# Reads gh_asked from gh() too: a body on standard input is not read when the
+# private check has already refused.
+function gh_issue_stamp() {
+	emulate -L zsh;
+	local owner=$1; shift;
+	[[ $GH_ISSUE_STAMP == checked ]] && return 0;
+	[[ $(command git config --type=bool --get "gh.$owner.issue-stamp" 2>/dev/null) == true ]] || return 0;
+	if [[ $GH_ISSUE_STAMP == 0 ]]; then gh_stamp_count bypassed; return 0; fi;
+	local -a args=("$@");
+	local i arg file='' body='' how='';
+	for (( i = 1; i <= $#args; i++ )); do
+		arg=$args[i];
+		case $arg in
+			(--body|-b) body=$args[i+1]; how=body; (( i++ ));;
+			(--body=*) body=${arg#--body=}; how=body;;
+			(-b?*) body=${arg#-b}; how=body;;
+			(--body-file|-F) file=$args[i+1]; how=file; (( i++ ));;
+			(--body-file=*) file=${arg#--body-file=}; how=file;;
+			(-F?*) file=${arg#-F}; how=file;;
+		esac;
+	done;
+	if [[ -z $how ]]; then gh_stamp_count unchecked; return 0; fi;
+	if [[ $how == file ]]; then
+		if [[ $file == - ]]; then
+			(( gh_asked )) && return 0;
+			how=stdin; body="$(command cat)";
+		elif [[ -f $file && -r $file ]]; then
+			body="$(<$file)";
+		else
+			gh_stamp_count unchecked; return 0;
+		fi;
+	fi;
+	local tab=$'\t' cr=$'\r' line stamped=0 noted=0;
+	local stamp_re="^[ $tab]*<!--[ $tab]*workboard:filed-by-session[ $tab]+v[0-9]+([ $tab][^>]*)?-->[ $tab$cr]*\$";
+	local note_re="^[ $tab]*_Filed by a Claude session\\._[ $tab$cr]*\$";
+	for line in "${(@f)body}"; do
+		[[ $line =~ $stamp_re ]] && stamped=1;
+		[[ $line =~ $note_re ]] && noted=1;
+	done;
+	if (( stamped && noted )); then
+		gh_stamp_count stamped;
+		if [[ $how == stdin ]]; then
+			print -r -- "$body" | GH_ISSUE_STAMP=checked gh "$@";
+			gh_stamp_status=$?;
+			return 1;
+		fi;
+		return 0;
+	fi;
+	gh_stamp_count refused;
+	print -ru2 -- "gh: not created. In this repository a session's issue ends with these two lines, last in its body:";
+	print -ru2 -- "_Filed by a Claude session._";
+	print -ru2 -- "<!-- workboard:filed-by-session v1 -->";
+	[[ -r $HOME/.claude-shared/topics/issues.md ]] && print -ru2 -- 'gh: how issues are written: ~/.claude-shared/topics/issues.md';
+	gh_stamp_status=64;
+	return 1;
+}
+
 # `gh` wrapper that picks the GitHub account for each invocation, mirroring
 # the git identity scheme in ~/.gitconfig.local. It injects GH_TOKEN for the
 # single gh invocation rather than running `gh auth switch`, so it never
@@ -2843,6 +2977,21 @@ function gh() {
 		'^credential\.https://github\.com/.*\.username' 2>/dev/null);
 	(( ${#gh_owners} )) || { command gh "$@"; return; };
 
+	# A session's create in a pinned owner's repository meets the private-details
+	# check (issues and pull requests) and the stamp guard (issues, and only where
+	# the owner opted in); see issue-practice.md. Neither runs in the guard's own
+	# second call (GH_ISSUE_STAMP=checked) nor in the private check's `gh api`.
+	if [[ -n $CLAUDECODE && $1 == (issue|pr) && $2 == (create|new) && $GH_ISSUE_STAMP != checked ]]; then
+		local gh_target gh_owner gh_asked=0 gh_stamp_status=0;
+		gh_target="$(gh_issue_target "$@")";
+		gh_owner=${gh_target%%/*};
+		if [[ -n $gh_target && -n ${gh_owners[$gh_owner]} ]]; then
+			gh_private_check "$gh_target" || gh_asked=1;
+			[[ $1 == issue ]] && { gh_issue_stamp "$gh_owner" "$@" || return $gh_stamp_status; };
+			(( gh_asked )) && return 65;
+		fi;
+	fi;
+
 	# Every `/`- and `:`-delimited segment of every target-shaped argument is
 	# a candidate, so `<org>`, `<org>/<repo>`, `orgs/<org>`, `<host>:<org>/<repo>`
 	# and full URLs all match. First hit wins. Local paths are skipped so a
@@ -2892,9 +3041,9 @@ function gh() {
 # call; says so if it cannot. Note gh() also lets an explicit owner in the
 # arguments outrank the cwd, which this only describes.
 function gh-doctor() {
-	local origin acct tok who;
+	local origin acct tok who slug owner private;
 	print -r -- "wrapper: $(whence -w gh)";
-	print -r -- "defined: $(defined_trace gh_account_for_cwd git_origin_slug bin_trace)";
+	print -r -- "defined: $(defined_trace gh_account_for_cwd git_origin_slug gh_issue_target gh_private_check gh_issue_stamp gh_stamp_count gh_stamp_total bin_trace)";
 	print -r -- "binary:  $(bin="$(whence -p gh)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH')";
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
@@ -2904,6 +3053,17 @@ function gh-doctor() {
 	# Never echo the token itself — only whether it is set.
 	print -r -- "env:     GH_TOKEN=$([[ -n $GH_TOKEN ]] && print -r -- '<set — gh ignores stored logins>' || print -r -- '<unset>')";
 	print -r -- "pins:    $(command git config --get-regexp '^credential\.https://github\.com/.*\.username' 2>/dev/null | command sed 's|credential.https://github.com/||; s|\.username | -> |; s|^\([^ ]*[[:upper:]][^ ]*\) -> .*|& MIXED CASE: the wrappers look up the lowercase owner so add a pin for that spelling too (keep this one if a remote spells it this way; the git match is case-sensitive)|' | command paste -sd, - | command sed 's/,/, /g')";
+	slug="$(git_origin_slug)" || slug='';
+	owner=${slug%%/*};
+	if [[ -z $acct ]]; then
+		print -r -- "issues:  stamp guard not here (no pinned owner) · stamped $(gh_stamp_total stamped) · refused $(gh_stamp_total refused) · unchecked $(gh_stamp_total unchecked) · bypassed $(gh_stamp_total bypassed)";
+	elif [[ $(command git config --type=bool --get "gh.$owner.issue-stamp" 2>/dev/null) == true ]]; then
+		print -r -- "issues:  stamp guard on · stamped $(gh_stamp_total stamped) · refused $(gh_stamp_total refused) · unchecked $(gh_stamp_total unchecked) · bypassed $(gh_stamp_total bypassed)";
+	else
+		print -r -- "issues:  stamp guard off (this owner has not opted in: gh.<owner>.issue-stamp) · stamped $(gh_stamp_total stamped) · refused $(gh_stamp_total refused) · unchecked $(gh_stamp_total unchecked) · bypassed $(gh_stamp_total bypassed)";
+	fi;
+	private="$(command git config --get "gh.$owner.private-issues" 2>/dev/null)";
+	[[ -n $acct && -n $private ]] && print -r -- "private: this owner's private details go to $private · asked $(gh_stamp_total asked) · passed $(gh_stamp_total passed) · unkeyed $(gh_stamp_total unkeyed) · unknown $(gh_stamp_total unknown) · bypassed $(gh_stamp_total private-bypassed)";
 	[[ -n $acct ]] || return 0;
 	tok="$(command gh auth token --user "$acct" 2>/dev/null)";
 	if [[ -z $tok ]]; then
