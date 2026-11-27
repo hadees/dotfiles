@@ -201,7 +201,7 @@ decide again. The order, the lines and the helpers are in `docs/claude-proxy.md`
 `tests/claude-profiles.bats` runs bare, like a stranger's clone, with one test
 that plants a healthy stub proxy; `tests/claude-proxy.bats` meets the lines.
 
-**The same block keeps the Needs You panel up.** When `claude-tab panel install` has left its marker (`panel.installed` in `claude-tab`'s state directory) and the launch is attended in an iTerm2 session, `claude()` starts `claude-tab panel ensure` in the background with all three streams off the terminal; with no marker it pays one file test and nothing else (`claude-tab-panel.md`).
+**The same block keeps the Needs You panel up.** `claude()` makes one call on an attended launch, `claude_tab_panel_ensure`, and `.zshrc` makes the same call in every interactive shell, so the first shell of an iTerm2 run starts the panel. It prints nothing and returns 0, testing in the calling shell only `$ITERM_SESSION_ID`, the `panel.installed` marker in `claude-tab`'s state directory and an executable `~/bin/claude-tab`; the rest runs in a background subshell off the terminal (`ztcp` has no connect timeout). It connects once to the marker's port (47600 if invalid) and ends if something listens; otherwise, or when `panel.reload` is owed, it mints the cookie as above and execs `claude-tab panel ensure` (`claude-tab-panel.md`). A wedged port costs each new shell one background process and two `panel.log` lines; `claude-tab panel status` names why.
 
 **Each profile must be logged in once** with `claude auth login`; credentials
 live in the macOS Keychain and cannot be copied between profiles — verified,

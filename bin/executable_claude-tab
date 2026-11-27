@@ -1009,13 +1009,13 @@ def posint(v, default):
 def parse(argv):
     o = {"state": None, "now": None, "focus": "?", "profiles": [], "quiet": 900,
          "finished": 60, "life": {}, "build": "-", "tabname": "", "port": 0, "script": "",
-         "self": "", "focus-script": ""}
+         "self": "", "focus-script": "", "deployed": ""}
     i = 0
     while i < len(argv):
         k = argv[i]
         if k not in ("--state", "--now", "--focus", "--profile", "--quiet",
                      "--finished", "--life", "--build", "--tabname", "--port", "--script",
-                     "--self", "--focus-script") or i + 1 >= len(argv):
+                     "--self", "--focus-script", "--deployed") or i + 1 >= len(argv):
             die("bad argument '%s'" % k)
         v = argv[i + 1]
         i += 2
@@ -1506,8 +1506,16 @@ def serve(o):
             return "-"
     build = mtime()
     o["build"] = build
+    deployed = o["deployed"]
+
+    def deployed_mtime():
+        try:
+            return str(os.stat(deployed).st_mtime_ns) if os.path.isfile(deployed) else "-"
+        except OSError:
+            return "-"
+    deployed_at = deployed_mtime() if deployed else "-"
     lock = threading.Lock()
-    box = {"state": load_state(path), "snap": None, "pids": set()}
+    box = {"state": load_state(path), "snap": None, "pids": set(), "polled": None}
     box["written"] = copy.deepcopy(box["state"])
 
     class Handler(BaseHTTPRequestHandler):
@@ -1536,12 +1544,16 @@ def serve(o):
                 return self.reply(403, '{"error": "bad host"}')
             p = self.path.split("?", 1)[0]
             if p == "/snapshot.json":
+                if self.headers.get("X-Claude-Tab") == "1":  # the page; a CLI read carries none
+                    box["polled"] = int(time.time())
                 snap = box["snap"]
                 if snap is None:
                     return self.reply(503, '{"error": "no snapshot yet"}')
                 return self.reply(200, json.dumps(snap, sort_keys=True))
             if p == "/health":
-                return self.reply(200, json.dumps({"ok": True, "pid": os.getpid(), "build": build}))
+                return self.reply(200, json.dumps({
+                    "ok": True, "pid": os.getpid(), "build": build, "script": script,
+                    "polled": box["polled"]}))
             if p == "/":
                 try:
                     with open(html, "rb") as fh:
@@ -1594,26 +1606,39 @@ def serve(o):
         sys.stderr.write("claude-tab: panel: port %d: %s\n" % (port, err.strerror or err))
         sys.exit(1)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    gone_limit, gone, listening = 15 * tick_s, None, False  # 30 s at the default tick
+    listening, orphan_said = False, False
+
+    def hand_over(why):
+        sys.stderr.write("claude-tab: panel: %s\n" % why)
+        sys.stderr.flush()
+        with lock:
+            if box["state"] is not None:
+                save_state(path, box["state"], None, time.time())
+        httpd.server_close()
+        os.execv("/bin/sh", ["/bin/sh", deployed, "panel", "serve", "--port", str(port)])
 
     while True:
         now = time.time()
         up = iterm_running()
-        if mtime() != build:
+        # Not the deployed copy: a deploy or the loss of this script hands the port to it.
+        other = bool(deployed) and os.path.isfile(deployed) and \
+            os.path.realpath(deployed) != os.path.realpath(script)
+        m = mtime()
+        if other and m == "-":
+            hand_over("%s is gone; continuing as %s" % (script, deployed))
+        if other and m != "-" and deployed_mtime() != deployed_at:
+            hand_over("%s changed; leaving %s for it" % (deployed, script))
+        if m == "-" and build != "-" and not other:
+            if not orphan_said:
+                orphan_said = True
+                sys.stderr.write("claude-tab: panel: %s is gone; serving on with the code already loaded\n" % script)
+                sys.stderr.flush()
+        elif m != build:
             with lock:
                 if box["state"] is not None:
                     save_state(path, box["state"], None, now)
             httpd.server_close()
             os.execv("/bin/sh", ["/bin/sh", script, "panel", "serve", "--port", str(port)])
-        if up:
-            gone = None
-        else:
-            gone = now if gone is None else gone
-            if now - gone >= gone_limit:
-                with lock:
-                    if box["state"] is not None:
-                        save_state(path, box["state"], None, now)
-                sys.exit(0)
         try:
             focus = "?"
             snap = box["snap"]
@@ -1646,7 +1671,13 @@ def status(o):
     if h is None:
         print("server: not running")
         sys.exit(3)
-    print("server: pid %d, port %d" % (json.loads(h)["pid"], port))
+    h = json.loads(h)
+    deployed, follows = o["deployed"], ""
+    if deployed and os.path.isfile(deployed):
+        mine = h.get("script")
+        if mine is None or os.path.realpath(mine) != os.path.realpath(deployed):
+            follows = ", following %s (not %s)" % (mine or "an older build", deployed)
+    print("server: pid %d, port %d%s" % (h["pid"], port, follows))
     if s is None:
         print("data: no snapshot yet")
         return
@@ -1661,6 +1692,8 @@ def status(o):
     print("needs: " + (", ".join("%s %d" % kv for kv in sorted(kinds.items())) or "none"))
     print("tally: %d entered, %d left, %d hidden prompts, %d seen by focus, %d seen by click, %d transitions" % (
         t["entered"], t["left"], t["hidden_prompts"], t["seen_focus"], t["seen_click"], t["transitions"]))
+    print("page: never polled" if h.get("polled") is None else
+          "page: polled %ds ago" % max(0, int(time.time() - h["polled"])))
 
 
 def detach(log, argv):
@@ -1774,7 +1807,7 @@ cmd_panel_serve() {
   [ "$port" -le 65535 ] || usage
   PANEL_EXEC=exec
   panel_run serve --port "$port" --script "$(self_path)" --self "${CLAUDE_TAB_SELF-}" \
-    --focus-script "$(front_tty_script)"
+    --focus-script "$(front_tty_script)" --deployed "${CLAUDE_TAB_DEPLOYED:-$HOME/bin/claude-tab}"
 }
 
 cmd_panel_start() {
@@ -1792,6 +1825,11 @@ cmd_panel_start() {
     if h=$(panel_py fetch "$port" /health 2>/dev/null); then
       printf '%s %s\n' "$(printf '%s\n' "$h" | sed -n 's/.*"pid": \([0-9]*\).*/\1/p')" "$port" > "$dir/panel.pid"
       printf 'claude-tab: panel started on http://127.0.0.1:%s/\n' "$port"
+      dep=${CLAUDE_TAB_DEPLOYED:-$HOME/bin/claude-tab}
+      if [ -f "$dep" ] && [ ! "$dep" -ef "$(self_path)" ]; then
+        printf 'claude-tab: panel: following %s, not %s; it leaves at the next deploy (sooner: claude-tab panel stop, then %s panel start)\n' \
+          "$(self_path)" "$dep" "$dep" >&2
+      fi
       return 0
     fi
     sleep 0.2
@@ -1820,9 +1858,11 @@ cmd_panel_snapshot() {
 
 cmd_panel_status() {
   need_python
-  panel_py status --port "$(panel_port)"
+  panel_py status --port "$(panel_port)" --deployed "${CLAUDE_TAB_DEPLOYED:-$HOME/bin/claude-tab}"
   ps_rc=$?
-  if [ -e "$(panel_dir)/panel.installed" ]; then echo "tool: installed"; else echo "tool: not installed"; fi
+  if [ ! -e "$(panel_dir)/panel.installed" ]; then echo "tool: not installed"
+  elif [ -e "$(panel_dir)/panel.reload" ]; then echo "tool: installed, reload pending"
+  else echo "tool: installed"; fi
   return "$ps_rc"
 }
 
@@ -1873,6 +1913,7 @@ cmd_panel_register() {
     [ "$?" -ne 7 ] || die "no fresh iTerm2 API cookie (run iterm2-cookie); the panel is not registered"
     die "could not register the panel: $(printf '%s\n' "$rg_out" | tail -n 1)"
   }
+  rm -f "$(panel_dir)/panel.reload"
   [ -n "$rg_quiet" ] || printf 'claude-tab: Toolbelt tool "%s" registered (View > Toolbelt)\n' "$rg_name"
 }
 
@@ -1888,28 +1929,54 @@ cmd_panel_install() {
 
 cmd_panel_uninstall() {
   ( cmd_panel_stop ) || :
-  rm -f "$(panel_dir)/panel.installed"
+  rm -f "$(panel_dir)/panel.installed" "$(panel_dir)/panel.reload"
   printf 'claude-tab: untick the tool in View > Toolbelt (iTerm2 has no call that removes a registration)\n'
 }
 
-# Silent, for the `claude` wrapper: nothing without the marker, nothing while the
-# server answers, else start it and register (a view that loaded while nothing
-# listened stays blank until it is reloaded). A fresh launch after an iTerm2
-# restart may find its cookie still being minted, so the cookie is waited for
-# (this runs detached). Failures are one line each in panel.log.
+# Silent, for the `claude` wrapper and every interactive shell: nothing without
+# the marker, nothing while another ensure runs (a lock directory, stale after a
+# minute), nothing while the server answers and no reload is owed, else start the
+# server and register (a view that loaded while nothing listened stays blank
+# until it is reloaded). The reload is owed from the moment this call had to
+# start the server, in panel.reload, until a registration succeeds: a call that
+# starts it waits for a cookie (an iTerm2 restart has the wrapper minting one at
+# the same moment), a later call that finds the flag tries once with no wait.
+# Failures are one line each in panel.log.
 cmd_panel_ensure() {
   en_dir=$(panel_dir)
   [ -e "$en_dir/panel.installed" ] || return 0
   [ "$(os)" = Darwin ] || return 0
-  panel_py fetch "$(panel_port)" /health >/dev/null 2>&1 && return 0
   mkdir -p "$en_dir" && chmod 700 "$en_dir"
-  ( cmd_panel_start ) >/dev/null 2>>"$en_dir/panel.log" || return 0
-  en_i=0
-  while [ "$en_i" -lt 20 ] && ! ( api_cookie_env ); do
-    sleep "${CLAUDE_TAB_PANEL_COOKIE_WAIT:-0.5}"
-    en_i=$((en_i + 1))
-  done
-  ( cmd_panel_register --quiet ) >/dev/null 2>>"$en_dir/panel.log" || :
+  en_lock=$en_dir/panel.ensure.lock
+  if ! mkdir "$en_lock" 2>/dev/null; then
+    [ -n "$(find "$en_lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] || return 0
+    rmdir "$en_lock" 2>/dev/null
+    mkdir "$en_lock" 2>/dev/null || return 0
+  fi
+  ( ensure_body "$en_dir" ) || :
+  rmdir "$en_lock" 2>/dev/null
+  return 0
+}
+
+ensure_body() {
+  eb_dir=$1
+  eb_started=''
+  if ! panel_py fetch "$(panel_port)" /health >/dev/null 2>&1; then
+    ( cmd_panel_start ) >/dev/null 2>>"$eb_dir/panel.log" || return 0
+    : > "$eb_dir/panel.reload"
+    eb_started=1
+  fi
+  [ -e "$eb_dir/panel.reload" ] || return 0
+  if [ -n "$eb_started" ]; then
+    eb_i=0
+    while [ "$eb_i" -lt 20 ] && ! ( api_cookie_env ); do
+      sleep "${CLAUDE_TAB_PANEL_COOKIE_WAIT:-0.5}"
+      eb_i=$((eb_i + 1))
+    done
+  else
+    ( api_cookie_env ) || return 0
+  fi
+  ( cmd_panel_register --quiet ) >/dev/null 2>>"$eb_dir/panel.log" || :
 }
 
 cmd_panel() {

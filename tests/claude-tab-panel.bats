@@ -25,6 +25,8 @@ setup() {
 
   CT="$BATS_TEST_DIRNAME/../bin/executable_claude-tab"
   STATE="$BATS_TEST_TMPDIR/panel-state.json"
+  # The real script counts as the deployed copy, so a server started from it neither warns nor hands over.
+  export CLAUDE_TAB_DEPLOYED="$CT"
 
   BIN="$BATS_TEST_TMPDIR/bin"
   mkdir -p "$BIN"
@@ -1007,11 +1009,83 @@ STUB
     "$(printf '%s' "$after" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["pid"])')" ]
 }
 
-@test "the server exits once iTerm2 has been gone for the (scaled) 30 seconds" {
+@test "the server outlives iTerm2" {
   serve
   : > "$PROCS_FILE"
-  gone() { ! kill -0 "$SERVER" 2>/dev/null; }
-  wait_for gone
+  sleep 3
+  kill -0 "$SERVER"
+  run curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/health"
+  [ "$output" = 200 ]
+}
+
+# two_copies: COPY_A and COPY_B, two copies of the script under BATS_TEST_TMPDIR.
+two_copies() {
+  mkdir -p "$BATS_TEST_TMPDIR/ca" "$BATS_TEST_TMPDIR/cb"
+  COPY_A=$BATS_TEST_TMPDIR/ca/claude-tab
+  COPY_B=$BATS_TEST_TMPDIR/cb/claude-tab
+  cp "$CT" "$COPY_A"
+  cp "$CT" "$COPY_B"
+}
+
+# count_out <fixed string> <n>: serve.out holds the string exactly n times.
+count_out() { [ "$(grep -cF -- "$1" "$BATS_TEST_TMPDIR/serve.out")" = "$2" ]; }
+
+health_pid() { curl -s --noproxy '*' "http://127.0.0.1:$PORT/health" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["pid"])'; }
+
+@test "a server whose script vanishes serves on, then continues as the deployed copy when one appears" {
+  two_copies
+  export CLAUDE_TAB_DEPLOYED=$BATS_TEST_TMPDIR/cb/absent
+  serve "$COPY_A"
+  rm "$COPY_A"
+  sleep 1
+  [ "$(health_pid)" = "$SERVER" ]
+  count_out "ca/claude-tab is gone; serving on with the code already loaded" 1
+  cp "$CT" "$CLAUDE_TAB_DEPLOYED"
+  wait_for count_out "is gone; continuing as $CLAUDE_TAB_DEPLOYED" 1
+  wait_for count_out "panel on" 2
+  [ "$(health_pid)" = "$SERVER" ]
+}
+
+@test "a server whose script vanishes continues as the deployed copy" {
+  two_copies
+  export CLAUDE_TAB_DEPLOYED=$COPY_B
+  serve "$COPY_A"
+  rm "$COPY_A"
+  wait_for count_out "is gone; continuing as $COPY_B" 1
+  wait_for count_out "panel on" 2
+  [ "$(health_pid)" = "$SERVER" ]
+}
+
+@test "a server from a copy leaves for the deployed copy when that changes, and not before" {
+  two_copies
+  export CLAUDE_TAB_DEPLOYED=$COPY_B
+  serve "$COPY_A"
+  sleep 2
+  count_out "panel on" 1
+  touch "$COPY_B"
+  wait_for count_out "$COPY_B changed; leaving $COPY_A for it" 1
+  wait_for count_out "panel on" 2
+  [ "$(health_pid)" = "$SERVER" ]
+}
+
+@test "start from a copy says it is not the deployed copy, from the deployed one it says nothing more" {
+  two_copies
+  export CLAUDE_TAB_PANEL_TICK=0.1
+  git config --file "$GIT_CONFIG_GLOBAL" claude-tab.panel-port "$(free_port)"
+  CLAUDE_TAB_DEPLOYED=$COPY_B run --separate-stderr sh "$COPY_A" panel start
+  [ "$status" -eq 0 ]
+  [[ "$output" == "claude-tab: panel started on "* ]]
+  [ "$stderr" = "claude-tab: panel: following $COPY_A, not $COPY_B; it leaves at the next deploy (sooner: claude-tab panel stop, then $COPY_B panel start)" ]
+  sh "$COPY_A" panel stop
+  sleep 0.5
+  CLAUDE_TAB_DEPLOYED=$COPY_A run --separate-stderr sh "$COPY_A" panel start
+  [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
+  sh "$COPY_A" panel stop
+  sleep 0.5
+  CLAUDE_TAB_DEPLOYED=$BATS_TEST_TMPDIR/absent run --separate-stderr sh "$COPY_A" panel start
+  [ "$status" -eq 0 ]
+  [ -z "$stderr" ]
 }
 
 @test "start twice starts one process, stop ends it, a second stop is exit 3" {
@@ -1049,13 +1123,35 @@ STUB
   [ "$(val 'd["v"]')" = 1 ]
   run sh "$CT" panel status
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 6 ]
+  [ "${#lines[@]}" -eq 7 ]
   [ "${lines[0]}" = "server: pid $SERVER, port $PORT" ]
   [[ "${lines[1]}" == "data: "* ]]
   [[ "${lines[2]}" == "focus: "* ]]
   [ "${lines[3]}" = "needs: none" ]
   [[ "${lines[4]}" == "tally: "* ]]
-  [ "${lines[5]}" = "tool: not installed" ]
+  [ "${lines[5]}" = "page: never polled" ]
+  [ "${lines[6]}" = "tool: not installed" ]
+}
+
+@test "only a request from the page counts as a poll, and status says so" {
+  serve
+  wait_for needs_has "d['tally']['ticks'] >= 1"
+  curl -s --noproxy '*' "http://127.0.0.1:$PORT/snapshot.json" >/dev/null
+  [ "$(curl -s --noproxy '*' "http://127.0.0.1:$PORT/health" | "$REAL_PYTHON3" -I -c 'import json,sys; print(json.load(sys.stdin)["polled"])')" = None ]
+  curl -s --noproxy '*' -H 'X-Claude-Tab: 1' "http://127.0.0.1:$PORT/snapshot.json" >/dev/null
+  [ "$(curl -s --noproxy '*' "http://127.0.0.1:$PORT/health" | "$REAL_PYTHON3" -I -c 'import json,sys; print(type(json.load(sys.stdin)["polled"]).__name__)')" = int ]
+  run sh "$CT" panel status
+  [[ "${lines[5]}" =~ ^"page: polled "[0-9]+"s ago"$ ]]
+}
+
+@test "status names the script a server follows when it is not the deployed copy" {
+  two_copies
+  export CLAUDE_TAB_DEPLOYED=$COPY_B
+  serve "$COPY_A"
+  run sh "$COPY_A" panel status
+  [ "${lines[0]}" = "server: pid $SERVER, port $PORT, following $COPY_A (not $COPY_B)" ]
+  CLAUDE_TAB_DEPLOYED=$COPY_A run sh "$COPY_A" panel status
+  [ "${lines[0]}" = "server: pid $SERVER, port $PORT" ]
 }
 
 # The page: panel.html is one self-contained file, checked as text.
@@ -1076,6 +1172,7 @@ sys.exit(1 if any(0xE000 <= ord(c) <= 0xF8FF for c in t) else 0)' "$PAGE"
 
 @test "the page names all four endpoints and every kind of the snapshot" {
   PAGE=$(page)
+  grep -Eq 'fetch\("/snapshot.json".*X-Claude-Tab' "$PAGE" || { echo "the snapshot fetch lacks the header"; return 1; }
   for w in /snapshot.json /health /seen /go X-Claude-Tab \
     blocked failed asked finished finished-bg quiet unknown working idle idle-bg; do
     grep -Fq -- "$w" "$PAGE" || { echo "panel.html lacks $w"; return 1; }
@@ -1220,6 +1317,8 @@ lines_of() { wc -l < "$1" | tr -d ' '; }
   run sh "$CT" panel ensure
   [ "$status" -eq 0 ]
   [ "$(lines_of "$REG_LOG")" = 1 ]
+  [ ! -e "$HOME/.local/state/claude-tab/panel.reload" ]
+  [ ! -e "$HOME/.local/state/claude-tab/panel.ensure.lock" ]
 }
 
 @test "ensure that cannot register waits for the cookie, then leaves one line in the log" {
@@ -1234,4 +1333,81 @@ lines_of() { wc -l < "$1" | tr -d ' '; }
   [ -z "$output" ]
   [ ! -e "$REG_LOG" ]
   grep -Fq "claude-tab: no fresh iTerm2 API cookie" "$HOME/.local/state/claude-tab/panel.log"
+  sd=$HOME/.local/state/claude-tab
+  [ -e "$sd/panel.reload" ]
+  [ ! -e "$sd/panel.ensure.lock" ]
+  run sh "$CT" panel status
+  [ "${lines[${#lines[@]}-1]}" = "tool: installed, reload pending" ]
+  pid1=$(cut -d' ' -f1 "$sd/panel.pid")
+  log1=$(cat "$sd/panel.log")
+  # a later ensure finds the flag, waits for nothing and says nothing
+  run sh "$CT" panel ensure
+  [ "$status" -eq 0 ]
+  [ "$(cat "$sd/panel.log")" = "$log1" ]
+  [ ! -e "$REG_LOG" ]
+  [ -e "$sd/panel.reload" ]
+  cookie fresh
+  run sh "$CT" panel ensure
+  [ "$status" -eq 0 ]
+  [ "$(lines_of "$REG_LOG")" = 1 ]
+  [ ! -e "$sd/panel.reload" ]
+  [ "$(cut -d' ' -f1 "$sd/panel.pid")" = "$pid1" ]
+}
+
+# ensure_ready: marker for a free port, stub interpreter, fresh cookie.
+ensure_ready() {
+  reg_stub
+  cookie fresh
+  port=$(free_port)
+  git config --file "$GIT_CONFIG_GLOBAL" claude-tab.panel-port "$port"
+  export CLAUDE_TAB_PANEL_TICK=0.1
+  SD=$HOME/.local/state/claude-tab
+  mkdir -p "$SD"
+  echo "$port" > "$SD/panel.installed"
+}
+
+@test "two ensure started together leave one server and one registration" {
+  ensure_ready
+  sh "$CT" panel ensure 3>&- &
+  e1=$!
+  sh "$CT" panel ensure 3>&- &
+  e2=$!
+  wait "$e1" "$e2"
+  [ "$(lines_of "$REG_LOG")" = 1 ]
+  ! grep -q "Address already in use" "$SD/panel.log" || false
+  [ ! -e "$SD/panel.ensure.lock" ]
+  [ "$(grep -c "panel on" "$SD/panel.log")" = 1 ]
+}
+
+@test "ensure that finds a fresh lock returns at once and starts nothing" {
+  ensure_ready
+  mkdir "$SD/panel.ensure.lock"
+  run sh "$CT" panel ensure
+  [ "$status" -eq 0 ]
+  [ ! -e "$SD/panel.pid" ]
+  [ ! -e "$REG_LOG" ]
+  [ -d "$SD/panel.ensure.lock" ]
+}
+
+@test "ensure that finds a lock over a minute old takes it and works" {
+  ensure_ready
+  mkdir "$SD/panel.ensure.lock"
+  python3 -I -c 'import os,sys; os.utime(sys.argv[1], (1000,) * 2)' "$SD/panel.ensure.lock"
+  run sh "$CT" panel ensure
+  [ "$status" -eq 0 ]
+  [ "$(lines_of "$REG_LOG")" = 1 ]
+  [ ! -e "$SD/panel.ensure.lock" ]
+}
+
+@test "a typed register removes panel.reload, and so does uninstall" {
+  ensure_ready
+  : > "$SD/panel.reload"
+  run sh "$CT" panel register --quiet
+  [ "$status" -eq 0 ]
+  [ ! -e "$SD/panel.reload" ]
+  : > "$SD/panel.reload"
+  run sh "$CT" panel uninstall
+  [ "$status" -eq 0 ]
+  [ ! -e "$SD/panel.reload" ]
+  [ ! -e "$SD/panel.installed" ]
 }

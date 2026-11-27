@@ -252,7 +252,7 @@ function draw() {
 
 function poll() {
   var ctl = new AbortController(), timer = setTimeout(function () { ctl.abort(); }, POLL_MS + 1000);
-  return fetch("/snapshot.json", { signal: ctl.signal }).then(function (r) {
+  return fetch("/snapshot.json", { signal: ctl.signal, headers: { "X-Claude-Tab": "1" } }).then(function (r) {
     if (!r.ok) { throw new Error(String(r.status)); }
     return r.json();
   }).then(function (j) {
