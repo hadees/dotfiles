@@ -121,7 +121,7 @@ REFUSAL_1="gh: not created. In this repository a session's issue ends with these
   gh_in_stdin "$PERSONAL" "$CLOSED" issue create --title t -F -
   [ "$status" -eq 0 ]
   [ "$(creates)" -eq 5 ]
-  ! grep -v 'TOKEN=tok-personal-acct' "$GH_STUB_LOG"
+  ! grep -v 'TOKEN=tok-personal-acct' "$GH_STUB_LOG" || false
   [ "$(cat "$GH_STUB_STDIN")" = "$CLOSED" ]
   [ "$(count stamped)" -eq 5 ]
 }
@@ -399,7 +399,7 @@ private_on() {
   private_on
   gh_in "$PUBLIC" issue create --title "title 9242" --body "card 4111"
   [[ "$output" != *4111* && "$output" != *9242* ]]
-  ! grep -rq -e 4111 -e 9242 "$XDG_STATE_HOME"
+  ! grep -rq -e 4111 -e 9242 "$XDG_STATE_HOME" || false
   [ -z "$(find "$XDG_STATE_HOME" -name '*4111*' -o -name '*9242*')" ]
 }
 
