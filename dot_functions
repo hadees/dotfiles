@@ -1013,7 +1013,7 @@ function claude-as() {
 function claude-doctor() {
 	local origin acct map dir cred email slug pin;
 	print -r -- "wrapper: $(whence -w claude)";
-	print -r -- "defined: $(defined_trace claude_profile_dir claude_proxy_probe claude_proxy_decide claude_proxy_session claude_proxy_external claude_proxy_notice claude_sessions_here claude_memory_leaks tabstatus_wiring iterm2_cookie_state iterm2_cookie_auto iterm2_allows_all_apps iterm2_skill_drift iterm2_app_path claude_peer_key hermes_profile claude_browser_alias claude_browser_can_open gh_account_for_cwd git_origin_slug bin_trace)";
+	print -r -- "defined: $(defined_trace claude_profile_dir claude_proxy_probe claude_proxy_decide claude_proxy_session claude_proxy_external claude_proxy_notice claude_sessions_here claude_memory_leaks tabstatus_wiring iterm2_cookie_state iterm2_cookie_auto claude_tab_panel_ensure iterm2_allows_all_apps iterm2_skill_drift iterm2_app_path claude_peer_key hermes_profile claude_browser_alias claude_browser_can_open gh_account_for_cwd git_origin_slug bin_trace)";
 	print -r -- "binary:  $(bin="$(whence -p claude)" && bin_trace "$bin" || print -r -- 'NOT FOUND on PATH')";
 	print -r -- "cwd:     $PWD";
 	origin="$(command git config --get remote.origin.url 2>/dev/null)";
