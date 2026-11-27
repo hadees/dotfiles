@@ -286,6 +286,7 @@ rule first.
 | `claude-tab-panel` | the needs-you list: its kinds, the tick, the server, the page |
 | `workboard` | the work board: cards, the who and inbox contracts, readers, server, page; read it before `workboard open` or any live look at the board |
 | `workboard-verbs` | what a session may write through the board, the MCP endpoint and `connect`, the LaunchAgent |
+| `workboard-bots` | the `bot` card, the `bots` key, the bots' extra GitHub lists |
 | `issue-practice` | the issue forms and labels, session stamp, origins, `gh` issue guard and private-details check |
 | `pane-sight` | reading and picturing another pane, its scope gate and audit log, screen-heads-up |
 | `branchname` | the branch label a prompt or status line shows, the detached-slot base record |

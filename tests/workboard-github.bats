@@ -358,7 +358,6 @@ q2 = github.build_query([dict(W, bots=["renovate", "dependabot"])])
 assert "bot_issues_1: issues(first: 3, filterBy: {createdBy: \"dependabot[bot]\"" in q2
 for none in (W, dict(W, bots=[])):
     q0 = github.build_query([none, P])
-    assert "bot" not in q0 and "[" not in q0.replace("[$", "").replace("labels: [", "") or True
     assert "bot_" not in q0 and "[bot]" not in q0
 assert github.build_query([W]) == github.build_query([dict(W, bots=[])])
 # a login reaches the document only as a JSON string literal
