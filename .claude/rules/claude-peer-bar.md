@@ -14,13 +14,13 @@ the operator thought up, and runs the pane to think in. The rest of the script i
 
 ## The bar
 
-The bar is `Lead, Ideas, Agents[, Hermes]`. **Ideas is the slot `ideas`** (session `<repo>-ideas`). Old
+The bar is `Lead, Ideas, Agents, PRs[, Hermes]`. **Ideas is the slot `ideas`** (session `<repo>-ideas`). Old
 name `secretary` works in `run --as`, `start`, `stop` and `name` (`slot_alias`), its
 worktree and transcripts move once (`slot_pick`; refused: warn, keep the old one: `slot_wt`) and `claude-peer.secretary.cap` falls back; all can go.
 `build_base` returns the root and two peers under an id prefix: `<prefix>.ideas` (command `claude-peer
 run --as ideas --wait`) and `<prefix>.agents` (label `Agents`, command `claude-peer
-agents`). `Claude Peers` (`claudePeer.workgroup`) has three sessions and `Claude
-Peers + Hermes` (`claudePeer.h`) four, Hermes last (`with_hermes` is unchanged). The
+agents`). `Claude Peers` (`claudePeer.workgroup`) has four sessions and `Claude
+Peers + Hermes` (`claudePeer.h`) five, Hermes last (`with_hermes` is unchanged). The
 root's id, which the Enter triggers are keyed to, is `<prefix>.main` as before.
 
 **The Agents pane** is a viewer: no slot, claim, worktree or hand-off. `claude-peer

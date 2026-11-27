@@ -35,7 +35,7 @@ iTerm2 verbs refuse off macOS.
 
 The definitions are **two more** Workgroups, never extra peers on the builtin:
 peers spawn at entry and the builtin is entered on every `claude` job.
-`Claude Peers` (`claudePeer.workgroup`) is Lead, Ideas and Agents, and `Claude Peers + Hermes`
+`Claude Peers` (`claudePeer.workgroup`) is Lead, Ideas, Agents and PRs, and `Claude Peers + Hermes`
 (`claudePeer.h`) adds a Hermes pane (`claude-peer hermes --wait`): the pane cannot remove
 itself, so a repo where no Hermes profile routes gets the definition without it, chosen
 before entry. The bar and the retired overlay pair are in `claude-peer-bar.md`. There is no Diff peer, and
@@ -60,6 +60,16 @@ compare the installed definition's sessions (identifier, name, command) with
 what this version builds and say `installed, out of date (...); this version
 defines N (...)` when they differ (the script changed since `install` last
 ran), or `not installed`.
+
+**The PRs pane** (`claude-peer prs`, `build_base`'s `<prefix>.prs`, label `PRs`, the
+fourth pane, before Hermes) is a viewer like Agents: no slot, claim or worktree. It goes
+to the repository's main checkout and runs `gh dash` through an interactive shell, so
+the `gh()` wrapper picks the account and its `GH_REPO` makes the dashboard read this
+repository; the config is `dot_config/gh-dash/config.yml`. It is on in every repository
+(no `git config` knob, as for Agents). Without the `gh dash` extension (`gh extension
+list` has no `gh dash` row) it says so in one line, with the install command, and runs
+nothing. Either way, and when `gh dash` exits, it ends in a plain shell. Outside a
+repository it is one line and a plain shell. Tests: `tests/claude-peer.bats` ("prs: ...").
 
 `iterm2-relaunch claude-peer` runs `install` with iTerm2 quit and starts it
 again (`iterm2-relaunch.md`); the keys it builds are reserved in `iterm2-prefs.md`.
@@ -413,7 +423,7 @@ checkout the leader stands in, once, if that line is missing (Hermes 0.19.0
 `cli.py`). The Hermes peer has no Session Status row (rows come from Claude
 Code hooks) and is not part of the leader's roll-call.
 
-**Overlay peers (retired: `install` builds no pair and the bar is Lead, Ideas, Agents[, Hermes];
+**Overlay peers (retired: `install` builds no pair and the bar is Lead, Ideas, Agents, PRs[, Hermes];
 see `claude-peer-bar.md`; the code below stays until the step that deletes it).** A tab of
 the public chezmoi source got one extra pane per private
 overlay of the machine, each a waiting pane of that overlay's own repository. Discovery is
@@ -453,8 +463,8 @@ entered, prints one line and leaves a plain shell, never iTerm2's restart banner
 
 The overlay pair was separate from the others because peers spawn at entry: panes added to
 `Claude Peers` would appear in every repository's tab. The bar is the root plus the peers in
-session order and ⌥⇧⌘1…8 pick by position: Lead, Ideas, Agents, or the same and Hermes, which is
-⌥⇧⌘4 (the operator's order, 2026-11-13: Hermes after the last pane). `install` writes no state
+session order and ⌥⇧⌘1…8 pick by position: Lead, Ideas, Agents, PRs, or the same and Hermes, which is
+⌥⇧⌘5 (the operator's order, 2026-11-13: Hermes after the last pane). `install` writes no state
 file and removes a stale one with the pair, so `here` answers `base`, and `status` says
 `overlays: not installed` for a machine that has overlays.
 

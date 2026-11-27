@@ -14,7 +14,7 @@
 #
 # Two more Workgroups, not extra peers on the builtin Claude Code one: peers
 # spawn eagerly when a workgroup is entered, and the builtin is entered on
-# every claude job. `Claude Peers` is Lead, the Ideas pane (slot ideas) and the Agents viewer;
+# every claude job. `Claude Peers` is Lead, the Ideas pane (slot ideas), the Agents viewer and the PRs viewer;
 # the Ideas pane waits (below), so entering it on every claude job costs a
 # blocked shell and an agent list, not a Claude. `Claude Peers + Hermes` is the same plus a Hermes
 # pane, a twin because a pane cannot remove itself from a workgroup: where no
@@ -126,6 +126,11 @@
 #                            when it ends, or claude is missing, one line and
 #                            Return runs it again, q leaves a shell. A viewer:
 #                            no slot, claim or worktree
+#   prs                      the PRs pane: in the repository's main checkout,
+#                            `gh dash` through an interactive shell (so the gh()
+#                            wrapper picks the account); without the gh-dash
+#                            extension one line, then a shell, which is also
+#                            where it ends up when gh dash exits. A viewer
 #   overlays                 name<TAB>root<TAB>state<TAB>leader<TAB>pid per
 #                            private overlay of this machine (a chezmoi config
 #                            whose source is a git repository); state is idle,
@@ -212,7 +217,7 @@
 #   plan <branch>...         branch<TAB>worktree<TAB>create|reuse|conflict:<why>
 #                            per branch, exit 1 on any conflict
 #   workgroup                print the "Claude Peers" Workgroup definition JSON
-#                            (Lead, Ideas, Agents) that install would write
+#                            (Lead, Ideas, Agents, PRs) that install would write
 #   install                  write that and "Claude Peers + Hermes" (the same
 #                            plus a Hermes pane) into iTerm2's preferences;
 #                            iTerm2 must be quit. It builds no overlay pair
@@ -2174,6 +2179,19 @@ exec "${SHELL:-/bin/sh}" -i'
   exec "${SHELL:-/bin/sh}" -i
 }
 
+# The PRs pane: gh dash in the main checkout, through the interactive shell so the gh()
+# wrapper (and its GH_REPO for `gh dash`) applies. Nothing is claimed or checked out.
+cmd_prs() {
+  [ $# -eq 0 ] || usage
+  if pr_root=$(repo_root_q) && cd "$pr_root"; then
+    PRS_SH='if gh extension list 2>/dev/null | grep -q "^gh dash"; then gh dash; else echo "claude-peer: the gh dash extension is not installed (gh extension install dlvhdr/gh-dash), so there is no PR list to show"; fi
+exec "${SHELL:-/bin/sh}" -i'
+    exec "${SHELL:-/bin/sh}" -i -c "$PRS_SH" claude-peer
+  fi
+  echo "claude-peer: prs: not inside a git repository; plain shell"
+  exec "${SHELL:-/bin/sh}" -i
+}
+
 # [--wait] [-- hermes args...]. The shell function does the routing
 # (hermes_profile is zsh and lives in .functions), so this only settles, then
 # starts a shell that calls it and stays a shell whatever it did. --wait hands
@@ -3836,14 +3854,15 @@ def session(ident, name, kind, command="", items=None, parent=None):
     return s
 
 def build_base(prefix):
-    """Lead, the Ideas pane (slot ideas) and the Agents viewer, ids under prefix.
+    """Lead, the Ideas pane (slot ideas), the Agents and PRs viewers, ids under prefix.
     The slot pane waits (--wait): nothing starts in it until Return or
-    `claude-peer start`. The Agents pane is a viewer: no slot, claim or worktree."""
+    `claude-peer start`. The Agents and PRs panes are viewers: no slot, claim or worktree."""
     root = prefix + ".main"
     return [session(root, "Lead", "root", items=[{"kind": "modeSwitcher"}, {"kind": "gitStatus"}]),
             session(prefix + ".ideas", "Ideas", "peer",
                     "claude-peer run --as ideas --wait", parent=root),
-            session(prefix + ".agents", "Agents", "peer", "claude-peer agents", parent=root)]
+            session(prefix + ".agents", "Agents", "peer", "claude-peer agents", parent=root),
+            session(prefix + ".prs", "PRs", "peer", "claude-peer prs", parent=root)]
 
 def with_hermes(group):
     """The twin of a definition with a Hermes pane: id <id>.h (claudePeer.h for
@@ -4656,6 +4675,7 @@ case $cmd in
   run) cmd_run "$@";;
   hermes) cmd_hermes "$@";;
   agents) cmd_agents "$@";;
+  prs) cmd_prs "$@";;
   overlays) cmd_overlays "$@";;
   overlay) cmd_overlay "$@";;
   peers) cmd_peers "$@";;
