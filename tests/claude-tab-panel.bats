@@ -1123,13 +1123,35 @@ health_pid() { curl -s --noproxy '*' "http://127.0.0.1:$PORT/health" | python3 -
   [ "$(val 'd["v"]')" = 1 ]
   run sh "$CT" panel status
   [ "$status" -eq 0 ]
-  [ "${#lines[@]}" -eq 6 ]
+  [ "${#lines[@]}" -eq 7 ]
   [ "${lines[0]}" = "server: pid $SERVER, port $PORT" ]
   [[ "${lines[1]}" == "data: "* ]]
   [[ "${lines[2]}" == "focus: "* ]]
   [ "${lines[3]}" = "needs: none" ]
   [[ "${lines[4]}" == "tally: "* ]]
-  [ "${lines[5]}" = "tool: not installed" ]
+  [ "${lines[5]}" = "page: never polled" ]
+  [ "${lines[6]}" = "tool: not installed" ]
+}
+
+@test "only a request from the page counts as a poll, and status says so" {
+  serve
+  wait_for needs_has "d['tally']['ticks'] >= 1"
+  curl -s --noproxy '*' "http://127.0.0.1:$PORT/snapshot.json" >/dev/null
+  [ "$(curl -s --noproxy '*' "http://127.0.0.1:$PORT/health" | "$REAL_PYTHON3" -I -c 'import json,sys; print(json.load(sys.stdin)["polled"])')" = None ]
+  curl -s --noproxy '*' -H 'X-Claude-Tab: 1' "http://127.0.0.1:$PORT/snapshot.json" >/dev/null
+  [ "$(curl -s --noproxy '*' "http://127.0.0.1:$PORT/health" | "$REAL_PYTHON3" -I -c 'import json,sys; print(type(json.load(sys.stdin)["polled"]).__name__)')" = int ]
+  run sh "$CT" panel status
+  [[ "${lines[5]}" =~ ^"page: polled "[0-9]+"s ago"$ ]]
+}
+
+@test "status names the script a server follows when it is not the deployed copy" {
+  two_copies
+  export CLAUDE_TAB_DEPLOYED=$COPY_B
+  serve "$COPY_A"
+  run sh "$COPY_A" panel status
+  [ "${lines[0]}" = "server: pid $SERVER, port $PORT, following $COPY_A (not $COPY_B)" ]
+  CLAUDE_TAB_DEPLOYED=$COPY_A run sh "$COPY_A" panel status
+  [ "${lines[0]}" = "server: pid $SERVER, port $PORT" ]
 }
 
 # The page: panel.html is one self-contained file, checked as text.
@@ -1150,6 +1172,7 @@ sys.exit(1 if any(0xE000 <= ord(c) <= 0xF8FF for c in t) else 0)' "$PAGE"
 
 @test "the page names all four endpoints and every kind of the snapshot" {
   PAGE=$(page)
+  grep -Eq 'fetch\("/snapshot.json".*X-Claude-Tab' "$PAGE" || { echo "the snapshot fetch lacks the header"; return 1; }
   for w in /snapshot.json /health /seen /go X-Claude-Tab \
     blocked failed asked finished finished-bg quiet unknown working idle idle-bg; do
     grep -Fq -- "$w" "$PAGE" || { echo "panel.html lacks $w"; return 1; }

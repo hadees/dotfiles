@@ -153,7 +153,10 @@ raises is one line on stderr and the loop goes on; `generated_at` then stops
 moving, which is what the page's stale banner reads.
 
 **Endpoints.** `GET /snapshot.json` (503 before the first tick), `GET /health`
-(`{ok, pid, build}`), `GET /` (the file `$CLAUDE_TAB_PANEL_HTML`, else
+(`{ok, pid, build, script, polled}`: `script` is the script the server follows,
+`polled` the epoch second of the last `GET /snapshot.json` that carried
+`X-Claude-Tab: 1`, which only the page sends, so `snapshot`, `status` and the work
+board never move it; `null` before the first), `GET /` (the file `$CLAUDE_TAB_PANEL_HTML`, else
 `~/.local/share/claude-tab/panel.html`, read on each request, with a CSP that
 allows only inline script and style and fetches to itself; a missing file is
 500 naming the path), `POST /seen` and `POST /go` with the body `pid=<digits>`.
@@ -218,8 +221,15 @@ sends TERM to the pid of `panel.pid` when `ps` shows `serve` and `claude-tab`
 in its command, removes the file, exit 3 when nothing runs. `snapshot` prints
 the running server's `/snapshot.json` (python `urllib` without proxies, exit 3
 when nothing answers). `status` prints `server:`, `data:`, `focus:`, `needs:`
-and `tally:` lines, then `tool:` (`installed`, `installed, reload pending` with `panel.reload` beside the marker, else `not installed`); exit 3
-and `server: not running` when nothing answers.
+and `tally:` lines, then `page: polled <n>s ago` or `page: never polled`, then `tool:` (`installed`, `installed, reload pending` with `panel.reload` beside the marker, else `not installed`); exit 3
+and `server: not running` when nothing answers. The `server:` line ends
+`, following <script> (not <deployed>)` when the server follows another script than
+the deployed copy (`following an older build` for a server that predates the field):
+a checkout's copy holds the real port, and `stop` then `start` from the deployed
+copy ends it. `page: never polled` with a server up, the Toolbelt visible and the
+tool ticked means the view loaded while nothing listened: `claude-tab panel register`
+reloads it. With the Toolbelt hidden or the tool unticked there is no view, or a
+paused one, and the same line means only that.
 The invariant anyone can check while a prompt is open: the pids of
 `claude-tab attention` rows waiting four seconds or more are exactly the
 `blocked` rows of `panel snapshot`.

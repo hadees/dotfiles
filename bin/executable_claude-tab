@@ -1515,7 +1515,7 @@ def serve(o):
             return "-"
     deployed_at = deployed_mtime() if deployed else "-"
     lock = threading.Lock()
-    box = {"state": load_state(path), "snap": None, "pids": set()}
+    box = {"state": load_state(path), "snap": None, "pids": set(), "polled": None}
     box["written"] = copy.deepcopy(box["state"])
 
     class Handler(BaseHTTPRequestHandler):
@@ -1544,12 +1544,16 @@ def serve(o):
                 return self.reply(403, '{"error": "bad host"}')
             p = self.path.split("?", 1)[0]
             if p == "/snapshot.json":
+                if self.headers.get("X-Claude-Tab") == "1":  # the page; a CLI read carries none
+                    box["polled"] = int(time.time())
                 snap = box["snap"]
                 if snap is None:
                     return self.reply(503, '{"error": "no snapshot yet"}')
                 return self.reply(200, json.dumps(snap, sort_keys=True))
             if p == "/health":
-                return self.reply(200, json.dumps({"ok": True, "pid": os.getpid(), "build": build}))
+                return self.reply(200, json.dumps({
+                    "ok": True, "pid": os.getpid(), "build": build, "script": script,
+                    "polled": box["polled"]}))
             if p == "/":
                 try:
                     with open(html, "rb") as fh:
@@ -1667,7 +1671,13 @@ def status(o):
     if h is None:
         print("server: not running")
         sys.exit(3)
-    print("server: pid %d, port %d" % (json.loads(h)["pid"], port))
+    h = json.loads(h)
+    deployed, follows = o["deployed"], ""
+    if deployed and os.path.isfile(deployed):
+        mine = h.get("script")
+        if mine is None or os.path.realpath(mine) != os.path.realpath(deployed):
+            follows = ", following %s (not %s)" % (mine or "an older build", deployed)
+    print("server: pid %d, port %d%s" % (h["pid"], port, follows))
     if s is None:
         print("data: no snapshot yet")
         return
@@ -1682,6 +1692,8 @@ def status(o):
     print("needs: " + (", ".join("%s %d" % kv for kv in sorted(kinds.items())) or "none"))
     print("tally: %d entered, %d left, %d hidden prompts, %d seen by focus, %d seen by click, %d transitions" % (
         t["entered"], t["left"], t["hidden_prompts"], t["seen_focus"], t["seen_click"], t["transitions"]))
+    print("page: never polled" if h.get("polled") is None else
+          "page: polled %ds ago" % max(0, int(time.time() - h["polled"])))
 
 
 def detach(log, argv):
@@ -1846,7 +1858,7 @@ cmd_panel_snapshot() {
 
 cmd_panel_status() {
   need_python
-  panel_py status --port "$(panel_port)"
+  panel_py status --port "$(panel_port)" --deployed "${CLAUDE_TAB_DEPLOYED:-$HOME/bin/claude-tab}"
   ps_rc=$?
   if [ ! -e "$(panel_dir)/panel.installed" ]; then echo "tool: not installed"
   elif [ -e "$(panel_dir)/panel.reload" ]; then echo "tool: installed, reload pending"
