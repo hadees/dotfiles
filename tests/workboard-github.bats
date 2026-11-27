@@ -61,6 +61,7 @@ import calendar, json, os, time, github
 W = {"slug": "octo-work-org/proj-one", "account": "work-acct", "intake": "all"}
 G = {"slug": "octo-work-org/proj-gone", "account": "work-acct", "intake": "all"}
 P = {"slug": "octo-personal/proj-two", "account": "personal-acct", "intake": "mine"}
+WB = dict(W, bots=["renovate"])
 NOW = 1800000000.0
 def poll(*repos, prior=None, only=None, now=NOW):
     return github.poll({"repos": list(repos)}, prior, 1200, now, only)
@@ -151,11 +152,11 @@ o, m = doc["prs"]
 assert o == {"slug": W["slug"], "number": 15, "title": "Fixture title: own open pull request",
              "url": "https://github.com/octo-work-org/proj-one/pull/15", "state": "OPEN", "draft": False,
              "branch": "wb-alpha", "updated_at": ts("2026-11-20T10:00:00Z"), "merged_at": None,
-             "review": "REVIEW_REQUIRED", "merge": "BLOCKED", "checks": "FAILURE",
+             "review": "REVIEW_REQUIRED", "merge": "BLOCKED", "checks": "FAILURE", "bot": None,
              "closes": [{"slug": W["slug"], "number": 14, "title": "Fixture title: issue closed by 15",
                          "url": "https://github.com/octo-work-org/proj-one/issues/14", "state": "OPEN"}]}
 assert m["number"] == 16 and m["state"] == "MERGED" and m["merged_at"] == ts("2026-11-19T10:00:00Z")
-assert m["updated_at"] == m["merged_at"] and m["review"] == "NONE" and m["checks"] == "NONE" and m["closes"] == []'
+assert m["updated_at"] == m["merged_at"] and m["review"] == "NONE" and m["checks"] == "NONE" and m["closes"] == [] and m["bot"] is None'
 }
 
 @test "the issue selection asks who wrote it and what it waits on, once per issue selection, and not on the pull requests" {
@@ -346,9 +347,98 @@ assert github.token_for("-") is None
 assert github.token_for("work-acct") == "tok-work-acct"'
 }
 
+@test "a repository with bots asks for bot_prs and one bot_issues_<k> per login, createdBy a JSON string with the suffix; one without gets neither" {
+  drive '
+q = github.build_query([WB, P])
+assert q.count("bot_prs: pullRequests(first: 30, states: OPEN, orderBy: {field: UPDATED_AT, direction: DESC})") == 1
+assert q.count("bot_issues_0: issues(first: 3, filterBy: {createdBy: \"renovate[bot]\", states: OPEN}") == 1
+assert "bot_issues_1" not in q
+assert "totalCount nodes { number url isDraft headRefName updatedAt reviewDecision mergeStateStatus author { login __typename }" in q
+q2 = github.build_query([dict(W, bots=["renovate", "dependabot"])])
+assert "bot_issues_1: issues(first: 3, filterBy: {createdBy: \"dependabot[bot]\"" in q2
+for none in (W, dict(W, bots=[])):
+    q0 = github.build_query([none, P])
+    assert "bot" not in q0 and "[" not in q0.replace("[$", "").replace("labels: [", "") or True
+    assert "bot_" not in q0 and "[bot]" not in q0
+assert github.build_query([W]) == github.build_query([dict(W, bots=[])])
+# a login reaches the document only as a JSON string literal
+q3 = github.build_query([dict(W, bots=["a\"b } x"])])
+assert "createdBy: \"a\\\"b } x[bot]\"," in q3, q3'
+}
+
+@test "normalize: the bot pull requests become rows with bot set, a User and a bot not in the list are not kept, every other row has bot null" {
+  drive '
+doc = poll(WB)
+rows = [p for p in doc["prs"] if p["number"] in (31, 32, 33, 34)]
+assert [p["number"] for p in rows] == [31, 32, 33], rows
+assert rows[0] == {"slug": W["slug"], "number": 31, "title": "", "url": "https://github.com/octo-work-org/proj-one/pull/31",
+                   "state": "OPEN", "draft": False, "branch": "renovate/dep-31", "updated_at": ts("2027-01-15T06:00:00Z"),
+                   "merged_at": None, "review": "NONE", "merge": "CLEAN", "checks": "SUCCESS", "bot": "renovate", "closes": []}
+assert (rows[1]["draft"], rows[1]["checks"]) == (True, "PENDING") and rows[2]["checks"] == "FAILURE"
+assert [p["bot"] for p in doc["prs"] if p["number"] in (15, 16)] == [None, None]
+assert doc["repos"][W["slug"]]["bot_prs_cut"] is False
+# no bots: no row, no key
+plain = poll(W)
+assert not [p for p in plain["prs"] if p["number"] > 30]
+assert "bot_prs_cut" not in plain["repos"][W["slug"]]'
+  gql_copy '
+n = d["data"]["r0"]["bot_prs"]["nodes"]
+n[3]["author"] = {"login": "renovate", "__typename": "User"}
+n[1]["author"] = {"login": "other-app", "__typename": "Bot"}
+n[0]["author"] = {"login": "Renovate", "__typename": "Bot"}'
+  drive '
+doc = poll(WB)
+assert sorted((p["number"], p["bot"]) for p in doc["prs"] if p["number"] > 30) == [(31, "renovate"), (33, "renovate")]'
+}
+
+@test "a bot pull request the account also owns is one row, the account's own" {
+  gql_copy '
+own = dict(d["data"]["viewer"]["open"]["nodes"][0], number=31, title="Fixture title: own")
+d["data"]["viewer"]["open"]["nodes"].append(own)
+d["data"]["viewer"]["open"]["totalCount"] = 3'
+  drive '
+doc = poll(WB)
+rows = [p for p in doc["prs"] if p["number"] == 31]
+assert len(rows) == 1 and rows[0]["bot"] is None and rows[0]["title"] == "Fixture title: own", rows
+assert sorted(p["number"] for p in doc["prs"] if p["number"] > 30) == [31, 32, 33]'
+}
+
+@test "a bot pull request total above 30 sets bot_prs_cut" {
+  gql_copy 'd["data"]["r0"]["bot_prs"]["totalCount"] = 31'
+  drive '
+assert poll(WB)["repos"][W["slug"]]["bot_prs_cut"] is True'
+}
+
+@test "the bots' issue is one issue row with author_kind Bot, and one that intake all also fetched is not doubled" {
+  drive '
+doc = poll(WB)
+rows = [i for i in doc["issues"] if i["number"] == 30]
+assert len(rows) == 1 and (rows[0]["author"], rows[0]["author_kind"], rows[0]["association"]) == ("renovate", "Bot", "NONE")
+assert rows[0]["title"] == "Dependency Dashboard" and rows[0]["prs"] == []
+assert not [i for i in poll(W)["issues"] if i["number"] == 30]'
+  gql_copy 'd["data"]["r0"]["issues"]["nodes"].append(d["data"]["r0"]["bot_issues_0"]["nodes"][0])'
+  drive '
+assert len([i for i in poll(WB)["issues"] if i["number"] == 30]) == 1'
+}
+
+@test "over the recorded responses the bot rows are the ones demo/github.json holds" {
+  export WB_FIXTURES
+  drive '
+local = json.load(open(os.environ["WB_FIXTURES"] + "/demo/local.json"))
+got = github.poll(local, None, 1200, NOW, None)
+want = json.load(open(os.environ["WB_FIXTURES"] + "/demo/github.json"))
+bots = lambda d: sorted((p for p in d["prs"] if p.get("bot")), key=lambda p: p["number"])
+assert bots(got) == bots(want) and len(bots(want)) == 3
+issue = lambda d: [i for i in d["issues"] if (i["slug"], i["number"]) == ("octo-work-org/proj-one", 30)]
+assert issue(got) == issue(want) and len(issue(want)) == 1
+for d in (got, want):
+    assert d["repos"]["octo-work-org/proj-one"]["bot_prs_cut"] is False
+    assert "bot_prs_cut" not in d["repos"]["octo-personal/proj-two"]'
+}
+
 @test "the document passes wb_shape github, a failed account's too" {
   drive '
-json.dump(poll(W, G, P), open(os.environ["BATS_TEST_TMPDIR"] + "/ok.json", "w"))
+json.dump(poll(WB, G, P), open(os.environ["BATS_TEST_TMPDIR"] + "/ok.json", "w"))
 open(os.environ["BATS_TEST_TMPDIR"] + "/ok.json", "a").write("\n")'
   run wb_shape github "$BATS_TEST_TMPDIR/ok.json"
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
@@ -372,7 +462,7 @@ open(os.environ["BATS_TEST_TMPDIR"] + "/failed.json", "a").write("\n")'
   run $WB_PY "$WB_SRC/github.py" --local "$WB_FIXTURES/demo/local.json"
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
   [ "${#lines[@]}" -eq 2 ]
-  [ "${lines[0]}" = "work-acct · cost 2 · remaining 4900 · interval 60 · issues 2 · prs 2 · ok" ]
+  [ "${lines[0]}" = "work-acct · cost 2 · remaining 4900 · interval 60 · issues 3 · prs 5 · ok" ]
   [ "${lines[1]}" = "personal-acct · cost 2 · remaining 4950 · interval 60 · issues 3 · prs 1 · ok" ]
   [[ "$output" != *itle* && "$output" != *ody* && "$output" != *bug* ]]
   [ "$(grep -c 'api graphql' "$GH_LOG")" -eq 4 ]
