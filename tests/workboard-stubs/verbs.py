@@ -43,6 +43,11 @@ def move(ctx, dir, ref, to, force=False, profile=None):
     return 0, "move ok"
 
 
+@_stub
+def show(ctx, dir, ref, profile=None):
+    return 0, "show ok"
+
+
 def _parser(positional=(), options=(), flags=()):
     def parse(argv):
         body, rest, it = {"dir": os.getcwd()}, [], iter(argv)
@@ -64,10 +69,11 @@ def _parser(positional=(), options=(), flags=()):
 
 
 def register(app):
-    for name, fn in (("list", list_cards), ("take", take), ("add", add), ("move", move)):
+    for name, fn in (("list", list_cards), ("take", take), ("add", add), ("move", move), ("show", show)):
         app.api(name, fn)
     app.cli("list", _parser(options=("stage",)))
     app.cli("take", _parser(("ref",), flags=("force",)))
     app.cli("add", _parser(("title",), options=("body",), flags=("take",)))
     app.cli("move", _parser(("ref", "to"), flags=("force",)))
+    app.cli("show", _parser(("ref",)))
     app.status("writes", lambda: {"done": 0, "forced": 0, "refused_rule": 0, "refused_write_off": 0, "refused_profile": 0})

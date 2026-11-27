@@ -112,6 +112,16 @@ PY
   done
 }
 
+@test "the page marks the origin and the waiting labels, and reads origin without assuming the key" {
+  local w
+  for w in 'filed by a session' "a colleague's" 'from outside' 'from a bot' 'written by hand' \
+    'needs the operator' 'blockers closed' '"Origin"'; do
+    has "$w"
+  done
+  run grep -nE 'c\.origin\.|c\.blockers\.' "$PAGE"
+  [ "$status" -eq 1 ]
+}
+
 @test "the page has a light scheme and keeps the look's base colours" {
   has 'prefers-color-scheme: light'
   has 'prefers-reduced-motion'

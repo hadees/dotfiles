@@ -140,11 +140,13 @@ i = [x for x in doc["issues"] if x["number"] == 14][0]
 assert i == {"slug": W["slug"], "number": 14, "title": "Fixture title: issue closed by 15",
              "url": "https://github.com/octo-work-org/proj-one/issues/14",
              "body": "Fixture body: Fixture title: issue closed by 15", "updated_at": ts("2026-11-20T10:00:00Z"),
-             "author": "work-acct", "assignees": ["work-acct"], "labels": ["bug"],
+             "author": "work-acct", "author_kind": "User", "association": "MEMBER", "editor": None,
+             "assignees": ["work-acct"], "labels": ["bug", "blocked"], "blockers": {"open": 0, "total": 2},
              "prs": [{"number": 15, "url": "https://github.com/octo-work-org/proj-one/pull/15", "state": "OPEN",
                       "draft": False, "merged_at": None, "branch": "wb-alpha", "author": "work-acct"}]}
 other = [x for x in doc["issues"] if x["number"] == 11][0]
 assert other["author"] == "colleague-a" and other["assignees"] == [] and other["prs"] == []
+assert other["labels"] == ["needs-human"] and other["blockers"] is None and other["association"] == "MEMBER"
 o, m = doc["prs"]
 assert o == {"slug": W["slug"], "number": 15, "title": "Fixture title: own open pull request",
              "url": "https://github.com/octo-work-org/proj-one/pull/15", "state": "OPEN", "draft": False,
@@ -154,6 +156,46 @@ assert o == {"slug": W["slug"], "number": 15, "title": "Fixture title: own open 
                          "url": "https://github.com/octo-work-org/proj-one/issues/14", "state": "OPEN"}]}
 assert m["number"] == 16 and m["state"] == "MERGED" and m["merged_at"] == ts("2026-11-19T10:00:00Z")
 assert m["updated_at"] == m["merged_at"] and m["review"] == "NONE" and m["checks"] == "NONE" and m["closes"] == []'
+}
+
+@test "the issue selection asks who wrote it and what it waits on, once per issue selection, and not on the pull requests" {
+  drive '
+q = github.build_query([W, P])
+# W is intake all (one issue selection), P is mine (two): three in all
+for f in ("authorAssociation", "editor { login }", "issueDependenciesSummary { blockedBy totalBlockedBy }",
+          "author { login __typename }"):
+    assert q.count(f) == 3, (f, q.count(f))
+assert q.count("__typename") == 3, q
+assert q.count("author { login }") == 3  # the linked pull requests inside each issue selection'
+}
+
+@test "normalize: who wrote it, who edited it and what it waits on, from the recorded responses" {
+  drive '
+doc = poll(W, P)
+by = {(i["slug"], i["number"]): i for i in doc["issues"]}
+a = by[(W["slug"], 11)]
+assert (a["author_kind"], a["association"], a["editor"], a["blockers"]) == ("User", "MEMBER", None, None)
+b = by[(P["slug"], 25)]
+assert (b["association"], b["editor"]) == ("OWNER", "personal-acct")
+assert by[(P["slug"], 30)]["association"] == "NONE"
+assert list(b) == ["slug", "number", "title", "url", "body", "updated_at", "author", "author_kind",
+                   "association", "editor", "assignees", "labels", "blockers", "prs"]'
+}
+
+@test "a node with no editor, no summary, no association and a deleted author normalises to nulls and NONE; a Bot stays Bot" {
+  gql_copy '
+n = d["data"]["r0"]["issues"]["nodes"]
+n[1]["author"] = None
+for k in ("authorAssociation", "editor", "issueDependenciesSummary"):
+    n[1].pop(k, None)
+n[0]["author"] = {"login": "some-bot", "__typename": "Bot"}'
+  drive '
+doc = poll(W)
+by = {i["number"]: i for i in doc["issues"]}
+assert (by[14]["author"], by[14]["author_kind"], by[14]["association"], by[14]["blockers"]) == \
+    ("some-bot", "Bot", "MEMBER", {"open": 0, "total": 2}), by[14]
+assert (by[11]["author"], by[11]["author_kind"], by[11]["association"], by[11]["editor"], by[11]["blockers"]) == \
+    (None, None, "NONE", None, None), by[11]'
 }
 
 @test "the checks word: EXPECTED and PENDING are PENDING, ERROR and FAILURE are FAILURE, none is NONE" {
